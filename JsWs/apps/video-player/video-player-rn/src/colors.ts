@@ -1,0 +1,17 @@
+export const C = {
+  bgPrimary:    '#0e0e10',
+  bgSecondary:  '#18181b',
+  bgElevated:   '#222226',
+  bgHover:      '#2a2a2f',
+  bgActive:     '#1a2d4a',
+  textPrimary:  '#e8e8ec',
+  textSecondary:'#a0a0b0',
+  textMuted:    '#666680',
+  accent:       '#4a9eff',
+  border:       '#2e2e35',
+  watched:      '#4caf7d',
+  resume:       '#f5a623',
+  danger:       '#e05c5c',
+  headerHeight: 48,
+  sidebarWidth: 300,
+} as const
