@@ -1,0 +1,153 @@
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.setup-dialog {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 40px 36px;
+  width: 100%;
+  max-width: 440px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.setup-icon {
+  font-size: 32px;
+  color: var(--accent);
+  line-height: 1;
+}
+
+.setup-title {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  margin-top: -12px;
+}
+
+.setup-subtitle {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+  margin-top: -12px;
+}
+
+.setup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setup-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.setup-label-hint {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.setup-pick-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  transition: background 0.15s, border-color 0.15s;
+  text-align: left;
+}
+
+.setup-pick-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: #444;
+}
+
+.setup-pick-btn--chosen {
+  color: var(--text-primary);
+  border-color: var(--accent-dim);
+}
+
+.setup-pick-check {
+  color: var(--watched);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.setup-pick-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setup-pick-change {
+  color: var(--accent);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.setup-input {
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  transition: border-color 0.15s;
+  outline: none;
+}
+
+.setup-input:focus {
+  border-color: var(--accent);
+}
+
+.setup-preview {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.setup-preview code {
+  font-family: 'Consolas', 'SF Mono', monospace;
+  color: var(--text-secondary);
+}
+
+.setup-error {
+  font-size: 13px;
+  color: var(--danger);
+  padding: 10px 12px;
+  background: rgba(224, 92, 92, 0.1);
+  border-radius: 6px;
+}
+
+.setup-confirm-btn {
+  padding: 11px 20px;
+  background: var(--accent);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.setup-confirm-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.setup-confirm-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
