@@ -12,6 +12,7 @@ export default function App() {
     tree,
     currentFile,
     errorMessage,
+    warnings,
     onSetupComplete,
     onOpenLibrary,
     onSelectFile,
@@ -19,6 +20,7 @@ export default function App() {
     onMarkWatched,
     onRefresh,
     onReset,
+    onDismissWarnings,
   } = useAppInit()
 
   const initialPosition = currentFile
@@ -104,6 +106,19 @@ export default function App() {
             <span>&#9881;</span> Change Folder
           </button>
         </div>
+
+        {warnings.length > 0 && (
+          <div className="app-warnings">
+            <div className="app-warnings-header">
+              <span>&#9888; {warnings.length} file{warnings.length > 1 ? 's' : ''} could not be read and were skipped:</span>
+              <button className="app-warnings-dismiss" onClick={onDismissWarnings}>&#10005;</button>
+            </div>
+            <ul className="app-warnings-list">
+              {warnings.map(w => <li key={w}>{w}</li>)}
+            </ul>
+          </div>
+        )}
+
         <div className="app-player">
           <VideoPlayer
             file={currentFile}

@@ -18,6 +18,7 @@ export interface AppInitResult {
   tree: FileNode[]
   currentFile: FileNode | null
   errorMessage: string | null
+  warnings: string[]
   onSetupComplete: (rootHandle: FileSystemDirectoryHandle, dataFolderPath: string) => Promise<void>
   onOpenLibrary: () => Promise<void>
   onSelectFile: (node: FileNode) => void
@@ -25,6 +26,7 @@ export interface AppInitResult {
   onMarkWatched: (path: string) => Promise<void>
   onRefresh: () => Promise<void>
   onReset: () => Promise<void>
+  onDismissWarnings: () => void
 }
 
 export function useAppInit(): AppInitResult {
@@ -34,6 +36,7 @@ export function useAppInit(): AppInitResult {
   const [tree, setTree] = useState<FileNode[]>([])
   const [currentFile, setCurrentFile] = useState<FileNode | null>(null)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [warnings, setWarnings] = useState<string[]>([])
 
   const rootHandleRef = useRef<FileSystemDirectoryHandle | null>(null)
   const dataFolderRef = useRef<FileSystemDirectoryHandle | null>(null)
@@ -49,15 +52,20 @@ export function useAppInit(): AppInitResult {
     cfg: StoredConfig,
   ) => {
     setPhase('loading')
+    setWarnings([])
     try {
       const dataFolder = await getOrCreateDataFolder(rootHandle, cfg.dataFolderPath)
       dataFolderRef.current = dataFolder
 
       const topLevelDataName = cfg.dataFolderPath.split('/')[0]
+      const skipped: string[] = []
       const [state, fileTree] = await Promise.all([
         readAppState(dataFolder),
-        buildFileTree(rootHandle, '', topLevelDataName),
+        buildFileTree(rootHandle, '', topLevelDataName, 0, (path, err) => {
+          skipped.push(`${path}: ${err.message}`)
+        }),
       ])
+      if (skipped.length > 0) setWarnings(skipped)
 
       setAppState(state)
       setTree(fileTree)
@@ -158,9 +166,15 @@ export function useAppInit(): AppInitResult {
     const handle = rootHandleRef.current
     if (!handle || !config) return
     const topLevelDataName = config.dataFolderPath.split('/')[0]
-    const newTree = await buildFileTree(handle, '', topLevelDataName)
+    const skipped: string[] = []
+    const newTree = await buildFileTree(handle, '', topLevelDataName, 0, (path, err) => {
+      skipped.push(`${path}: ${err.message}`)
+    })
     setTree(newTree)
+    setWarnings(skipped)
   }, [config])
+
+  const onDismissWarnings = useCallback(() => setWarnings([]), [])
 
   const onReset = useCallback(async () => {
     await clearAll()
@@ -181,6 +195,7 @@ export function useAppInit(): AppInitResult {
     tree,
     currentFile,
     errorMessage,
+    warnings,
     onSetupComplete,
     onOpenLibrary,
     onSelectFile,
@@ -188,5 +203,6 @@ export function useAppInit(): AppInitResult {
     onMarkWatched,
     onRefresh,
     onReset,
+    onDismissWarnings,
   }
 }

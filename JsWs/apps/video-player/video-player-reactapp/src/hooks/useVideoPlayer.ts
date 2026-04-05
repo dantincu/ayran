@@ -87,7 +87,10 @@ export function useVideoPlayer({
     }
   }, [file])
 
-  // Restore position once metadata is loaded
+  // Restore position and start playback once metadata is loaded.
+  // We call play() here instead of using the autoPlay attribute so that
+  // the browser treats it as continuing a user gesture (the file-click),
+  // which is required for unmuted audio on Android Chrome.
   useEffect(() => {
     if (!objectUrl || !videoRef.current) return
     const video = videoRef.current
@@ -96,6 +99,12 @@ export function useVideoPlayer({
     function handleMeta() {
       if (savedPos > 0 && savedPos < video.duration - 3) {
         video.currentTime = savedPos
+      }
+      // Only call play() if autoPlay was blocked by the browser (e.g. Android Chrome).
+      // On desktop, autoPlay already started playback; calling play() again here
+      // causes Chrome to treat it as a new unprompted request and mute the audio.
+      if (video.paused) {
+        void video.play()
       }
     }
 

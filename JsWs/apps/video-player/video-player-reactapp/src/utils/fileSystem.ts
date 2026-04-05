@@ -26,6 +26,7 @@ export async function buildFileTree(
   path: string = '',
   skipTopLevelName: string = '',
   depth: number = 0,
+  onSkip?: (skippedPath: string, error: Error) => void,
 ): Promise<FileNode[]> {
   if (depth > 8) return []
 
@@ -37,29 +38,34 @@ export async function buildFileTree(
 
     const entryPath = path ? `${path}/${entry.name}` : entry.name
 
-    if (entry.kind === 'directory') {
-      const children = await buildFileTree(
-        entry as FileSystemDirectoryHandle,
-        entryPath,
-        '',
-        depth + 1,
-      )
-      if (children.length > 0) {
+    try {
+      if (entry.kind === 'directory') {
+        const children = await buildFileTree(
+          entry as FileSystemDirectoryHandle,
+          entryPath,
+          '',
+          depth + 1,
+          onSkip,
+        )
+        if (children.length > 0) {
+          nodes.push({
+            name: entry.name,
+            path: entryPath,
+            kind: 'directory',
+            handle: entry as FileSystemDirectoryHandle,
+            children,
+          })
+        }
+      } else if (isVideoFile(entry.name)) {
         nodes.push({
           name: entry.name,
           path: entryPath,
-          kind: 'directory',
-          handle: entry as FileSystemDirectoryHandle,
-          children,
+          kind: 'file',
+          handle: entry as FileSystemFileHandle,
         })
       }
-    } else if (isVideoFile(entry.name)) {
-      nodes.push({
-        name: entry.name,
-        path: entryPath,
-        kind: 'file',
-        handle: entry as FileSystemFileHandle,
-      })
+    } catch (e) {
+      onSkip?.(entryPath, e instanceof Error ? e : new Error(String(e)))
     }
   }
 
