@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { AppSession, AppTab, AppState } from '../types/session.types';
+import { AppSession, AppTab } from '../types/session.types';
 import { StorageProviderType } from '../types/storage.types';
 
 interface SessionStore {

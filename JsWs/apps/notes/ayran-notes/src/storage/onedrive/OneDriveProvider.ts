@@ -5,7 +5,10 @@ import * as SecureStore from 'expo-secure-store';
 
 const API_BASE = 'https://graph.microsoft.com/v1.0/me/drive';
 const TOKEN_KEY = 'onedrive_tokens';
-const DISCOVERY = AuthSession.useAutoDiscovery('https://login.microsoftonline.com/common/v2.0');
+const OAUTH_DISCOVERY = {
+  authorizationEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+  tokenEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+};
 
 interface OneDriveTokens {
   accessToken: string;
@@ -27,7 +30,6 @@ export class OneDriveProvider extends BaseStorageProvider {
   }
 
   private encodePath(path: string): string {
-    // OneDrive uses :/path/to/item: syntax
     const clean = path.replace(/^\/+/, '');
     return clean ? `/root:/${clean}:` : '/root';
   }
@@ -39,7 +41,7 @@ export class OneDriveProvider extends BaseStorageProvider {
     }
     if (!this.tokens) return false;
     if (this.tokens.expiresAt && Date.now() >= this.tokens.expiresAt - 60000) {
-      return this.tokens.refreshToken ? true : false;
+      return !!this.tokens.refreshToken;
     }
     return true;
   }
@@ -53,15 +55,10 @@ export class OneDriveProvider extends BaseStorageProvider {
       responseType: AuthSession.ResponseType.Code,
     });
 
-    const discovery = {
-      authorizationEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
-      tokenEndpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
-    };
-
-    const result = await request.promptAsync(discovery);
+    const result = await request.promptAsync(OAUTH_DISCOVERY);
     if (result.type !== 'success') throw new Error('OneDrive authentication cancelled');
 
-    const tokenRes = await fetch(discovery.tokenEndpoint, {
+    const tokenRes = await fetch(OAUTH_DISCOVERY.tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -83,7 +80,7 @@ export class OneDriveProvider extends BaseStorageProvider {
 
   async refreshAuth(): Promise<void> {
     if (!this.tokens?.refreshToken) throw new Error('No refresh token');
-    const tokenRes = await fetch('https://login.microsoftonline.com/common/oauth2/v2.0/token', {
+    const tokenRes = await fetch(OAUTH_DISCOVERY.tokenEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -109,7 +106,7 @@ export class OneDriveProvider extends BaseStorageProvider {
     return this.tokens!.accessToken;
   }
 
-  private async fetch(url: string, init?: RequestInit): Promise<Response> {
+  private async apiFetch(url: string, init?: RequestInit): Promise<Response> {
     const token = await this.getToken();
     return fetch(url, {
       ...init,
@@ -118,45 +115,44 @@ export class OneDriveProvider extends BaseStorageProvider {
   }
 
   async readFile(path: string): Promise<string> {
-    const res = await this.fetch(`${API_BASE}${this.encodePath(path)}/content`);
+    const res = await this.apiFetch(`${API_BASE}${this.encodePath(path)}/content`);
     return res.text();
   }
 
   async readFileBytes(path: string): Promise<Uint8Array> {
-    const res = await this.fetch(`${API_BASE}${this.encodePath(path)}/content`);
+    const res = await this.apiFetch(`${API_BASE}${this.encodePath(path)}/content`);
     const buf = await res.arrayBuffer();
     return new Uint8Array(buf);
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    await this.fetch(`${API_BASE}${this.encodePath(path)}/content`, {
+    await this.apiFetch(`${API_BASE}${this.encodePath(path)}/content`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'text/plain' },
+      headers: { 'Content-Type': 'text/plain; charset=utf-8' },
       body: content,
     });
   }
 
   async writeFileBytes(path: string, content: Uint8Array): Promise<void> {
-    await this.fetch(`${API_BASE}${this.encodePath(path)}/content`, {
+    // Convert Uint8Array to ArrayBuffer for fetch compatibility
+    await this.apiFetch(`${API_BASE}${this.encodePath(path)}/content`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body: content,
+      body: content.buffer as ArrayBuffer,
     });
   }
 
   async deleteFile(path: string): Promise<void> {
-    await this.fetch(`${API_BASE}${this.encodePath(path)}`, { method: 'DELETE' });
+    await this.apiFetch(`${API_BASE}${this.encodePath(path)}`, { method: 'DELETE' });
   }
 
   async moveFile(srcPath: string, destPath: string): Promise<void> {
     const destSegments = destPath.split('/').filter(Boolean);
     const newName = destSegments[destSegments.length - 1];
     const parentPath = destSegments.slice(0, -1).join('/');
-    const parentRef = parentPath
-      ? { path: `/${parentPath}` }
-      : { id: 'root' };
+    const parentRef = parentPath ? { path: `/${parentPath}` } : { id: 'root' };
 
-    await this.fetch(`${API_BASE}${this.encodePath(srcPath)}`, {
+    await this.apiFetch(`${API_BASE}${this.encodePath(srcPath)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName, parentReference: parentRef }),
@@ -167,7 +163,7 @@ export class OneDriveProvider extends BaseStorageProvider {
     const destSegments = destPath.split('/').filter(Boolean);
     const newName = destSegments[destSegments.length - 1];
     const parentPath = destSegments.slice(0, -1).join('/');
-    await this.fetch(`${API_BASE}${this.encodePath(srcPath)}/copy`, {
+    await this.apiFetch(`${API_BASE}${this.encodePath(srcPath)}/copy`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: newName, parentReference: { path: `/${parentPath}` } }),
@@ -178,14 +174,14 @@ export class OneDriveProvider extends BaseStorageProvider {
     const endpoint = path
       ? `${API_BASE}${this.encodePath(path)}/children`
       : `${API_BASE}/root/children`;
-    const res = await this.fetch(`${endpoint}?$select=name,folder,size,lastModifiedDateTime`);
+    const res = await this.apiFetch(`${endpoint}?$select=name,folder,size,lastModifiedDateTime`);
     const data = await res.json();
-    return (data.value ?? []).map((f: any) => ({
-      name: f.name,
-      path: path ? `${path}/${f.name}` : f.name,
-      isDirectory: !!f.folder,
-      size: f.size,
-      modifiedAt: f.lastModifiedDateTime,
+    return (data.value ?? []).map((f: Record<string, unknown>) => ({
+      name: f['name'] as string,
+      path: path ? `${path}/${f['name']}` : (f['name'] as string),
+      isDirectory: !!f['folder'],
+      size: f['size'] as number | undefined,
+      modifiedAt: f['lastModifiedDateTime'] as string | undefined,
     }));
   }
 
@@ -196,7 +192,7 @@ export class OneDriveProvider extends BaseStorageProvider {
     const parentEndpoint = parentPath
       ? `${API_BASE}${this.encodePath(parentPath)}/children`
       : `${API_BASE}/root/children`;
-    await this.fetch(parentEndpoint, {
+    await this.apiFetch(parentEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, folder: {}, '@microsoft.graph.conflictBehavior': 'rename' }),
@@ -213,7 +209,7 @@ export class OneDriveProvider extends BaseStorageProvider {
 
   async exists(path: string): Promise<boolean> {
     try {
-      const res = await this.fetch(`${API_BASE}${this.encodePath(path)}?$select=id`);
+      const res = await this.apiFetch(`${API_BASE}${this.encodePath(path)}?$select=id`);
       return res.ok;
     } catch {
       return false;
@@ -222,17 +218,17 @@ export class OneDriveProvider extends BaseStorageProvider {
 
   async stat(path: string): Promise<FileStat | null> {
     try {
-      const res = await this.fetch(
+      const res = await this.apiFetch(
         `${API_BASE}${this.encodePath(path)}?$select=name,folder,size,lastModifiedDateTime`,
       );
       if (!res.ok) return null;
-      const f = await res.json();
+      const f = await res.json() as Record<string, unknown>;
       return {
-        name: f.name,
+        name: f['name'] as string,
         path,
-        isDirectory: !!f.folder,
-        size: f.size,
-        modifiedAt: f.lastModifiedDateTime,
+        isDirectory: !!f['folder'],
+        size: f['size'] as number | undefined,
+        modifiedAt: f['lastModifiedDateTime'] as string | undefined,
       };
     } catch {
       return null;

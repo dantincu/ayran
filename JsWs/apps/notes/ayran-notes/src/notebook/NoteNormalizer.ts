@@ -1,6 +1,6 @@
 import { IStorageProvider } from '../types/storage.types';
 import { NoteChildrenJson, NoteCategory } from '../types/note.types';
-import { buildShortName, buildFullName, buildMdFileName, buildHtmlFileName, buildPdfFileName } from './NoteFileNaming';
+import { buildFullName } from './NoteFileNaming';
 import { getIndexesForCategory, buildNormalizationMap, formatIndex } from './NoteIndexer';
 import { readNoteChildrenJson, readNoteJson } from './NoteReader';
 import constants from '../../config/app-constants.json';
@@ -46,9 +46,6 @@ export async function normalizeNoteIndexes(
 
       const oldFullName = buildFullName(oldIdx, oldTitle);
       const newFullName = buildFullName(newIdx, oldTitle);
-      const oldMdFileName = buildMdFileName(oldTitle);
-      const newMdFileName = buildMdFileName(oldTitle); // md file name doesn't change on renumber
-
       const newShortPath = provider.joinPath(parentShortNameFolderPath, newIdxStr);
       const oldFullPath = provider.joinPath(parentShortNameFolderPath, oldFullName);
       const newFullPath = provider.joinPath(parentShortNameFolderPath, newFullName);

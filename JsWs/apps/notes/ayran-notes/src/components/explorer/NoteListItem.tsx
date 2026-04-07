@@ -9,7 +9,6 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
 import { NoteMetadata } from '../../types/note.types';
 import { useTheme } from '../../hooks/useTheme';
 import { LongPressLink } from '../common/LongPressLink';
@@ -25,7 +24,6 @@ interface NoteListItemProps {
 
 export function NoteListItem({ note, onStar, onLabelColor, onDelete, onRename }: NoteListItemProps) {
   const theme = useTheme();
-  const router = useRouter();
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [showColorPicker, setShowColorPicker] = useState(false);
 

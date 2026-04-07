@@ -1,9 +1,10 @@
 import React, { useRef, useCallback, useEffect } from 'react';
-import { StyleSheet, View, Platform } from 'react-native';
+import { StyleSheet, View } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { useTheme } from '../../hooks/useTheme';
 
-const EDITOR_HTML = require('../../../assets/monaco/index.html');
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const EDITOR_HTML = require('../../../assets/monaco/index.html') as number;
 
 interface MonacoEditorProps {
   content: string;

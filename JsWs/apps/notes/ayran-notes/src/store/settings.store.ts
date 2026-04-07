@@ -14,7 +14,7 @@ interface SettingsStore extends NotebookSettings {
   resetSettings: () => void;
 }
 
-export const useSettingsStore = create<SettingsStore>()((set, get) => ({
+export const useSettingsStore = create<SettingsStore>()((set) => ({
   ...DEFAULT_NOTEBOOK_SETTINGS,
 
   setDarkMode: (darkMode) => set({ darkMode }),

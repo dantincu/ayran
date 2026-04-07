@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,22 +8,25 @@ import {
   TextInput,
   Switch,
   Alert,
+  Animated,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from '../../src/hooks/useTheme';
-import { useSessionStore, createSession } from '../../src/store/session.store';
+import { useSessionStore } from '../../src/store/session.store';
 import { AppHeader } from '../../src/components/layout/AppHeader';
+import { AppSession } from '../../src/types/session.types';
 
 export default function ManageSessionPage() {
   const theme = useTheme();
   const router = useRouter();
-  const sessions = useSessionStore((s) => s.sessions);
-  const currentSessionId = useSessionStore((s) => s.currentSessionId);
-  const setCurrentSession = useSessionStore((s) => s.setCurrentSession);
-  const updateSession = useSessionStore((s) => s.updateSession);
-  const removeSession = useSessionStore((s) => s.removeSession);
+  const headerOpacity = useRef(new Animated.Value(1)).current;
+
+  const sessions = useSessionStore((s: { sessions: AppSession[] }) => s.sessions);
+  const currentSessionId = useSessionStore((s: { currentSessionId: string | null }) => s.currentSessionId);
+  const setCurrentSession = useSessionStore((s: { setCurrentSession: (id: string) => void }) => s.setCurrentSession);
+  const updateSession = useSessionStore((s: { updateSession: (id: string, updates: Partial<AppSession>) => void }) => s.updateSession);
+  const removeSession = useSessionStore((s: { removeSession: (id: string) => void }) => s.removeSession);
 
   const currentSession = sessions.find((s) => s.id === currentSessionId);
 
@@ -59,7 +62,7 @@ export default function ManageSessionPage() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <AppHeader title="Manage Sessions" opacity={new (require('react-native').Animated.Value)(1)} icon="albums-outline" />
+      <AppHeader title="Manage Sessions" opacity={headerOpacity} icon="albums-outline" />
 
       <View style={[styles.section, { borderBottomColor: theme.colors.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>CURRENT SESSION</Text>
@@ -103,7 +106,7 @@ export default function ManageSessionPage() {
       </View>
 
       <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary, margin: 16 }]}>ALL SESSIONS</Text>
-      <FlatList
+      <FlatList<AppSession>
         data={sessions}
         keyExtractor={(s) => s.id}
         renderItem={({ item }) => (

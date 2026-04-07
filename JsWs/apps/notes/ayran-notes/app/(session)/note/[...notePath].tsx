@@ -11,7 +11,6 @@ import { readNoteJson, readNoteMarkdown } from '../../../src/notebook/NoteReader
 import { saveNoteMarkdown } from '../../../src/notebook/NoteWriter';
 import { buildMdFileName } from '../../../src/notebook/NoteFileNaming';
 import { exportNote } from '../../../src/notebook/NoteExporter';
-import { extractMarkdownTitle, updateMarkdownTitle } from '../../../src/notebook/NoteFileNaming';
 import { MonacoEditor } from '../../../src/components/editor/MonacoEditor';
 import { AppHeader } from '../../../src/components/layout/AppHeader';
 import { TopToolbar } from '../../../src/components/layout/TopToolbar';
@@ -89,10 +88,8 @@ export default function NoteEditorPage() {
 
     setIsSaving(true);
     try {
-      // Check if title changed in content
-      const extractedTitle = extractMarkdownTitle(content);
-      let finalContent = content;
-      let currentMdFileName = mdFileName;
+      const finalContent = content;
+      const currentMdFileName = mdFileName;
 
       // Save markdown
       await saveNoteMarkdown(provider, shortPath, currentMdFileName, finalContent);

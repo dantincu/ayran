@@ -56,7 +56,6 @@ export default function StorageSetupPage() {
   const [filenEmail, setFilenEmail] = useState('');
   const [filenPassword, setFilenPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [isNewNotebook, setIsNewNotebook] = useState(false);
 
   const providerId = generateId();
 
@@ -124,8 +123,6 @@ export default function StorageSetupPage() {
         // Open existing notebook
         await finishSetup(path, existing);
       } else {
-        // New notebook
-        setIsNewNotebook(true);
         setStep('notebook-title');
       }
     } catch (err) {

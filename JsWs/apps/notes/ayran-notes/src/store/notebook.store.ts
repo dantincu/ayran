@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { NotebookMetadata } from '../types/notebook.types';
-import { NoteMetadata, NoteChildrenJson } from '../types/note.types';
+import { NoteMetadata } from '../types/note.types';
 
 interface NoteListCache {
   /** Note path of parent (empty string for root) */

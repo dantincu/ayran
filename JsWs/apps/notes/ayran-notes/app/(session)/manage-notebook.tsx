@@ -1,19 +1,24 @@
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert } from 'react-native';
+import React, { useState, useRef } from 'react';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, Alert, Animated } from 'react-native';
 import { useTheme } from '../../src/hooks/useTheme';
 import { useNotebookStore } from '../../src/store/notebook.store';
 import { useSessionStore } from '../../src/store/session.store';
 import { getStorageProvider } from '../../src/storage/StorageProviderFactory';
 import { updateNotebookTitle } from '../../src/notebook/NotebookWriter';
 import { AppHeader } from '../../src/components/layout/AppHeader';
-import { Animated } from 'react-native';
+import { AppSession } from '../../src/types/session.types';
+import { NotebookMetadata } from '../../src/types/notebook.types';
 
 export default function ManageNotebookPage() {
   const theme = useTheme();
-  const notebookMeta = useNotebookStore((s) => s.metadata);
-  const setNotebook = useNotebookStore((s) => s.setNotebook);
-  const session = useSessionStore((s) => s.getCurrentSession());
-  const updateSession = useSessionStore((s) => s.updateSession);
+  const headerOpacity = useRef(new Animated.Value(1)).current;
+
+  const notebookMeta = useNotebookStore((s: { metadata: NotebookMetadata | null }) => s.metadata);
+  const setNotebook = useNotebookStore((s: { setNotebook: (m: NotebookMetadata) => void }) => s.setNotebook);
+  const session = useSessionStore((s: { getCurrentSession: () => AppSession | null }) => s.getCurrentSession());
+  const updateSession = useSessionStore(
+    (s: { updateSession: (id: string, u: Partial<AppSession>) => void }) => s.updateSession,
+  );
 
   const [title, setTitle] = useState(notebookMeta?.title ?? '');
   const [editingTitle, setEditingTitle] = useState(false);
@@ -42,7 +47,7 @@ export default function ManageNotebookPage() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <AppHeader title="Manage Notebook" opacity={new Animated.Value(1)} icon="book-outline" />
+      <AppHeader title="Manage Notebook" opacity={headerOpacity} icon="book-outline" />
 
       <View style={[styles.section, { borderBottomColor: theme.colors.border }]}>
         <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>NOTEBOOK INFO</Text>

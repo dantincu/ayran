@@ -1,9 +1,8 @@
-import { useEffect, useRef } from 'react';
-import { Animated, View, StyleSheet } from 'react-native';
+import { useEffect } from 'react';
+import { StyleSheet } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useSessionStore } from '../../src/store/session.store';
-import { useScrollFade } from '../../src/hooks/useScrollFade';
 import { useTheme } from '../../src/hooks/useTheme';
 import { ModalStack } from '../../src/components/modals/ModalStack';
 

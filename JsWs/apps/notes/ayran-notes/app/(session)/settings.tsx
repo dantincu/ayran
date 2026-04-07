@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -32,6 +32,7 @@ const DEFAULT_SHORTCUTS: Record<string, string> = {
 
 export default function SettingsPage() {
   const theme = useTheme();
+  const headerOpacity = useRef(new Animated.Value(1)).current;
   const darkMode = useSettingsStore((s) => s.darkMode);
   const setDarkMode = useSettingsStore((s) => s.setDarkMode);
   const customStylesheet = useSettingsStore((s) => s.customStylesheet);
@@ -63,7 +64,7 @@ export default function SettingsPage() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <AppHeader title="Settings" opacity={new Animated.Value(1)} icon="settings-outline" />
+      <AppHeader title="Settings" opacity={headerOpacity} icon="settings-outline" />
       <ScrollView>
         {/* Theme */}
         <Text style={[styles.sectionTitle, { color: theme.colors.textSecondary }]}>APPEARANCE</Text>

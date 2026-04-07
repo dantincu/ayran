@@ -4,7 +4,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Modal,
   TextInput,
 } from 'react-native';
 import { useTheme } from '../../hooks/useTheme';

@@ -121,7 +121,7 @@ export function HtmlPreview({
         ref={webViewRef}
         source={{ html: processedHtml }}
         style={styles.webview}
-        javaScriptEnabled={false}
+        javaScriptEnabled={true}
         injectedJavaScriptBeforeContentLoaded={INTERCEPT_SCRIPT}
         onShouldStartLoadWithRequest={handleNavigation}
         onMessage={handleMessage}

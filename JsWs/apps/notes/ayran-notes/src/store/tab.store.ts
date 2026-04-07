@@ -18,7 +18,7 @@ interface TabStore {
 }
 
 // We implement tab operations as functions that operate on the session store
-export const useTabStore = create<TabStore>()((set, get) => ({
+export const useTabStore = create<TabStore>()(() => ({
   getCurrentTab: () => {
     const session = useSessionStore.getState().getCurrentSession();
     if (!session) return null;

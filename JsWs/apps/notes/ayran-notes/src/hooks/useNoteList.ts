@@ -68,7 +68,7 @@ export function useNoteList(parentNotePath: string) {
     const parentPath = getParentShortFolderPath();
     if (!provider || !parentPath) return;
     try {
-      const result = await createNote(provider, parentPath, parentNotePath, title);
+      await createNote(provider, parentPath, parentNotePath, title);
       await loadNotes();
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to create note';

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   FlatList,
   View,
@@ -13,7 +13,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { NoteMetadata } from '../../types/note.types';
 import { NoteListItem } from './NoteListItem';
 import { useTheme } from '../../hooks/useTheme';
-import { useScrollFade } from '../../hooks/useScrollFade';
 
 interface NoteListProps {
   notes: NoteMetadata[];
