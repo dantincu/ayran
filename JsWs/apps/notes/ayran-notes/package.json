@@ -1,0 +1,72 @@
+{
+  "name": "ayran-notes",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "build:web": "expo export --platform web",
+    "electron": "electron electron/main.js",
+    "build:electron": "npm run build:web && electron-builder"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.3",
+    "@filen/sdk": "^0.1.13",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/slider": "4.5.6",
+    "expo": "~54.0.33",
+    "expo-auth-session": "~6.1.5",
+    "expo-crypto": "~14.1.4",
+    "expo-file-system": "~19.0.21",
+    "expo-font": "~13.3.2",
+    "expo-linking": "~7.1.5",
+    "expo-print": "~14.1.4",
+    "expo-router": "~4.0.20",
+    "expo-secure-store": "~14.2.0",
+    "expo-sharing": "~13.1.4",
+    "expo-splash-screen": "~0.29.24",
+    "expo-status-bar": "~3.0.9",
+    "expo-web-browser": "~14.1.6",
+    "marked": "^15.0.12",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.24.0",
+    "react-native-reanimated": "~3.17.4",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.10.0",
+    "react-native-webview": "13.13.5",
+    "zustand": "^5.0.5"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~19.1.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "typescript": "~5.9.2"
+  },
+  "private": true,
+  "build": {
+    "appId": "com.ayran.notes",
+    "productName": "Ayran Notes",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "node_modules/**/*"
+    ],
+    "win": {
+      "target": ["nsis", "appx"]
+    },
+    "linux": {
+      "target": ["snap", "deb"],
+      "category": "Office"
+    },
+    "mac": {
+      "target": ["dmg"]
+    }
+  }
+}

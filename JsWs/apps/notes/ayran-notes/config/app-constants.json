@@ -1,0 +1,62 @@
+{
+  "noteIndexRanges": {
+    "regular":   { "max": 999, "min": 400, "label": "regular", "maxCount": 600 },
+    "primary":   { "max": 199, "min": 110, "label": "primary", "maxCount": 90 },
+    "secondary": { "max": 299, "min": 200, "label": "secondary", "maxCount": 100 },
+    "ternary":   { "max": 399, "min": 300, "label": "ternary", "maxCount": 100 }
+  },
+  "specialFolderSuffixes": {
+    "noteFiles": "[note-files]",
+    "noteInternals": "[note-internals]",
+    "noteBook": "[note-book]",
+    "fullNameKeepFile": ".keep"
+  },
+  "specialFolderIndexPrefix": "0",
+  "fileNames": {
+    "noteJson": "[note].json",
+    "noteChildrenJson": "[note-children].json",
+    "notebookJson": "[note-book].json",
+    "keepFile": ".keep",
+    "noteMdPrefix": "0-",
+    "noteMdSuffix": "[note].md",
+    "noteHtmlSuffix": ".html",
+    "notePdfSuffix": ".pdf",
+    "normalizationMarker": "[normalization-in-progress].json"
+  },
+  "limits": {
+    "titleMaxLength": 1000,
+    "fullNameFolderTitlePartMaxLength": 100,
+    "shortIndexDigits": 3
+  },
+  "pathSyntax": {
+    "noteSeparator": "||",
+    "fileSeparator": "|",
+    "noteAbsolutePrefix": "||/",
+    "noteRelativePrefix": "||./",
+    "fileAbsolutePrefix": "|/",
+    "fileRelativePrefix": "|./"
+  },
+  "sessionStorage": {
+    "fileName": "sessions.json",
+    "legalAcceptedKey": "legal_accepted"
+  },
+  "oauth": {
+    "googleDrive": {
+      "scopes": ["https://www.googleapis.com/auth/drive"],
+      "redirectScheme": "ayran-notes"
+    },
+    "oneDrive": {
+      "scopes": ["Files.ReadWrite.All", "offline_access"],
+      "redirectScheme": "ayran-notes"
+    },
+    "dropbox": {
+      "scopes": ["files.content.write", "files.content.read", "files.metadata.write", "files.metadata.read"],
+      "redirectScheme": "ayran-notes"
+    }
+  },
+  "appInfo": {
+    "name": "Ayran Notes",
+    "bundleId": "com.ayran.notes",
+    "version": "1.0.0"
+  }
+}

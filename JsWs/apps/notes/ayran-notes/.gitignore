@@ -1,0 +1,17 @@
+node_modules/
+.expo/
+dist/
+dist-electron/
+android/
+ios/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+web-build/
+.env
+.env.local
+.DS_Store
+Thumbs.db

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ayran Notes Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body, #editor { width: 100%; height: 100%; overflow: hidden; }
+    body { background: #1e1e1e; }
+  </style>
+</head>
+<body>
+<div id="editor"></div>
+<script>
+  // Minimal markdown editor using contenteditable when Monaco is not available
+  // In production, replace this with a bundled Monaco editor
+
+  var editorEl = document.getElementById('editor');
+  var textarea = document.createElement('textarea');
+  textarea.style.cssText = 'width:100%;height:100%;resize:none;border:none;outline:none;background:#1e1e1e;color:#d4d4d4;font-family:monospace;font-size:14px;line-height:1.6;padding:16px;';
+  editorEl.appendChild(textarea);
+
+  var lastContent = '';
+
+  // Receive content from React Native
+  window.addEventListener('message', function(event) {
+    try {
+      var msg = JSON.parse(event.data);
+      if (msg.type === 'setContent') {
+        textarea.value = msg.content;
+        lastContent = msg.content;
+      } else if (msg.type === 'setTheme') {
+        if (msg.theme === 'dark') {
+          textarea.style.background = '#1e1e1e';
+          textarea.style.color = '#d4d4d4';
+          document.body.style.background = '#1e1e1e';
+        } else {
+          textarea.style.background = '#ffffff';
+          textarea.style.color = '#1e1e1e';
+          document.body.style.background = '#ffffff';
+        }
+      }
+    } catch(e) {}
+  });
+
+  // Send content changes to React Native
+  var debounceTimer;
+  textarea.addEventListener('input', function() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(function() {
+      var content = textarea.value;
+      if (content !== lastContent) {
+        lastContent = content;
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'contentChange',
+            content: content
+          }));
+        }
+      }
+    }, 150);
+  });
+
+  // Notify ready
+  if (window.ReactNativeWebView) {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'ready' }));
+  }
+</script>
+</body>
+</html>
