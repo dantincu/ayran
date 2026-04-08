@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Ayran Baby Sitter",
+    "slug": "ayran-baby-sitter",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.ayran.babysitter",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Camera access is needed to stream video to the parent devices.",
+        "NSMicrophoneUsageDescription": "Microphone access is needed to stream audio to the parent devices."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF"
+      },
+      "package": "com.ayran.babysitter",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE"
+      ]
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Ayran Baby Sitter to access your camera.",
+          "microphonePermission": "Allow Ayran Baby Sitter to access your microphone.",
+          "recordAudioAndroid": true
+        }
+      ]
+    ],
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "scheme": "ayran-baby-sitter",
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
+}
