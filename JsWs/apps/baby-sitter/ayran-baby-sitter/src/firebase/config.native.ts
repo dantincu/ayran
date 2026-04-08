@@ -7,21 +7,23 @@
 //   5. Add Firestore rules to allow authenticated users to read/write their own data:
 //        match /users/{userId}/{document=**} { allow read, write: if request.auth.uid == userId; }
 
-import { initializeApp, getApps } from 'firebase/app';
-import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { initializeApp, getApps } from "firebase/app";
+import { initializeAuth, getReactNativePersistence } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 const firebaseConfig = {
-  apiKey: 'YOUR_API_KEY',
-  authDomain: 'YOUR_PROJECT_ID.firebaseapp.com',
-  projectId: 'YOUR_PROJECT_ID',
-  storageBucket: 'YOUR_PROJECT_ID.appspot.com',
-  messagingSenderId: 'YOUR_MESSAGING_SENDER_ID',
-  appId: 'YOUR_APP_ID',
+  apiKey: "AIzaSyDgna8iG_U20yI0Blyv8uHiZIQZjDYoNV8",
+  authDomain: "ayran-2f380.firebaseapp.com",
+  projectId: "ayran-2f380",
+  storageBucket: "ayran-2f380.firebasestorage.app",
+  messagingSenderId: "880607612119",
+  appId: "1:880607612119:web:20dee6fd9da6275fbc3492",
+  measurementId: "G-EMGQ0XR87W",
 };
 
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+const app =
+  getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
 
 export const auth = initializeAuth(app, {
   persistence: getReactNativePersistence(AsyncStorage),
