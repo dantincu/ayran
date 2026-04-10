@@ -28,7 +28,7 @@ export interface HostConnectionManager {
 
 export async function startHostMode(
   userId: string,
-  deviceId: string,
+  _deviceId: string,
   onStreamUpdate: (stream: MediaStream | null) => void,
   onError: (err: Error) => void,
 ): Promise<HostConnectionManager> {
@@ -74,16 +74,17 @@ export async function startHostMode(
       }
     };
 
+    answeredClients.add(clientDeviceId);
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer as any));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer as any);
-      answeredClients.add(clientDeviceId);
       await Signaling.writeAnswer(userId, clientDeviceId, {
         type: answer.type,
         sdp: (answer as any).sdp ?? '',
       });
     } catch (err) {
+      answeredClients.delete(clientDeviceId);
       onError(err as Error);
       pc.close();
       peerConnections.delete(clientDeviceId);
@@ -194,10 +195,11 @@ export async function connectToHost(
     if (!session) return;
 
     if (!answerApplied && session.answer) {
+      answerApplied = true;
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(session.answer as any));
-        answerApplied = true;
       } catch (err) {
+        answerApplied = false;
         onError(err as Error);
       }
     }

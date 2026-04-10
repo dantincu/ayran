@@ -64,16 +64,17 @@ export async function startHostMode(
       }
     };
 
+    answeredClients.add(clientDeviceId);
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(offer as RTCSessionDescriptionInit));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
-      answeredClients.add(clientDeviceId);
       await Signaling.writeAnswer(userId, clientDeviceId, {
         type: answer.type,
         sdp: answer.sdp ?? '',
       });
     } catch (err) {
+      answeredClients.delete(clientDeviceId);
       onError(err as Error);
       pc.close();
       peerConnections.delete(clientDeviceId);
@@ -184,10 +185,11 @@ export async function connectToHost(
     if (!session) return;
 
     if (!answerApplied && session.answer) {
+      answerApplied = true;
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(session.answer as RTCSessionDescriptionInit));
-        answerApplied = true;
       } catch (err) {
+        answerApplied = false;
         onError(err as Error);
       }
     }
