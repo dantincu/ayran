@@ -1,0 +1,13 @@
+node_modules/
+.expo/
+dist/
+web-build/
+
+# Environment variables — never commit these
+.env
+.env.local
+.env.*.local
+
+# Native build artifacts
+android/
+ios/
