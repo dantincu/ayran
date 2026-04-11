@@ -177,11 +177,15 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
         string profileDir = Path.Combine(Path.GetTempPath(), "ayran-lo-profile");
         string profileUri = "file:///" + profileDir.Replace('\\', '/');
 
-        // Without --infilter, LibreOffice routes HTML through the Draw importer, which
-        // cannot export to Writer formats (odt/doc/docx). Force the Writer HTML importer.
+        // Without --infilter, LibreOffice routes HTML and PDF through the Draw importer,
+        // which cannot export to Writer formats (odt/doc/docx). Force the correct importer.
         string inputExt = input.Extension.ToLowerInvariant();
-        string infilter = HtmlExtensions.Contains(inputExt) && filterArg is "odt" or "doc" or "docx"
-            ? "--infilter=\"HTML (StarWriter)\" "
+        string infilter = filterArg is "odt" or "doc" or "docx"
+            ? HtmlExtensions.Contains(inputExt)
+                ? "--infilter=\"HTML (StarWriter)\" "
+                : PdfExtensions.Contains(inputExt)
+                    ? "--infilter=\"writer_pdf_import\" "
+                    : ""
             : "";
 
         string arguments =
