@@ -6,30 +6,29 @@ namespace AyranDocsConverter;
 public class DocumentConverter(string? libreOfficePath = null, string? chromiumPath = null)
 {
     private static readonly string[] HtmlExtensions = [".html", ".htm"];
-    private static readonly string[] OdtExtensions = [".odt"];
-    private static readonly string[] PdfExtensions = [".pdf"];
+    private static readonly string[] PdfExtensions  = [".pdf"];
+
+    private static readonly string[] AllInputExtensions  = [".html", ".htm", ".odt", ".doc", ".docx", ".pdf"];
+    private static readonly string[] AllOutputExtensions = [".html", ".htm", ".odt", ".doc", ".docx", ".pdf"];
 
     public async Task ConvertAsync(FileInfo input, FileInfo output)
     {
-        string inputExt = input.Extension.ToLowerInvariant();
+        string inputExt  = input.Extension.ToLowerInvariant();
         string outputExt = output.Extension.ToLowerInvariant();
 
-        bool inputIsHtml = HtmlExtensions.Contains(inputExt);
-        bool inputIsOdt = OdtExtensions.Contains(inputExt);
-        bool inputIsPdf = PdfExtensions.Contains(inputExt);
+        if (!AllInputExtensions.Contains(inputExt))
+            throw new NotSupportedException($"Unsupported input format: {inputExt}. Supported: {string.Join(", ", AllInputExtensions)}");
 
-        bool outputIsHtml = HtmlExtensions.Contains(outputExt);
-        bool outputIsOdt = OdtExtensions.Contains(outputExt);
-        bool outputIsPdf = PdfExtensions.Contains(outputExt);
+        if (!AllOutputExtensions.Contains(outputExt))
+            throw new NotSupportedException($"Unsupported output format: {outputExt}. Supported: {string.Join(", ", AllOutputExtensions)}");
 
-        if (!inputIsHtml && !inputIsOdt && !inputIsPdf)
-            throw new NotSupportedException($"Unsupported input format: {inputExt}. Supported: .html, .htm, .odt, .pdf");
-
-        if (!outputIsHtml && !outputIsOdt && !outputIsPdf)
-            throw new NotSupportedException($"Unsupported output format: {outputExt}. Supported: .html, .htm, .odt, .pdf");
-
-        if (inputIsHtml && outputIsHtml || inputIsOdt && outputIsOdt || inputIsPdf && outputIsPdf)
+        if (inputExt == outputExt)
             throw new InvalidOperationException("Input and output formats are the same.");
+
+        bool inputIsHtml  = HtmlExtensions.Contains(inputExt);
+        bool inputIsPdf   = PdfExtensions.Contains(inputExt);
+        bool outputIsPdf  = PdfExtensions.Contains(outputExt);
+        bool outputIsHtml = HtmlExtensions.Contains(outputExt);
 
         if (inputIsHtml && outputIsPdf)
         {
@@ -167,18 +166,40 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
         {
             "html" or "htm" => "html",
             "odt"           => "odt",
+            "doc"           => "doc",
+            "docx"          => "docx",
             "pdf"           => "pdf",
             _               => targetFormat
         };
 
-        string arguments = $"--headless --convert-to {filterArg} --outdir \"{outDir}\" \"{input.FullName}\"";
+        // Use an isolated user profile so headless mode doesn't conflict with a running
+        // LibreOffice GUI instance (which locks the default profile and causes silent failure).
+        string profileDir = Path.Combine(Path.GetTempPath(), "ayran-lo-profile");
+        string profileUri = "file:///" + profileDir.Replace('\\', '/');
+
+        // Without --infilter, LibreOffice routes HTML through the Draw importer, which
+        // cannot export to Writer formats (odt/doc/docx). Force the Writer HTML importer.
+        string inputExt = input.Extension.ToLowerInvariant();
+        string infilter = HtmlExtensions.Contains(inputExt) && filterArg is "odt" or "doc" or "docx"
+            ? "--infilter=\"HTML (StarWriter)\" "
+            : "";
+
+        string arguments =
+            $"--headless --norestore \"-env:UserInstallation={profileUri}\" " +
+            $"{infilter}--convert-to {filterArg} --outdir \"{outDir}\" \"{input.FullName}\"";
+
         await RunProcessAsync(sofficePath, arguments);
 
+        // LibreOffice always names its output file after the INPUT filename (not the output path).
+        // We locate that intermediate file and rename it to the requested output path.
         string expectedName = Path.ChangeExtension(input.Name, filterArg == "html" ? "html" : filterArg);
         string expectedPath = Path.Combine(outDir, expectedName);
 
         if (!File.Exists(expectedPath))
-            throw new FileNotFoundException($"LibreOffice did not produce expected output file: {expectedPath}");
+            throw new FileNotFoundException(
+                $"LibreOffice ran but produced no output file.\n" +
+                $"  Intermediate expected at: {expectedPath}\n" +
+                $"  Final output path:        {output.FullName}");
 
         if (!string.Equals(expectedPath, output.FullName, StringComparison.OrdinalIgnoreCase))
         {

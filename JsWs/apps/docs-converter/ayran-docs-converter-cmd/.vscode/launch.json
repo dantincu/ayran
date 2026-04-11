@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug AyranDocsConverter",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/AyranDocsConverter/bin/Debug/net10.0/AyranDocsConverter.dll",
+      "args": [
+        "--input", "${workspaceFolder}/AyranDocsConverter/test/imgs/output.pdf",
+        "--output", "${workspaceFolder}/AyranDocsConverter/test/imgs/output.odt"
+      ],
+      "cwd": "${workspaceFolder}/AyranDocsConverter",
+      "console": "integratedTerminal",
+      "stopAtEntry": false
+    }
+  ]
+}
