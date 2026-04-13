@@ -11,6 +11,39 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
     private static readonly string[] AllInputExtensions  = [".html", ".htm", ".odt", ".doc", ".docx", ".pdf"];
     private static readonly string[] AllOutputExtensions = [".html", ".htm", ".odt", ".doc", ".docx", ".pdf"];
 
+    public async Task ConvertUrlAsync(string url, FileInfo output, bool useWindowsAuth = false)
+    {
+        string outputExt = output.Extension.ToLowerInvariant();
+
+        if (outputExt is ".html" or ".htm")
+        {
+            string html = await FetchHtmlAsync(url, useWindowsAuth);
+            Directory.CreateDirectory(output.DirectoryName ?? ".");
+            await File.WriteAllTextAsync(output.FullName, html);
+            return;
+        }
+
+        if (PdfExtensions.Contains(outputExt))
+        {
+            await ConvertUrlToPdfAsync(url, libreOfficeInput: null, output);
+            return;
+        }
+
+        // All other formats (odt, doc, docx, …): fetch HTML, write temp file, convert via LibreOffice.
+        string tempFile = Path.Combine(Path.GetTempPath(), $"ayran-input-{Guid.NewGuid()}.html");
+        try
+        {
+            string html = await FetchHtmlAsync(url, useWindowsAuth);
+            await File.WriteAllTextAsync(tempFile, html);
+            await ConvertViaLibreOfficeAsync(new FileInfo(tempFile), output,
+                outputExt.TrimStart('.'));
+        }
+        finally
+        {
+            if (File.Exists(tempFile)) File.Delete(tempFile);
+        }
+    }
+
     public async Task ConvertAsync(FileInfo input, FileInfo output)
     {
         string inputExt  = input.Extension.ToLowerInvariant();
@@ -51,11 +84,21 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
 
     private async Task ConvertHtmlToPdfAsync(FileInfo input, FileInfo output)
     {
+        string inputUrl = "file:///" + input.FullName.Replace('\\', '/');
+        await ConvertUrlToPdfAsync(inputUrl, input, output);
+    }
+
+    private async Task ConvertUrlToPdfAsync(string inputUrl, FileInfo? libreOfficeInput, FileInfo output)
+    {
         string? browser = chromiumPath ?? FindChromiumExecutable();
 
         if (browser != null)
         {
-            await ConvertHtmlToPdfViaChromiumAsync(browser, input, output);
+            Directory.CreateDirectory(output.DirectoryName ?? ".");
+            string arguments =
+                $"--headless --disable-gpu --no-pdf-header-footer " +
+                $"--print-to-pdf=\"{output.FullName}\" \"{inputUrl}\"";
+            await RunProcessAsync(browser, arguments);
         }
         else
         {
@@ -63,21 +106,13 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
                 "Warning: no Chrome/Edge found for HTML→PDF. " +
                 "Falling back to LibreOffice (may not render all content correctly). " +
                 "Install Chrome or Edge, or pass --browser <path>.");
-            await ConvertViaLibreOfficeAsync(input, output, "pdf");
+
+            if (libreOfficeInput == null)
+                throw new InvalidOperationException(
+                    "LibreOffice fallback requires a local file; no Chrome/Edge found and no local file is available for the URL input.");
+
+            await ConvertViaLibreOfficeAsync(libreOfficeInput, output, "pdf");
         }
-    }
-
-    private static async Task ConvertHtmlToPdfViaChromiumAsync(
-        string browserPath, FileInfo input, FileInfo output)
-    {
-        Directory.CreateDirectory(output.DirectoryName ?? ".");
-        string fileUrl = "file:///" + input.FullName.Replace('\\', '/');
-
-        string arguments =
-            $"--headless --disable-gpu --no-pdf-header-footer " +
-            $"--print-to-pdf=\"{output.FullName}\" \"{fileUrl}\"";
-
-        await RunProcessAsync(browserPath, arguments);
     }
 
     private static string? FindChromiumExecutable()
@@ -243,6 +278,20 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
     }
 
     // -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // HTTP helper
+    // -------------------------------------------------------------------------
+
+    private static async Task<string> FetchHtmlAsync(string url, bool useWindowsAuth = false)
+    {
+        var handler = new HttpClientHandler { UseDefaultCredentials = useWindowsAuth };
+        using var client = new HttpClient(handler);
+        client.DefaultRequestHeaders.Add("User-Agent", "AyranDocsConverter/1.0");
+        var response = await client.GetAsync(url);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync();
+    }
+
     // Helpers
     // -------------------------------------------------------------------------
 

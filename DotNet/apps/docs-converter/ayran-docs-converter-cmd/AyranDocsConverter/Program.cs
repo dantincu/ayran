@@ -1,9 +1,10 @@
 using System.CommandLine;
+using System.Text.Json;
 using AyranDocsConverter;
 
-var inputOption = new Option<FileInfo>(
+var inputOption = new Option<string>(
     aliases: ["--input", "-i"],
-    description: "Path to the input file (HTML, ODT, or PDF)")
+    description: "Path to the input file (HTML, ODT, or PDF), or :baseUrlId:relativePath to fetch HTML from a configured URL.")
 {
     IsRequired = true
 };
@@ -32,24 +33,48 @@ var rootCommand = new RootCommand("Ayran Docs Converter — converts HTML ↔ OD
 };
 
 rootCommand.SetHandler(async (
-    FileInfo input,
+    string input,
     string output,
     string? libreOfficePath,
     string? browserPath) =>
 {
-    if (!input.Exists)
-    {
-        Console.Error.WriteLine($"Input file not found: {input.FullName}");
-        Environment.Exit(1);
-    }
-
     var outputFile = new FileInfo(output);
     var converter = new DocumentConverter(libreOfficePath, browserPath);
 
     try
     {
-        await converter.ConvertAsync(input, outputFile);
-        Console.WriteLine($"Converted: {input.FullName} -> {outputFile.FullName}");
+        if (input.StartsWith(':'))
+        {
+            int secondColon = input.IndexOf(':', 1);
+            if (secondColon < 0)
+            {
+                Console.Error.WriteLine("Invalid input format. Expected :baseUrlId:relativePath");
+                Environment.Exit(1);
+                return;
+            }
+
+            string urlId = input[1..secondColon];
+            string relativePath = input[(secondColon + 1)..];
+
+            var (baseUrl, windowsAuth) = GetBaseUrl(urlId);
+            string fullUrl = baseUrl.TrimEnd('/') + "/" + relativePath.TrimStart('/');
+
+            await converter.ConvertUrlAsync(fullUrl, outputFile, windowsAuth);
+            Console.WriteLine($"Converted: {fullUrl} -> {outputFile.FullName}");
+        }
+        else
+        {
+            var inputFile = new FileInfo(input);
+            if (!inputFile.Exists)
+            {
+                Console.Error.WriteLine($"Input file not found: {inputFile.FullName}");
+                Environment.Exit(1);
+                return;
+            }
+
+            await converter.ConvertAsync(inputFile, outputFile);
+            Console.WriteLine($"Converted: {inputFile.FullName} -> {outputFile.FullName}");
+        }
     }
     catch (Exception ex)
     {
@@ -60,3 +85,40 @@ rootCommand.SetHandler(async (
 inputOption, outputOption, libreOfficeOption, browserOption);
 
 return await rootCommand.InvokeAsync(args);
+
+static (string Url, bool WindowsAuth) GetBaseUrl(string urlId)
+{
+    string settingsPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+
+    if (!File.Exists(settingsPath))
+        throw new FileNotFoundException($"appsettings.json not found at: {settingsPath}");
+
+    using var doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
+
+    if (!doc.RootElement.TryGetProperty("BaseUrls", out var baseUrls))
+        throw new KeyNotFoundException("appsettings.json is missing the 'BaseUrls' section.");
+
+    if (!baseUrls.TryGetProperty(urlId, out var entry))
+        throw new KeyNotFoundException($"No base URL configured for identifier '{urlId}' in appsettings.json.");
+
+    string url = entry.GetProperty("Url").GetString()
+        ?? throw new InvalidOperationException($"'Url' for '{urlId}' is null in appsettings.json.");
+
+    bool? explicitAuth = entry.TryGetProperty("WindowsAuth", out var authProp) && authProp.ValueKind != JsonValueKind.Null
+        ? authProp.GetBoolean()
+        : null;
+
+    bool windowsAuth = explicitAuth ?? IsLocalhost(url);
+    return (url, windowsAuth);
+}
+
+static bool IsLocalhost(string url)
+{
+    if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+    {
+        string host = uri.Host.ToLowerInvariant();
+        return host is "localhost" or "127.0.0.1" or "::1";
+    }
+    return false;
+}
+
