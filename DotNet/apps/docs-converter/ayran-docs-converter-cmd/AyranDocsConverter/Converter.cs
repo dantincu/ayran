@@ -11,13 +11,13 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
     private static readonly string[] AllInputExtensions  = [".html", ".htm", ".odt", ".doc", ".docx", ".pdf"];
     private static readonly string[] AllOutputExtensions = [".html", ".htm", ".odt", ".doc", ".docx", ".pdf"];
 
-    public async Task ConvertUrlAsync(string url, FileInfo output, bool useWindowsAuth = false)
+    public async Task ConvertUrlAsync(string url, FileInfo output, bool useWindowsAuth = false, string? postBody = null)
     {
         string outputExt = output.Extension.ToLowerInvariant();
 
         if (outputExt is ".html" or ".htm")
         {
-            string html = await FetchHtmlAsync(url, useWindowsAuth);
+            string html = await FetchHtmlAsync(url, useWindowsAuth, postBody);
             Directory.CreateDirectory(output.DirectoryName ?? ".");
             await File.WriteAllTextAsync(output.FullName, html);
             return;
@@ -33,7 +33,7 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
         string tempFile = Path.Combine(Path.GetTempPath(), $"ayran-input-{Guid.NewGuid()}.html");
         try
         {
-            string html = await FetchHtmlAsync(url, useWindowsAuth);
+            string html = await FetchHtmlAsync(url, useWindowsAuth, postBody);
             await File.WriteAllTextAsync(tempFile, html);
             await ConvertViaLibreOfficeAsync(new FileInfo(tempFile), output,
                 outputExt.TrimStart('.'));
@@ -282,12 +282,14 @@ public class DocumentConverter(string? libreOfficePath = null, string? chromiumP
     // HTTP helper
     // -------------------------------------------------------------------------
 
-    private static async Task<string> FetchHtmlAsync(string url, bool useWindowsAuth = false)
+    private static async Task<string> FetchHtmlAsync(string url, bool useWindowsAuth = false, string? postBody = null)
     {
         var handler = new HttpClientHandler { UseDefaultCredentials = useWindowsAuth };
         using var client = new HttpClient(handler);
         client.DefaultRequestHeaders.Add("User-Agent", "AyranDocsConverter/1.0");
-        var response = await client.GetAsync(url);
+        var response = postBody != null
+            ? await client.PostAsync(url, new StringContent(postBody))
+            : await client.GetAsync(url);
         response.EnsureSuccessStatusCode();
         return await response.Content.ReadAsStringAsync();
     }

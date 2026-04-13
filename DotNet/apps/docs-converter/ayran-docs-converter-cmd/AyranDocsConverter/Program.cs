@@ -4,7 +4,7 @@ using AyranDocsConverter;
 
 var inputOption = new Option<string>(
     aliases: ["--input", "-i"],
-    description: "Path to the input file (HTML, ODT, or PDF), or :baseUrlId:relativePath to fetch HTML from a configured URL.")
+    description: "Path to the input file (HTML, ODT, or PDF), or :baseUrlId[:relativePath] to fetch HTML from a configured URL.")
 {
     IsRequired = true
 };
@@ -24,19 +24,25 @@ var browserOption = new Option<string>(
     aliases: ["--browser", "-b"],
     description: "Path to Chrome or Edge executable used for HTML→PDF. Auto-detected if not specified.");
 
+var postOption = new Option<FileInfo?>(
+    aliases: ["--post", "-p"],
+    description: "Path to a file whose text content is sent as the POST body when fetching from a URL. Only used with URL inputs.");
+
 var rootCommand = new RootCommand("Ayran Docs Converter — converts HTML ↔ ODT/PDF")
 {
     inputOption,
     outputOption,
     libreOfficeOption,
-    browserOption
+    browserOption,
+    postOption
 };
 
 rootCommand.SetHandler(async (
     string input,
     string output,
     string? libreOfficePath,
-    string? browserPath) =>
+    string? browserPath,
+    FileInfo? postFile) =>
 {
     var outputFile = new FileInfo(output);
     var converter = new DocumentConverter(libreOfficePath, browserPath);
@@ -46,20 +52,26 @@ rootCommand.SetHandler(async (
         if (input.StartsWith(':'))
         {
             int secondColon = input.IndexOf(':', 1);
-            if (secondColon < 0)
-            {
-                Console.Error.WriteLine("Invalid input format. Expected :baseUrlId:relativePath");
-                Environment.Exit(1);
-                return;
-            }
 
-            string urlId = input[1..secondColon];
-            string relativePath = input[(secondColon + 1)..];
+            string urlId = secondColon >= 0 ? input[1..secondColon] : input[1..];
+            string relativePath = secondColon >= 0 ? input[(secondColon + 1)..] : string.Empty;
 
             var (baseUrl, windowsAuth) = GetBaseUrl(urlId);
-            string fullUrl = baseUrl.TrimEnd('/') + "/" + relativePath.TrimStart('/');
+            string fullUrl = baseUrl + relativePath;
 
-            await converter.ConvertUrlAsync(fullUrl, outputFile, windowsAuth);
+            string? postBody = null;
+            if (postFile != null)
+            {
+                if (!postFile.Exists)
+                {
+                    Console.Error.WriteLine($"POST body file not found: {postFile.FullName}");
+                    Environment.Exit(1);
+                    return;
+                }
+                postBody = await File.ReadAllTextAsync(postFile.FullName);
+            }
+
+            await converter.ConvertUrlAsync(fullUrl, outputFile, windowsAuth, postBody);
             Console.WriteLine($"Converted: {fullUrl} -> {outputFile.FullName}");
         }
         else
@@ -82,7 +94,7 @@ rootCommand.SetHandler(async (
         Environment.Exit(1);
     }
 },
-inputOption, outputOption, libreOfficeOption, browserOption);
+inputOption, outputOption, libreOfficeOption, browserOption, postOption);
 
 return await rootCommand.InvokeAsync(args);
 
