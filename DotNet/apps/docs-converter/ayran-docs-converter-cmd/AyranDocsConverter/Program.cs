@@ -106,12 +106,26 @@ static (string Url, bool WindowsAuth) GetBaseUrl(string urlId)
         throw new FileNotFoundException($"appsettings.json not found at: {settingsPath}");
 
     using var doc = JsonDocument.Parse(File.ReadAllText(settingsPath));
+    var root = doc.RootElement;
 
-    if (!doc.RootElement.TryGetProperty("BaseUrls", out var baseUrls))
+    bool globalIsProd = root.TryGetProperty("IsProd", out var globalIsProdProp) &&
+        globalIsProdProp.ValueKind == JsonValueKind.True;
+
+    if (!root.TryGetProperty("BaseUrls", out var baseUrls))
         throw new KeyNotFoundException("appsettings.json is missing the 'BaseUrls' section.");
 
     if (!baseUrls.TryGetProperty(urlId, out var entry))
         throw new KeyNotFoundException($"No base URL configured for identifier '{urlId}' in appsettings.json.");
+
+    if (globalIsProd)
+    {
+        bool entryIsProd = entry.TryGetProperty("IsProd", out var entryIsProdProp) &&
+            entryIsProdProp.ValueKind == JsonValueKind.True;
+
+        if (!entryIsProd)
+            throw new InvalidOperationException(
+                $"URL identifier '{urlId}' is not allowed in production mode (IsProd is not true for this entry).");
+    }
 
     string url = entry.GetProperty("Url").GetString()
         ?? throw new InvalidOperationException($"'Url' for '{urlId}' is null in appsettings.json.");
