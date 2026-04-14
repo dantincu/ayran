@@ -6,9 +6,8 @@ import { useSettingsStore } from '../store/useSettingsStore'
 const TOOLBAR_HEIGHT = 52
 const GAP = 1        // gap between keys in px
 const H_PADDING = 16 // horizontal padding inside the keyboard container (left+right = 2*8px)
-// app-main padding: 1rem top + 1rem bottom = 32px
 // keyboard container padding: 8px top + 8px bottom = 16px
-const V_PADDING = 48
+const V_PADDING = 16
 
 /**
  * Find the largest key size in [KEY_SIZE_MIN, KEY_SIZE_MAX] such that
