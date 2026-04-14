@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Modal } from '../common/Modal'
 import { useRecordingStore } from '../../store/useRecordingStore'
-import { saveRecording } from '../../db/recordingsDb'
-import { stopRecordingAndGetBlob, downloadBlob } from '../../audio/recorder'
+import { saveRecording, clearCurrentRecording } from '../../db/recordingsDb'
+import { downloadBlob } from '../../audio/recorder'
 import { Recording } from '../../db/schema'
 import './RecordingControls.css'
 
@@ -22,8 +22,7 @@ export function SaveRecordingPopup({ recordingBlob, onClose }: SaveRecordingPopu
     try {
       // Download the audio file
       if (recordingBlob) {
-        const ext = recordingBlob.type.includes('webm') ? 'webm' : 'mp3'
-        downloadBlob(recordingBlob, `${filename.trim()}.${ext}`)
+        downloadBlob(recordingBlob, `${filename.trim()}.mp3`)
       }
 
       // Save blueprint to recordings list
@@ -35,6 +34,7 @@ export function SaveRecordingPopup({ recordingBlob, onClose }: SaveRecordingPopu
         createdAt: currentStartedAt ?? Date.now()
       }
       await saveRecording(rec)
+      await clearCurrentRecording()
       closeSavePopup()
     } finally {
       setSaving(false)

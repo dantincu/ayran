@@ -4,21 +4,25 @@ import { useSettingsStore } from '../store/useSettingsStore'
 
 // Toolbar height estimate — keys area is the remaining viewport height
 const TOOLBAR_HEIGHT = 52
-const GAP = 1  // gap between keys in px
-const PADDING = 16 // total vertical padding inside the keyboard container
+const GAP = 1        // gap between keys in px
+const H_PADDING = 16 // horizontal padding inside the keyboard container (left+right = 2*8px)
+// app-main padding: 1rem top + 1rem bottom = 32px
+// keyboard container padding: 8px top + 8px bottom = 16px
+const V_PADDING = 48
 
 /**
  * Find the largest key size in [KEY_SIZE_MIN, KEY_SIZE_MAX] such that
  * all 88 keys wrap into rows that fit within the available viewport height.
  */
 function calcAutoSize(windowWidth: number, windowHeight: number): number {
-  const availableHeight = windowHeight - TOOLBAR_HEIGHT - PADDING
+  const availableWidth = windowWidth - H_PADDING
+  const availableHeight = windowHeight - TOOLBAR_HEIGHT - V_PADDING
 
   for (let size = KEY_SIZE_MAX; size >= KEY_SIZE_MIN; size--) {
-    const keysPerRow = Math.floor((windowWidth - PADDING) / (size + GAP))
+    const keysPerRow = Math.floor(availableWidth / (size + GAP))
     if (keysPerRow < 1) continue
     const numRows = Math.ceil(TOTAL_KEYS / keysPerRow)
-    const totalHeight = numRows * size + (numRows - 1) * GAP
+    const totalHeight = numRows * (size + GAP) - GAP
     if (totalHeight <= availableHeight) return size
   }
 

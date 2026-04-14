@@ -78,6 +78,6 @@ export const useRecordingStore = create<RecordingStore>((set, get) => ({
   },
 
   closeSavePopup: () => {
-    set({ showSavePopup: false, state: 'idle' })
+    set({ showSavePopup: false, state: 'idle', currentBlueprint: null, currentStartedAt: null })
   }
 }))
