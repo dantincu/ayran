@@ -20,8 +20,6 @@ const A_WEIGHTS: number[] = NOTE_CODES.map((note) =>
   aWeightLinear(noteCodeToFrequency(note)),
 );
 
-console.log("A-weights for piano notes:", A_WEIGHTS);
-
 // The most A-weighted (most sensitive) note in the piano range — around 3 kHz
 const MAX_A = Math.max(...A_WEIGHTS);
 
