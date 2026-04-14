@@ -1,8 +1,3 @@
-// lamejs is loaded as a global script via /lame.min.js in index.html
-declare const lamejs: { Mp3Encoder: new (channels: number, sampleRate: number, kbps: number) => {
-  encodeBuffer(left: Int16Array, right?: Int16Array): Int16Array
-  flush(): Int16Array
-}}
 import { startCapture, stopCapture } from './AudioEngine'
 
 let mediaRecorder: MediaRecorder | null = null
@@ -37,7 +32,7 @@ export function resumeMediaRecording(): void {
   }
 }
 
-function floatToInt16(float32: Float32Array): Int16Array {
+export function floatToInt16(float32: Float32Array): Int16Array {
   const int16 = new Int16Array(float32.length)
   for (let i = 0; i < float32.length; i++) {
     const s = Math.max(-1, Math.min(1, float32[i]))
@@ -46,12 +41,7 @@ function floatToInt16(float32: Float32Array): Int16Array {
   return int16
 }
 
-async function webmToMp3(webmBlob: Blob): Promise<Blob> {
-  const arrayBuffer = await webmBlob.arrayBuffer()
-  const ctx = new AudioContext()
-  const audioBuffer = await ctx.decodeAudioData(arrayBuffer)
-  await ctx.close()
-
+export function audioBufferToMp3Blob(audioBuffer: AudioBuffer): Blob {
   const numChannels = Math.min(audioBuffer.numberOfChannels, 2) as 1 | 2
   const sampleRate = audioBuffer.sampleRate
   const encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, 128)
@@ -74,6 +64,14 @@ async function webmToMp3(webmBlob: Blob): Promise<Blob> {
   if (flush.length > 0) mp3Parts.push(flush)
 
   return new Blob(mp3Parts.map(p => p.buffer as ArrayBuffer), { type: 'audio/mp3' })
+}
+
+async function webmToMp3(webmBlob: Blob): Promise<Blob> {
+  const arrayBuffer = await webmBlob.arrayBuffer()
+  const ctx = new AudioContext()
+  const audioBuffer = await ctx.decodeAudioData(arrayBuffer)
+  await ctx.close()
+  return audioBufferToMp3Blob(audioBuffer)
 }
 
 export async function stopRecordingAndGetBlob(): Promise<Blob> {

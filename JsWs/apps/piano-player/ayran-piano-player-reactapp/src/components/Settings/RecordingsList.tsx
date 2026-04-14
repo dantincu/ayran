@@ -1,18 +1,30 @@
 import { useState, useEffect } from 'react'
 import { useRecordingStore } from '../../store/useRecordingStore'
 import { getAllRecordings, deleteRecording, saveRecording } from '../../db/recordingsDb'
+import { clearCurrentRecording } from '../../db/recordingsDb'
 import { Recording } from '../../db/schema'
+import { blueprintToMp3Blob } from '../../audio/blueprintPlayer'
+import { downloadBlob } from '../../audio/recorder'
+import { useSettingsStore } from '../../store/useSettingsStore'
 import { ConfirmDialog } from '../common/ConfirmDialog'
+import { PlaybackPopup } from './PlaybackPopup'
 import './Settings.css'
 
 export function RecordingsList() {
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [deleteTarget, setDeleteTarget] = useState<Recording | null>(null)
-  const { currentBlueprint, currentStartedAt } = useRecordingStore()
+  const [playTarget, setPlayTarget] = useState<Recording | null>(null)
+  const [downloadingId, setDownloadingId] = useState<string | null>(null)
+  const { currentBlueprint, currentStartedAt, clearCurrentRecording: clearStoreRecording } = useRecordingStore()
+  const { activeSoundsetId, fadeMs } = useSettingsStore()
 
-  const reload = () => getAllRecordings().then(r =>
-    setRecordings(r.filter(x => x.savedAt !== null).sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0)))
-  )
+  const reload = () =>
+    getAllRecordings().then(r =>
+      setRecordings(
+        r.filter(x => x.savedAt !== null)
+          .sort((a, b) => (b.savedAt ?? 0) - (a.savedAt ?? 0))
+      )
+    )
 
   useEffect(() => { reload() }, [])
 
@@ -27,7 +39,19 @@ export function RecordingsList() {
       createdAt: currentStartedAt ?? Date.now()
     }
     await saveRecording(rec)
+    await clearCurrentRecording()
+    clearStoreRecording()
     reload()
+  }
+
+  const handleDownload = async (rec: Recording) => {
+    setDownloadingId(rec.id)
+    try {
+      const blob = await blueprintToMp3Blob(rec.blueprint, activeSoundsetId, fadeMs)
+      downloadBlob(blob, `${rec.name}.mp3`)
+    } finally {
+      setDownloadingId(null)
+    }
   }
 
   const handleDelete = async (rec: Recording) => {
@@ -49,10 +73,12 @@ export function RecordingsList() {
     <div className="settings-section">
       <h3 className="settings-section__title">Recordings</h3>
 
-      {currentBlueprint && (
+      {currentBlueprint && currentBlueprint.length > 0 && (
         <div className="current-recording-banner">
           <span>Unsaved recording ({currentBlueprint.length} note events)</span>
-          <button className="btn btn--primary btn--sm" onClick={handleSaveCurrent}>Save to List</button>
+          <button className="btn btn--primary btn--sm" onClick={handleSaveCurrent}>
+            Save to List
+          </button>
         </div>
       )}
 
@@ -69,13 +95,39 @@ export function RecordingsList() {
                 </span>
               </div>
               <div className="item-actions">
-                <button className="btn btn--danger-soft btn--sm" onClick={() => setDeleteTarget(rec)}>
+                <button
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => setPlayTarget(rec)}
+                  title="Play"
+                >
+                  ▶ Play
+                </button>
+                <button
+                  className="btn btn--secondary btn--sm"
+                  onClick={() => handleDownload(rec)}
+                  disabled={downloadingId === rec.id}
+                  title="Download MP3"
+                >
+                  {downloadingId === rec.id ? '…' : '⬇ MP3'}
+                </button>
+                <button
+                  className="btn btn--danger-soft btn--sm"
+                  onClick={() => setDeleteTarget(rec)}
+                >
                   Delete
                 </button>
               </div>
             </div>
           ))}
         </div>
+      )}
+
+      {playTarget && (
+        <PlaybackPopup
+          name={playTarget.name ?? 'Recording'}
+          blueprint={playTarget.blueprint}
+          onClose={() => setPlayTarget(null)}
+        />
       )}
 
       {deleteTarget && (
