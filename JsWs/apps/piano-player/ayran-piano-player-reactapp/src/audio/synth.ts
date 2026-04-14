@@ -1,4 +1,5 @@
 import { noteCodeToFrequency } from '../constants/piano'
+import { getLoudnessGain } from '../utils/loudness'
 import { getAudioContext, getMasterGain } from './AudioEngine'
 
 export type SynthNote = {
@@ -16,9 +17,10 @@ export function playSynthNote(noteCode: string, fadeMs: number): SynthNote {
   const ctx = getAudioContext()
   const freq = noteCodeToFrequency(noteCode)
 
+  const targetGain = getLoudnessGain(noteCode)
   const gainNode = ctx.createGain()
   gainNode.gain.setValueAtTime(0.001, ctx.currentTime)
-  gainNode.gain.exponentialRampToValueAtTime(0.7, ctx.currentTime + 0.01)
+  gainNode.gain.exponentialRampToValueAtTime(targetGain, ctx.currentTime + 0.01)
   gainNode.connect(getMasterGain())
 
   const oscillator = ctx.createOscillator()
@@ -34,9 +36,7 @@ export function playSynthNote(noteCode: string, fadeMs: number): SynthNote {
     releaseTimeout: null
   }
 
-  oscillator.onended = () => {
-    note.finished = true
-  }
+  oscillator.onended = () => { note.finished = true }
 
   activeNotes.set(noteCode, note)
   return note

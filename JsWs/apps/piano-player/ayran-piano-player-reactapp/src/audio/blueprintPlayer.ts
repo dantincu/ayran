@@ -1,5 +1,6 @@
 import { NoteEvent } from '../db/schema'
 import { noteCodeToFrequency } from '../constants/piano'
+import { getLoudnessGain } from '../utils/loudness'
 import { getSoundsetNote } from '../db/soundsetsDb'
 import { audioBufferToMp3Blob } from './recorder'
 
@@ -45,13 +46,17 @@ export async function synthesizeBlueprint(
     const fadeSec = fadeMs / 1000
     const stopSec = startSec + holdSec + fadeSec + 0.05
 
+    const soundBuf = bufferCache.get(event.note)
+
+    // Loudness compensation only for synthesized notes, not user-uploaded samples
+    const peakGain = soundBuf ? 0.9 : getLoudnessGain(event.note)
+
     const gainNode = offlineCtx.createGain()
-    gainNode.gain.setValueAtTime(0.7, startSec)
-    gainNode.gain.setValueAtTime(0.7, startSec + holdSec)
+    gainNode.gain.setValueAtTime(peakGain, startSec)
+    gainNode.gain.setValueAtTime(peakGain, startSec + holdSec)
     gainNode.gain.linearRampToValueAtTime(0, startSec + holdSec + fadeSec)
     gainNode.connect(offlineCtx.destination)
 
-    const soundBuf = bufferCache.get(event.note)
     if (soundBuf) {
       const src = offlineCtx.createBufferSource()
       src.buffer = soundBuf
@@ -59,12 +64,15 @@ export async function synthesizeBlueprint(
       src.start(startSec)
       src.stop(Math.min(stopSec, startSec + soundBuf.duration))
     } else {
+      const freq = noteCodeToFrequency(event.note)
       const osc = offlineCtx.createOscillator()
       osc.type = 'triangle'
-      osc.frequency.value = noteCodeToFrequency(event.note)
+      osc.frequency.value = freq
       osc.connect(gainNode)
       osc.start(startSec)
       osc.stop(stopSec)
+
+
     }
   }
 
