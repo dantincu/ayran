@@ -1,0 +1,12 @@
+.piano-keyboard {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 1px;
+  padding: 8px;
+  overflow: hidden;
+  background: var(--keyboard-bg, #2d2d3d);
+  width: 100%;
+  box-sizing: border-box;
+  align-content: flex-start;
+}

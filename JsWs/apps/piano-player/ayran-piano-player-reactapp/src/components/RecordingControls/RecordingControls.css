@@ -1,0 +1,88 @@
+.recording-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.recording-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary, #cdd6f4);
+}
+
+.rec-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--error-color, #f38ba8);
+  flex-shrink: 0;
+}
+
+.rec-dot--active {
+  background: var(--error-color, #f38ba8);
+  animation: blink 1s step-start infinite;
+}
+
+.rec-dot--paused {
+  background: var(--warning-color, #fab387);
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+.btn--record {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--error-color, #f38ba8);
+  color: #fff;
+  border: none;
+  padding: 0.4rem 0.75rem;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.875rem;
+  transition: background 0.15s;
+}
+
+.btn--record:hover {
+  background: #e07890;
+}
+
+.btn--stop {
+  background: var(--error-bg, #3d1a1a);
+  color: var(--error-color, #f38ba8);
+  border: 1px solid var(--error-color, #f38ba8);
+}
+
+.btn--stop:hover {
+  background: var(--error-color, #f38ba8);
+  color: #fff;
+}
+
+.save-recording {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.save-recording__desc {
+  color: var(--text-secondary, #a6adc8);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
+.save-recording__row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.save-recording__actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
