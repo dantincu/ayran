@@ -1,0 +1,37 @@
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MailPage } from './pages/MailPage'
+import { LoginPage } from './pages/LoginPage'
+import { OAuthCallbackPage } from './pages/OAuthCallbackPage'
+import { useAuthStore } from './stores/authStore'
+
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
+})
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const { accounts } = useAuthStore()
+  if (accounts.length === 0) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
+export default function App() {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/oauth/callback" element={<OAuthCallbackPage />} />
+          <Route
+            path="/*"
+            element={
+              <RequireAuth>
+                <MailPage />
+              </RequireAuth>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
+    </QueryClientProvider>
+  )
+}
