@@ -1,6 +1,11 @@
 import { create } from 'zustand'
 import type { Email, SearchParams, SortParams, ComposeData } from '../types/email'
 import type { Folder } from '../types/folder'
+import {
+  loadTrustedSenders,
+  addTrustedSenderToDb,
+  removeTrustedSenderFromDb,
+} from '../services/trustedSendersDb'
 
 interface EmailState {
   selectedFolderId: string | null
@@ -35,6 +40,7 @@ interface EmailState {
   addTrustedSender: (email: string) => void
   removeTrustedSender: (email: string) => void
   isTrustedSender: (email: string) => boolean
+  initTrustedSenders: () => Promise<void>
 }
 
 export const useEmailStore = create<EmailState>()((set, get) => ({
@@ -81,17 +87,24 @@ export const useEmailStore = create<EmailState>()((set, get) => ({
       ),
     })),
 
-  addTrustedSender: (email) =>
-    set((state) => ({
-      trustedSenders: state.trustedSenders.includes(email)
-        ? state.trustedSenders
-        : [...state.trustedSenders, email],
-    })),
+  addTrustedSender: (email) => {
+    const { trustedSenders } = get()
+    if (trustedSenders.includes(email)) return
+    set({ trustedSenders: [...trustedSenders, email] })
+    addTrustedSenderToDb(email).catch(console.error)
+  },
 
-  removeTrustedSender: (email) =>
+  removeTrustedSender: (email) => {
     set((state) => ({
       trustedSenders: state.trustedSenders.filter((s) => s !== email),
-    })),
+    }))
+    removeTrustedSenderFromDb(email).catch(console.error)
+  },
 
   isTrustedSender: (email) => get().trustedSenders.includes(email),
+
+  initTrustedSenders: async () => {
+    const senders = await loadTrustedSenders()
+    set({ trustedSenders: senders })
+  },
 }))

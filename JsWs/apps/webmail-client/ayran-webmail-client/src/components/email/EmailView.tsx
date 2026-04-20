@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
   Reply, ReplyAll, Forward, Trash2, Star, MoreHorizontal, Download, Image, ImageOff, X, Loader2,
+  Filter,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useEmailStore } from '../../stores/emailStore'
@@ -35,8 +37,10 @@ interface EmailViewProps {
 }
 
 export function EmailView({ email, onClose }: EmailViewProps) {
-  const { isTrustedSender, addTrustedSender, removeTrustedSender, openCompose, setEmails, emails } = useEmailStore()
+  const { isTrustedSender, addTrustedSender, removeTrustedSender, openCompose, setEmails, emails, setSearch, search } = useEmailStore()
   const { getActiveAccount } = useAuthStore()
+  const navigate = useNavigate()
+  const { folderId } = useParams<{ folderId?: string }>()
   const [showImages, setShowImages] = useState(isTrustedSender(email.from.email))
   const [showAllHeaders, setShowAllHeaders] = useState(false)
   const [fullBody, setFullBody] = useState<{ body: string; bodyHtml?: string; attachments?: Email['attachments'] } | null>(null)
@@ -94,6 +98,18 @@ export function EmailView({ email, onClose }: EmailViewProps) {
     } finally {
       setDeleting(false)
     }
+  }
+
+  const isFilteredBySender = search.from === email.from?.email
+
+  const handleFilterBySender = () => {
+    if (isFilteredBySender) {
+      setSearch({ ...search, from: undefined })
+    } else {
+      setSearch({ ...search, from: email.from?.email })
+    }
+    // Navigate back to folder list so the filtered results are visible
+    if (folderId) navigate(`/mail/${folderId}`)
   }
 
   const buildComposeData = (mode: ComposeData['mode']): ComposeData => {
@@ -230,9 +246,25 @@ export function EmailView({ email, onClose }: EmailViewProps) {
                   {(email.from?.name ?? email.from?.email ?? '?')[0]?.toUpperCase() ?? '?'}
                 </div>
                 <div>
-                  <p className="font-medium text-sm text-gray-900">
-                    {email.from?.name ?? email.from?.email ?? '(unknown sender)'}
-                  </p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-sm text-gray-900">
+                      {email.from?.name ?? email.from?.email ?? '(unknown sender)'}
+                    </p>
+                    {email.from?.email && (
+                      <button
+                        onClick={handleFilterBySender}
+                        title={isFilteredBySender ? 'Clear sender filter' : `Show all mail from ${email.from.email}`}
+                        className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-xs transition-colors ${
+                          isFilteredBySender
+                            ? 'bg-primary-100 text-primary-700 hover:bg-primary-200'
+                            : 'text-gray-400 hover:text-primary-600 hover:bg-primary-50'
+                        }`}
+                      >
+                        <Filter size={10} />
+                        {isFilteredBySender ? 'Filtered' : 'Filter'}
+                      </button>
+                    )}
+                  </div>
                   {email.from?.name && email.from?.email && (
                     <p className="text-xs text-gray-400">&lt;{email.from.email}&gt;</p>
                   )}
