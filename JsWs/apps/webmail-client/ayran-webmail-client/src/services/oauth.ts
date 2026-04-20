@@ -22,7 +22,7 @@ async function generateCodeChallenge(verifier: string): Promise<string> {
 
 const PROVIDER_CONFIGS: Record<
   EmailProvider,
-  { authUrl: string; tokenUrl: string; scopes: string; clientId: string }
+  { authUrl: string; tokenUrl: string; scopes: string; clientId: string; clientSecret: string }
 > = {
   gmail: {
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -30,6 +30,7 @@ const PROVIDER_CONFIGS: Record<
     scopes:
       'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile',
     clientId: import.meta.env.VITE_GMAIL_CLIENT_ID ?? '',
+    clientSecret: import.meta.env.VITE_GMAIL_CLIENT_SECRET ?? '',
   },
   outlook: {
     authUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
@@ -37,12 +38,14 @@ const PROVIDER_CONFIGS: Record<
     scopes:
       'https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access',
     clientId: import.meta.env.VITE_OUTLOOK_CLIENT_ID ?? '',
+    clientSecret: import.meta.env.VITE_OUTLOOK_CLIENT_SECRET ?? '',
   },
   yahoo: {
     authUrl: 'https://api.login.yahoo.com/oauth2/request_auth',
     tokenUrl: 'https://api.login.yahoo.com/oauth2/get_token',
     scopes: 'mail-r mail-w',
     clientId: import.meta.env.VITE_YAHOO_CLIENT_ID ?? '',
+    clientSecret: import.meta.env.VITE_YAHOO_CLIENT_SECRET ?? '',
   },
 }
 
@@ -98,6 +101,7 @@ export async function exchangeCodeForTokens(
 
   const body = new URLSearchParams({
     client_id: config.clientId,
+    ...(config.clientSecret ? { client_secret: config.clientSecret } : {}),
     code,
     code_verifier: codeVerifier,
     grant_type: 'authorization_code',
@@ -141,6 +145,7 @@ export async function refreshAccessToken(
 
   const body = new URLSearchParams({
     client_id: config.clientId,
+    ...(config.clientSecret ? { client_secret: config.clientSecret } : {}),
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
   })

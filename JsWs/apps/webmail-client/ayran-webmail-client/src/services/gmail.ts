@@ -51,6 +51,22 @@ function extractBody(payload: GmailPayload): { text: string; html: string } {
   return { text, html }
 }
 
+async function throttleAll<T>(
+  tasks: (() => Promise<T>)[],
+  concurrency: number
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length)
+  let next = 0
+  async function worker() {
+    while (next < tasks.length) {
+      const i = next++
+      results[i] = await tasks[i]()
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker))
+  return results
+}
+
 interface GmailPayload {
   mimeType: string
   headers?: { name: string; value: string }[]
@@ -76,6 +92,8 @@ const FOLDER_MAP: Record<string, Folder['type']> = {
   TRASH: 'trash',
   STARRED: 'all',
 }
+
+const METADATA_HEADERS = 'From,To,Cc,Bcc,Subject,Date,In-Reply-To,References'
 
 function parseGmailMessage(msg: GmailMessage, accountId: string): Email {
   const headers = msg.payload.headers ?? []
@@ -136,9 +154,9 @@ export class GmailService {
   }
 
   async getFolders(): Promise<Folder[]> {
-    const res = await this.client.get<{ labels: { id: string; name: string; type: string; messagesUnread?: number; messagesTotal?: number }[] }>(
-      '/users/me/labels'
-    )
+    const res = await this.client.get<{
+      labels: { id: string; name: string; type: string; messagesUnread?: number; messagesTotal?: number }[]
+    }>('/users/me/labels')
     return res.data.labels.map((label) => ({
       id: label.id,
       name: label.name,
@@ -182,12 +200,19 @@ export class GmailService {
     const messages = listRes.data.messages ?? []
     const totalCount = listRes.data.resultSizeEstimate
 
-    const emails = await Promise.all(
-      messages.map((m) =>
+    // Fetch metadata only (no body) for the list — max 3 concurrent to avoid 429
+    const emails = await throttleAll(
+      messages.map((m) => () =>
         this.client
-          .get<GmailMessage>(`/users/me/messages/${m.id}`, { params: { format: 'full' } })
+          .get<GmailMessage>(`/users/me/messages/${m.id}`, {
+            params: {
+              format: 'metadata',
+              metadataHeaders: METADATA_HEADERS,
+            },
+          })
           .then((r) => parseGmailMessage(r.data, this.accountId))
-      )
+      ),
+      3
     )
 
     if (sort.field === 'from') {
@@ -205,6 +230,32 @@ export class GmailService {
     }
 
     return { emails, totalCount }
+  }
+
+  // Fetches the full email body — called only when opening an email
+  async getEmailFull(emailId: string): Promise<Partial<Email>> {
+    const res = await this.client.get<GmailMessage>(`/users/me/messages/${emailId}`, {
+      params: { format: 'full' },
+    })
+    const { text, html } = extractBody(res.data.payload)
+    const headers = res.data.payload.headers ?? []
+
+    const attachments = (function collectAttachments(p: GmailPayload): Email['attachments'] {
+      const result: Email['attachments'] = []
+      if (p.filename && p.body?.attachmentId) {
+        result.push({ id: p.body.attachmentId, filename: p.filename, mimeType: p.mimeType, size: p.body.size })
+      }
+      if (p.parts) p.parts.forEach((part) => result.push(...collectAttachments(part)))
+      return result
+    })(res.data.payload)
+
+    return {
+      body: text,
+      bodyHtml: html,
+      attachments,
+      inReplyTo: getHeader(headers, 'In-Reply-To'),
+      references: getHeader(headers, 'References').split(/\s+/).filter(Boolean),
+    }
   }
 
   private async getPageToken(q: string, page: number, pageSize: number): Promise<string | null> {

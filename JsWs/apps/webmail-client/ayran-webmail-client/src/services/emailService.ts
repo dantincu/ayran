@@ -42,6 +42,16 @@ export async function moveEmailToTrash(account: Account, emailId: string): Promi
   return getService(account).moveToTrash(emailId)
 }
 
+export async function fetchEmailFull(
+  account: Account,
+  emailId: string
+): Promise<Partial<Email>> {
+  const svc = getService(account)
+  if (svc instanceof GmailService) return svc.getEmailFull(emailId)
+  // Outlook/Yahoo already return full body in list fetch
+  return {}
+}
+
 export async function fetchUserProfile(
   account: Account
 ): Promise<{ email: string; name: string; picture?: string }> {

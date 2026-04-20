@@ -1,9 +1,11 @@
 import { useState, useRef, useEffect } from 'react'
 import {
-  Reply, ReplyAll, Forward, Trash2, Star, MoreHorizontal, Download, Image, ImageOff, X,
+  Reply, ReplyAll, Forward, Trash2, Star, MoreHorizontal, Download, Image, ImageOff, X, Loader2,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useEmailStore } from '../../stores/emailStore'
+import { useAuthStore } from '../../stores/authStore'
+import { fetchEmailFull } from '../../services/emailService'
 import type { Email, ComposeData } from '../../types/email'
 
 function sanitizeHtml(html: string, showImages: boolean): string {
@@ -34,8 +36,11 @@ interface EmailViewProps {
 
 export function EmailView({ email, onClose }: EmailViewProps) {
   const { isTrustedSender, addTrustedSender, removeTrustedSender, openCompose } = useEmailStore()
+  const { getActiveAccount } = useAuthStore()
   const [showImages, setShowImages] = useState(isTrustedSender(email.from.email))
   const [showAllHeaders, setShowAllHeaders] = useState(false)
+  const [fullBody, setFullBody] = useState<{ body: string; bodyHtml?: string; attachments?: Email['attachments'] } | null>(null)
+  const [bodyLoading, setBodyLoading] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   const trusted = isTrustedSender(email.from.email)
@@ -43,6 +48,25 @@ export function EmailView({ email, onClose }: EmailViewProps) {
   useEffect(() => {
     setShowImages(isTrustedSender(email.from.email))
   }, [email.from.email, isTrustedSender])
+
+  // Lazy-load full body for Gmail (metadata-only emails have no body yet)
+  useEffect(() => {
+    if (email.provider !== 'gmail') return
+    if (email.body || email.bodyHtml) return  // already has body from a previous full fetch
+    const account = getActiveAccount()
+    if (!account) return
+    setBodyLoading(true)
+    setFullBody(null)
+    fetchEmailFull(account, email.id)
+      .then((full) => {
+        setFullBody({
+          body: full.body ?? '',
+          bodyHtml: full.bodyHtml,
+          attachments: full.attachments,
+        })
+      })
+      .finally(() => setBodyLoading(false))
+  }, [email.id, email.provider, email.body, email.bodyHtml, getActiveAccount])
 
   const handleTrustSender = () => {
     addTrustedSender(email.from.email)
@@ -95,8 +119,11 @@ export function EmailView({ email, onClose }: EmailViewProps) {
     }
   }
 
-  const bodyHtml = email.bodyHtml
-    ? sanitizeHtml(stripScripts(email.bodyHtml), showImages)
+  const resolvedBodyHtml = fullBody?.bodyHtml ?? email.bodyHtml
+  const resolvedBody = fullBody?.body ?? email.body
+  const resolvedAttachments = fullBody?.attachments ?? email.attachments
+  const bodyHtml = resolvedBodyHtml
+    ? sanitizeHtml(stripScripts(resolvedBodyHtml), showImages)
     : null
 
   useEffect(() => {
@@ -214,7 +241,7 @@ export function EmailView({ email, onClose }: EmailViewProps) {
         </div>
 
         {/* Image blocking banner */}
-        {email.bodyHtml && !showImages && (
+        {resolvedBodyHtml && !showImages && (
           <div className="mx-6 mt-3 flex items-center justify-between bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
             <div className="flex items-center gap-2 text-sm text-amber-700">
               <ImageOff size={14} />
@@ -254,7 +281,12 @@ export function EmailView({ email, onClose }: EmailViewProps) {
 
         {/* Body */}
         <div className="px-6 py-4">
-          {bodyHtml ? (
+          {bodyLoading ? (
+            <div className="flex items-center gap-2 text-gray-400 py-8">
+              <Loader2 size={16} className="animate-spin" />
+              <span className="text-sm">Loading message…</span>
+            </div>
+          ) : bodyHtml ? (
             <iframe
               ref={iframeRef}
               sandbox="allow-same-origin"
@@ -264,19 +296,19 @@ export function EmailView({ email, onClose }: EmailViewProps) {
             />
           ) : (
             <pre className="whitespace-pre-wrap text-sm text-gray-700 font-sans leading-relaxed">
-              {email.body}
+              {resolvedBody}
             </pre>
           )}
         </div>
 
         {/* Attachments */}
-        {email.attachments.length > 0 && (
+        {resolvedAttachments.length > 0 && (
           <div className="px-6 pb-6">
             <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-              Attachments ({email.attachments.length})
+              Attachments ({resolvedAttachments.length})
             </p>
             <div className="flex flex-wrap gap-2">
-              {email.attachments.map((att) => (
+              {resolvedAttachments.map((att) => (
                 <div
                   key={att.id}
                   className="flex items-center gap-2 px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg hover:bg-gray-100 transition-colors cursor-pointer"
