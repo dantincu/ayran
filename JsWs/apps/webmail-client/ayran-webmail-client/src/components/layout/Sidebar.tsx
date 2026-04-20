@@ -31,11 +31,7 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
     folders.filter((f) => f.accountId === accountId)
 
   return (
-    <aside
-      className={`flex flex-col bg-white border-r border-gray-200 transition-all duration-200 ${
-        collapsed ? 'w-14' : 'w-64'
-      }`}
-    >
+    <aside className="flex flex-col w-full h-full bg-white border-r border-gray-200">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-gray-100">
         {!collapsed && (

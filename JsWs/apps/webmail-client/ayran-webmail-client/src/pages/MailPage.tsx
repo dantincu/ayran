@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Sidebar } from '../components/layout/Sidebar'
+import { ResizeHandle } from '../components/layout/ResizeHandle'
 import { EmailList } from '../components/email/EmailList'
 import { EmailView } from '../components/email/EmailView'
 import { ComposeModal } from '../components/compose/ComposeModal'
@@ -8,11 +9,28 @@ import { SearchBar } from '../components/search/SearchBar'
 import { useEmailStore } from '../stores/emailStore'
 import { useAuthStore } from '../stores/authStore'
 import { fetchEmails, fetchFolders } from '../services/emailService'
+import { useResizable } from '../hooks/useResizable'
+
+const SIDEBAR_COLLAPSED_WIDTH = 56
 
 export function MailPage() {
   const { folderId, emailId } = useParams<{ folderId?: string; emailId?: string }>()
   const navigate = useNavigate()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  const sidebar = useResizable({
+    storageKey: 'panel-sidebar',
+    defaultWidth: 256,
+    minWidth: 160,
+    maxWidth: 400,
+  })
+
+  const emailList = useResizable({
+    storageKey: 'panel-email-list',
+    defaultWidth: 320,
+    minWidth: 200,
+    maxWidth: 600,
+  })
 
   const {
     currentPage,
@@ -30,7 +48,6 @@ export function MailPage() {
 
   const { getActiveAccount, accounts } = useAuthStore()
 
-  // Decode URL param — folder IDs can contain slashes when base64-encoded by Gmail
   const activeFolderId = folderId ? decodeURIComponent(folderId) : null
   const activeEmailId = emailId ? decodeURIComponent(emailId) : null
 
@@ -40,7 +57,6 @@ export function MailPage() {
     try {
       const fetched = await fetchFolders(account)
       setFolders(fetched)
-      // If no folder is selected yet, navigate to inbox
       if (!folderId) {
         const inbox = fetched.find((f) => f.type === 'inbox')
         if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
@@ -72,25 +88,9 @@ export function MailPage() {
     }
   }, [getActiveAccount, activeFolderId, currentPage, pageSize, search, sort, setEmails, setLoading, setError])
 
-  useEffect(() => {
-    loadFolders()
-  }, [loadFolders, accounts])
+  useEffect(() => { loadFolders() }, [loadFolders, accounts])
+  useEffect(() => { if (activeFolderId) loadEmails() }, [loadEmails, activeFolderId, currentPage, search, sort])
 
-  useEffect(() => {
-    if (activeFolderId) loadEmails()
-  }, [loadEmails, activeFolderId, currentPage, search, sort])
-
-  const selectedEmail = activeEmailId ? emails.find((e) => e.id === activeEmailId) : null
-
-  const handleCloseEmail = () => {
-    if (activeFolderId) navigate(`/mail/${encodeURIComponent(activeFolderId)}`)
-  }
-
-  const handleCompose = () => {
-    openCompose({ mode: 'compose', to: '', cc: '', bcc: '', subject: '', body: '' })
-  }
-
-  // Keep store in sync with URL so components that read from store still work
   useEffect(() => {
     const store = useEmailStore.getState()
     if (activeFolderId !== store.selectedFolderId) store.setSelectedFolder(activeFolderId)
@@ -101,17 +101,26 @@ export function MailPage() {
     if (activeEmailId !== store.selectedEmailId) store.setSelectedEmail(activeEmailId)
   }, [activeEmailId])
 
+  const selectedEmail = activeEmailId ? emails.find((e) => e.id === activeEmailId) : null
   const folderName = activeFolderId
     ? (folders.find((f) => f.id === activeFolderId)?.name ?? activeFolderId)
     : null
 
+  const sidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebar.width
+
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggle={() => setSidebarCollapsed((v) => !v)}
-        onCompose={handleCompose}
-      />
+      {/* Sidebar */}
+      <div style={{ width: sidebarWidth, flexShrink: 0 }} className="flex flex-col h-full">
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggle={() => setSidebarCollapsed((v) => !v)}
+          onCompose={() => openCompose({ mode: 'compose', to: '', cc: '', bcc: '', subject: '', body: '' })}
+        />
+      </div>
+
+      {/* Sidebar ↔ email-list handle (hidden when sidebar is collapsed) */}
+      {!sidebarCollapsed && <ResizeHandle onMouseDown={sidebar.onMouseDown} />}
 
       <div className="flex flex-col flex-1 min-w-0">
         {/* Top bar */}
@@ -125,12 +134,11 @@ export function MailPage() {
         </header>
 
         {/* Main content */}
-        <div className="flex flex-1 min-h-0">
+        <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Email list pane */}
           <div
-            className={`flex flex-col border-r border-gray-100 bg-white flex-shrink-0 ${
-              selectedEmail ? 'w-80 xl:w-96' : 'flex-1'
-            }`}
+            style={selectedEmail ? { width: emailList.width, flexShrink: 0 } : undefined}
+            className={`flex flex-col bg-white overflow-hidden ${selectedEmail ? '' : 'flex-1'}`}
           >
             {activeFolderId ? (
               <EmailList onRefresh={loadEmails} />
@@ -141,10 +149,16 @@ export function MailPage() {
             )}
           </div>
 
+          {/* Email-list ↔ email-view handle */}
+          {selectedEmail && <ResizeHandle onMouseDown={emailList.onMouseDown} />}
+
           {/* Email view pane */}
           {selectedEmail && (
-            <div className="flex-1 min-w-0 bg-white">
-              <EmailView email={selectedEmail} onClose={handleCloseEmail} />
+            <div className="flex-1 min-w-0 bg-white overflow-hidden">
+              <EmailView
+                email={selectedEmail}
+                onClose={() => activeFolderId && navigate(`/mail/${encodeURIComponent(activeFolderId)}`)}
+              />
             </div>
           )}
         </div>
