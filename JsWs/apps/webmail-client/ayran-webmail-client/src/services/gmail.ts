@@ -5,9 +5,13 @@ import type { Folder } from '../types/folder'
 import type { Account } from '../types/auth'
 
 function parseEmailAddress(raw: string): EmailAddress {
+  if (!raw?.trim()) return { email: 'unknown' }
   const match = raw.match(/^(.*?)\s*<(.+?)>$/)
-  if (match) return { name: match[1].trim().replace(/^"|"$/g, ''), email: match[2] }
-  return { email: raw.trim() }
+  if (match) {
+    const name = match[1].trim().replace(/^"|"$/g, '')
+    return name ? { name, email: match[2] } : { email: match[2] }
+  }
+  return { email: raw.trim() || 'unknown' }
 }
 
 function parseAddressList(raw: string | undefined): EmailAddress[] {

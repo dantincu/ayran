@@ -23,13 +23,31 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           <Route path="/oauth/callback" element={<OAuthCallbackPage />} />
           <Route
-            path="/*"
+            path="/mail"
             element={
               <RequireAuth>
                 <MailPage />
               </RequireAuth>
             }
           />
+          <Route
+            path="/mail/:folderId"
+            element={
+              <RequireAuth>
+                <MailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/mail/:folderId/:emailId"
+            element={
+              <RequireAuth>
+                <MailPage />
+              </RequireAuth>
+            }
+          />
+          <Route path="/" element={<Navigate to="/mail" replace />} />
+          <Route path="*" element={<Navigate to="/mail" replace />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

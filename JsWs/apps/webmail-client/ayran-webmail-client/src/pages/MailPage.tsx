@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { Sidebar } from '../components/layout/Sidebar'
 import { EmailList } from '../components/email/EmailList'
 import { EmailView } from '../components/email/EmailView'
@@ -7,51 +8,57 @@ import { SearchBar } from '../components/search/SearchBar'
 import { useEmailStore } from '../stores/emailStore'
 import { useAuthStore } from '../stores/authStore'
 import { fetchEmails, fetchFolders } from '../services/emailService'
-import type { ComposeData } from '../types/email'
 
 export function MailPage() {
+  const { folderId, emailId } = useParams<{ folderId?: string; emailId?: string }>()
+  const navigate = useNavigate()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
 
   const {
-    selectedFolderId,
-    selectedEmailId,
     currentPage,
     pageSize,
     search,
     sort,
     emails,
+    folders,
     setEmails,
     setFolders,
     setLoading,
     setError,
     openCompose,
-    closeCompose,
-    compose,
   } = useEmailStore()
 
-  const { getActiveAccount } = useAuthStore()
-  const { accounts } = useAuthStore()
+  const { getActiveAccount, accounts } = useAuthStore()
+
+  // Decode URL param — folder IDs can contain slashes when base64-encoded by Gmail
+  const activeFolderId = folderId ? decodeURIComponent(folderId) : null
+  const activeEmailId = emailId ? decodeURIComponent(emailId) : null
 
   const loadFolders = useCallback(async () => {
     const account = getActiveAccount()
     if (!account) return
     try {
-      const folders = await fetchFolders(account)
-      setFolders(folders)
+      const fetched = await fetchFolders(account)
+      setFolders(fetched)
+      // If no folder is selected yet, navigate to inbox
+      if (!folderId) {
+        const inbox = fetched.find((f) => f.type === 'inbox')
+        if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
+      }
     } catch (e) {
       console.error('Failed to load folders', e)
     }
-  }, [getActiveAccount, setFolders])
+  }, [getActiveAccount, setFolders, folderId, navigate])
 
   const loadEmails = useCallback(async () => {
     const account = getActiveAccount()
-    if (!account || !selectedFolderId) return
+    if (!account || !activeFolderId) return
     setLoading(true)
     setError(null)
     try {
       const { emails: fetched, totalCount } = await fetchEmails(
         account,
-        selectedFolderId,
+        activeFolderId,
         currentPage,
         pageSize,
         search,
@@ -63,24 +70,40 @@ export function MailPage() {
     } finally {
       setLoading(false)
     }
-  }, [getActiveAccount, selectedFolderId, currentPage, pageSize, search, sort, setEmails, setLoading, setError])
+  }, [getActiveAccount, activeFolderId, currentPage, pageSize, search, sort, setEmails, setLoading, setError])
 
   useEffect(() => {
     loadFolders()
   }, [loadFolders, accounts])
 
   useEffect(() => {
-    if (selectedFolderId) loadEmails()
-  }, [loadEmails, selectedFolderId, currentPage, search, sort])
+    if (activeFolderId) loadEmails()
+  }, [loadEmails, activeFolderId, currentPage, search, sort])
 
-  const selectedEmail = selectedEmailId ? emails.find((e) => e.id === selectedEmailId) : null
+  const selectedEmail = activeEmailId ? emails.find((e) => e.id === activeEmailId) : null
+
+  const handleCloseEmail = () => {
+    if (activeFolderId) navigate(`/mail/${encodeURIComponent(activeFolderId)}`)
+  }
 
   const handleCompose = () => {
     openCompose({ mode: 'compose', to: '', cc: '', bcc: '', subject: '', body: '' })
   }
 
-  void closeCompose
-  void compose
+  // Keep store in sync with URL so components that read from store still work
+  useEffect(() => {
+    const store = useEmailStore.getState()
+    if (activeFolderId !== store.selectedFolderId) store.setSelectedFolder(activeFolderId)
+  }, [activeFolderId])
+
+  useEffect(() => {
+    const store = useEmailStore.getState()
+    if (activeEmailId !== store.selectedEmailId) store.setSelectedEmail(activeEmailId)
+  }, [activeEmailId])
+
+  const folderName = activeFolderId
+    ? (folders.find((f) => f.id === activeFolderId)?.name ?? activeFolderId)
+    : null
 
   return (
     <div className="flex h-screen bg-gray-50 overflow-hidden">
@@ -91,8 +114,11 @@ export function MailPage() {
       />
 
       <div className="flex flex-col flex-1 min-w-0">
-        {/* Top bar with search */}
+        {/* Top bar */}
         <header className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-gray-100 flex-shrink-0">
+          {folderName && (
+            <h2 className="text-sm font-semibold text-gray-700 flex-shrink-0">{folderName}</h2>
+          )}
           <div className="flex-1 max-w-xl">
             <SearchBar />
           </div>
@@ -106,7 +132,7 @@ export function MailPage() {
               selectedEmail ? 'w-80 xl:w-96' : 'flex-1'
             }`}
           >
-            {selectedFolderId ? (
+            {activeFolderId ? (
               <EmailList onRefresh={loadEmails} />
             ) : (
               <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
@@ -118,24 +144,13 @@ export function MailPage() {
           {/* Email view pane */}
           {selectedEmail && (
             <div className="flex-1 min-w-0 bg-white">
-              <EmailView
-                email={selectedEmail}
-                onClose={() => useEmailStore.getState().setSelectedEmail(null)}
-              />
+              <EmailView email={selectedEmail} onClose={handleCloseEmail} />
             </div>
-          )}
-
-          {/* Empty state when no email selected */}
-          {!selectedEmail && selectedFolderId && (
-            <div className="hidden" />
           )}
         </div>
       </div>
 
-      {/* Compose modal */}
       <ComposeModal />
     </div>
   )
 }
-
-export type { ComposeData }

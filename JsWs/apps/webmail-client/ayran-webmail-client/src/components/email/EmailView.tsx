@@ -206,13 +206,13 @@ export function EmailView({ email, onClose }: EmailViewProps) {
             <div>
               <div className="flex items-center gap-2">
                 <div className="w-8 h-8 rounded-full bg-primary-100 text-primary-700 flex items-center justify-center text-sm font-semibold flex-shrink-0">
-                  {(email.from.name ?? email.from.email)[0].toUpperCase()}
+                  {(email.from?.name ?? email.from?.email ?? '?')[0]?.toUpperCase() ?? '?'}
                 </div>
                 <div>
                   <p className="font-medium text-sm text-gray-900">
-                    {email.from.name ?? email.from.email}
+                    {email.from?.name ?? email.from?.email ?? '(unknown sender)'}
                   </p>
-                  {email.from.name && (
+                  {email.from?.name && email.from?.email && (
                     <p className="text-xs text-gray-400">&lt;{email.from.email}&gt;</p>
                   )}
                 </div>
@@ -268,7 +268,7 @@ export function EmailView({ email, onClose }: EmailViewProps) {
           <div className="mx-6 mt-3 flex items-center justify-between bg-green-50 border border-green-200 rounded-lg px-3 py-2">
             <div className="flex items-center gap-2 text-sm text-green-700">
               <Image size={14} />
-              <span>Images from {email.from.email} are always shown.</span>
+              <span>Images from {email.from?.email ?? 'this sender'} are always shown.</span>
             </div>
             <button
               onClick={handleUntrustSender}

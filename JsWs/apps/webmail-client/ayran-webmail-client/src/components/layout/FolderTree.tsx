@@ -1,9 +1,9 @@
 import { useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
 import {
   Inbox, Send, Archive, Trash2, AlertOctagon, Folder, ChevronRight, ChevronDown, Tag,
 } from 'lucide-react'
 import type { Folder as FolderType } from '../../types/folder'
-import { useEmailStore } from '../../stores/emailStore'
 
 const FOLDER_ICONS: Record<FolderType['type'], typeof Inbox> = {
   inbox: Inbox,
@@ -21,16 +21,17 @@ interface FolderItemProps {
 
 function FolderItem({ folder, depth = 0 }: FolderItemProps) {
   const [expanded, setExpanded] = useState(false)
-  const { selectedFolderId, setSelectedFolder } = useEmailStore()
+  const navigate = useNavigate()
+  const { folderId } = useParams<{ folderId?: string }>()
   const hasChildren = (folder.children?.length ?? 0) > 0
   const Icon = FOLDER_ICONS[folder.type] ?? Tag
-  const isSelected = selectedFolderId === folder.id
+  const isSelected = folderId ? decodeURIComponent(folderId) === folder.id : false
 
   return (
     <div>
       <button
         onClick={() => {
-          setSelectedFolder(folder.id)
+          navigate(`/mail/${encodeURIComponent(folder.id)}`)
           if (hasChildren) setExpanded((e) => !e)
         }}
         className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors group ${

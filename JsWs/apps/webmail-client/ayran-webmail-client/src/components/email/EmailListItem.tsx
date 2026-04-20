@@ -1,3 +1,4 @@
+import { useNavigate, useParams } from 'react-router-dom'
 import { Star, Paperclip } from 'lucide-react'
 import { format, isToday, isThisYear } from 'date-fns'
 import type { Email } from '../../types/email'
@@ -6,7 +7,6 @@ import { useEmailStore } from '../../stores/emailStore'
 interface EmailListItemProps {
   email: Email
   selected: boolean
-  onClick: () => void
 }
 
 function formatDate(date: Date): string {
@@ -15,12 +15,20 @@ function formatDate(date: Date): string {
   return format(date, 'MM/dd/yy')
 }
 
-export function EmailListItem({ email, selected, onClick }: EmailListItemProps) {
+export function EmailListItem({ email, selected }: EmailListItemProps) {
   const { toggleStar } = useEmailStore()
+  const navigate = useNavigate()
+  const { folderId } = useParams<{ folderId?: string }>()
+
+  const handleClick = () => {
+    if (folderId) {
+      navigate(`/mail/${folderId}/${encodeURIComponent(email.id)}`)
+    }
+  }
 
   return (
     <div
-      onClick={onClick}
+      onClick={handleClick}
       className={`flex items-start gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 transition-colors ${
         selected ? 'bg-primary-50 border-l-2 border-l-primary-500' : 'hover:bg-gray-50'
       } ${!email.isRead ? 'bg-white' : 'bg-gray-50/30'}`}

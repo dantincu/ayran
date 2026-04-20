@@ -1,3 +1,4 @@
+import { useParams } from 'react-router-dom'
 import { RefreshCw, Loader2, Users } from 'lucide-react'
 import { EmailListItem } from './EmailListItem'
 import { PageSelector } from '../pagination/PageSelector'
@@ -25,6 +26,8 @@ interface EmailListProps {
 }
 
 export function EmailList({ onRefresh }: EmailListProps) {
+  const { emailId } = useParams<{ emailId?: string }>()
+  const activeEmailId = emailId ? decodeURIComponent(emailId) : null
   const {
     emails,
     totalCount,
@@ -32,8 +35,6 @@ export function EmailList({ onRefresh }: EmailListProps) {
     pageSize,
     isLoading,
     error,
-    selectedEmailId,
-    setSelectedEmail,
     setCurrentPage,
     groupBySender,
     setGroupBySender,
@@ -115,9 +116,8 @@ export function EmailList({ onRefresh }: EmailListProps) {
                 <EmailListItem
                   key={email.id}
                   email={email}
-                  selected={selectedEmailId === email.id}
-                  onClick={() => setSelectedEmail(email.id)}
-                />
+                  selected={activeEmailId === email.id}
+                                  />
               ))}
             </div>
           ))
@@ -126,9 +126,8 @@ export function EmailList({ onRefresh }: EmailListProps) {
             <EmailListItem
               key={email.id}
               email={email}
-              selected={selectedEmailId === email.id}
-              onClick={() => setSelectedEmail(email.id)}
-            />
+              selected={activeEmailId === email.id}
+                          />
           ))
         )}
       </div>
