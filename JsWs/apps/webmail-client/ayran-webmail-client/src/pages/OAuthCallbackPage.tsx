@@ -2,10 +2,34 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Loader2, AlertCircle } from 'lucide-react'
 import { exchangeCodeForTokens } from '../services/oauth'
-import { fetchUserProfile } from '../services/emailService'
 import { useAuthStore } from '../stores/authStore'
 import type { EmailProvider } from '../types/email'
 import type { Account } from '../types/auth'
+
+// Fetch profile directly with an access token — avoids the store-based API client
+// which requires the account to already be registered in the store.
+async function fetchGmailProfile(
+  accessToken: string
+): Promise<{ email: string; name: string; picture?: string }> {
+  const res = await fetch('https://www.googleapis.com/oauth2/v1/userinfo?alt=json', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!res.ok) throw new Error(`Profile fetch failed: ${res.status}`)
+  const data = await res.json() as { email: string; name: string; picture?: string }
+  return data
+}
+
+async function fetchOutlookProfile(
+  accessToken: string
+): Promise<{ email: string; name: string }> {
+  const res = await fetch(
+    'https://graph.microsoft.com/v1.0/me?$select=displayName,mail,userPrincipalName',
+    { headers: { Authorization: `Bearer ${accessToken}` } }
+  )
+  if (!res.ok) throw new Error(`Profile fetch failed: ${res.status}`)
+  const data = await res.json() as { displayName: string; mail?: string; userPrincipalName: string }
+  return { email: data.mail ?? data.userPrincipalName, name: data.displayName }
+}
 
 export function OAuthCallbackPage() {
   const [searchParams] = useSearchParams()
@@ -38,34 +62,34 @@ export function OAuthCallbackPage() {
 
     exchangeCodeForTokens(providerTyped, code, state)
       .then(async (tokens) => {
-        const tempAccount: Account = {
-          id: `${providerTyped}-temp`,
+        let email = 'unknown'
+        let displayName = providerTyped.charAt(0).toUpperCase() + providerTyped.slice(1)
+        let avatarUrl: string | undefined
+
+        try {
+          if (providerTyped === 'gmail') {
+            const profile = await fetchGmailProfile(tokens.accessToken)
+            email = profile.email
+            displayName = profile.name
+            avatarUrl = profile.picture
+          } else if (providerTyped === 'outlook') {
+            const profile = await fetchOutlookProfile(tokens.accessToken)
+            email = profile.email
+            displayName = profile.name
+          }
+        } catch (e) {
+          console.warn('Could not fetch profile, using fallback', e)
+        }
+
+        const account: Account = {
+          id: `${providerTyped}-${email}`,
           provider: providerTyped,
-          email: '',
-          displayName: '',
+          email,
+          displayName,
+          avatarUrl,
           tokens,
         }
-        try {
-          const profile = await fetchUserProfile(tempAccount)
-          const account: Account = {
-            id: `${providerTyped}-${profile.email}`,
-            provider: providerTyped,
-            email: profile.email,
-            displayName: profile.name,
-            avatarUrl: profile.picture,
-            tokens,
-          }
-          addAccount(account)
-        } catch {
-          const account: Account = {
-            id: `${providerTyped}-${Date.now()}`,
-            provider: providerTyped,
-            email: 'unknown',
-            displayName: providerTyped.charAt(0).toUpperCase() + providerTyped.slice(1),
-            tokens,
-          }
-          addAccount(account)
-        }
+        addAccount(account)
         navigate('/', { replace: true })
       })
       .catch((e) => {

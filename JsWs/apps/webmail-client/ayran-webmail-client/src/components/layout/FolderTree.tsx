@@ -76,7 +76,7 @@ export function FolderTree({ folders, accountLabel }: FolderTreeProps) {
   const systemFolders = folders.filter((f) => f.type !== 'custom')
   const customFolders = folders.filter((f) => f.type === 'custom')
 
-  const order: FolderType['type'][] = ['inbox', 'sent', 'all', 'trash', 'spam']
+  const order: FolderType['type'][] = ['inbox', 'sent', 'all', 'spam', 'trash']
   const sorted = [...systemFolders].sort(
     (a, b) => order.indexOf(a.type) - order.indexOf(b.type)
   )

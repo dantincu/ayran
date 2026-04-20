@@ -94,10 +94,27 @@ const FOLDER_MAP: Record<string, Folder['type']> = {
   SENT: 'sent',
   SPAM: 'spam',
   TRASH: 'trash',
-  STARRED: 'all',
+  ALLMAIL: 'all',
 }
 
-const METADATA_HEADERS = 'From,To,Cc,Bcc,Subject,Date,In-Reply-To,References'
+const LABEL_DISPLAY_NAMES: Record<string, string> = {
+  INBOX: 'Inbox',
+  SENT: 'Sent',
+  SPAM: 'Spam',
+  TRASH: 'Trash',
+  ALLMAIL: 'All Mail',
+  STARRED: 'Starred',
+  IMPORTANT: 'Important',
+  DRAFT: 'Drafts',
+  CHAT: 'Chat',
+  CATEGORY_PERSONAL: 'Personal',
+  CATEGORY_SOCIAL: 'Social',
+  CATEGORY_PROMOTIONS: 'Promotions',
+  CATEGORY_UPDATES: 'Updates',
+  CATEGORY_FORUMS: 'Forums',
+}
+
+const METADATA_HEADERS = ['From', 'To', 'Cc', 'Bcc', 'Subject', 'Date', 'In-Reply-To', 'References']
 
 function parseGmailMessage(msg: GmailMessage, accountId: string): Email {
   const headers = msg.payload.headers ?? []
@@ -161,15 +178,29 @@ export class GmailService {
     const res = await this.client.get<{
       labels: { id: string; name: string; type: string; messagesUnread?: number; messagesTotal?: number }[]
     }>('/users/me/labels')
-    return res.data.labels.map((label) => ({
+
+    const folders: Folder[] = res.data.labels.map((label) => ({
       id: label.id,
-      name: label.name,
+      name: LABEL_DISPLAY_NAMES[label.id] ?? label.name,
       type: (FOLDER_MAP[label.id] ?? 'custom') as Folder['type'],
       provider: 'gmail' as const,
       accountId: this.accountId,
       unreadCount: label.messagesUnread,
       totalCount: label.messagesTotal,
     }))
+
+    // Gmail never returns ALLMAIL from labels.list — inject it manually
+    if (!folders.some((f) => f.id === 'ALLMAIL')) {
+      folders.push({
+        id: 'ALLMAIL',
+        name: 'All Mail',
+        type: 'all',
+        provider: 'gmail',
+        accountId: this.accountId,
+      })
+    }
+
+    return folders
   }
 
   async getEmails(
@@ -179,7 +210,8 @@ export class GmailService {
     search: SearchParams,
     sort: SortParams
   ): Promise<{ emails: Email[]; totalCount: number }> {
-    let q = `in:${folderId.toLowerCase()}`
+    // ALLMAIL has no label filter — Gmail returns all mail with an empty query
+    let q = folderId === 'ALLMAIL' ? '' : `in:${folderId.toLowerCase()}`
 
     if (search.from) q += ` from:${search.from}`
     if (search.to) q += ` to:${search.to}`
@@ -204,18 +236,16 @@ export class GmailService {
     const messages = listRes.data.messages ?? []
     const totalCount = listRes.data.resultSizeEstimate
 
-    // Fetch metadata only (no body) for the list — max 3 concurrent to avoid 429
+    // Fetch metadata only (no body) for the list — max 3 concurrent to avoid 429.
+    // metadataHeaders must be repeated query params, not comma-separated.
     const emails = await throttleAll(
-      messages.map((m) => () =>
-        this.client
-          .get<GmailMessage>(`/users/me/messages/${m.id}`, {
-            params: {
-              format: 'metadata',
-              metadataHeaders: METADATA_HEADERS,
-            },
-          })
+      messages.map((m) => () => {
+        const qs = new URLSearchParams({ format: 'metadata' })
+        METADATA_HEADERS.forEach((h) => qs.append('metadataHeaders', h))
+        return this.client
+          .get<GmailMessage>(`/users/me/messages/${m.id}?${qs}`)
           .then((r) => parseGmailMessage(r.data, this.accountId))
-      ),
+      }),
       3
     )
 

@@ -5,7 +5,7 @@ import {
 import { format } from 'date-fns'
 import { useEmailStore } from '../../stores/emailStore'
 import { useAuthStore } from '../../stores/authStore'
-import { fetchEmailFull } from '../../services/emailService'
+import { fetchEmailFull, moveEmailToTrash } from '../../services/emailService'
 import type { Email, ComposeData } from '../../types/email'
 
 function sanitizeHtml(html: string, showImages: boolean): string {
@@ -35,12 +35,13 @@ interface EmailViewProps {
 }
 
 export function EmailView({ email, onClose }: EmailViewProps) {
-  const { isTrustedSender, addTrustedSender, removeTrustedSender, openCompose } = useEmailStore()
+  const { isTrustedSender, addTrustedSender, removeTrustedSender, openCompose, setEmails, emails } = useEmailStore()
   const { getActiveAccount } = useAuthStore()
   const [showImages, setShowImages] = useState(isTrustedSender(email.from.email))
   const [showAllHeaders, setShowAllHeaders] = useState(false)
   const [fullBody, setFullBody] = useState<{ body: string; bodyHtml?: string; attachments?: Email['attachments'] } | null>(null)
   const [bodyLoading, setBodyLoading] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
 
   const trusted = isTrustedSender(email.from.email)
@@ -76,6 +77,23 @@ export function EmailView({ email, onClose }: EmailViewProps) {
   const handleUntrustSender = () => {
     removeTrustedSender(email.from.email)
     setShowImages(false)
+  }
+
+  const handleDelete = async () => {
+    const account = getActiveAccount()
+    if (!account || deleting) return
+    setDeleting(true)
+    try {
+      await moveEmailToTrash(account, email.id)
+      // Remove from local list so it disappears immediately
+      const { totalCount } = useEmailStore.getState()
+      setEmails(emails.filter((e) => e.id !== email.id), Math.max(0, totalCount - 1))
+      onClose?.()
+    } catch (e) {
+      console.error('Failed to delete email', e)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const buildComposeData = (mode: ComposeData['mode']): ComposeData => {
@@ -126,29 +144,27 @@ export function EmailView({ email, onClose }: EmailViewProps) {
     ? sanitizeHtml(stripScripts(resolvedBodyHtml), showImages)
     : null
 
-  useEffect(() => {
-    if (!iframeRef.current || !bodyHtml) return
-    const doc = iframeRef.current.contentDocument
-    if (!doc) return
-    doc.open()
-    doc.write(`<!DOCTYPE html><html><head><style>
+  const iframeSrcdoc = bodyHtml
+    ? `<!DOCTYPE html><html><head><style>
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 14px; line-height: 1.5; margin: 0; padding: 16px; color: #374151; }
       .blocked-image { display: inline-block; background: #f3f4f6; border: 1px dashed #d1d5db; border-radius: 4px; padding: 4px 8px; font-size: 11px; color: #9ca3af; cursor: pointer; }
       a { color: #2563eb; }
       img { max-width: 100%; }
       pre { white-space: pre-wrap; word-break: break-word; }
-    </style></head><body>${bodyHtml}</body></html>`)
-    doc.close()
+    </style></head><body>${bodyHtml}</body></html>`
+    : null
 
+  useEffect(() => {
+    const iframe = iframeRef.current
+    if (!iframe) return
     const adjustHeight = () => {
-      if (iframeRef.current?.contentDocument?.body) {
-        iframeRef.current.style.height =
-          iframeRef.current.contentDocument.body.scrollHeight + 32 + 'px'
+      if (iframe.contentDocument?.body) {
+        iframe.style.height = iframe.contentDocument.body.scrollHeight + 32 + 'px'
       }
     }
-    iframeRef.current.onload = adjustHeight
-    setTimeout(adjustHeight, 100)
-  }, [bodyHtml, showImages])
+    iframe.addEventListener('load', adjustHeight)
+    return () => iframe.removeEventListener('load', adjustHeight)
+  }, [iframeSrcdoc])
 
   return (
     <div className="flex flex-col h-full bg-white">
@@ -177,8 +193,13 @@ export function EmailView({ email, onClose }: EmailViewProps) {
             <Forward size={14} /> Forward
           </button>
           <div className="w-px h-4 bg-gray-200 mx-1" />
-          <button className="p-1.5 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors" title="Delete">
-            <Trash2 size={14} />
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="p-1.5 rounded-md text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-50"
+            title="Move to trash"
+          >
+            {deleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
           </button>
           <button className="p-1.5 rounded-md text-gray-400 hover:text-yellow-400 hover:bg-yellow-50 transition-colors" title="Star">
             <Star size={14} fill={email.isStarred ? 'currentColor' : 'none'} className={email.isStarred ? 'text-yellow-400' : ''} />
@@ -286,10 +307,11 @@ export function EmailView({ email, onClose }: EmailViewProps) {
               <Loader2 size={16} className="animate-spin" />
               <span className="text-sm">Loading message…</span>
             </div>
-          ) : bodyHtml ? (
+          ) : iframeSrcdoc ? (
             <iframe
               ref={iframeRef}
-              sandbox="allow-same-origin"
+              srcDoc={iframeSrcdoc}
+              sandbox=""
               className="w-full border-0 block"
               style={{ minHeight: '200px' }}
               title="Email body"
