@@ -81,7 +81,7 @@ export function PageSelector({
       <button
         onClick={() => currentPage > 1 && onPageChange(currentPage - 1)}
         disabled={currentPage <= 1}
-        className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         title="Previous page"
       >
         <ChevronLeft size={16} />
@@ -90,16 +90,16 @@ export function PageSelector({
       <div className="relative" ref={popoverRef}>
         <button
           onClick={handleOpen}
-          className="px-3 py-1 rounded-md text-sm text-gray-600 hover:bg-gray-100 transition-colors font-medium border border-gray-200"
+          className="px-3 py-1 rounded-md text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors font-medium border border-gray-200 dark:border-gray-600"
           title="Go to page"
         >
           Page {currentPage}
-          {totalPages > 0 && <span className="text-gray-400 font-normal"> / {totalPages}</span>}
+          {totalPages > 0 && <span className="text-gray-400 dark:text-gray-500 font-normal"> / {totalPages}</span>}
         </button>
 
         {open && (
-          <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-white border border-gray-200 rounded-lg shadow-lg z-50 w-48">
-            <div className="p-2 border-b border-gray-100">
+          <div className="absolute top-full mt-1 left-1/2 -translate-x-1/2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50 w-48">
+            <div className="p-2 border-b border-gray-100 dark:border-gray-700">
               <input
                 ref={inputRef}
                 type="number"
@@ -115,7 +115,7 @@ export function PageSelector({
                     setOpen(false)
                   }
                 }}
-                className="w-full px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400 text-center"
+                className="w-full px-2 py-1 text-sm border border-gray-200 dark:border-gray-600 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400 text-center bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200"
                 placeholder="Page #"
               />
             </div>
@@ -127,10 +127,10 @@ export function PageSelector({
                   onClick={() => handleSelect(page)}
                   className={`w-full text-center py-1 text-sm transition-colors ${
                     page === highlighted
-                      ? 'bg-primary-100 text-primary-700 font-semibold'
+                      ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 font-semibold'
                       : page === currentPage
-                      ? 'bg-gray-50 text-gray-700'
-                      : 'text-gray-600 hover:bg-gray-50'
+                      ? 'bg-gray-50 dark:bg-gray-700 text-gray-700 dark:text-gray-300'
+                      : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
                   }`}
                 >
                   {page === currentPage && page !== highlighted ? `${page} (current)` : page}
@@ -144,7 +144,7 @@ export function PageSelector({
       <button
         onClick={() => currentPage < totalPages && onPageChange(currentPage + 1)}
         disabled={currentPage >= totalPages}
-        className="p-1.5 rounded-md text-gray-500 hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        className="p-1.5 rounded-md text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         title="Next page"
       >
         <ChevronRight size={16} />

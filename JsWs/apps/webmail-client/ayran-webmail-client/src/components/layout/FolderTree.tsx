@@ -36,19 +36,19 @@ function FolderItem({ folder, depth = 0 }: FolderItemProps) {
         }}
         className={`w-full flex items-center gap-2 px-3 py-1.5 rounded-md text-sm transition-colors group ${
           isSelected
-            ? 'bg-primary-100 text-primary-700 font-medium'
-            : 'text-gray-700 hover:bg-gray-100'
+            ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400 font-medium'
+            : 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
         }`}
         style={{ paddingLeft: `${12 + depth * 16}px` }}
       >
         {hasChildren ? (
-          <span className="text-gray-400">
+          <span className="text-gray-400 dark:text-gray-500">
             {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
           </span>
         ) : (
           <span className="w-3.5" />
         )}
-        <Icon size={15} className={isSelected ? 'text-primary-600' : 'text-gray-400'} />
+        <Icon size={15} className={isSelected ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400 dark:text-gray-500'} />
         <span className="flex-1 text-left truncate">{folder.name}</span>
         {(folder.unreadCount ?? 0) > 0 && (
           <span className="text-xs font-semibold bg-primary-500 text-white rounded-full px-1.5 py-0.5 min-w-[20px] text-center">
@@ -84,7 +84,7 @@ export function FolderTree({ folders, accountLabel }: FolderTreeProps) {
   return (
     <div className="py-2">
       {accountLabel && (
-        <p className="px-3 py-1 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+        <p className="px-3 py-1 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
           {accountLabel}
         </p>
       )}
@@ -93,7 +93,7 @@ export function FolderTree({ folders, accountLabel }: FolderTreeProps) {
       ))}
       {customFolders.length > 0 && (
         <>
-          <p className="px-3 py-1 mt-2 text-xs font-semibold text-gray-400 uppercase tracking-wider">
+          <p className="px-3 py-1 mt-2 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
             Labels
           </p>
           {customFolders.map((f) => (

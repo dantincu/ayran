@@ -31,24 +31,26 @@ export function SearchBar() {
     setSearch(s)
   }
 
+  const inputBase = 'flex-1 px-2 py-1 text-sm border border-gray-200 dark:border-gray-600 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400 bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-200'
+
   return (
     <div className="relative">
       <div className="flex items-center gap-2">
         {/* Quick search input */}
         <div className="relative flex-1">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 pointer-events-none" />
           <input
             type="text"
             value={local.subject ?? ''}
             onChange={(e) => setLocal((l) => ({ ...l, subject: e.target.value }))}
             onKeyDown={(e) => e.key === 'Enter' && handleQuickSearch(local.subject ?? '')}
             placeholder="Search emails…"
-            className="w-full pl-8 pr-8 py-1.5 text-sm bg-gray-100 rounded-lg border border-transparent focus:outline-none focus:border-primary-300 focus:bg-white transition-colors"
+            className="w-full pl-8 pr-8 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-800 dark:text-gray-200 placeholder:text-gray-400 dark:placeholder:text-gray-500 rounded-lg border border-transparent focus:outline-none focus:border-primary-300 focus:bg-white dark:focus:bg-gray-600 transition-colors"
           />
           {(local.subject) && (
             <button
               onClick={handleClear}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
             >
               <X size={12} />
             </button>
@@ -60,8 +62,8 @@ export function SearchBar() {
           onClick={() => setExpanded((v) => !v)}
           className={`p-1.5 rounded-lg transition-colors ${
             hasActiveSearch || expanded
-              ? 'bg-primary-100 text-primary-700'
-              : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+              ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400'
+              : 'text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300'
           }`}
           title="Advanced search"
         >
@@ -71,12 +73,12 @@ export function SearchBar() {
         {/* Sort */}
         <div className="relative group">
           <button
-            className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
+            className="p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
             title="Sort"
           >
             <ArrowUpDown size={15} />
           </button>
-          <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg hidden group-hover:block z-20 w-44">
+          <div className="absolute right-0 top-full mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg hidden group-hover:block z-20 w-44">
             {([
               { label: 'Date (newest)', field: 'date', dir: 'desc' },
               { label: 'Date (oldest)', field: 'date', dir: 'asc' },
@@ -90,8 +92,8 @@ export function SearchBar() {
                 onClick={() => setSort({ field: opt.field, direction: opt.dir })}
                 className={`w-full text-left px-3 py-1.5 text-sm transition-colors ${
                   sort.field === opt.field && sort.direction === opt.dir
-                    ? 'bg-primary-50 text-primary-700 font-medium'
-                    : 'text-gray-700 hover:bg-gray-50'
+                    ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-400 font-medium'
+                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'
                 }`}
               >
                 {opt.label}
@@ -103,18 +105,18 @@ export function SearchBar() {
 
       {/* Advanced panel */}
       {expanded && (
-        <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-20 p-4 space-y-3">
+        <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-20 p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Subject contains</label>
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Subject contains</label>
               <div className="flex gap-1">
                 <input
                   value={local.subject ?? ''}
                   onChange={(e) => setLocal((l) => ({ ...l, subject: e.target.value }))}
-                  className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400"
+                  className={inputBase}
                   placeholder="Text or /regex/"
                 />
-                <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
+                <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={local.subjectIsRegex ?? false}
@@ -126,15 +128,15 @@ export function SearchBar() {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Body contains</label>
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Body contains</label>
               <div className="flex gap-1">
                 <input
                   value={local.body ?? ''}
                   onChange={(e) => setLocal((l) => ({ ...l, body: e.target.value }))}
-                  className="flex-1 px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400"
+                  className={inputBase}
                   placeholder="Text or /regex/"
                 />
-                <label className="flex items-center gap-1 text-xs text-gray-500 cursor-pointer">
+                <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={local.bodyIsRegex ?? false}
@@ -146,25 +148,25 @@ export function SearchBar() {
               </div>
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">From</label>
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">From</label>
               <input
                 value={local.from ?? ''}
                 onChange={(e) => setLocal((l) => ({ ...l, from: e.target.value }))}
-                className="w-full px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400"
+                className={`w-full ${inputBase}`}
                 placeholder="sender@example.com"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">To / Cc / Bcc</label>
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">To / Cc / Bcc</label>
               <input
                 value={local.to ?? ''}
                 onChange={(e) => setLocal((l) => ({ ...l, to: e.target.value }))}
-                className="w-full px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400"
+                className={`w-full ${inputBase}`}
                 placeholder="recipient@example.com"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">After</label>
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">After</label>
               <input
                 type="date"
                 value={local.after ? local.after.toISOString().slice(0, 10) : ''}
@@ -174,11 +176,11 @@ export function SearchBar() {
                     after: e.target.value ? new Date(e.target.value) : undefined,
                   }))
                 }
-                className="w-full px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400"
+                className={`w-full ${inputBase}`}
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Before</label>
+              <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">Before</label>
               <input
                 type="date"
                 value={local.before ? local.before.toISOString().slice(0, 10) : ''}
@@ -188,14 +190,14 @@ export function SearchBar() {
                     before: e.target.value ? new Date(e.target.value) : undefined,
                   }))
                 }
-                className="w-full px-2 py-1 text-sm border border-gray-200 rounded-md focus:outline-none focus:ring-1 focus:ring-primary-400"
+                className={`w-full ${inputBase}`}
               />
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-1">
             <button
               onClick={handleClear}
-              className="px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
             >
               Clear
             </button>

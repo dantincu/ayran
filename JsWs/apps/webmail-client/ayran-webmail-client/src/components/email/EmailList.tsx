@@ -46,7 +46,7 @@ export function EmailList({ onRefresh }: EmailListProps) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center text-center p-8">
         <p className="text-red-500 font-medium mb-2">Failed to load emails</p>
-        <p className="text-sm text-gray-500 mb-4">{error}</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">{error}</p>
         <button
           onClick={onRefresh}
           className="px-4 py-2 bg-primary-600 text-white rounded-lg text-sm hover:bg-primary-700 transition-colors"
@@ -60,12 +60,12 @@ export function EmailList({ onRefresh }: EmailListProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 bg-white flex-shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 flex-shrink-0">
         <div className="flex items-center gap-2">
           <button
             onClick={onRefresh}
             disabled={isLoading}
-            className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+            className="p-1.5 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
             title="Refresh"
           >
             <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
@@ -74,8 +74,8 @@ export function EmailList({ onRefresh }: EmailListProps) {
             onClick={() => setGroupBySender(!groupBySender)}
             className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${
               groupBySender
-                ? 'bg-primary-100 text-primary-700'
-                : 'text-gray-500 hover:bg-gray-100'
+                ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-400'
+                : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
             }`}
             title="Group by sender"
           >
@@ -83,7 +83,7 @@ export function EmailList({ onRefresh }: EmailListProps) {
             Group
           </button>
           {totalCount > 0 && (
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-gray-400 dark:text-gray-500">
               {totalCount.toLocaleString()} messages
             </span>
           )}
@@ -102,22 +102,22 @@ export function EmailList({ onRefresh }: EmailListProps) {
             <Loader2 size={24} className="animate-spin text-primary-500" />
           </div>
         ) : emails.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+          <div className="flex flex-col items-center justify-center py-16 text-gray-400 dark:text-gray-500">
             <p className="text-sm">No messages found</p>
           </div>
         ) : groupBySender ? (
           groupEmailsBySender(emails).map(({ sender, emails: group }) => (
             <div key={sender}>
-              <div className="px-4 py-1.5 bg-gray-50 border-b border-gray-100 text-xs font-semibold text-gray-500 sticky top-0">
+              <div className="px-4 py-1.5 bg-gray-50 dark:bg-gray-700/50 border-b border-gray-100 dark:border-gray-600 text-xs font-semibold text-gray-500 dark:text-gray-400 sticky top-0">
                 {group[0].from.name ? `${group[0].from.name} (${sender})` : sender}
-                <span className="ml-1 text-gray-400">({group.length})</span>
+                <span className="ml-1 text-gray-400 dark:text-gray-500">({group.length})</span>
               </div>
               {group.map((email) => (
                 <EmailListItem
                   key={email.id}
                   email={email}
                   selected={activeEmailId === email.id}
-                                  />
+                />
               ))}
             </div>
           ))
@@ -127,7 +127,7 @@ export function EmailList({ onRefresh }: EmailListProps) {
               key={email.id}
               email={email}
               selected={activeEmailId === email.id}
-                          />
+            />
           ))
         )}
       </div>

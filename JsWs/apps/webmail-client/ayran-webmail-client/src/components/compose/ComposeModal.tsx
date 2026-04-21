@@ -76,15 +76,15 @@ export function ComposeModal() {
   }
 
   const containerClass = maximized
-    ? 'fixed inset-4 z-50 flex flex-col bg-white rounded-xl shadow-2xl border border-gray-200'
+    ? 'fixed inset-4 z-50 flex flex-col bg-white dark:bg-gray-800 rounded-xl shadow-2xl border border-gray-200 dark:border-gray-700'
     : minimized
-    ? 'fixed bottom-0 right-4 z-50 w-80 bg-white rounded-t-xl shadow-2xl border border-gray-200'
-    : 'fixed bottom-0 right-4 z-50 w-[560px] bg-white rounded-t-xl shadow-2xl border border-gray-200'
+    ? 'fixed bottom-0 right-4 z-50 w-80 bg-white dark:bg-gray-800 rounded-t-xl shadow-2xl border border-gray-200 dark:border-gray-700'
+    : 'fixed bottom-0 right-4 z-50 w-[560px] bg-white dark:bg-gray-800 rounded-t-xl shadow-2xl border border-gray-200 dark:border-gray-700'
 
   return (
     <div className={containerClass}>
       {/* Title bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-800 rounded-t-xl">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-gray-800 dark:bg-gray-900 rounded-t-xl">
         <h3 className="text-sm font-medium text-white">
           {MODE_LABELS[compose.mode]}
         </h3>
@@ -115,19 +115,19 @@ export function ComposeModal() {
           {/* Form */}
           <div className="flex flex-col flex-1 overflow-hidden">
             {/* Recipients */}
-            <div className="border-b border-gray-100">
+            <div className="border-b border-gray-100 dark:border-gray-700">
               <div className="flex items-center px-4 py-2">
-                <label className="text-xs text-gray-400 w-8">To</label>
+                <label className="text-xs text-gray-400 dark:text-gray-500 w-8">To</label>
                 <input
                   ref={toRef}
                   value={form.to}
                   onChange={(e) => setForm((f) => ({ ...f, to: e.target.value }))}
-                  className="flex-1 text-sm text-gray-800 outline-none placeholder:text-gray-300"
+                  className="flex-1 text-sm text-gray-800 dark:text-gray-200 bg-transparent outline-none placeholder:text-gray-300 dark:placeholder:text-gray-600"
                   placeholder="Recipients"
                 />
                 <button
                   onClick={() => setShowCcBcc((v) => !v)}
-                  className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-0.5"
+                  className="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 flex items-center gap-0.5"
                 >
                   Cc/Bcc
                   {showCcBcc ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
@@ -135,33 +135,33 @@ export function ComposeModal() {
               </div>
               {showCcBcc && (
                 <>
-                  <div className="flex items-center px-4 py-1.5 border-t border-gray-50">
-                    <label className="text-xs text-gray-400 w-8">Cc</label>
+                  <div className="flex items-center px-4 py-1.5 border-t border-gray-50 dark:border-gray-700">
+                    <label className="text-xs text-gray-400 dark:text-gray-500 w-8">Cc</label>
                     <input
                       value={form.cc}
                       onChange={(e) => setForm((f) => ({ ...f, cc: e.target.value }))}
-                      className="flex-1 text-sm text-gray-800 outline-none placeholder:text-gray-300"
+                      className="flex-1 text-sm text-gray-800 dark:text-gray-200 bg-transparent outline-none placeholder:text-gray-300 dark:placeholder:text-gray-600"
                       placeholder="Cc"
                     />
                   </div>
-                  <div className="flex items-center px-4 py-1.5 border-t border-gray-50">
-                    <label className="text-xs text-gray-400 w-8">Bcc</label>
+                  <div className="flex items-center px-4 py-1.5 border-t border-gray-50 dark:border-gray-700">
+                    <label className="text-xs text-gray-400 dark:text-gray-500 w-8">Bcc</label>
                     <input
                       value={form.bcc}
                       onChange={(e) => setForm((f) => ({ ...f, bcc: e.target.value }))}
-                      className="flex-1 text-sm text-gray-800 outline-none placeholder:text-gray-300"
+                      className="flex-1 text-sm text-gray-800 dark:text-gray-200 bg-transparent outline-none placeholder:text-gray-300 dark:placeholder:text-gray-600"
                       placeholder="Bcc"
                     />
                   </div>
                 </>
               )}
             </div>
-            <div className="flex items-center px-4 py-2 border-b border-gray-100">
-              <label className="text-xs text-gray-400 w-14">Subject</label>
+            <div className="flex items-center px-4 py-2 border-b border-gray-100 dark:border-gray-700">
+              <label className="text-xs text-gray-400 dark:text-gray-500 w-14">Subject</label>
               <input
                 value={form.subject}
                 onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value }))}
-                className="flex-1 text-sm text-gray-800 outline-none placeholder:text-gray-300"
+                className="flex-1 text-sm text-gray-800 dark:text-gray-200 bg-transparent outline-none placeholder:text-gray-300 dark:placeholder:text-gray-600"
                 placeholder="Subject"
               />
             </div>
@@ -171,7 +171,7 @@ export function ComposeModal() {
               ref={bodyRef}
               value={form.body}
               onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
-              className={`flex-1 px-4 py-3 text-sm text-gray-800 resize-none outline-none placeholder:text-gray-300 ${
+              className={`flex-1 px-4 py-3 text-sm text-gray-800 dark:text-gray-200 bg-transparent resize-none outline-none placeholder:text-gray-300 dark:placeholder:text-gray-600 ${
                 maximized ? 'min-h-0' : 'h-48'
               }`}
               placeholder="Write your message..."
@@ -179,7 +179,7 @@ export function ComposeModal() {
           </div>
 
           {/* Footer */}
-          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+          <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 dark:border-gray-700">
             <div>
               {error && <p className="text-xs text-red-500">{error}</p>}
             </div>

@@ -31,18 +31,18 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
     folders.filter((f) => f.accountId === accountId)
 
   return (
-    <aside className="flex flex-col w-full h-full bg-white border-r border-gray-200">
+    <aside className="flex flex-col w-full h-full bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-3 border-b border-gray-100">
+      <div className="flex items-center justify-between px-3 py-3 border-b border-gray-100 dark:border-gray-700">
         {!collapsed && (
           <div className="flex items-center gap-2">
             <Mail size={20} className="text-primary-600" />
-            <span className="font-semibold text-gray-800 text-sm">Ayran Mail</span>
+            <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm">Ayran Mail</span>
           </div>
         )}
         <button
           onClick={onToggle}
-          className="ml-auto p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100"
+          className="ml-auto p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700"
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
@@ -71,8 +71,8 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
                   onClick={() => setActiveAccount(account.id)}
                   className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium transition-colors ${
                     activeAccountId === account.id
-                      ? 'bg-gray-800 text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                      ? 'bg-gray-800 dark:bg-gray-600 text-white'
+                      : 'bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
                   }`}
                   title={account.email}
                 >
@@ -101,18 +101,18 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
           </div>
 
           {/* Add account + logout */}
-          <div className="border-t border-gray-100 px-3 py-2 space-y-1">
+          <div className="border-t border-gray-100 dark:border-gray-700 px-3 py-2 space-y-1">
             <div className="relative group">
-              <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-gray-500 hover:bg-gray-100 transition-colors">
+              <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                 <Plus size={13} />
                 Add account
               </button>
-              <div className="absolute bottom-full left-0 mb-1 bg-white border border-gray-200 rounded-lg shadow-lg hidden group-hover:block z-10 min-w-[140px]">
+              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg hidden group-hover:block z-10 min-w-[140px]">
                 {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => (
                   <button
                     key={p}
                     onClick={() => initiateOAuth(p)}
-                    className="w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2 capitalize"
+                    className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2 capitalize"
                   >
                     <span
                       className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[9px] font-bold ${PROVIDER_COLORS[p]}`}
@@ -129,7 +129,7 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
                 onClick={() => {
                   if (confirm('Remove this account?')) removeAccount(activeAccountId)
                 }}
-                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-red-500 hover:bg-red-50 transition-colors"
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
               >
                 <LogOut size={13} />
                 Remove account
@@ -155,7 +155,7 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
               onClick={() => setActiveAccount(account.id)}
               className={`w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold ${
                 PROVIDER_COLORS[account.provider]
-              } ${activeAccountId === account.id ? 'ring-2 ring-primary-500 ring-offset-1' : ''}`}
+              } ${activeAccountId === account.id ? 'ring-2 ring-primary-500 ring-offset-1 dark:ring-offset-gray-800' : ''}`}
               title={account.email}
             >
               {PROVIDER_LABELS[account.provider]}

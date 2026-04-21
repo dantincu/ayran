@@ -29,9 +29,11 @@ export function EmailListItem({ email, selected }: EmailListItemProps) {
   return (
     <div
       onClick={handleClick}
-      className={`flex items-start gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 transition-colors ${
-        selected ? 'bg-primary-50 border-l-2 border-l-primary-500' : 'hover:bg-gray-50'
-      } ${!email.isRead ? 'bg-white' : 'bg-gray-50/30'}`}
+      className={`flex items-start gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors ${
+        selected
+          ? 'bg-primary-50 dark:bg-primary-900/20 border-l-2 border-l-primary-500'
+          : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+      } ${!email.isRead ? 'bg-white dark:bg-gray-800' : 'bg-gray-50/30 dark:bg-gray-800/50'}`}
     >
       {/* Unread dot */}
       <div className="flex flex-col items-center pt-1 gap-2 flex-shrink-0">
@@ -46,7 +48,7 @@ export function EmailListItem({ email, selected }: EmailListItemProps) {
             toggleStar(email.id)
           }}
           className={`transition-colors ${
-            email.isStarred ? 'text-yellow-400' : 'text-gray-200 hover:text-yellow-300'
+            email.isStarred ? 'text-yellow-400' : 'text-gray-200 dark:text-gray-600 hover:text-yellow-300'
           }`}
         >
           <Star size={13} fill={email.isStarred ? 'currentColor' : 'none'} />
@@ -58,28 +60,30 @@ export function EmailListItem({ email, selected }: EmailListItemProps) {
         <div className="flex items-center justify-between gap-2 mb-0.5">
           <span
             className={`text-sm truncate ${
-              !email.isRead ? 'font-semibold text-gray-900' : 'font-medium text-gray-700'
+              !email.isRead
+                ? 'font-semibold text-gray-900 dark:text-gray-100'
+                : 'font-medium text-gray-700 dark:text-gray-300'
             }`}
           >
             {email.from.name ?? email.from.email}
           </span>
           <div className="flex items-center gap-1.5 flex-shrink-0">
             {email.attachments.length > 0 && (
-              <Paperclip size={12} className="text-gray-400" />
+              <Paperclip size={12} className="text-gray-400 dark:text-gray-500" />
             )}
-            <span className="text-xs text-gray-400 whitespace-nowrap">
+            <span className="text-xs text-gray-400 dark:text-gray-500 whitespace-nowrap">
               {formatDate(email.date)}
             </span>
           </div>
         </div>
         <p
           className={`text-sm truncate mb-0.5 ${
-            !email.isRead ? 'text-gray-800' : 'text-gray-600'
+            !email.isRead ? 'text-gray-800 dark:text-gray-200' : 'text-gray-600 dark:text-gray-400'
           }`}
         >
           {email.subject || '(no subject)'}
         </p>
-        <p className="text-xs text-gray-400 line-clamp-1">{email.snippet}</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 line-clamp-1">{email.snippet}</p>
       </div>
     </div>
   )

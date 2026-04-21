@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import { Sun, Moon } from 'lucide-react'
 import { Sidebar } from '../components/layout/Sidebar'
 import { ResizeHandle } from '../components/layout/ResizeHandle'
 import { EmailList } from '../components/email/EmailList'
@@ -10,6 +11,7 @@ import { useEmailStore } from '../stores/emailStore'
 import { useAuthStore } from '../stores/authStore'
 import { fetchEmails, fetchFolders } from '../services/emailService'
 import { useResizable } from '../hooks/useResizable'
+import { useThemeStore } from '../stores/themeStore'
 
 const SIDEBAR_COLLAPSED_WIDTH = 56
 
@@ -17,6 +19,7 @@ export function MailPage() {
   const { folderId, emailId } = useParams<{ folderId?: string; emailId?: string }>()
   const navigate = useNavigate()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const { dark, toggle: toggleDark } = useThemeStore()
 
   const sidebar = useResizable({
     storageKey: 'panel-sidebar',
@@ -109,7 +112,7 @@ export function MailPage() {
   const sidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebar.width
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-gray-50 dark:bg-gray-900 overflow-hidden">
       {/* Sidebar */}
       <div style={{ width: sidebarWidth, flexShrink: 0 }} className="flex flex-col h-full">
         <Sidebar
@@ -124,13 +127,20 @@ export function MailPage() {
 
       <div className="flex flex-col flex-1 min-w-0">
         {/* Top bar */}
-        <header className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-gray-100 flex-shrink-0">
+        <header className="flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700 flex-shrink-0">
           {folderName && (
-            <h2 className="text-sm font-semibold text-gray-700 flex-shrink-0">{folderName}</h2>
+            <h2 className="text-sm font-semibold text-gray-700 dark:text-gray-200 flex-shrink-0">{folderName}</h2>
           )}
           <div className="flex-1 max-w-xl">
             <SearchBar />
           </div>
+          <button
+            onClick={toggleDark}
+            className="ml-auto p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700 transition-colors flex-shrink-0"
+            title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {dark ? <Sun size={15} /> : <Moon size={15} />}
+          </button>
         </header>
 
         {/* Main content */}
@@ -138,12 +148,12 @@ export function MailPage() {
           {/* Email list pane */}
           <div
             style={selectedEmail ? { width: emailList.width, flexShrink: 0 } : undefined}
-            className={`flex flex-col bg-white overflow-hidden ${selectedEmail ? '' : 'flex-1'}`}
+            className={`flex flex-col bg-white dark:bg-gray-800 overflow-hidden ${selectedEmail ? '' : 'flex-1'}`}
           >
             {activeFolderId ? (
               <EmailList onRefresh={loadEmails} />
             ) : (
-              <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
+              <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
                 Select a folder to view emails
               </div>
             )}
@@ -154,7 +164,7 @@ export function MailPage() {
 
           {/* Email view pane */}
           {selectedEmail && (
-            <div className="flex-1 min-w-0 bg-white overflow-hidden">
+            <div className="flex-1 min-w-0 bg-white dark:bg-gray-800 overflow-hidden">
               <EmailView
                 email={selectedEmail}
                 onClose={() => activeFolderId && navigate(`/mail/${encodeURIComponent(activeFolderId)}`)}
