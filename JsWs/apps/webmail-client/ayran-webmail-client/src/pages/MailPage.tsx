@@ -49,7 +49,7 @@ export function MailPage() {
     openCompose,
   } = useEmailStore()
 
-  const { getActiveAccount, accounts } = useAuthStore()
+  const { getActiveAccount, activeAccountId } = useAuthStore()
 
   const activeFolderId = folderId ? decodeURIComponent(folderId) : null
   const activeEmailId = emailId ? decodeURIComponent(emailId) : null
@@ -57,17 +57,17 @@ export function MailPage() {
   const loadFolders = useCallback(async () => {
     const account = getActiveAccount()
     if (!account) return
+    setFolders([])
+    setEmails([], 0)
     try {
       const fetched = await fetchFolders(account)
       setFolders(fetched)
-      if (!folderId) {
-        const inbox = fetched.find((f) => f.type === 'inbox')
-        if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
-      }
+      const inbox = fetched.find((f) => f.type === 'inbox')
+      if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
     } catch (e) {
       console.error('Failed to load folders', e)
     }
-  }, [getActiveAccount, setFolders, folderId, navigate])
+  }, [getActiveAccount, setFolders, setEmails, navigate, activeAccountId])
 
   const loadEmails = useCallback(async () => {
     const account = getActiveAccount()
@@ -91,7 +91,7 @@ export function MailPage() {
     }
   }, [getActiveAccount, activeFolderId, currentPage, pageSize, search, sort, setEmails, setLoading, setError])
 
-  useEffect(() => { loadFolders() }, [loadFolders, accounts])
+  useEffect(() => { loadFolders() }, [loadFolders])
   useEffect(() => { if (activeFolderId) loadEmails() }, [loadEmails, activeFolderId, currentPage, search, sort])
 
   useEffect(() => {

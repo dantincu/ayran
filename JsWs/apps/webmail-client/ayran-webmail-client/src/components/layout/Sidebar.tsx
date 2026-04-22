@@ -1,9 +1,11 @@
+import { useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Plus, LogOut, Mail } from 'lucide-react'
 import { FolderTree } from './FolderTree'
 import { useAuthStore } from '../../stores/authStore'
 import { useEmailStore } from '../../stores/emailStore'
 import { initiateOAuth } from '../../services/oauth'
 import type { EmailProvider } from '../../types/email'
+import { useClickOutside } from '../../hooks/useClickOutside'
 
 interface SidebarProps {
   collapsed: boolean
@@ -26,6 +28,9 @@ const PROVIDER_LABELS: Record<EmailProvider, string> = {
 export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
   const { accounts, activeAccountId, setActiveAccount, removeAccount } = useAuthStore()
   const { folders } = useEmailStore()
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
+  useClickOutside(addMenuRef, () => setAddMenuOpen(false))
 
   const accountFolders = (accountId: string) =>
     folders.filter((f) => f.accountId === accountId)
@@ -102,27 +107,32 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
 
           {/* Add account + logout */}
           <div className="border-t border-gray-100 dark:border-gray-700 px-3 py-2 space-y-1">
-            <div className="relative group">
-              <button className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+            <div className="relative" ref={addMenuRef}>
+              <button
+                onClick={() => setAddMenuOpen((v) => !v)}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              >
                 <Plus size={13} />
                 Add account
               </button>
-              <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg hidden group-hover:block z-10 min-w-[140px]">
-                {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => initiateOAuth(p)}
-                    className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2 capitalize"
-                  >
-                    <span
-                      className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[9px] font-bold ${PROVIDER_COLORS[p]}`}
+              {addMenuOpen && (
+                <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10 min-w-[140px]">
+                  {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => { initiateOAuth(p); setAddMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2 capitalize"
                     >
-                      {PROVIDER_LABELS[p]}
-                    </span>
-                    {p.charAt(0).toUpperCase() + p.slice(1)}
-                  </button>
-                ))}
-              </div>
+                      <span
+                        className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[9px] font-bold ${PROVIDER_COLORS[p]}`}
+                      >
+                        {PROVIDER_LABELS[p]}
+                      </span>
+                      {p.charAt(0).toUpperCase() + p.slice(1)}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             {activeAccountId && (
               <button

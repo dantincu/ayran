@@ -26,7 +26,7 @@ export const useAuthStore = create<AuthState>()(
             : [...state.accounts, account]
           return {
             accounts,
-            activeAccountId: state.activeAccountId ?? account.id,
+            activeAccountId: account.id,
           }
         }),
 
