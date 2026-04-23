@@ -62,12 +62,10 @@ export function MailPage() {
     try {
       const fetched = await fetchFolders(account)
       setFolders(fetched)
-      const inbox = fetched.find((f) => f.type === 'inbox')
-      if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
     } catch (e) {
       console.error('Failed to load folders', e)
     }
-  }, [getActiveAccount, setFolders, setEmails, navigate, activeAccountId])
+  }, [getActiveAccount, setFolders, setEmails, activeAccountId])
 
   const loadEmails = useCallback(async () => {
     const account = getActiveAccount()
@@ -92,6 +90,14 @@ export function MailPage() {
   }, [getActiveAccount, activeFolderId, currentPage, pageSize, search, sort, setEmails, setLoading, setError])
 
   useEffect(() => { loadFolders() }, [loadFolders])
+
+  useEffect(() => {
+    if (!activeFolderId && folders.length > 0) {
+      const inbox = folders.find((f) => f.type === 'inbox')
+      if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
+    }
+  }, [folders, activeFolderId, navigate])
+
   useEffect(() => { if (activeFolderId) loadEmails() }, [loadEmails, activeFolderId, currentPage, search, sort])
 
   useEffect(() => {

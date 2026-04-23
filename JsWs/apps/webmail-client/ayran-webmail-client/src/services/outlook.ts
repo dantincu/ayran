@@ -30,6 +30,7 @@ interface GraphFolder {
   displayName: string
   unreadItemCount: number
   totalItemCount: number
+  childFolderCount: number
   wellKnownName?: string
 }
 
@@ -84,18 +85,37 @@ export class OutlookService {
   }
 
   async getFolders(): Promise<Folder[]> {
-    const res = await this.client.get<{ value: GraphFolder[] }>('/me/mailFolders', {
-      params: { $top: 100, includeHiddenFolders: false },
-    })
-    return res.data.value.map((f) => ({
-      id: f.id,
-      name: f.displayName,
-      type: (WELL_KNOWN_MAP[f.wellKnownName?.toLowerCase() ?? ''] ?? 'custom') as Folder['type'],
-      provider: 'outlook' as const,
-      accountId: this.accountId,
-      unreadCount: f.unreadItemCount,
-      totalCount: f.totalItemCount,
-    }))
+    const result: Folder[] = []
+
+    const fetchLevel = async (url: string, parentId?: string): Promise<void> => {
+      let nextLink: string | undefined = url
+      while (nextLink) {
+        const res = await this.client.get<{
+          value: GraphFolder[]
+          '@odata.nextLink'?: string
+        }>(nextLink, { params: nextLink === url ? { $top: 100 } : undefined })
+
+        for (const f of res.data.value) {
+          result.push({
+            id: f.id,
+            name: f.displayName,
+            type: (WELL_KNOWN_MAP[f.wellKnownName?.toLowerCase() ?? ''] ?? 'custom') as Folder['type'],
+            provider: 'outlook' as const,
+            accountId: this.accountId,
+            unreadCount: f.unreadItemCount,
+            totalCount: f.totalItemCount,
+            parentId,
+          })
+          if (f.childFolderCount > 0)
+            await fetchLevel(`/me/mailFolders/${f.id}/childFolders`, f.id)
+        }
+
+        nextLink = res.data['@odata.nextLink']
+      }
+    }
+
+    await fetchLevel('/me/mailFolders')
+    return result
   }
 
   async getEmails(

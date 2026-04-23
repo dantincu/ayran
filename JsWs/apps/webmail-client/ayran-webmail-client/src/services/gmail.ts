@@ -181,7 +181,7 @@ export class GmailService {
 
     const folders: Folder[] = res.data.labels.map((label) => ({
       id: label.id,
-      name: LABEL_DISPLAY_NAMES[label.id] ?? label.name,
+      name: LABEL_DISPLAY_NAMES[label.id] ?? label.name.split('/').pop()!,
       type: (FOLDER_MAP[label.id] ?? 'custom') as Folder['type'],
       provider: 'gmail' as const,
       accountId: this.accountId,
@@ -200,6 +200,19 @@ export class GmailService {
       })
     }
 
+    // Build parent-child relationships from "/" in label names
+    const nameToId = new Map(res.data.labels.map((l) => [l.name, l.id]))
+    for (const label of res.data.labels) {
+      const slashIdx = label.name.lastIndexOf('/')
+      if (slashIdx === -1) continue
+      const parentName = label.name.slice(0, slashIdx)
+      const parentId = nameToId.get(parentName)
+      if (parentId) {
+        const folder = folders.find((f) => f.id === label.id)
+        if (folder) folder.parentId = parentId
+      }
+    }
+
     return folders
   }
 
@@ -210,9 +223,7 @@ export class GmailService {
     search: SearchParams,
     sort: SortParams
   ): Promise<{ emails: Email[]; totalCount: number }> {
-    // ALLMAIL has no label filter — Gmail returns all mail with an empty query
-    let q = folderId === 'ALLMAIL' ? '' : `in:${folderId.toLowerCase()}`
-
+    let q = ''
     if (search.from) q += ` from:${search.from}`
     if (search.to) q += ` to:${search.to}`
     if (search.subject) {
@@ -222,15 +233,21 @@ export class GmailService {
     }
     if (search.after) q += ` after:${Math.floor(search.after.getTime() / 1000)}`
     if (search.before) q += ` before:${Math.floor(search.before.getTime() / 1000)}`
+    q = q.trim()
 
-    const pageToken = await this.getPageToken(q, page, pageSize)
+    // Use labelIds param for folder filtering — works for all label types including
+    // stars (YELLOW_STAR), categories (CATEGORY_SOCIAL), and custom labels.
+    // ALLMAIL has no label filter.
+    const labelIds = folderId !== 'ALLMAIL' ? folderId : undefined
+
+    const pageToken = await this.getPageToken(q, page, pageSize, labelIds)
 
     const listRes = await this.client.get<{
       messages?: { id: string }[]
       resultSizeEstimate: number
       nextPageToken?: string
     }>('/users/me/messages', {
-      params: { q, maxResults: pageSize, pageToken: pageToken ?? undefined },
+      params: { q: q || undefined, labelIds, maxResults: pageSize, pageToken: pageToken ?? undefined },
     })
 
     const messages = listRes.data.messages ?? []
@@ -292,12 +309,12 @@ export class GmailService {
     }
   }
 
-  private async getPageToken(q: string, page: number, pageSize: number): Promise<string | null> {
+  private async getPageToken(q: string, page: number, pageSize: number, labelIds?: string): Promise<string | null> {
     if (page <= 1) return null
     let token: string | null = null
     for (let i = 1; i < page; i++) {
       const pageRes: AxiosResponse<{ nextPageToken?: string }> = await this.client.get('/users/me/messages', {
-        params: { q, maxResults: pageSize, pageToken: token ?? undefined, fields: 'nextPageToken' },
+        params: { q: q || undefined, labelIds, maxResults: pageSize, pageToken: token ?? undefined, fields: 'nextPageToken' },
       })
       token = pageRes.data.nextPageToken ?? null
       if (!token) break
