@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Plus, LogOut, Mail } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Maximize2, Minimize2, Plus, LogOut, Mail } from 'lucide-react'
 import { FolderTree } from './FolderTree'
 import { useAuthStore } from '../../stores/authStore'
 import { useEmailStore } from '../../stores/emailStore'
@@ -7,9 +7,11 @@ import { initiateOAuth } from '../../services/oauth'
 import type { EmailProvider } from '../../types/email'
 import { useClickOutside } from '../../hooks/useClickOutside'
 
+type SidebarState = 'collapsed' | 'normal' | 'maximized'
+
 interface SidebarProps {
-  collapsed: boolean
-  onToggle: () => void
+  sidebarState: SidebarState
+  onSetSidebarState: (s: SidebarState) => void
   onCompose: () => void
 }
 
@@ -25,7 +27,9 @@ const PROVIDER_LABELS: Record<EmailProvider, string> = {
   yahoo: 'Y',
 }
 
-export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
+export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarProps) {
+  const collapsed = sidebarState === 'collapsed'
+  const maximized = sidebarState === 'maximized'
   const { accounts, activeAccountId, setActiveAccount, removeAccount } = useAuthStore()
   const { folders } = useEmailStore()
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -45,8 +49,17 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
             <span className="font-semibold text-gray-800 dark:text-gray-100 text-sm">Ayran Mail</span>
           </div>
         )}
+        {!collapsed && (
+          <button
+            onClick={() => onSetSidebarState(maximized ? 'normal' : 'maximized')}
+            className="p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700"
+            title={maximized ? 'Restore sidebar' : 'Maximize sidebar'}
+          >
+            {maximized ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+          </button>
+        )}
         <button
-          onClick={onToggle}
+          onClick={() => onSetSidebarState(collapsed ? 'normal' : 'collapsed')}
           className="ml-auto p-1 rounded-md text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700"
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >

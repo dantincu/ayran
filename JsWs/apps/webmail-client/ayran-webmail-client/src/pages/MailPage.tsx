@@ -14,6 +14,7 @@ import { useResizable } from '../hooks/useResizable'
 import { useThemeStore } from '../stores/themeStore'
 
 const SIDEBAR_COLLAPSED_PX = 56
+type SidebarState = 'collapsed' | 'normal' | 'maximized'
 
 function readBool(key: string, defaultVal: boolean): boolean {
   const s = localStorage.getItem(key)
@@ -26,10 +27,13 @@ export function MailPage() {
   const { dark, toggle: toggleDark } = useThemeStore()
 
   // Layout toggles (persisted)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBool('sidebar-collapsed', true))
+  const [sidebarState, setSidebarState] = useState<SidebarState>(() => {
+    const s = localStorage.getItem('sidebar-state')
+    return (s === 'normal' || s === 'maximized' || s === 'collapsed') ? s : 'collapsed'
+  })
   const [splitView, setSplitView] = useState(() => readBool('split-view', true))
 
-  useEffect(() => { localStorage.setItem('sidebar-collapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
+  useEffect(() => { localStorage.setItem('sidebar-state', sidebarState) }, [sidebarState])
   useEffect(() => { localStorage.setItem('split-view', String(splitView)) }, [splitView])
 
   // Track viewport width so percentage → px conversion stays accurate on resize
@@ -49,7 +53,10 @@ export function MailPage() {
   const emailList = useResizable({ storageKey: 'pct-emaillist', defaultPct: 40, minPct: 20, maxPct: 70 })
 
   // Computed pixel widths
-  const sidebarPx = sidebarCollapsed ? SIDEBAR_COLLAPSED_PX : Math.round((sidebar.pct / 100) * vw)
+  const sidebarPx =
+    sidebarState === 'collapsed' ? SIDEBAR_COLLAPSED_PX :
+    sidebarState === 'maximized' ? vw :
+    Math.round((sidebar.pct / 100) * vw)
   const remainingPx = vw - sidebarPx
 
   const {
@@ -149,17 +156,18 @@ export function MailPage() {
       {/* Sidebar */}
       <div style={{ width: sidebarPx, flexShrink: 0 }} className="flex flex-col h-full">
         <Sidebar
-          collapsed={sidebarCollapsed}
-          onToggle={() => setSidebarCollapsed((v) => !v)}
+          sidebarState={sidebarState}
+          onSetSidebarState={setSidebarState}
           onCompose={() => openCompose({ mode: 'compose', to: '', cc: '', bcc: '', subject: '', body: '' })}
         />
       </div>
 
       {/* Sidebar ↔ email-list handle */}
-      {!sidebarCollapsed && (
+      {sidebarState === 'normal' && (
         <ResizeHandle onMouseDown={(e) => sidebar.onMouseDown(e, vw)} />
       )}
 
+      {sidebarState !== 'maximized' && (
       <div className="flex flex-col flex-1 min-w-0">
         {/* Top bar */}
         <header className="flex items-center gap-3 px-4 py-2.5 bg-white dark:bg-gray-800 border-b border-gray-100 dark:border-gray-700 flex-shrink-0">
@@ -220,6 +228,7 @@ export function MailPage() {
           )}
         </div>
       </div>
+      )}
 
       <ComposeModal />
     </div>
