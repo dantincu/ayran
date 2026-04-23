@@ -2,48 +2,45 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 
 interface UseResizableOptions {
   storageKey: string
-  defaultWidth: number
-  minWidth: number
-  maxWidth: number
+  defaultPct: number
+  minPct: number
+  maxPct: number
 }
 
-export function useResizable({
-  storageKey,
-  defaultWidth,
-  minWidth,
-  maxWidth,
-}: UseResizableOptions) {
-  const [width, setWidth] = useState(() => {
-    const stored = localStorage.getItem(storageKey)
-    if (stored) {
-      const n = parseInt(stored)
-      if (!isNaN(n)) return Math.min(maxWidth, Math.max(minWidth, n))
+export function useResizable({ storageKey, defaultPct, minPct, maxPct }: UseResizableOptions) {
+  const [pct, setPct] = useState<number>(() => {
+    const s = localStorage.getItem(storageKey)
+    if (s) {
+      const n = parseFloat(s)
+      if (!isNaN(n)) return Math.min(maxPct, Math.max(minPct, n))
     }
-    return defaultWidth
+    return defaultPct
   })
 
   const isDragging = useRef(false)
   const startX = useRef(0)
-  const startWidth = useRef(0)
+  const startPct = useRef(0)
+  const containerPx = useRef(0)
 
+  // containerWidth: total px of the reference container for this panel's percentage
   const onMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+    (e: React.MouseEvent, containerWidth: number) => {
       e.preventDefault()
       isDragging.current = true
       startX.current = e.clientX
-      startWidth.current = width
+      startPct.current = pct
+      containerPx.current = containerWidth
       document.body.style.cursor = 'col-resize'
       document.body.style.userSelect = 'none'
     },
-    [width]
+    [pct]
   )
 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!isDragging.current) return
-      const delta = e.clientX - startX.current
-      const next = Math.min(maxWidth, Math.max(minWidth, startWidth.current + delta))
-      setWidth(next)
+      const deltaPct = ((e.clientX - startX.current) / containerPx.current) * 100
+      setPct(Math.min(maxPct, Math.max(minPct, startPct.current + deltaPct)))
     }
 
     const onMouseUp = () => {
@@ -51,11 +48,7 @@ export function useResizable({
       isDragging.current = false
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
-      // Persist after drag ends
-      setWidth((w) => {
-        localStorage.setItem(storageKey, String(w))
-        return w
-      })
+      setPct((p) => { localStorage.setItem(storageKey, String(p)); return p })
     }
 
     window.addEventListener('mousemove', onMouseMove)
@@ -64,7 +57,7 @@ export function useResizable({
       window.removeEventListener('mousemove', onMouseMove)
       window.removeEventListener('mouseup', onMouseUp)
     }
-  }, [storageKey, minWidth, maxWidth])
+  }, [storageKey, minPct, maxPct])
 
-  return { width, onMouseDown }
+  return { pct, onMouseDown }
 }

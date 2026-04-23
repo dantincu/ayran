@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Sun, Moon } from 'lucide-react'
+import { Sun, Moon, Columns2 } from 'lucide-react'
 import { Sidebar } from '../components/layout/Sidebar'
 import { ResizeHandle } from '../components/layout/ResizeHandle'
 import { EmailList } from '../components/email/EmailList'
@@ -13,27 +13,44 @@ import { fetchEmails, fetchFolders } from '../services/emailService'
 import { useResizable } from '../hooks/useResizable'
 import { useThemeStore } from '../stores/themeStore'
 
-const SIDEBAR_COLLAPSED_WIDTH = 56
+const SIDEBAR_COLLAPSED_PX = 56
+
+function readBool(key: string, defaultVal: boolean): boolean {
+  const s = localStorage.getItem(key)
+  return s === null ? defaultVal : s !== 'false'
+}
 
 export function MailPage() {
   const { folderId, emailId } = useParams<{ folderId?: string; emailId?: string }>()
   const navigate = useNavigate()
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const { dark, toggle: toggleDark } = useThemeStore()
 
-  const sidebar = useResizable({
-    storageKey: 'panel-sidebar',
-    defaultWidth: 256,
-    minWidth: 160,
-    maxWidth: 400,
-  })
+  // Layout toggles (persisted)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => readBool('sidebar-collapsed', true))
+  const [splitView, setSplitView] = useState(() => readBool('split-view', true))
 
-  const emailList = useResizable({
-    storageKey: 'panel-email-list',
-    defaultWidth: 320,
-    minWidth: 200,
-    maxWidth: 600,
-  })
+  useEffect(() => { localStorage.setItem('sidebar-collapsed', String(sidebarCollapsed)) }, [sidebarCollapsed])
+  useEffect(() => { localStorage.setItem('split-view', String(splitView)) }, [splitView])
+
+  // Track viewport width so percentage → px conversion stays accurate on resize
+  const [vw, setVw] = useState(window.innerWidth)
+  useEffect(() => {
+    const handler = () => setVw(window.innerWidth)
+    window.addEventListener('resize', handler)
+    return () => window.removeEventListener('resize', handler)
+  }, [])
+
+  // Sidebar: % of total viewport width
+  const sidebar = useResizable({ storageKey: 'pct-sidebar', defaultPct: 20, minPct: 10, maxPct: 30 })
+
+  // Email list: % of the remaining space (viewport − sidebar)
+  // Expressing it relative to remaining space means the list:view ratio is preserved
+  // automatically when the sidebar collapses/expands.
+  const emailList = useResizable({ storageKey: 'pct-emaillist', defaultPct: 40, minPct: 20, maxPct: 70 })
+
+  // Computed pixel widths
+  const sidebarPx = sidebarCollapsed ? SIDEBAR_COLLAPSED_PX : Math.round((sidebar.pct / 100) * vw)
+  const remainingPx = vw - sidebarPx
 
   const {
     currentPage,
@@ -91,12 +108,16 @@ export function MailPage() {
 
   useEffect(() => { loadFolders() }, [loadFolders])
 
+  // Navigate to the active account's inbox whenever folders change and the current
+  // URL folder either doesn't exist or belongs to a different account (e.g. after switching).
   useEffect(() => {
-    if (!activeFolderId && folders.length > 0) {
+    if (folders.length === 0) return
+    const folderOwned = folders.some((f) => f.id === activeFolderId && f.accountId === activeAccountId)
+    if (!activeFolderId || !folderOwned) {
       const inbox = folders.find((f) => f.type === 'inbox')
       if (inbox) navigate(`/mail/${encodeURIComponent(inbox.id)}`, { replace: true })
     }
-  }, [folders, activeFolderId, navigate])
+  }, [folders, activeFolderId, activeAccountId, navigate])
 
   useEffect(() => { if (activeFolderId) loadEmails() }, [loadEmails, activeFolderId, currentPage, search, sort])
 
@@ -112,15 +133,21 @@ export function MailPage() {
 
   const selectedEmail = activeEmailId ? emails.find((e) => e.id === activeEmailId) : null
   const folderName = activeFolderId
-    ? (folders.find((f) => f.id === activeFolderId)?.name ?? activeFolderId)
+    ? (folders.find((f) => f.id === activeFolderId)?.name ?? null)
     : null
 
-  const sidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebar.width
+  // In split view, the email list has a fixed width and the email view fills the rest.
+  // emailListPct is a share of remainingPx (not total vw), so the list:view ratio is
+  // preserved when the sidebar is toggled.
+  const showSplit = splitView && !!selectedEmail
+  const emailListPx = showSplit ? Math.round((emailList.pct / 100) * remainingPx) : undefined
+
+  const closeEmail = () => activeFolderId && navigate(`/mail/${encodeURIComponent(activeFolderId)}`)
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-900 overflow-hidden">
       {/* Sidebar */}
-      <div style={{ width: sidebarWidth, flexShrink: 0 }} className="flex flex-col h-full">
+      <div style={{ width: sidebarPx, flexShrink: 0 }} className="flex flex-col h-full">
         <Sidebar
           collapsed={sidebarCollapsed}
           onToggle={() => setSidebarCollapsed((v) => !v)}
@@ -128,8 +155,10 @@ export function MailPage() {
         />
       </div>
 
-      {/* Sidebar ↔ email-list handle (hidden when sidebar is collapsed) */}
-      {!sidebarCollapsed && <ResizeHandle onMouseDown={sidebar.onMouseDown} />}
+      {/* Sidebar ↔ email-list handle */}
+      {!sidebarCollapsed && (
+        <ResizeHandle onMouseDown={(e) => sidebar.onMouseDown(e, vw)} />
+      )}
 
       <div className="flex flex-col flex-1 min-w-0">
         {/* Top bar */}
@@ -141,8 +170,19 @@ export function MailPage() {
             <SearchBar />
           </div>
           <button
+            onClick={() => setSplitView((v) => !v)}
+            className={`p-1.5 rounded-lg transition-colors flex-shrink-0 ${
+              splitView
+                ? 'text-primary-600 dark:text-primary-400 bg-primary-50 dark:bg-primary-900/20 hover:bg-primary-100 dark:hover:bg-primary-900/40'
+                : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700'
+            }`}
+            title={splitView ? 'Disable split view' : 'Enable split view'}
+          >
+            <Columns2 size={15} />
+          </button>
+          <button
             onClick={toggleDark}
-            className="ml-auto p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700 transition-colors flex-shrink-0"
+            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-gray-700 transition-colors flex-shrink-0"
             title={dark ? 'Switch to light mode' : 'Switch to dark mode'}
           >
             {dark ? <Sun size={15} /> : <Moon size={15} />}
@@ -151,30 +191,31 @@ export function MailPage() {
 
         {/* Main content */}
         <div className="flex flex-1 min-h-0 overflow-hidden">
-          {/* Email list pane */}
-          <div
-            style={selectedEmail ? { width: emailList.width, flexShrink: 0 } : undefined}
-            className={`flex flex-col bg-white dark:bg-gray-800 overflow-hidden ${selectedEmail ? '' : 'flex-1'}`}
-          >
-            {activeFolderId ? (
-              <EmailList onRefresh={loadEmails} />
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
-                Select a folder to view emails
-              </div>
-            )}
-          </div>
+          {/* Email list pane: always visible in split view; hidden when an email is open in single-pane mode */}
+          {(!selectedEmail || splitView) && (
+            <div
+              style={emailListPx ? { width: emailListPx, flexShrink: 0 } : undefined}
+              className={`flex flex-col bg-white dark:bg-gray-800 overflow-hidden ${emailListPx ? '' : 'flex-1'}`}
+            >
+              {activeFolderId ? (
+                <EmailList onRefresh={loadEmails} />
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
+                  Select a folder to view emails
+                </div>
+              )}
+            </div>
+          )}
 
-          {/* Email-list ↔ email-view handle */}
-          {selectedEmail && <ResizeHandle onMouseDown={emailList.onMouseDown} />}
+          {/* Email-list ↔ email-view resize handle (split view only) */}
+          {showSplit && (
+            <ResizeHandle onMouseDown={(e) => emailList.onMouseDown(e, remainingPx)} />
+          )}
 
           {/* Email view pane */}
           {selectedEmail && (
             <div className="flex-1 min-w-0 bg-white dark:bg-gray-800 overflow-hidden">
-              <EmailView
-                email={selectedEmail}
-                onClose={() => activeFolderId && navigate(`/mail/${encodeURIComponent(activeFolderId)}`)}
-              />
+              <EmailView email={selectedEmail} onClose={closeEmail} />
             </div>
           )}
         </div>
