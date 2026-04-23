@@ -117,20 +117,25 @@ export function Sidebar({ collapsed, onToggle, onCompose }: SidebarProps) {
               </button>
               {addMenuOpen && (
                 <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10 min-w-[140px]">
-                  {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => { initiateOAuth(p); setAddMenuOpen(false) }}
-                      className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2 capitalize"
-                    >
-                      <span
-                        className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[9px] font-bold ${PROVIDER_COLORS[p]}`}
+                  {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => {
+                    const disabled = p === 'yahoo'
+                    return (
+                      <button
+                        key={p}
+                        onClick={() => { if (!disabled) { initiateOAuth(p); setAddMenuOpen(false) } }}
+                        disabled={disabled}
+                        title={disabled ? 'Coming soon — requires backend support' : undefined}
+                        className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 capitalize ${disabled ? 'opacity-40 cursor-not-allowed text-gray-500 dark:text-gray-500' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
                       >
-                        {PROVIDER_LABELS[p]}
-                      </span>
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
-                    </button>
-                  ))}
+                        <span
+                          className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[9px] font-bold ${PROVIDER_COLORS[p]}`}
+                        >
+                          {PROVIDER_LABELS[p]}
+                        </span>
+                        {p.charAt(0).toUpperCase() + p.slice(1)}
+                      </button>
+                    )
+                  })}
                 </div>
               )}
             </div>

@@ -2,7 +2,7 @@ import { Mail } from 'lucide-react'
 import { initiateOAuth } from '../services/oauth'
 import type { EmailProvider } from '../types/email'
 
-const PROVIDERS: { id: EmailProvider; name: string; color: string; bg: string; description: string }[] = [
+const PROVIDERS: { id: EmailProvider; name: string; color: string; bg: string; description: string; disabled?: boolean }[] = [
   {
     id: 'gmail',
     name: 'Gmail',
@@ -21,8 +21,9 @@ const PROVIDERS: { id: EmailProvider; name: string; color: string; bg: string; d
     id: 'yahoo',
     name: 'Yahoo Mail',
     color: 'text-purple-600',
-    bg: 'hover:bg-purple-50 dark:hover:bg-purple-900/20 border-purple-200 dark:border-purple-800',
-    description: 'Connect your Yahoo Mail account',
+    bg: 'border-purple-200 dark:border-purple-800',
+    description: 'Requires a backend — coming soon',
+    disabled: true,
   },
 ]
 
@@ -46,8 +47,10 @@ export function LoginPage() {
             {PROVIDERS.map((provider) => (
               <button
                 key={provider.id}
-                onClick={() => initiateOAuth(provider.id)}
-                className={`w-full flex items-center gap-4 px-4 py-4 rounded-xl border transition-colors ${provider.bg}`}
+                onClick={() => !provider.disabled && initiateOAuth(provider.id)}
+                disabled={provider.disabled}
+                title={provider.disabled ? 'Coming soon — requires backend support' : undefined}
+                className={`w-full flex items-center gap-4 px-4 py-4 rounded-xl border transition-colors ${provider.bg} ${provider.disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
               >
                 <div className={`text-2xl font-bold ${provider.color} w-8 text-center`}>
                   {provider.name[0]}
