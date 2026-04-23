@@ -90,10 +90,9 @@ export class OutlookService {
     const fetchLevel = async (url: string, parentId?: string): Promise<void> => {
       let nextLink: string | undefined = url
       while (nextLink) {
-        const res = await this.client.get<{
-          value: GraphFolder[]
-          '@odata.nextLink'?: string
-        }>(nextLink, { params: nextLink === url ? { $top: 100 } : undefined })
+        const params = nextLink === url ? { $top: 100 } : undefined
+        type PageData = { value: GraphFolder[]; '@odata.nextLink'?: string }
+        const res: { data: PageData } = await this.client.get<PageData>(nextLink, { params })
 
         for (const f of res.data.value) {
           result.push({
@@ -184,10 +183,12 @@ export class OutlookService {
     await this.client.patch(`/me/messages/${emailId}`, { isRead: true })
   }
 
+  async moveToFolder(emailId: string, folderId: string): Promise<void> {
+    await this.client.post(`/me/messages/${emailId}/move`, { destinationId: folderId })
+  }
+
   async moveToTrash(emailId: string): Promise<void> {
-    await this.client.post(`/me/messages/${emailId}/move`, {
-      destinationId: 'deleteditems',
-    })
+    await this.client.post(`/me/messages/${emailId}/move`, { destinationId: 'deleteditems' })
   }
 
   async getUserProfile(): Promise<{ email: string; name: string; picture?: string }> {

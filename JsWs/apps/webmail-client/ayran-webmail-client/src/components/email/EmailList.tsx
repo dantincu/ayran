@@ -1,6 +1,8 @@
+import { useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { RefreshCw, Loader2, Users } from 'lucide-react'
 import { EmailListItem } from './EmailListItem'
+import { BulkActionBar } from './BulkActionBar'
 import { PageSelector } from '../pagination/PageSelector'
 import { useEmailStore } from '../../stores/emailStore'
 import type { Email } from '../../types/email'
@@ -38,9 +40,41 @@ export function EmailList({ onRefresh }: EmailListProps) {
     setCurrentPage,
     groupBySender,
     setGroupBySender,
+    checkedEmailIds,
+    toggleChecked,
+    setChecked,
   } = useEmailStore()
 
+  const lastCheckedIndexRef = useRef<number>(-1)
+  const emailIndexMap = new Map(emails.map((e, i) => [e.id, i]))
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+
+  const handleCheckChange = (id: string, checked: boolean, shiftKey: boolean) => {
+    const index = emailIndexMap.get(id) ?? -1
+    if (shiftKey && lastCheckedIndexRef.current >= 0 && index >= 0) {
+      const start = Math.min(lastCheckedIndexRef.current, index)
+      const end = Math.max(lastCheckedIndexRef.current, index)
+      const rangeIds = emails.slice(start, end + 1).map((e) => e.id)
+      setChecked(
+        checked
+          ? [...new Set([...checkedEmailIds, ...rangeIds])]
+          : checkedEmailIds.filter((cid) => !rangeIds.includes(cid))
+      )
+    } else {
+      toggleChecked(id)
+    }
+    if (index >= 0) lastCheckedIndexRef.current = index
+  }
+
+  const renderItem = (email: Email) => (
+    <EmailListItem
+      key={email.id}
+      email={email}
+      selected={activeEmailId === email.id}
+      isChecked={checkedEmailIds.includes(email.id)}
+      onCheckChange={(checked, shiftKey) => handleCheckChange(email.id, checked, shiftKey)}
+    />
+  )
 
   if (error) {
     return (
@@ -95,6 +129,9 @@ export function EmailList({ onRefresh }: EmailListProps) {
         />
       </div>
 
+      {/* Bulk action bar — only visible when emails are checked */}
+      <BulkActionBar />
+
       {/* Email list */}
       <div className="flex-1 overflow-y-auto scrollbar-thin">
         {isLoading ? (
@@ -112,23 +149,11 @@ export function EmailList({ onRefresh }: EmailListProps) {
                 {group[0].from.name ? `${group[0].from.name} (${sender})` : sender}
                 <span className="ml-1 text-gray-400 dark:text-gray-500">({group.length})</span>
               </div>
-              {group.map((email) => (
-                <EmailListItem
-                  key={email.id}
-                  email={email}
-                  selected={activeEmailId === email.id}
-                />
-              ))}
+              {group.map(renderItem)}
             </div>
           ))
         ) : (
-          emails.map((email) => (
-            <EmailListItem
-              key={email.id}
-              email={email}
-              selected={activeEmailId === email.id}
-            />
-          ))
+          emails.map(renderItem)
         )}
       </div>
     </div>

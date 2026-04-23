@@ -7,6 +7,8 @@ import { useEmailStore } from '../../stores/emailStore'
 interface EmailListItemProps {
   email: Email
   selected: boolean
+  isChecked: boolean
+  onCheckChange: (checked: boolean, shiftKey: boolean) => void
 }
 
 function formatDate(date: Date): string {
@@ -15,33 +17,48 @@ function formatDate(date: Date): string {
   return format(date, 'MM/dd/yy')
 }
 
-export function EmailListItem({ email, selected }: EmailListItemProps) {
-  const { toggleStar } = useEmailStore()
+export function EmailListItem({ email, selected, isChecked, onCheckChange }: EmailListItemProps) {
+  const { toggleStar, checkedEmailIds } = useEmailStore()
   const navigate = useNavigate()
   const { folderId } = useParams<{ folderId?: string }>()
+  const anyChecked = checkedEmailIds.length > 0
 
   const handleClick = () => {
-    if (folderId) {
-      navigate(`/mail/${folderId}/${encodeURIComponent(email.id)}`)
-    }
+    if (folderId) navigate(`/mail/${folderId}/${encodeURIComponent(email.id)}`)
   }
 
   return (
     <div
       onClick={handleClick}
-      className={`flex items-start gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors ${
+      className={`group flex items-start gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors ${
         selected
           ? 'bg-primary-50 dark:bg-primary-900/20 border-l-2 border-l-primary-500'
           : 'hover:bg-gray-50 dark:hover:bg-gray-700'
       } ${!email.isRead ? 'bg-white dark:bg-gray-800' : 'bg-gray-50/30 dark:bg-gray-800/50'}`}
     >
-      {/* Unread dot */}
+      {/* Checkbox / unread-dot column */}
       <div className="flex flex-col items-center pt-1 gap-2 flex-shrink-0">
-        <div
-          className={`w-2 h-2 rounded-full flex-shrink-0 ${
-            !email.isRead ? 'bg-primary-500' : 'bg-transparent'
-          }`}
-        />
+        <div className="relative w-4 h-4 flex items-center justify-center">
+          {/* Unread dot — fades out on hover or when any email is checked */}
+          <div
+            className={`absolute w-2 h-2 rounded-full pointer-events-none transition-opacity ${
+              isChecked || anyChecked ? 'opacity-0' : 'group-hover:opacity-0'
+            } ${!email.isRead ? 'bg-primary-500' : 'bg-transparent'}`}
+          />
+          {/* Checkbox — appears on hover or when this / any email is checked */}
+          <input
+            type="checkbox"
+            checked={isChecked}
+            readOnly
+            onClick={(e) => {
+              e.stopPropagation()
+              onCheckChange(!isChecked, e.shiftKey)
+            }}
+            className={`absolute w-4 h-4 rounded cursor-pointer accent-primary-600 transition-opacity ${
+              isChecked || anyChecked ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+            }`}
+          />
+        </div>
         <button
           onClick={(e) => {
             e.stopPropagation()

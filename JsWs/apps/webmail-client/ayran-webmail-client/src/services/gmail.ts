@@ -355,6 +355,15 @@ export class GmailService {
     })
   }
 
+  async modifyLabels(emailId: string, addLabelIds: string[], removeLabelIds: string[]): Promise<void> {
+    await this.client.post(`/users/me/messages/${emailId}/modify`, { addLabelIds, removeLabelIds })
+  }
+
+  async batchModifyLabels(emailIds: string[], addLabelIds: string[], removeLabelIds: string[]): Promise<void> {
+    if (!emailIds.length) return
+    await this.client.post('/users/me/messages/batchModify', { ids: emailIds, addLabelIds, removeLabelIds })
+  }
+
   async moveToTrash(emailId: string): Promise<void> {
     await this.client.post(`/users/me/messages/${emailId}/trash`)
   }

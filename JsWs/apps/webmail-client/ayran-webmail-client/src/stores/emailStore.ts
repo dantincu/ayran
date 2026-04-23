@@ -22,6 +22,7 @@ interface EmailState {
   groupBySender: boolean
   compose: ComposeData | null
   trustedSenders: string[]
+  checkedEmailIds: string[]
 
   setSelectedFolder: (folderId: string | null) => void
   setSelectedEmail: (emailId: string | null) => void
@@ -41,6 +42,12 @@ interface EmailState {
   removeTrustedSender: (email: string) => void
   isTrustedSender: (email: string) => boolean
   initTrustedSenders: () => Promise<void>
+  toggleChecked: (id: string) => void
+  setChecked: (ids: string[]) => void
+  clearChecked: () => void
+  removeEmails: (ids: string[]) => void
+  updateEmailLabels: (id: string, addIds: string[], removeIds: string[]) => void
+  setEmailFolder: (id: string, folderId: string) => void
 }
 
 export const useEmailStore = create<EmailState>()((set, get) => ({
@@ -58,12 +65,13 @@ export const useEmailStore = create<EmailState>()((set, get) => ({
   groupBySender: false,
   compose: null,
   trustedSenders: [],
+  checkedEmailIds: [],
 
   setSelectedFolder: (folderId) =>
-    set({ selectedFolderId: folderId, selectedEmailId: null, currentPage: 1 }),
+    set({ selectedFolderId: folderId, selectedEmailId: null, currentPage: 1, checkedEmailIds: [] }),
   setSelectedEmail: (emailId) => set({ selectedEmailId: emailId }),
   setFolders: (folders) => set({ folders }),
-  setEmails: (emails, totalCount) => set({ emails, totalCount }),
+  setEmails: (emails, totalCount) => set({ emails, totalCount, checkedEmailIds: [] }),
   setCurrentPage: (page) => set({ currentPage: page }),
   setLoading: (isLoading) => set({ isLoading }),
   setError: (error) => set({ error }),
@@ -75,16 +83,12 @@ export const useEmailStore = create<EmailState>()((set, get) => ({
 
   markAsRead: (emailId) =>
     set((state) => ({
-      emails: state.emails.map((e) =>
-        e.id === emailId ? { ...e, isRead: true } : e
-      ),
+      emails: state.emails.map((e) => e.id === emailId ? { ...e, isRead: true } : e),
     })),
 
   toggleStar: (emailId) =>
     set((state) => ({
-      emails: state.emails.map((e) =>
-        e.id === emailId ? { ...e, isStarred: !e.isStarred } : e
-      ),
+      emails: state.emails.map((e) => e.id === emailId ? { ...e, isStarred: !e.isStarred } : e),
     })),
 
   addTrustedSender: (email) => {
@@ -95,9 +99,7 @@ export const useEmailStore = create<EmailState>()((set, get) => ({
   },
 
   removeTrustedSender: (email) => {
-    set((state) => ({
-      trustedSenders: state.trustedSenders.filter((s) => s !== email),
-    }))
+    set((state) => ({ trustedSenders: state.trustedSenders.filter((s) => s !== email) }))
     removeTrustedSenderFromDb(email).catch(console.error)
   },
 
@@ -107,4 +109,36 @@ export const useEmailStore = create<EmailState>()((set, get) => ({
     const senders = await loadTrustedSenders()
     set({ trustedSenders: senders })
   },
+
+  toggleChecked: (id) =>
+    set((s) => ({
+      checkedEmailIds: s.checkedEmailIds.includes(id)
+        ? s.checkedEmailIds.filter((i) => i !== id)
+        : [...s.checkedEmailIds, id],
+    })),
+
+  setChecked: (ids) => set({ checkedEmailIds: ids }),
+
+  clearChecked: () => set({ checkedEmailIds: [] }),
+
+  removeEmails: (ids) =>
+    set((s) => ({
+      emails: s.emails.filter((e) => !ids.includes(e.id)),
+      totalCount: Math.max(0, s.totalCount - ids.length),
+      checkedEmailIds: s.checkedEmailIds.filter((id) => !ids.includes(id)),
+    })),
+
+  updateEmailLabels: (id, addIds, removeIds) =>
+    set((s) => ({
+      emails: s.emails.map((e) =>
+        e.id === id
+          ? { ...e, labels: [...new Set([...e.labels.filter((l) => !removeIds.includes(l)), ...addIds])] }
+          : e
+      ),
+    })),
+
+  setEmailFolder: (id, folderId) =>
+    set((s) => ({
+      emails: s.emails.map((e) => e.id === id ? { ...e, folderId } : e),
+    })),
 }))

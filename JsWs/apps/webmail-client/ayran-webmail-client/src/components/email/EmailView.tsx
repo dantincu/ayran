@@ -2,13 +2,17 @@ import { useState, useRef, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Reply, ReplyAll, Forward, Trash2, Star, MoreHorizontal, Download, Image, ImageOff, X, Loader2,
-  Filter,
+  Filter, Archive, Tag, FolderInput,
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { useEmailStore } from '../../stores/emailStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useThemeStore } from '../../stores/themeStore'
-import { fetchEmailFull, moveEmailToTrash } from '../../services/emailService'
+import {
+  fetchEmailFull, moveEmailToTrash, archiveEmail, modifyEmailLabels, moveEmailToFolder,
+} from '../../services/emailService'
+import { FolderPickerModal } from './FolderPickerModal'
+import { LabelPickerModal } from './LabelPickerModal'
 import type { Email, ComposeData } from '../../types/email'
 
 function sanitizeHtml(html: string, showImages: boolean): string {
@@ -54,7 +58,10 @@ interface EmailViewProps {
 }
 
 export function EmailView({ email, onClose }: EmailViewProps) {
-  const { isTrustedSender, addTrustedSender, removeTrustedSender, openCompose, setEmails, emails, setSearch, search } = useEmailStore()
+  const {
+    isTrustedSender, addTrustedSender, removeTrustedSender, openCompose,
+    setSearch, search, folders, removeEmails, updateEmailLabels,
+  } = useEmailStore()
   const { getActiveAccount } = useAuthStore()
   const navigate = useNavigate()
   const { folderId } = useParams<{ folderId?: string }>()
@@ -63,7 +70,13 @@ export function EmailView({ email, onClose }: EmailViewProps) {
   const [fullBody, setFullBody] = useState<{ body: string; bodyHtml?: string; attachments?: Email['attachments'] } | null>(null)
   const [bodyLoading, setBodyLoading] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [showFolderPicker, setShowFolderPicker] = useState(false)
+  const [showLabelPicker, setShowLabelPicker] = useState(false)
+  const [moving, setMoving] = useState(false)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+
+  const account = getActiveAccount()
+  const accountFolders = folders.filter((f) => f.accountId === account?.id)
 
   const trusted = isTrustedSender(email.from.email)
   const { dark: darkMode } = useThemeStore()
@@ -101,18 +114,52 @@ export function EmailView({ email, onClose }: EmailViewProps) {
   }
 
   const handleDelete = async () => {
-    const account = getActiveAccount()
     if (!account || deleting) return
     setDeleting(true)
     try {
       await moveEmailToTrash(account, email.id)
-      const { totalCount } = useEmailStore.getState()
-      setEmails(emails.filter((e) => e.id !== email.id), Math.max(0, totalCount - 1))
+      removeEmails([email.id])
       onClose?.()
     } catch (e) {
       console.error('Failed to delete email', e)
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const handleArchive = async () => {
+    if (!account) return
+    try {
+      await archiveEmail(account, email.id)
+      removeEmails([email.id])
+      onClose?.()
+    } catch (e) {
+      console.error('Failed to archive email', e)
+    }
+  }
+
+  const handleMoveToFolder = async (destFolderId: string) => {
+    if (!account) return
+    setMoving(true)
+    setShowFolderPicker(false)
+    try {
+      await moveEmailToFolder(account, email.id, destFolderId)
+      removeEmails([email.id])
+      onClose?.()
+    } catch (e) {
+      console.error('Failed to move email', e)
+    } finally {
+      setMoving(false)
+    }
+  }
+
+  const handleApplyLabels = async (addIds: string[], removeIds: string[]) => {
+    if (!account || (addIds.length === 0 && removeIds.length === 0)) return
+    try {
+      await modifyEmailLabels(account, email.id, addIds, removeIds)
+      updateEmailLabels(email.id, addIds, removeIds)
+    } catch (e) {
+      console.error('Failed to modify labels', e)
     }
   }
 
@@ -216,6 +263,57 @@ export function EmailView({ email, onClose }: EmailViewProps) {
             <Forward size={14} /> Forward
           </button>
           <div className="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-1" />
+
+          {/* Gmail-specific actions */}
+          {email.provider === 'gmail' && (
+            <>
+              <button
+                onClick={handleArchive}
+                className="p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                title="Archive"
+              >
+                <Archive size={14} />
+              </button>
+              <button
+                onClick={() => { setShowLabelPicker((v) => !v); setShowFolderPicker(false) }}
+                className="p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                title="Labels"
+              >
+                <Tag size={14} />
+              </button>
+              {showLabelPicker && (
+                <LabelPickerModal
+                  folders={accountFolders}
+                  currentLabelIds={email.labels}
+                  onApply={handleApplyLabels}
+                  onClose={() => setShowLabelPicker(false)}
+                />
+              )}
+            </>
+          )}
+
+          {/* Outlook-specific actions */}
+          {email.provider === 'outlook' && (
+            <>
+              <button
+                onClick={() => { setShowFolderPicker((v) => !v); setShowLabelPicker(false) }}
+                disabled={moving}
+                className="p-1.5 rounded-md text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-50"
+                title="Move to folder"
+              >
+                {moving ? <Loader2 size={14} className="animate-spin" /> : <FolderInput size={14} />}
+              </button>
+              {showFolderPicker && (
+                <FolderPickerModal
+                  folders={accountFolders}
+                  currentFolderId={email.folderId}
+                  onSelect={handleMoveToFolder}
+                  onClose={() => setShowFolderPicker(false)}
+                />
+              )}
+            </>
+          )}
+
           <button
             onClick={handleDelete}
             disabled={deleting}

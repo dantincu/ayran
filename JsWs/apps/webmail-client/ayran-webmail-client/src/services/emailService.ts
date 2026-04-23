@@ -42,13 +42,60 @@ export async function moveEmailToTrash(account: Account, emailId: string): Promi
   return getService(account).moveToTrash(emailId)
 }
 
-export async function fetchEmailFull(
-  account: Account,
-  emailId: string
-): Promise<Partial<Email>> {
+export async function batchMoveEmailsToTrash(account: Account, emailIds: string[]): Promise<void> {
+  if (!emailIds.length) return
+  const svc = getService(account)
+  if (svc instanceof GmailService) {
+    await svc.batchModifyLabels(emailIds, ['TRASH'], ['INBOX'])
+  } else {
+    await Promise.all(emailIds.map((id) => svc.moveToTrash(id)))
+  }
+}
+
+export async function archiveEmail(account: Account, emailId: string): Promise<void> {
+  const svc = getService(account)
+  if (svc instanceof GmailService) await svc.modifyLabels(emailId, [], ['INBOX'])
+}
+
+export async function batchArchiveEmails(account: Account, emailIds: string[]): Promise<void> {
+  const svc = getService(account)
+  if (svc instanceof GmailService) await svc.batchModifyLabels(emailIds, [], ['INBOX'])
+}
+
+export async function modifyEmailLabels(
+  account: Account, emailId: string, addIds: string[], removeIds: string[]
+): Promise<void> {
+  const svc = getService(account)
+  if (svc instanceof GmailService) await svc.modifyLabels(emailId, addIds, removeIds)
+}
+
+export async function batchModifyEmailLabels(
+  account: Account, emailIds: string[], addIds: string[], removeIds: string[]
+): Promise<void> {
+  const svc = getService(account)
+  if (svc instanceof GmailService) await svc.batchModifyLabels(emailIds, addIds, removeIds)
+}
+
+export async function moveEmailToFolder(
+  account: Account, emailId: string, folderId: string
+): Promise<void> {
+  const svc = getService(account)
+  if (svc instanceof OutlookService) await svc.moveToFolder(emailId, folderId)
+}
+
+export async function batchMoveEmailsToFolder(
+  account: Account, emailIds: string[], folderId: string
+): Promise<void> {
+  if (!emailIds.length) return
+  const svc = getService(account)
+  if (svc instanceof OutlookService) {
+    await Promise.all(emailIds.map((id) => svc.moveToFolder(id, folderId)))
+  }
+}
+
+export async function fetchEmailFull(account: Account, emailId: string): Promise<Partial<Email>> {
   const svc = getService(account)
   if (svc instanceof GmailService) return svc.getEmailFull(emailId)
-  // Outlook/Yahoo already return full body in list fetch
   return {}
 }
 
