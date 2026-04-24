@@ -9,7 +9,7 @@ import { useEmailStore } from '../../stores/emailStore'
 import { useAuthStore } from '../../stores/authStore'
 import { useThemeStore } from '../../stores/themeStore'
 import {
-  fetchEmailFull, moveEmailToTrash, archiveEmail, modifyEmailLabels, moveEmailToFolder,
+  fetchEmailFull, markEmailAsRead, moveEmailToTrash, archiveEmail, modifyEmailLabels, moveEmailToFolder,
 } from '../../services/emailService'
 import { FolderPickerModal } from './FolderPickerModal'
 import { LabelPickerModal } from './LabelPickerModal'
@@ -60,7 +60,7 @@ interface EmailViewProps {
 export function EmailView({ email, onClose }: EmailViewProps) {
   const {
     isTrustedSender, addTrustedSender, removeTrustedSender, openCompose,
-    setSearch, search, folders, removeEmails, updateEmailLabels,
+    setSearch, search, folders, removeEmails, updateEmailLabels, markAsRead,
   } = useEmailStore()
   const { getActiveAccount } = useAuthStore()
   const navigate = useNavigate()
@@ -101,6 +101,14 @@ export function EmailView({ email, onClose }: EmailViewProps) {
       })
       .finally(() => setBodyLoading(false))
   }, [email.id, email.provider, email.body, email.bodyHtml, getActiveAccount])
+
+  useEffect(() => {
+    if (email.isRead) return
+    const account = getActiveAccount()
+    if (!account) return
+    markAsRead(email.id)
+    markEmailAsRead(account, email.id).catch(console.error)
+  }, [email.id, email.isRead, getActiveAccount, markAsRead])
 
   const handleTrustSender = () => {
     addTrustedSender(email.from.email)

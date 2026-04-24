@@ -29,6 +29,7 @@ export function BulkActionBar() {
   const activeEmailId = emailId ? decodeURIComponent(emailId) : null
   const allVisibleIds = emails.map((e) => e.id)
   const allSelected = checkedEmailIds.length === allVisibleIds.length
+  const provider = emails.find((e) => checkedEmailIds.includes(e.id))?.provider ?? account.provider
   const accountFolders = folders.filter((f) => f.accountId === account.id)
 
   const afterBulk = (ids: string[]) => {
@@ -77,7 +78,7 @@ export function BulkActionBar() {
 
       {busy && <Loader2 size={13} className="animate-spin text-gray-400 flex-shrink-0" />}
 
-      {account.provider === 'gmail' && (
+      {provider === 'gmail' && (
         <>
           <button
             onClick={() => run(() => batchArchiveEmails(account, [...checkedEmailIds]))}
@@ -109,7 +110,7 @@ export function BulkActionBar() {
         </>
       )}
 
-      {account.provider === 'outlook' && (
+      {provider === 'outlook' && (
         <>
           <button
             onClick={() => { setShowFolderPicker((v) => !v); setShowLabelPicker(false) }}

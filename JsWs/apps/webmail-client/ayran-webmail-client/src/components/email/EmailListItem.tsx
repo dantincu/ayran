@@ -33,8 +33,10 @@ export function EmailListItem({ email, selected, isChecked, onCheckChange }: Ema
       className={`group flex items-start gap-3 px-4 py-3 cursor-pointer border-b border-gray-100 dark:border-gray-700 transition-colors ${
         selected
           ? 'bg-primary-50 dark:bg-primary-900/20 border-l-2 border-l-primary-500'
-          : 'hover:bg-gray-50 dark:hover:bg-gray-700'
-      } ${!email.isRead ? 'bg-white dark:bg-gray-800' : 'bg-gray-50/30 dark:bg-gray-800/50'}`}
+          : !email.isRead
+            ? 'bg-white dark:bg-gray-800 hover:bg-blue-50/40 dark:hover:bg-gray-700 border-l-2 border-l-primary-400'
+            : 'bg-gray-50/60 dark:bg-gray-800/40 hover:bg-gray-100/80 dark:hover:bg-gray-700/60 border-l-2 border-l-transparent'
+      }`}
     >
       {/* Checkbox / unread-dot column */}
       <div className="flex flex-col items-center pt-1 gap-2 flex-shrink-0">
@@ -78,8 +80,8 @@ export function EmailListItem({ email, selected, isChecked, onCheckChange }: Ema
           <span
             className={`text-sm truncate ${
               !email.isRead
-                ? 'font-semibold text-gray-900 dark:text-gray-100'
-                : 'font-medium text-gray-700 dark:text-gray-300'
+                ? 'font-bold text-gray-900 dark:text-gray-100'
+                : 'font-normal text-gray-500 dark:text-gray-400'
             }`}
           >
             {email.from.name ?? email.from.email}
@@ -95,7 +97,9 @@ export function EmailListItem({ email, selected, isChecked, onCheckChange }: Ema
         </div>
         <p
           className={`text-sm truncate mb-0.5 ${
-            !email.isRead ? 'text-gray-800 dark:text-gray-200' : 'text-gray-600 dark:text-gray-400'
+            !email.isRead
+              ? 'font-semibold text-gray-800 dark:text-gray-200'
+              : 'font-normal text-gray-400 dark:text-gray-500'
           }`}
         >
           {email.subject || '(no subject)'}
