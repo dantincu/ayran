@@ -5,10 +5,10 @@ import type { Account } from '../types/auth'
 interface AuthState {
   accounts: Account[]
   activeAccountId: string | null
-  addAccount: (account: Account) => void
-  removeAccount: (accountId: string) => void
+  hydrated: boolean
+  hydrateFromServer: () => Promise<void>
+  removeAccount: (accountId: string) => Promise<void>
   setActiveAccount: (accountId: string) => void
-  updateTokens: (accountId: string, tokens: Account['tokens']) => void
   getActiveAccount: () => Account | undefined
 }
 
@@ -17,43 +17,45 @@ export const useAuthStore = create<AuthState>()(
     (set, get) => ({
       accounts: [],
       activeAccountId: null,
+      hydrated: false,
 
-      addAccount: (account) =>
-        set((state) => {
-          const exists = state.accounts.find((a) => a.id === account.id)
-          const accounts = exists
-            ? state.accounts.map((a) => (a.id === account.id ? account : a))
-            : [...state.accounts, account]
-          return {
-            accounts,
-            activeAccountId: account.id,
-          }
-        }),
+      hydrateFromServer: async () => {
+        try {
+          const res = await fetch('/api/auth/accounts')
+          if (!res.ok) throw new Error('Failed to fetch accounts')
+          const accounts: Account[] = await res.json()
+          set((state) => {
+            const activeAccountId =
+              accounts.some((a) => a.id === state.activeAccountId)
+                ? state.activeAccountId
+                : (accounts[0]?.id ?? null)
+            return { accounts, activeAccountId, hydrated: true }
+          })
+        } catch {
+          set({ hydrated: true })
+        }
+      },
 
-      removeAccount: (accountId) =>
+      removeAccount: async (accountId) => {
+        await fetch(`/api/auth/accounts/${accountId}`, { method: 'DELETE' })
         set((state) => {
           const accounts = state.accounts.filter((a) => a.id !== accountId)
           const activeAccountId =
-            state.activeAccountId === accountId
-              ? (accounts[0]?.id ?? null)
-              : state.activeAccountId
+            state.activeAccountId === accountId ? (accounts[0]?.id ?? null) : state.activeAccountId
           return { accounts, activeAccountId }
-        }),
+        })
+      },
 
       setActiveAccount: (accountId) => set({ activeAccountId: accountId }),
-
-      updateTokens: (accountId, tokens) =>
-        set((state) => ({
-          accounts: state.accounts.map((a) =>
-            a.id === accountId ? { ...a, tokens } : a
-          ),
-        })),
 
       getActiveAccount: () => {
         const { accounts, activeAccountId } = get()
         return accounts.find((a) => a.id === activeAccountId)
       },
     }),
-    { name: 'ayran-auth' }
+    {
+      name: 'ayran-auth-active',
+      partialize: (state) => ({ activeAccountId: state.activeAccountId }),
+    }
   )
 )

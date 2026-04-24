@@ -155,7 +155,7 @@ export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarP
             {activeAccountId && (
               <button
                 onClick={() => {
-                  if (confirm('Remove this account?')) removeAccount(activeAccountId)
+                  if (confirm('Remove this account?')) removeAccount(activeAccountId).catch(console.error)
                 }}
                 className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
               >

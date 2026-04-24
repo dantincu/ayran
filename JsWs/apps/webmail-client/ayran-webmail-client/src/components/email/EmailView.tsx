@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Reply, ReplyAll, Forward, Trash2, Star, MoreHorizontal, Download, Image, ImageOff, X, Loader2,
@@ -73,7 +73,6 @@ export function EmailView({ email, onClose }: EmailViewProps) {
   const [showFolderPicker, setShowFolderPicker] = useState(false)
   const [showLabelPicker, setShowLabelPicker] = useState(false)
   const [moving, setMoving] = useState(false)
-  const iframeRef = useRef<HTMLIFrameElement>(null)
 
   const account = getActiveAccount()
   const accountFolders = folders.filter((f) => f.accountId === account?.id)
@@ -224,17 +223,6 @@ export function EmailView({ email, onClose }: EmailViewProps) {
 
   const iframeSrcdoc = bodyHtml ? buildIframeSrcdoc(bodyHtml, darkMode) : null
 
-  useEffect(() => {
-    const iframe = iframeRef.current
-    if (!iframe) return
-    const adjustHeight = () => {
-      if (iframe.contentDocument?.body) {
-        iframe.style.height = iframe.contentDocument.body.scrollHeight + 32 + 'px'
-      }
-    }
-    iframe.addEventListener('load', adjustHeight)
-    return () => iframe.removeEventListener('load', adjustHeight)
-  }, [iframeSrcdoc])
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-800">
@@ -455,12 +443,17 @@ export function EmailView({ email, onClose }: EmailViewProps) {
             </div>
           ) : iframeSrcdoc ? (
             <iframe
-              ref={iframeRef}
               srcDoc={iframeSrcdoc}
-              sandbox=""
+              sandbox="allow-same-origin"
               className="w-full border-0 block"
               style={{ minHeight: '200px' }}
               title="Email body"
+              onLoad={(e) => {
+                const iframe = e.currentTarget
+                if (iframe.contentDocument?.body) {
+                  iframe.style.height = iframe.contentDocument.body.scrollHeight + 32 + 'px'
+                }
+              }}
             />
           ) : (
             <pre className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-300 font-sans leading-relaxed">

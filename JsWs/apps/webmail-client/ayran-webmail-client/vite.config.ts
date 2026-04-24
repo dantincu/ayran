@@ -6,4 +6,13 @@ import basicSsl from '@vitejs/plugin-basic-ssl'
 export default defineConfig({
   plugins: [tailwindcss(), react(), basicSsl()],
   server: { https: {} },
+  server: {
+    proxy: {
+      '/api': {
+        target: 'https://localhost:3001',
+        changeOrigin: true,
+        secure: false,
+      },
+    },
+  },
 })

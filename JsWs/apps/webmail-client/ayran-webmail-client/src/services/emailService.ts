@@ -1,22 +1,25 @@
-import { GmailService } from './gmail'
-import { OutlookService } from './outlook'
-import { YahooService } from './yahoo'
 import type { Account } from '../types/auth'
 import type { Email, SearchParams, SortParams, ComposeData } from '../types/email'
 import type { Folder } from '../types/folder'
 
-type AnyService = GmailService | OutlookService | YahooService
-
-function getService(account: Account): AnyService {
-  switch (account.provider) {
-    case 'gmail': return new GmailService(account)
-    case 'outlook': return new OutlookService(account)
-    case 'yahoo': return new YahooService(account)
+async function apiFetch<T>(url: string, options?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`API ${res.status}: ${text}`)
   }
+  return res.json() as Promise<T>
+}
+
+function mailUrl(accountId: string, path: string) {
+  return `/api/mail/${accountId}${path}`
 }
 
 export async function fetchFolders(account: Account): Promise<Folder[]> {
-  return getService(account).getFolders()
+  return apiFetch<Folder[]>(mailUrl(account.id, '/folders'))
 }
 
 export async function fetchEmails(
@@ -27,80 +30,103 @@ export async function fetchEmails(
   search: SearchParams,
   sort: SortParams
 ): Promise<{ emails: Email[]; totalCount: number }> {
-  return getService(account).getEmails(folderId, page, pageSize, search, sort)
+  const params = new URLSearchParams({
+    folderId,
+    page: String(page),
+    pageSize: String(pageSize),
+    sortField: sort.field,
+    sortDir: sort.direction,
+  })
+  if (search.subject) params.set('subject', search.subject)
+  if (search.subjectIsRegex) params.set('subjectIsRegex', 'true')
+  if (search.body) params.set('body', search.body)
+  if (search.bodyIsRegex) params.set('bodyIsRegex', 'true')
+  if (search.from) params.set('from', search.from)
+  if (search.to) params.set('to', search.to)
+  if (search.after) params.set('after', search.after.toISOString())
+  if (search.before) params.set('before', search.before.toISOString())
+
+  const result = await apiFetch<{ emails: Email[]; totalCount: number }>(
+    mailUrl(account.id, `/emails?${params}`)
+  )
+  result.emails = result.emails.map((e) => ({ ...e, date: new Date(e.date as unknown as string) }))
+  return result
+}
+
+export async function fetchEmailFull(account: Account, emailId: string): Promise<Partial<Email>> {
+  return apiFetch<Partial<Email>>(mailUrl(account.id, `/emails/${emailId}/full`))
 }
 
 export async function sendEmail(account: Account, compose: ComposeData): Promise<void> {
-  return getService(account).sendEmail(compose, account.email)
+  const body = {
+    to: compose.to, cc: compose.cc, bcc: compose.bcc,
+    subject: compose.subject, body: compose.body,
+    inReplyTo: compose.inReplyTo,
+    references: compose.references,
+    threadId: compose.originalEmail?.threadId,
+  }
+  await apiFetch(mailUrl(account.id, '/emails/send'), { method: 'POST', body: JSON.stringify(body) })
 }
 
 export async function markEmailAsRead(account: Account, emailId: string): Promise<void> {
-  return getService(account).markAsRead(emailId)
+  await apiFetch(mailUrl(account.id, `/emails/${emailId}/read`), { method: 'PATCH', body: '{}' })
 }
 
 export async function moveEmailToTrash(account: Account, emailId: string): Promise<void> {
-  return getService(account).moveToTrash(emailId)
-}
-
-export async function batchMoveEmailsToTrash(account: Account, emailIds: string[]): Promise<void> {
-  if (!emailIds.length) return
-  const svc = getService(account)
-  if (svc instanceof GmailService) {
-    await svc.batchModifyLabels(emailIds, ['TRASH'], ['INBOX'])
-  } else {
-    await Promise.all(emailIds.map((id) => svc.moveToTrash(id)))
-  }
+  await apiFetch(mailUrl(account.id, `/emails/${emailId}/trash`), { method: 'POST', body: '{}' })
 }
 
 export async function archiveEmail(account: Account, emailId: string): Promise<void> {
-  const svc = getService(account)
-  if (svc instanceof GmailService) await svc.modifyLabels(emailId, [], ['INBOX'])
-}
-
-export async function batchArchiveEmails(account: Account, emailIds: string[]): Promise<void> {
-  const svc = getService(account)
-  if (svc instanceof GmailService) await svc.batchModifyLabels(emailIds, [], ['INBOX'])
+  await apiFetch(mailUrl(account.id, `/emails/${emailId}/archive`), { method: 'POST', body: '{}' })
 }
 
 export async function modifyEmailLabels(
   account: Account, emailId: string, addIds: string[], removeIds: string[]
 ): Promise<void> {
-  const svc = getService(account)
-  if (svc instanceof GmailService) await svc.modifyLabels(emailId, addIds, removeIds)
-}
-
-export async function batchModifyEmailLabels(
-  account: Account, emailIds: string[], addIds: string[], removeIds: string[]
-): Promise<void> {
-  const svc = getService(account)
-  if (svc instanceof GmailService) await svc.batchModifyLabels(emailIds, addIds, removeIds)
+  await apiFetch(mailUrl(account.id, `/emails/${emailId}/labels`), {
+    method: 'POST', body: JSON.stringify({ addIds, removeIds }),
+  })
 }
 
 export async function moveEmailToFolder(
   account: Account, emailId: string, folderId: string
 ): Promise<void> {
-  const svc = getService(account)
-  if (svc instanceof OutlookService) await svc.moveToFolder(emailId, folderId)
+  await apiFetch(mailUrl(account.id, `/emails/${emailId}/move`), {
+    method: 'POST', body: JSON.stringify({ folderId }),
+  })
+}
+
+export async function batchMoveEmailsToTrash(account: Account, emailIds: string[]): Promise<void> {
+  await apiFetch(mailUrl(account.id, '/emails/batch/trash'), {
+    method: 'POST', body: JSON.stringify({ emailIds }),
+  })
+}
+
+export async function batchArchiveEmails(account: Account, emailIds: string[]): Promise<void> {
+  await apiFetch(mailUrl(account.id, '/emails/batch/archive'), {
+    method: 'POST', body: JSON.stringify({ emailIds }),
+  })
+}
+
+export async function batchModifyEmailLabels(
+  account: Account, emailIds: string[], addIds: string[], removeIds: string[]
+): Promise<void> {
+  await apiFetch(mailUrl(account.id, '/emails/batch/labels'), {
+    method: 'POST', body: JSON.stringify({ emailIds, addIds, removeIds }),
+  })
 }
 
 export async function batchMoveEmailsToFolder(
   account: Account, emailIds: string[], folderId: string
 ): Promise<void> {
-  if (!emailIds.length) return
-  const svc = getService(account)
-  if (svc instanceof OutlookService) {
-    await Promise.all(emailIds.map((id) => svc.moveToFolder(id, folderId)))
-  }
-}
-
-export async function fetchEmailFull(account: Account, emailId: string): Promise<Partial<Email>> {
-  const svc = getService(account)
-  if (svc instanceof GmailService) return svc.getEmailFull(emailId)
-  return {}
+  await apiFetch(mailUrl(account.id, '/emails/batch/move'), {
+    method: 'POST', body: JSON.stringify({ emailIds, folderId }),
+  })
 }
 
 export async function fetchUserProfile(
-  account: Account
+  _account: Account
 ): Promise<{ email: string; name: string; picture?: string }> {
-  return getService(account).getUserProfile()
+  // Profile is now fetched server-side during OAuth; this is kept for interface compatibility
+  throw new Error('fetchUserProfile is no longer used — profile is fetched server-side during OAuth')
 }
