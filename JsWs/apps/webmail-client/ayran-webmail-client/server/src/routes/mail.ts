@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import { GmailService } from '../services/gmail'
 import { OutlookService } from '../services/outlook'
+import { YahooService } from '../services/yahoo'
 import { refreshTokens } from '../services/oauth'
 import type { ComposeData } from '../types'
 
@@ -13,7 +14,7 @@ async function getService(req: Request, accountId: string) {
   const account = accounts[accountId]
   if (!account) throw Object.assign(new Error('Account not found'), { status: 401 })
 
-  if (Date.now() > account.tokens.expiresAt - 60_000 && account.tokens.refreshToken) {
+  if (account.tokens && Date.now() > account.tokens.expiresAt - 60_000 && account.tokens.refreshToken) {
     account.tokens = await refreshTokens(account.provider, account.tokens.refreshToken)
     req.session.accounts![accountId] = account
     await new Promise<void>((resolve, reject) =>
@@ -22,9 +23,9 @@ async function getService(req: Request, accountId: string) {
   }
 
   const svc =
-    account.provider === 'gmail'
-      ? new GmailService(account.tokens.accessToken, accountId)
-      : new OutlookService(account.tokens.accessToken, accountId)
+    account.provider === 'gmail' ? new GmailService(account.tokens!.accessToken, accountId) :
+    account.provider === 'outlook' ? new OutlookService(account.tokens!.accessToken, accountId) :
+    new YahooService(account.email, account.credentials!.appPassword, accountId)
 
   return { svc, account }
 }
@@ -62,6 +63,8 @@ mailRouter.post('/:accountId/emails/batch/trash', handle(async (req, res) => {
   if (!emailIds?.length) { res.json({ ok: true }); return }
   if (svc instanceof GmailService) {
     await svc.batchModifyLabels(emailIds, ['TRASH'], ['INBOX'])
+  } else if (svc instanceof YahooService) {
+    await svc.batchMoveToTrash(emailIds)
   } else {
     await Promise.all(emailIds.map((id) => svc.moveToTrash(id)))
   }
@@ -86,7 +89,9 @@ mailRouter.post('/:accountId/emails/batch/move', handle(async (req, res) => {
   const { svc } = await getService(req, str(req.params.accountId))
   const { emailIds, folderId } = req.body as { emailIds: string[]; folderId: string }
   if (svc instanceof OutlookService) {
-    await Promise.all(emailIds.map((id) => (svc as OutlookService).moveToFolder(id, folderId)))
+    await Promise.all(emailIds.map((id) => svc.moveToFolder(id, folderId)))
+  } else if (svc instanceof YahooService) {
+    await svc.batchMoveToFolder(emailIds, folderId)
   }
   res.json({ ok: true })
 }))
@@ -122,8 +127,11 @@ mailRouter.get('/:accountId/emails', handle(async (req, res) => {
 
 mailRouter.get('/:accountId/emails/:emailId/full', handle(async (req, res) => {
   const { svc } = await getService(req, str(req.params.accountId))
-  if (!(svc instanceof GmailService)) { res.json({}); return }
-  res.json(await svc.getEmailFull(str(req.params.emailId)))
+  if (svc instanceof GmailService || svc instanceof YahooService) {
+    res.json(await svc.getEmailFull(str(req.params.emailId)))
+  } else {
+    res.json({})
+  }
 }))
 
 mailRouter.patch('/:accountId/emails/:emailId/read', handle(async (req, res) => {
@@ -154,6 +162,8 @@ mailRouter.post('/:accountId/emails/:emailId/labels', handle(async (req, res) =>
 mailRouter.post('/:accountId/emails/:emailId/move', handle(async (req, res) => {
   const { svc } = await getService(req, str(req.params.accountId))
   const { folderId } = req.body as { folderId: string }
-  if (svc instanceof OutlookService) await svc.moveToFolder(str(req.params.emailId), folderId)
+  if (svc instanceof OutlookService || svc instanceof YahooService) {
+    await svc.moveToFolder(str(req.params.emailId), folderId)
+  }
   res.json({ ok: true })
 }))

@@ -8,6 +8,7 @@ import cors from 'cors'
 import selfsigned from 'selfsigned'
 import { authRouter } from './routes/auth'
 import { mailRouter } from './routes/mail'
+import { yahooRouter } from './routes/yahoo'
 
 const app = express()
 const port = parseInt(process.env.PORT ?? '3001')
@@ -33,6 +34,7 @@ app.use(
 app.use('/api/auth', authRouter)
 app.use('/api/oauth', authRouter)
 app.use('/api/mail', mailRouter)
+app.use('/api/yahoo', yahooRouter)
 
 function getDevCert(): { key: string; cert: string } {
   const certDir = path.join(__dirname, '..', '.dev-cert')

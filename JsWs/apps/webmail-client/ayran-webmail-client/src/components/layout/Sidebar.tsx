@@ -4,6 +4,7 @@ import { FolderTree } from './FolderTree'
 import { useAuthStore } from '../../stores/authStore'
 import { useEmailStore } from '../../stores/emailStore'
 import { initiateOAuth } from '../../services/oauth'
+import { YahooConnectModal } from '../auth/YahooConnectModal'
 import type { EmailProvider } from '../../types/email'
 import { useClickOutside } from '../../hooks/useClickOutside'
 
@@ -33,6 +34,7 @@ export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarP
   const { accounts, activeAccountId, setActiveAccount, removeAccount } = useAuthStore()
   const { folders } = useEmailStore()
   const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const [yahooModalOpen, setYahooModalOpen] = useState(false)
   const addMenuRef = useRef<HTMLDivElement>(null)
   useClickOutside(addMenuRef, () => setAddMenuOpen(false))
 
@@ -40,7 +42,7 @@ export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarP
     folders.filter((f) => f.accountId === accountId)
 
   return (
-    <aside className="flex flex-col w-full h-full bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
+    <><aside className="flex flex-col w-full h-full bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-3 border-b border-gray-100 dark:border-gray-700">
         {!collapsed && (
@@ -130,15 +132,15 @@ export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarP
               </button>
               {addMenuOpen && (
                 <div className="absolute bottom-full left-0 mb-1 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-10 min-w-[140px]">
-                  {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => {
-                    const disabled = p === 'yahoo'
-                    return (
+                  {(['gmail', 'outlook', 'yahoo'] as EmailProvider[]).map((p) => (
                       <button
                         key={p}
-                        onClick={() => { if (!disabled) { initiateOAuth(p); setAddMenuOpen(false) } }}
-                        disabled={disabled}
-                        title={disabled ? 'Coming soon — requires backend support' : undefined}
-                        className={`w-full text-left px-3 py-2 text-sm flex items-center gap-2 capitalize ${disabled ? 'opacity-40 cursor-not-allowed text-gray-500 dark:text-gray-500' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
+                        onClick={() => {
+                          setAddMenuOpen(false)
+                          if (p === 'yahoo') setYahooModalOpen(true)
+                          else initiateOAuth(p)
+                        }}
+                        className="w-full text-left px-3 py-2 text-sm flex items-center gap-2 capitalize text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
                       >
                         <span
                           className={`w-4 h-4 rounded-full flex items-center justify-center text-white text-[9px] font-bold ${PROVIDER_COLORS[p]}`}
@@ -147,8 +149,7 @@ export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarP
                         </span>
                         {p.charAt(0).toUpperCase() + p.slice(1)}
                       </button>
-                    )
-                  })}
+                  ))}
                 </div>
               )}
             </div>
@@ -192,5 +193,7 @@ export function Sidebar({ sidebarState, onSetSidebarState, onCompose }: SidebarP
         </div>
       )}
     </aside>
+    {yahooModalOpen && <YahooConnectModal onClose={() => setYahooModalOpen(false)} />}
+    </>
   )
 }

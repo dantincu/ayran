@@ -41,6 +41,15 @@ function getConfig(provider: string): ProviderConfig {
       clientSecret: process.env.OUTLOOK_CLIENT_SECRET ?? '',
     }
   }
+  if (provider === 'yahoo') {
+    return {
+      authUrl: 'https://api.login.yahoo.com/oauth2/request_auth',
+      tokenUrl: 'https://api.login.yahoo.com/oauth2/get_token',
+      scope: 'mail-w openid profile email',
+      clientId: process.env.YAHOO_CLIENT_ID ?? '',
+      clientSecret: process.env.YAHOO_CLIENT_SECRET ?? '',
+    }
+  }
   throw new Error(`Unknown provider: ${provider}`)
 }
 
@@ -133,6 +142,17 @@ export async function fetchProfile(
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
     return { email: res.data.mail ?? res.data.userPrincipalName, displayName: res.data.displayName }
+  }
+  if (provider === 'yahoo') {
+    const res = await axios.get<{ name?: string; nickname?: string; email: string; picture?: string }>(
+      'https://api.login.yahoo.com/openid/v1/userinfo',
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    )
+    return {
+      email: res.data.email,
+      displayName: res.data.name ?? res.data.nickname ?? res.data.email,
+      avatarUrl: res.data.picture,
+    }
   }
   throw new Error(`Unknown provider: ${provider}`)
 }

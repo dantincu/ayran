@@ -9,16 +9,17 @@ export interface OAuthTokens {
 
 export interface SessionAccount {
   id: string
-  provider: 'gmail' | 'outlook'
+  provider: 'gmail' | 'outlook' | 'yahoo'
   email: string
   displayName: string
   avatarUrl?: string
-  tokens: OAuthTokens
+  tokens?: OAuthTokens
+  credentials?: { appPassword: string }
 }
 
 export interface ClientAccount {
   id: string
-  provider: 'gmail' | 'outlook'
+  provider: 'gmail' | 'outlook' | 'yahoo'
   email: string
   displayName: string
   avatarUrl?: string

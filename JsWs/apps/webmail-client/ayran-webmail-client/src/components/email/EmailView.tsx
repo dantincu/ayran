@@ -85,7 +85,7 @@ export function EmailView({ email, onClose }: EmailViewProps) {
   }, [email.from.email, isTrustedSender])
 
   useEffect(() => {
-    if (email.provider !== 'gmail') return
+    if (email.provider !== 'gmail' && email.provider !== 'yahoo') return
     if (email.body || email.bodyHtml) return
     const account = getActiveAccount()
     if (!account) return
@@ -288,8 +288,8 @@ export function EmailView({ email, onClose }: EmailViewProps) {
             </>
           )}
 
-          {/* Outlook-specific actions */}
-          {email.provider === 'outlook' && (
+          {/* Outlook / Yahoo actions */}
+          {(email.provider === 'outlook' || email.provider === 'yahoo') && (
             <>
               <button
                 onClick={() => { setShowFolderPicker((v) => !v); setShowLabelPicker(false) }}

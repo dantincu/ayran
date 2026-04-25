@@ -110,7 +110,7 @@ export function BulkActionBar() {
         </>
       )}
 
-      {provider === 'outlook' && (
+      {(provider === 'outlook' || provider === 'yahoo') && (
         <>
           <button
             onClick={() => { setShowFolderPicker((v) => !v); setShowLabelPicker(false) }}
