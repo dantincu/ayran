@@ -158,9 +158,9 @@ export class YahooService {
         if (search.before) criteria.before = search.before
         if (!Object.keys(criteria).length) criteria.all = true
 
-        const uids = (await client.search(criteria as Parameters<typeof client.search>[0], { uid: true })) ?? []
+        const uids: number[] = (await client.search(criteria as Parameters<typeof client.search>[0], { uid: true })) || []
 
-        uids.sort((a, b) => sort.direction === 'asc' ? a - b : b - a)
+        uids.sort((a: number, b: number) => sort.direction === 'asc' ? a - b : b - a)
 
         const totalCount = uids.length
         const pageUids = uids.slice((page - 1) * pageSize, page * pageSize)

@@ -1,0 +1,8 @@
+node_modules
+dist
+server/node_modules
+server/dist
+server/.dev-cert
+server/.env
+.env
+*.local
