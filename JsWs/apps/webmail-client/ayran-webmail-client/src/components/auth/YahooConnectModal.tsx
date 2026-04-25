@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { X, Loader2, ExternalLink } from 'lucide-react'
 import { useAuthStore } from '../../stores/authStore'
 
@@ -8,6 +9,7 @@ interface Props {
 
 export function YahooConnectModal({ onClose }: Props) {
   const { hydrateFromServer } = useAuthStore()
+  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [appPassword, setAppPassword] = useState('')
   const [loading, setLoading] = useState(false)
@@ -30,6 +32,7 @@ export function YahooConnectModal({ onClose }: Props) {
       }
       await hydrateFromServer()
       onClose()
+      navigate('/mail')
     } catch {
       setError('Network error — make sure the server is running')
     } finally {

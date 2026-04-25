@@ -191,7 +191,21 @@ export class GmailService {
     })
 
     const messages = listRes.data.messages ?? []
-    const totalCount = listRes.data.resultSizeEstimate
+
+    // resultSizeEstimate is unreliable (often wrong for All Mail and large folders).
+    // When there is no active search, fetch the real count from the labels/profile API.
+    let totalCount = listRes.data.resultSizeEstimate
+    if (!q) {
+      try {
+        if (folderId === 'ALLMAIL') {
+          const profile = await this.client.get<{ messagesTotal: number }>('/users/me/profile')
+          totalCount = profile.data.messagesTotal
+        } else {
+          const label = await this.client.get<{ messagesTotal: number }>(`/users/me/labels/${folderId}`)
+          totalCount = label.data.messagesTotal ?? totalCount
+        }
+      } catch { /* fall back to estimate */ }
+    }
 
     const emails = await throttleAll(
       messages.map((m) => () => {
