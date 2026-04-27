@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Battery body -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,35 L38,73 L70,73 L70,35 Z M34,31 L74,31 L74,77 L34,77 Z" />
+    <!-- Battery terminal -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,27 L64,27 L64,31 L44,31 Z" />
+    <!-- Battery level fill -->
+    <path
+        android:fillColor="#42A5F5"
+        android:pathData="M38,50 L70,50 L70,73 L38,73 Z" />
+    <!-- Lightning bolt -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M56,42 L50,56 L55,56 L52,66 L62,50 L57,50 Z" />
+</vector>

@@ -1,0 +1,117 @@
+package com.ayran.mobilebatterylogger.filen
+
+import java.security.spec.PBEKeySpec
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import javax.crypto.Cipher
+import java.security.SecureRandom
+import android.util.Base64
+
+object FilenCrypto {
+
+    fun deriveKeys(password: String, salt: String): Pair<String, String> {
+        val spec = PBEKeySpec(
+            password.toCharArray(),
+            salt.toByteArray(Charsets.UTF_8),
+            200000,
+            512
+        )
+        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
+        val keyBytes = factory.generateSecret(spec).encoded
+        val hex = keyBytes.joinToString("") { "%02x".format(it) }
+        // first 256 bits = auth password, last 256 bits = master key
+        return Pair(hex.substring(0, 64), hex.substring(64, 128))
+    }
+
+    fun decryptMetadata(encrypted: String, key: String): String {
+        return try {
+            when {
+                encrypted.startsWith("002") -> decryptMetadataV2(encrypted.substring(3), key)
+                else -> decryptMetadataV1(encrypted, key)
+            }
+        } catch (e: Exception) {
+            throw IllegalArgumentException("Failed to decrypt metadata: ${e.message}", e)
+        }
+    }
+
+    private fun decryptMetadataV2(data: String, key: String): String {
+        val raw = Base64.decode(data, Base64.NO_WRAP)
+        // Format: iv(12 bytes) + ciphertext+tag
+        val iv = raw.copyOfRange(0, 12)
+        val ciphertext = raw.copyOfRange(12, raw.size)
+        val keyBytes = hexToBytes(key)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv))
+        return cipher.doFinal(ciphertext).toString(Charsets.UTF_8)
+    }
+
+    private fun decryptMetadataV1(data: String, key: String): String {
+        // v1 uses AES-CBC
+        val parts = data.split("|")
+        if (parts.size < 2) throw IllegalArgumentException("Invalid v1 metadata format")
+        val iv = parts[0].toByteArray(Charsets.UTF_8).copyOf(16)
+        val ciphertext = Base64.decode(parts[1], Base64.NO_WRAP)
+        val keyBytes = key.toByteArray(Charsets.UTF_8).copyOf(32)
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"),
+            javax.crypto.spec.IvParameterSpec(iv))
+        return cipher.doFinal(ciphertext).toString(Charsets.UTF_8)
+    }
+
+    fun encryptMetadata(plaintext: String, key: String): String {
+        val keyBytes = hexToBytes(key)
+        val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv))
+        val ciphertext = cipher.doFinal(plaintext.toByteArray(Charsets.UTF_8))
+        val combined = iv + ciphertext
+        return "002" + Base64.encodeToString(combined, Base64.NO_WRAP)
+    }
+
+    fun decryptFileContent(data: ByteArray, key: String, iv: String, version: Int): ByteArray {
+        return when (version) {
+            1 -> decryptFileV1(data, key, iv)
+            else -> decryptFileV2(data, key, iv)
+        }
+    }
+
+    private fun decryptFileV1(data: ByteArray, key: String, iv: String): ByteArray {
+        val keyBytes = key.toByteArray(Charsets.UTF_8).copyOf(32)
+        val ivBytes = iv.toByteArray(Charsets.UTF_8).copyOf(16)
+        val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"),
+            javax.crypto.spec.IvParameterSpec(ivBytes))
+        return cipher.doFinal(data)
+    }
+
+    private fun decryptFileV2(data: ByteArray, key: String, iv: String): ByteArray {
+        val keyBytes = hexToBytes(key)
+        val ivBytes = hexToBytes(iv)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"),
+            GCMParameterSpec(128, ivBytes))
+        return cipher.doFinal(data)
+    }
+
+    fun encryptFileContent(data: ByteArray): Triple<ByteArray, String, String> {
+        val keyBytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val ivBytes = ByteArray(12).also { SecureRandom().nextBytes(it) }
+        val keyHex = bytesToHex(keyBytes)
+        val ivHex = bytesToHex(ivBytes)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, ivBytes))
+        val encrypted = cipher.doFinal(data)
+        return Triple(encrypted, keyHex, ivHex)
+    }
+
+    private fun hexToBytes(hex: String): ByteArray {
+        check(hex.length % 2 == 0) { "Odd hex string length" }
+        return ByteArray(hex.length / 2) { i ->
+            hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        }
+    }
+
+    private fun bytesToHex(bytes: ByteArray): String =
+        bytes.joinToString("") { "%02x".format(it) }
+}
