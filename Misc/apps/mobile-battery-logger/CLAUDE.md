@@ -1,0 +1,1 @@
+ayran-mobile-battery-logger-androidapp/CLAUDE.md
