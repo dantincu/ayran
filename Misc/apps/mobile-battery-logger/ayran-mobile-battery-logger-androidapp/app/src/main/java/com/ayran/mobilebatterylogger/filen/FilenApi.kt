@@ -45,14 +45,15 @@ class FilenApi {
             .build()
         val response = client.newCall(request).execute()
         val responseText = response.body?.string() ?: throw Exception("Empty response from $endpoint")
-        val parsed = json.parseToJsonElement(responseText).jsonObject
-        val status = parsed["status"]?.jsonPrimitive?.booleanOrNull
-            ?: parsed["status"]?.jsonPrimitive?.content == "ok"
+        val parsedElement = json.parseToJsonElement(responseText)
+        val parsed = parsedElement as? JsonObject ?: throw Exception("Invalid JSON from $endpoint")
+        val statusContent = (parsed["status"] as? JsonPrimitive)?.content ?: ""
+        val status = statusContent == "true" || statusContent == "ok"
         if (!status) {
-            val msg = parsed["message"]?.jsonPrimitive?.contentOrNull ?: "Unknown API error"
+            val msg = (parsed["message"] as? JsonPrimitive)?.content ?: "Unknown API error"
             throw Exception("Filen API error ($endpoint): $msg")
         }
-        return parsed["data"]?.jsonObject ?: JsonObject(emptyMap())
+        return parsed["data"] as? JsonObject ?: JsonObject(emptyMap())
     }
 
     private fun postRaw(endpoint: String, body: JsonObject): JsonObject {
@@ -72,12 +73,12 @@ class FilenApi {
         return Pair(salt, authVersion)
     }
 
-    fun login(email: String, password: String, authVersion: Int): Pair<String, String> {
+    fun login(email: String, password: String, authVersion: Int, twoFactorCode: String): Pair<String, String> {
         val data = post("/v3/login", buildJsonObject {
             put("email", email)
             put("password", password)
             put("authVersion", authVersion)
-            put("twoFactorCode", "XXXXXX")
+            put("twoFactorCode", twoFactorCode.ifBlank { "XXXXXX" })
         })
         val apiKey = data["apiKey"]?.jsonPrimitive?.content ?: throw Exception("No apiKey in login response")
         val masterKeys = data["masterKeys"]?.jsonPrimitive?.content ?: ""

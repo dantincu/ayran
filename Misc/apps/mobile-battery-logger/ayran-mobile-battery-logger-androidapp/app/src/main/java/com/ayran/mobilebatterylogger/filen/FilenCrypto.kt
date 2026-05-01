@@ -1,27 +1,69 @@
 package com.ayran.mobilebatterylogger.filen
 
-import java.security.spec.PBEKeySpec
-import javax.crypto.SecretKeyFactory
+import javax.crypto.Mac
 import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import javax.crypto.Cipher
+import java.security.MessageDigest
 import java.security.SecureRandom
 import android.util.Base64
 
 object FilenCrypto {
 
+    fun sha512(input: String): String {
+        val digest = MessageDigest.getInstance("SHA-512")
+        return digest.digest(input.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
+    }
+
+    // Auth version 1: SHA512(SHA512(password) + "filen" + SHA512(password))
+    // master key is SHA512(password)
+    fun deriveKeysV1(password: String): Pair<String, String> {
+        val h = sha512(password)
+        val authKey = sha512(h + "filen" + h)
+        return Pair(authKey, h)
+    }
+
+    // Auth version 2: PBKDF2-SHA512 implemented manually so the password is
+    // passed as raw UTF-8 bytes to HMAC, matching Node.js crypto.pbkdf2 exactly.
     fun deriveKeys(password: String, salt: String): Pair<String, String> {
-        val spec = PBEKeySpec(
-            password.toCharArray(),
-            salt.toByteArray(Charsets.UTF_8),
-            200000,
-            512
-        )
-        val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA512")
-        val keyBytes = factory.generateSecret(spec).encoded
+        val passwordBytes = password.toByteArray(Charsets.UTF_8)
+        val saltBytes = salt.toByteArray(Charsets.UTF_8)
+        val keyBytes = pbkdf2HmacSha512(passwordBytes, saltBytes, iterations = 200000, keyLenBytes = 64)
         val hex = keyBytes.joinToString("") { "%02x".format(it) }
-        // first 256 bits = auth password, last 256 bits = master key
-        return Pair(hex.substring(0, 64), hex.substring(64, 128))
+        val masterKey = hex.substring(0, 64)
+        val authKey = sha512(hex.substring(64, 128))
+        return Pair(authKey, masterKey)
+    }
+
+    private fun pbkdf2HmacSha512(password: ByteArray, salt: ByteArray, iterations: Int, keyLenBytes: Int): ByteArray {
+        val mac = Mac.getInstance("HmacSHA512")
+        mac.init(SecretKeySpec(password, "HmacSHA512"))
+        val result = ByteArray(keyLenBytes)
+        var blockIndex = 1
+        var offset = 0
+        while (offset < keyLenBytes) {
+            val block = pbkdf2Block(mac, salt, iterations, blockIndex++)
+            val len = minOf(block.size, keyLenBytes - offset)
+            block.copyInto(result, offset, 0, len)
+            offset += len
+        }
+        return result
+    }
+
+    private fun pbkdf2Block(mac: Mac, salt: ByteArray, iterations: Int, index: Int): ByteArray {
+        val intBytes = byteArrayOf(
+            (index shr 24).toByte(), (index shr 16).toByte(),
+            (index shr 8).toByte(), index.toByte()
+        )
+        mac.update(salt)
+        mac.update(intBytes)
+        var u = mac.doFinal()
+        val t = u.copyOf()
+        repeat(iterations - 1) {
+            u = mac.doFinal(u)
+            for (j in t.indices) t[j] = (t[j].toInt() xor u[j].toInt()).toByte()
+        }
+        return t
     }
 
     fun decryptMetadata(encrypted: String, key: String): String {

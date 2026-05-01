@@ -22,10 +22,14 @@ class FilenRepository(
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
 
-    fun authenticate(email: String, password: String): Triple<String, List<String>, String> {
+    fun authenticate(email: String, password: String, twoFactorCode: String = ""): Triple<String, List<String>, String> {
         val (salt, authVersion) = api.getAuthInfo(email)
-        val (authKey, masterKeyHex) = FilenCrypto.deriveKeys(password, salt)
-        val (apiKey, encryptedMasterKeys) = api.login(email, authKey, authVersion)
+        val (authKey, masterKeyHex) = if (authVersion == 1) {
+            FilenCrypto.deriveKeysV1(password)
+        } else {
+            FilenCrypto.deriveKeys(password, salt)
+        }
+        val (apiKey, encryptedMasterKeys) = api.login(email, authKey, authVersion, twoFactorCode)
         val masterKeys = decryptMasterKeys(encryptedMasterKeys, masterKeyHex)
         return Triple(apiKey, masterKeys, email)
     }

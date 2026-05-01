@@ -19,10 +19,9 @@ import com.ayran.mobilebatterylogger.LoginUiState
 @Composable
 fun LoginScreen(viewModel: AppViewModel, context: Context) {
     val loginState by viewModel.loginState.collectAsState()
-    var useApiKey by remember { mutableStateOf(false) }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
-    var apiKey by remember { mutableStateOf("") }
+    var twoFactorCode by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
@@ -45,42 +44,33 @@ fun LoginScreen(viewModel: AppViewModel, context: Context) {
         )
         Spacer(modifier = Modifier.height(32.dp))
 
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Use API key instead")
-            Spacer(modifier = Modifier.width(8.dp))
-            Switch(checked = useApiKey, onCheckedChange = { useApiKey = it })
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        if (useApiKey) {
-            OutlinedTextField(
-                value = apiKey,
-                onValueChange = { apiKey = it },
-                label = { Text("filen.io API Key") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-        } else {
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Email") },
-                modifier = Modifier.fillMaxWidth(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                singleLine = true
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Password") },
-                modifier = Modifier.fillMaxWidth(),
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                singleLine = true
-            )
-        }
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email") },
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            singleLine = true
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it },
+            label = { Text("Password") },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            singleLine = true
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedTextField(
+            value = twoFactorCode,
+            onValueChange = { twoFactorCode = it },
+            label = { Text("Authenticator code (if 2FA enabled)") },
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            singleLine = true
+        )
 
         Spacer(modifier = Modifier.height(8.dp))
 
@@ -96,13 +86,7 @@ fun LoginScreen(viewModel: AppViewModel, context: Context) {
         }
 
         Button(
-            onClick = {
-                if (useApiKey) {
-                    viewModel.loginWithApiKey(context, apiKey.trim())
-                } else {
-                    viewModel.loginWithPassword(context, email.trim(), password)
-                }
-            },
+            onClick = { viewModel.loginWithPassword(context, email.trim(), password, twoFactorCode.trim()) },
             modifier = Modifier.fillMaxWidth(),
             enabled = loginState !is LoginUiState.Loading
         ) {
@@ -115,17 +99,6 @@ fun LoginScreen(viewModel: AppViewModel, context: Context) {
             } else {
                 Text("Sign In")
             }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        if (!useApiKey) {
-            Text(
-                text = "To use an API key: go to filen.io web app → Settings → Security → API Keys, generate one, then toggle \"Use API key\" above.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }

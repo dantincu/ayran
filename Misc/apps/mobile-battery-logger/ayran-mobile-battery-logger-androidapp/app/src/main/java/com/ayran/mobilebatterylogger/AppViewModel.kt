@@ -69,11 +69,11 @@ class AppViewModel : ViewModel() {
         _isLoggedIn.value = loaded.apiKey.isNotEmpty()
     }
 
-    fun loginWithPassword(context: Context, email: String, password: String) {
+    fun loginWithPassword(context: Context, email: String, password: String, twoFactorCode: String = "") {
         _loginState.value = LoginUiState.Loading
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val (apiKey, masterKeys, _) = filenRepo.authenticate(email, password)
+                val (apiKey, masterKeys, _) = filenRepo.authenticate(email, password, twoFactorCode)
                 val updated = _settings.value.copy(
                     apiKey = apiKey,
                     masterKeys = masterKeys,
