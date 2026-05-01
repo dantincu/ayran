@@ -96,8 +96,10 @@ class FilenApi {
     }
 
     fun getUserRootFolderUuid(apiKey: String): String {
-        val data = post("/v3/user/baseFolder", buildJsonObject { put("apiKey", apiKey) })
-        return data["uuid"]?.jsonPrimitive?.content ?: throw Exception("No base folder UUID")
+        val data = post("/v3/user/info", buildJsonObject { put("apiKey", apiKey) })
+        return (data["baseFolder"] as? JsonPrimitive)?.content
+            ?: (data["baseFolderUUID"] as? JsonPrimitive)?.content
+            ?: throw Exception("No base folder UUID in user info")
     }
 
     fun getDirContent(apiKey: String, uuid: String): Pair<List<FilenDirItem>, List<FilenDirItem>> {
