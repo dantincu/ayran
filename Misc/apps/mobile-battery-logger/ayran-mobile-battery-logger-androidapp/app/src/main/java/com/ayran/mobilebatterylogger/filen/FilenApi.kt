@@ -38,15 +38,15 @@ class FilenApi {
     private val mediaType = "application/json; charset=utf-8".toMediaType()
     private val baseUrl = "https://gateway.filen.io"
 
-    private fun post(endpoint: String, body: JsonObject): JsonObject {
-        val request = Request.Builder()
+    private fun post(endpoint: String, body: JsonObject, apiKey: String? = null): JsonObject {
+        val builder = Request.Builder()
             .url("$baseUrl$endpoint")
             .post(body.toString().toRequestBody(mediaType))
-            .build()
-        val response = client.newCall(request).execute()
+        if (apiKey != null) builder.header("Authorization", "Bearer $apiKey")
+        val response = client.newCall(builder.build()).execute()
         val responseText = response.body?.string() ?: throw Exception("Empty response from $endpoint")
-        val parsedElement = json.parseToJsonElement(responseText)
-        val parsed = parsedElement as? JsonObject ?: throw Exception("Invalid JSON from $endpoint")
+        val parsed = json.parseToJsonElement(responseText) as? JsonObject
+            ?: throw Exception("Invalid JSON from $endpoint")
         val statusContent = (parsed["status"] as? JsonPrimitive)?.content ?: ""
         val status = statusContent == "true" || statusContent == "ok"
         if (!status) {
@@ -56,14 +56,23 @@ class FilenApi {
         return parsed["data"] as? JsonObject ?: JsonObject(emptyMap())
     }
 
-    private fun postRaw(endpoint: String, body: JsonObject): JsonObject {
+    private fun get(endpoint: String, apiKey: String): JsonObject {
         val request = Request.Builder()
             .url("$baseUrl$endpoint")
-            .post(body.toString().toRequestBody(mediaType))
+            .header("Authorization", "Bearer $apiKey")
+            .get()
             .build()
         val response = client.newCall(request).execute()
-        val responseText = response.body?.string() ?: throw Exception("Empty response")
-        return json.parseToJsonElement(responseText).jsonObject
+        val responseText = response.body?.string() ?: throw Exception("Empty response from $endpoint")
+        val parsed = json.parseToJsonElement(responseText) as? JsonObject
+            ?: throw Exception("Invalid JSON from $endpoint")
+        val statusContent = (parsed["status"] as? JsonPrimitive)?.content ?: ""
+        val status = statusContent == "true" || statusContent == "ok"
+        if (!status) {
+            val msg = (parsed["message"] as? JsonPrimitive)?.content ?: "Unknown API error"
+            throw Exception("Filen API error ($endpoint): $msg")
+        }
+        return parsed["data"] as? JsonObject ?: JsonObject(emptyMap())
     }
 
     fun getAuthInfo(email: String): Pair<String, Int> {
@@ -87,26 +96,21 @@ class FilenApi {
 
     fun validateApiKey(apiKey: String): Boolean {
         return try {
-            val data = postRaw("/v3/user/info", buildJsonObject { put("apiKey", apiKey) })
-            data["status"]?.jsonPrimitive?.booleanOrNull == true ||
-                    data["status"]?.jsonPrimitive?.content == "ok"
+            get("/v3/user/info", apiKey)
+            true
         } catch (_: Exception) {
             false
         }
     }
 
     fun getUserRootFolderUuid(apiKey: String): String {
-        val data = post("/v3/user/info", buildJsonObject { put("apiKey", apiKey) })
-        return (data["baseFolder"] as? JsonPrimitive)?.content
-            ?: (data["baseFolderUUID"] as? JsonPrimitive)?.content
-            ?: throw Exception("No base folder UUID in user info")
+        val data = get("/v3/user/baseFolder", apiKey)
+        return (data["uuid"] as? JsonPrimitive)?.content
+            ?: throw Exception("No base folder UUID in user/baseFolder response")
     }
 
     fun getDirContent(apiKey: String, uuid: String): Pair<List<FilenDirItem>, List<FilenDirItem>> {
-        val data = post("/v3/dir/content", buildJsonObject {
-            put("apiKey", apiKey)
-            put("uuid", uuid)
-        })
+        val data = post("/v3/dir/content", buildJsonObject { put("uuid", uuid) }, apiKey)
         val folders = data["folders"]?.jsonArray?.map { el ->
             val obj = el.jsonObject
             FilenDirItem(
@@ -134,17 +138,15 @@ class FilenApi {
         val url = "https://$region.storage.filen.io/$bucket/$uuid/$index"
         val request = Request.Builder()
             .url(url)
-            .post(buildJsonObject { put("apiKey", apiKey) }.toString().toRequestBody(mediaType))
+            .header("Authorization", "Bearer $apiKey")
+            .get()
             .build()
         val response = client.newCall(request).execute()
         return response.body?.bytes() ?: throw Exception("Empty chunk response")
     }
 
     fun getFileInfo(apiKey: String, uuid: String): JsonObject {
-        return post("/v3/file", buildJsonObject {
-            put("apiKey", apiKey)
-            put("uuid", uuid)
-        })
+        return post("/v3/file", buildJsonObject { put("uuid", uuid) }, apiKey)
     }
 
     data class UploadResult(val uuid: String, val bucket: String, val region: String)
@@ -157,10 +159,13 @@ class FilenApi {
         uploadKey: String,
         chunkData: ByteArray
     ): UploadResult {
-        val url = "$baseUrl/v3/upload?apiKey=${apiKey}&uuid=$uuid&index=$index" +
-                "&parent=$parentUuid&uploadKey=$uploadKey"
+        val url = "$baseUrl/v3/upload?uuid=$uuid&index=$index&parent=$parentUuid&uploadKey=$uploadKey"
         val body = chunkData.toRequestBody("application/octet-stream".toMediaType())
-        val request = Request.Builder().url(url).post(body).build()
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $apiKey")
+            .post(body)
+            .build()
         val response = client.newCall(request).execute()
         val text = response.body?.string() ?: throw Exception("Empty upload response")
         val parsed = json.parseToJsonElement(text).jsonObject
@@ -184,7 +189,6 @@ class FilenApi {
         uploadKey: String
     ) {
         post("/v3/upload/done", buildJsonObject {
-            put("apiKey", apiKey)
             put("uuid", uuid)
             put("name", nameEncrypted)
             put("nameHashed", nameHashed)
@@ -195,13 +199,10 @@ class FilenApi {
             put("metadata", metadataEncrypted)
             put("version", version)
             put("uploadKey", uploadKey)
-        })
+        }, apiKey)
     }
 
     fun trashFile(apiKey: String, uuid: String) {
-        post("/v3/file/trash", buildJsonObject {
-            put("apiKey", apiKey)
-            put("uuid", uuid)
-        })
+        post("/v3/file/trash", buildJsonObject { put("uuid", uuid) }, apiKey)
     }
 }

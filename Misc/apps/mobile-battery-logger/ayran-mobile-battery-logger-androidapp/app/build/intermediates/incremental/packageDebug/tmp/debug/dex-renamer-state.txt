@@ -1,4 +1,4 @@
-#Fri May 01 16:16:04 EEST 2026
+#Sun May 03 06:27:12 EEST 2026
 base.0=F\:\\T\\ayran\\Misc\\apps\\mobile-battery-logger\\ayran-mobile-battery-logger-androidapp\\app\\build\\intermediates\\dex\\debug\\mergeExtDexDebug\\classes.dex
 base.1=F\:\\T\\ayran\\Misc\\apps\\mobile-battery-logger\\ayran-mobile-battery-logger-androidapp\\app\\build\\intermediates\\dex\\debug\\mergeProjectDexDebug\\0\\classes.dex
 base.10=F\:\\T\\ayran\\Misc\\apps\\mobile-battery-logger\\ayran-mobile-battery-logger-androidapp\\app\\build\\intermediates\\dex\\debug\\mergeExtDexDebug\\classes3.dex

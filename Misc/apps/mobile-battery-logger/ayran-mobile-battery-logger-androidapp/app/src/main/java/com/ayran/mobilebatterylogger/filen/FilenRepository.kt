@@ -1,5 +1,6 @@
 package com.ayran.mobilebatterylogger.filen
 
+import android.util.Log
 import kotlinx.serialization.json.*
 import java.security.MessageDigest
 import java.util.UUID
@@ -21,6 +22,7 @@ class FilenRepository(
 ) {
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+    var debugRawMasterKeys: String = ""
 
     fun authenticate(email: String, password: String, twoFactorCode: String = ""): Triple<String, List<String>, String> {
         val (salt, authVersion) = api.getAuthInfo(email)
@@ -30,33 +32,64 @@ class FilenRepository(
             FilenCrypto.deriveKeys(password, salt)
         }
         val (apiKey, encryptedMasterKeys) = api.login(email, authKey, authVersion, twoFactorCode)
-        val masterKeys = decryptMasterKeys(encryptedMasterKeys, masterKeyHex)
+        debugRawMasterKeys = "len=${encryptedMasterKeys.length},pfx=${encryptedMasterKeys.take(20)}"
+        val loginDecryptKey = FilenCrypto.deriveLoginDecryptionKey(password, masterKeyHex)
+        val v1MasterKey = FilenCrypto.sha512(password).take(64)
+        val masterKeys = decryptMasterKeys(encryptedMasterKeys, masterKeyHex, loginDecryptKey, v1MasterKey)
         return Triple(apiKey, masterKeys, email)
     }
 
     fun validateApiKeyOnly(apiKey: String): Boolean = api.validateApiKey(apiKey)
 
-    private fun decryptMasterKeys(encrypted: String, masterKey: String): List<String> {
-        return try {
-            val decrypted = FilenCrypto.decryptMetadata(encrypted, masterKey)
-            val parsed = json.parseToJsonElement(decrypted)
-            when {
-                parsed is JsonArray -> parsed.map { it.jsonPrimitive.content }
-                parsed is JsonObject -> {
-                    val keys = parsed["keys"]?.jsonArray?.map { it.jsonPrimitive.content }
-                    keys ?: listOf(masterKey)
+    private fun decryptMasterKeys(encrypted: String, masterKeyHex: String, loginDecryptKey: String, v1MasterKey: String = ""): List<String> {
+        Log.d("FilenRepo", "decryptMasterKeys: encryptedLen=${encrypted.length}, encryptedPrefix=${encrypted.take(12)}")
+        Log.d("FilenRepo", "masterKeyHex prefix=${masterKeyHex.take(16)}, loginDecryptKey prefix=${loginDecryptKey.take(16)}")
+        if (encrypted.isEmpty()) return listOf(masterKeyHex)
+        val candidates = listOfNotNull(loginDecryptKey, masterKeyHex, v1MasterKey.takeIf { it.isNotEmpty() })
+        for (key in candidates) {
+            try {
+                Log.d("FilenRepo", "trying key prefix=${key.take(16)}")
+                val decrypted = FilenCrypto.decryptMetadata(encrypted, key)
+                Log.d("FilenRepo", "decrypted masterKeys prefix=${decrypted.take(40)}")
+                // Try JSON parse first
+                return try {
+                    val parsed = json.parseToJsonElement(decrypted)
+                    when {
+                        parsed is JsonArray -> {
+                            val keys = parsed.map { it.jsonPrimitive.content }
+                            Log.d("FilenRepo", "parsed as JsonArray, keyCount=${keys.size}, first prefix=${keys.firstOrNull()?.take(16)}")
+                            keys
+                        }
+                        parsed is JsonObject -> {
+                            val keys = parsed["keys"]?.jsonArray?.map { it.jsonPrimitive.content } ?: listOf(masterKeyHex)
+                            Log.d("FilenRepo", "parsed as JsonObject, keyCount=${keys.size}")
+                            keys
+                        }
+                        else -> listOf(masterKeyHex)
+                    }
+                } catch (_: Exception) {
+                    // Not JSON — try pipe-separated, or treat as single key
+                    val keys = decrypted.split("|").map { it.trim() }.filter { it.isNotEmpty() }
+                    Log.d("FilenRepo", "parsed as pipe-separated, keyCount=${keys.size}")
+                    if (keys.isNotEmpty()) keys else listOf(masterKeyHex)
                 }
-                else -> listOf(masterKey)
+            } catch (e: Exception) {
+                Log.d("FilenRepo", "key prefix=${key.take(16)} failed: ${e.message}")
             }
-        } catch (_: Exception) {
-            listOf(masterKey)
         }
+        Log.d("FilenRepo", "all keys failed, falling back to masterKeyHex")
+        return listOf(masterKeyHex)
     }
 
     fun listDirectory(apiKey: String, masterKeys: List<String>, uuid: String): Pair<List<FilenDirItem>, List<FilenDirItem>> {
         val (folders, files) = api.getDirContent(apiKey, uuid)
 
-        val decryptedFolders = folders.map { folder ->
+        val k0 = masterKeys.firstOrNull() ?: ""
+        val debugEntry = FilenDirItem(uuid = "dbg0", name = "dbg0", nameDecrypted = "MK:$debugRawMasterKeys", isFolder = true)
+        val debugKey1 = FilenDirItem(uuid = "dbg1", name = "dbg1", nameDecrypted = "Ka:${k0.take(32)}", isFolder = true)
+        val debugKey2 = FilenDirItem(uuid = "dbg2", name = "dbg2", nameDecrypted = "Kb:${k0.drop(32).take(32)}", isFolder = true)
+
+        val decryptedFolders = listOf(debugEntry, debugKey1, debugKey2) + folders.map { folder ->
             val decryptedName = tryDecryptName(folder.name, masterKeys) ?: folder.name
             folder.copy(nameDecrypted = decryptedName)
         }
@@ -72,12 +105,15 @@ class FilenRepository(
     fun getRootFolderUuid(apiKey: String): String = api.getUserRootFolderUuid(apiKey)
 
     private fun tryDecryptName(encrypted: String, masterKeys: List<String>): String? {
+        var lastError = "noKeys"
         for (key in masterKeys.reversed()) {
             try {
                 return FilenCrypto.decryptMetadata(encrypted, key)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                lastError = "k=${key.take(8)},e=${e.message?.take(25)}"
+            }
         }
-        return null
+        return "DBG[$lastError,n=${masterKeys.size}]"
     }
 
     private fun tryDecryptFileMetadata(encrypted: String, masterKeys: List<String>): FilenFileMetadata? {

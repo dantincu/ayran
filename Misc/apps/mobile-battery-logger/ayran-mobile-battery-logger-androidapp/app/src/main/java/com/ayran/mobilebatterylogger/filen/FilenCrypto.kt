@@ -23,6 +23,18 @@ object FilenCrypto {
         return Pair(authKey, h)
     }
 
+    // Derives the key used to decrypt items from the login response (masterKeys, privateKey etc.)
+    // = PBKDF2(password, utf8(masterKeyHex), 1 iteration, SHA-512, 32 bytes)
+    fun deriveLoginDecryptionKey(password: String, masterKeyHex: String): String {
+        val keyBytes = pbkdf2HmacSha512(
+            password.toByteArray(Charsets.UTF_8),
+            masterKeyHex.toByteArray(Charsets.UTF_8),
+            iterations = 1,
+            keyLenBytes = 32
+        )
+        return keyBytes.joinToString("") { "%02x".format(it) }
+    }
+
     // Auth version 2: PBKDF2-SHA512 implemented manually so the password is
     // passed as raw UTF-8 bytes to HMAC, matching Node.js crypto.pbkdf2 exactly.
     fun deriveKeys(password: String, salt: String): Pair<String, String> {
