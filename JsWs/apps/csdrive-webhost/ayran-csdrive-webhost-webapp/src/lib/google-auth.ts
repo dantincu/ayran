@@ -1,10 +1,6 @@
 import { google } from 'googleapis';
 
-const SCOPES = [
-  'https://www.googleapis.com/auth/drive',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-];
+const SCOPES = ['https://www.googleapis.com/auth/drive'];
 
 function getRedirectUri(): string {
   return `${process.env.NEXTAUTH_URL ?? 'http://localhost:3000'}/api/auth/google/callback`;
@@ -39,16 +35,17 @@ export async function exchangeCode(code: string): Promise<{
   const { tokens } = await client.getToken(code);
   client.setCredentials(tokens);
 
-  const oauth2 = google.oauth2({ version: 'v2', auth: client });
-  const { data } = await oauth2.userinfo.get();
+  // Fetch user identity via Drive — no extra scopes needed beyond drive itself
+  const drive = google.drive({ version: 'v3', auth: client });
+  const { data } = await drive.about.get({ fields: 'user' });
 
   return {
     accessToken: tokens.access_token!,
     refreshToken: tokens.refresh_token ?? undefined,
     expiresAt: tokens.expiry_date ?? undefined,
-    email: data.email!,
-    displayName: data.name ?? undefined,
-    id: data.id!,
+    email: data.user?.emailAddress ?? '',
+    displayName: data.user?.displayName ?? undefined,
+    id: data.user?.permissionId ?? data.user?.emailAddress ?? '',
   };
 }
 
