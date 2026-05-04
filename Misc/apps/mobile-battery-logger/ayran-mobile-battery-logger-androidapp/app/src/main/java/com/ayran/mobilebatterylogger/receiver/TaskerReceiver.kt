@@ -7,12 +7,12 @@ import android.content.IntentFilter
 import android.os.BatteryManager
 import com.ayran.mobilebatterylogger.data.SettingsRepository
 import com.ayran.mobilebatterylogger.filen.FilenRepository
+import com.ayran.mobilebatterylogger.googledrive.GoogleDriveRepository
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.api.signin.GoogleSignIn
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class TaskerReceiver : BroadcastReceiver() {
 
@@ -27,11 +27,7 @@ class TaskerReceiver : BroadcastReceiver() {
                 val repo = SettingsRepository(appContext)
                 val settings = repo.load()
 
-                if (settings.apiKey.isEmpty()) {
-                    pendingResult.finish()
-                    return@launch
-                }
-                if (settings.fileUuid.isEmpty() && settings.filePath.isEmpty()) {
+                if (settings.filePath.isEmpty()) {
                     pendingResult.finish()
                     return@launch
                 }
@@ -42,20 +38,35 @@ class TaskerReceiver : BroadcastReceiver() {
                     return@launch
                 }
 
-                val filenRepo = FilenRepository()
-                val fileName = settings.filePath.substringAfterLast("/").let { if (it.isEmpty()) "battery_log.json" else it }
-                val parentUuid = if (settings.parentFolderUuid.isNotEmpty()) settings.parentFolderUuid
-                                 else filenRepo.getRootFolderUuid(settings.apiKey)
+                val fileName = settings.filePath.substringAfterLast("/").ifEmpty { "battery_log.json" }
 
-                val newUuid = filenRepo.logBattery(
-                    settings.apiKey,
-                    settings.masterKeys,
-                    settings.fileUuid,
-                    parentUuid,
-                    fileName,
-                    batteryLevel,
-                    settings.maxLogEntries
-                )
+                val newUuid = when (settings.selectedProvider) {
+                    "filen" -> {
+                        if (settings.apiKey.isEmpty()) return@launch
+                        val filenRepo = FilenRepository()
+                        val parentUuid = settings.parentFolderUuid.ifEmpty {
+                            filenRepo.getRootFolderUuid(settings.apiKey)
+                        }
+                        filenRepo.logBattery(
+                            settings.apiKey, settings.masterKeys, settings.fileUuid,
+                            parentUuid, fileName, batteryLevel, settings.maxLogEntries
+                        )
+                    }
+                    "google_drive" -> {
+                        val account = GoogleSignIn.getLastSignedInAccount(appContext)
+                            ?: return@launch
+                        val token = GoogleAuthUtil.getToken(
+                            appContext, account.account!!,
+                            "oauth2:https://www.googleapis.com/auth/drive"
+                        )
+                        val parentId = settings.parentFolderUuid.ifEmpty { "root" }
+                        GoogleDriveRepository().logBattery(
+                            token, settings.fileUuid, parentId,
+                            fileName, batteryLevel, settings.maxLogEntries
+                        )
+                    }
+                    else -> return@launch
+                }
 
                 repo.save(settings.copy(fileUuid = newUuid))
             } catch (_: Exception) {

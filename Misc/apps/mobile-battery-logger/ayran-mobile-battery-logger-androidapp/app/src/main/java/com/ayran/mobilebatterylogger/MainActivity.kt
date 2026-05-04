@@ -10,6 +10,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.ayran.mobilebatterylogger.ui.GoogleDriveLoginScreen
 import com.ayran.mobilebatterylogger.ui.LoginScreen
 import com.ayran.mobilebatterylogger.ui.MainScreen
 import com.ayran.mobilebatterylogger.ui.theme.AppTheme
@@ -26,10 +27,12 @@ class MainActivity : ComponentActivity() {
             AppTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     val isLoggedIn by viewModel.isLoggedIn.collectAsState()
-                    if (isLoggedIn) {
-                        MainScreen(viewModel = viewModel, context = this)
-                    } else {
-                        LoginScreen(viewModel = viewModel, context = this)
+                    val selectedProvider by viewModel.selectedProvider.collectAsState()
+
+                    when {
+                        isLoggedIn -> MainScreen(viewModel = viewModel, context = this)
+                        selectedProvider == "filen" -> LoginScreen(viewModel = viewModel, context = this)
+                        else -> GoogleDriveLoginScreen(viewModel = viewModel, context = this)
                     }
                 }
             }

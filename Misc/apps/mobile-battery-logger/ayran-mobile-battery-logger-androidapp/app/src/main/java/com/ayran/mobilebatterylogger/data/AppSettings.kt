@@ -4,6 +4,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class AppSettings(
+    val selectedProvider: String = "",
     val fileUuid: String = "",
     val filePath: String = "",
     val parentFolderUuid: String = "",

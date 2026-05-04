@@ -129,7 +129,7 @@ fun MainScreen(viewModel: AppViewModel, context: Context) {
                     Text("Log Battery Level", style = MaterialTheme.typography.titleMedium)
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        "Reads current battery level and appends it to your filen.io log file.",
+                        "Reads current battery level and appends it to your log file.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

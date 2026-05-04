@@ -8,15 +8,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ayran.mobilebatterylogger.data.AppSettings
 import com.ayran.mobilebatterylogger.data.SettingsRepository
-import com.ayran.mobilebatterylogger.filen.FilenApi
 import com.ayran.mobilebatterylogger.filen.FilenDirItem
 import com.ayran.mobilebatterylogger.filen.FilenRepository
+import com.ayran.mobilebatterylogger.googledrive.GoogleDriveRepository
+import com.ayran.mobilebatterylogger.storage.StorageProviderConfig
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 sealed class LoginUiState {
     object Idle : LoginUiState()
@@ -59,26 +64,41 @@ class AppViewModel : ViewModel() {
     private val _browseState = MutableStateFlow(BrowseState())
     val browseState: StateFlow<BrowseState> = _browseState.asStateFlow()
 
+    private val _selectedProvider = MutableStateFlow("")
+    val selectedProvider: StateFlow<String> = _selectedProvider.asStateFlow()
+
     private lateinit var settingsRepo: SettingsRepository
+    private lateinit var appContext: Context
     private val filenRepo = FilenRepository()
+    private val googleDriveRepo = GoogleDriveRepository()
 
     fun init(context: Context) {
+        appContext = context.applicationContext
         settingsRepo = SettingsRepository(context)
         val loaded = settingsRepo.load()
-        _settings.value = loaded
-        _isLoggedIn.value = loaded.apiKey.isNotEmpty()
+
+        val provider = loaded.selectedProvider.ifEmpty {
+            StorageProviderConfig.enabledProviders.firstOrNull()?.id ?: ""
+        }
+        val settings = if (loaded.selectedProvider != provider) loaded.copy(selectedProvider = provider) else loaded
+
+        _settings.value = settings
+        _selectedProvider.value = provider
+        _isLoggedIn.value = when (provider) {
+            "filen" -> settings.apiKey.isNotEmpty()
+            "google_drive" -> GoogleSignIn.getLastSignedInAccount(context) != null
+            else -> false
+        }
     }
+
+    // --- Filen.io auth ---
 
     fun loginWithPassword(context: Context, email: String, password: String, twoFactorCode: String = "") {
         _loginState.value = LoginUiState.Loading
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val (apiKey, masterKeys, _) = filenRepo.authenticate(email, password, twoFactorCode)
-                val updated = _settings.value.copy(
-                    apiKey = apiKey,
-                    masterKeys = masterKeys,
-                    email = email
-                )
+                val updated = _settings.value.copy(apiKey = apiKey, masterKeys = masterKeys, email = email)
                 settingsRepo.save(updated)
                 _settings.value = updated
                 _isLoggedIn.value = true
@@ -89,26 +109,45 @@ class AppViewModel : ViewModel() {
         }
     }
 
-    fun loginWithApiKey(context: Context, apiKey: String) {
+    // --- Google Drive auth ---
+
+    fun getGoogleSignInIntent(context: Context): Intent {
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .requestScopes(Scope("https://www.googleapis.com/auth/drive"))
+            .build()
+        return GoogleSignIn.getClient(context, gso).signInIntent
+    }
+
+    fun handleGoogleSignInResult(data: Intent?, context: Context) {
         _loginState.value = LoginUiState.Loading
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val valid = filenRepo.validateApiKeyOnly(apiKey)
-                if (!valid) throw Exception("Invalid API key")
-                val updated = _settings.value.copy(apiKey = apiKey, masterKeys = emptyList())
+                val account = GoogleSignIn.getSignedInAccountFromIntent(data)
+                    .getResult(ApiException::class.java)
+                val updated = _settings.value.copy(email = account.email ?: "")
                 settingsRepo.save(updated)
                 _settings.value = updated
                 _isLoggedIn.value = true
                 _loginState.value = LoginUiState.Idle
-            } catch (e: Exception) {
-                _loginState.value = LoginUiState.Error(e.message ?: "Invalid API key")
+            } catch (e: ApiException) {
+                _loginState.value = LoginUiState.Error("Google Sign-In failed: ${e.statusCode}")
             }
         }
     }
 
+    fun onGoogleSignInCancelled() {
+        _loginState.value = LoginUiState.Idle
+    }
+
+    // --- Shared ---
+
     fun logout(context: Context) {
+        if (_selectedProvider.value == "google_drive") {
+            GoogleSignIn.getClient(context, GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()).signOut()
+        }
         settingsRepo.clear()
-        _settings.value = AppSettings()
+        _settings.value = AppSettings(selectedProvider = _selectedProvider.value)
         _isLoggedIn.value = false
         _loginState.value = LoginUiState.Idle
     }
@@ -124,17 +163,24 @@ class AppViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val s = _settings.value
-                if (s.apiKey.isEmpty()) throw Exception("Not logged in")
-                if (s.fileUuid.isEmpty() && s.filePath.isEmpty()) throw Exception("No log file selected")
-
                 val batteryLevel = getBatteryLevel(context)
                 val fileName = s.filePath.substringAfterLast("/").ifEmpty { "battery_log.json" }
-                val parentUuid = s.parentFolderUuid.ifEmpty { filenRepo.getRootFolderUuid(s.apiKey) }
 
-                val newUuid = filenRepo.logBattery(
-                    s.apiKey, s.masterKeys, s.fileUuid, parentUuid,
-                    fileName, batteryLevel, s.maxLogEntries
-                )
+                val newUuid = when (s.selectedProvider) {
+                    "filen" -> {
+                        if (s.apiKey.isEmpty()) throw Exception("Not logged in")
+                        if (s.fileUuid.isEmpty() && s.filePath.isEmpty()) throw Exception("No log file selected")
+                        val parentUuid = s.parentFolderUuid.ifEmpty { filenRepo.getRootFolderUuid(s.apiKey) }
+                        filenRepo.logBattery(s.apiKey, s.masterKeys, s.fileUuid, parentUuid, fileName, batteryLevel, s.maxLogEntries)
+                    }
+                    "google_drive" -> {
+                        if (s.filePath.isEmpty()) throw Exception("No log file selected")
+                        val token = getGoogleAccessToken()
+                        val parentId = s.parentFolderUuid.ifEmpty { "root" }
+                        googleDriveRepo.logBattery(token, s.fileUuid, parentId, fileName, batteryLevel, s.maxLogEntries)
+                    }
+                    else -> throw Exception("Unknown storage provider")
+                }
 
                 val updated = s.copy(fileUuid = newUuid)
                 _settings.value = updated
@@ -150,9 +196,12 @@ class AppViewModel : ViewModel() {
         viewModelScope.launch(Dispatchers.IO) {
             _browseState.value = BrowseState(isOpen = true, isLoading = true)
             try {
-                val s = _settings.value
-                val rootUuid = filenRepo.getRootFolderUuid(s.apiKey)
-                loadFolder(rootUuid, "/", emptyList())
+                val rootId = when (_settings.value.selectedProvider) {
+                    "filen" -> filenRepo.getRootFolderUuid(_settings.value.apiKey)
+                    "google_drive" -> "root"
+                    else -> throw Exception("Unknown provider")
+                }
+                loadFolder(rootId, "/", emptyList())
             } catch (e: Exception) {
                 _browseState.value = _browseState.value.copy(isLoading = false, error = e.message)
             }
@@ -173,8 +222,7 @@ class AppViewModel : ViewModel() {
             val current = _browseState.value
             if (current.folderStack.isEmpty()) return@launch
             val (prevUuid, prevPath) = current.folderStack.last()
-            val newStack = current.folderStack.dropLast(1)
-            loadFolder(prevUuid, prevPath, newStack)
+            loadFolder(prevUuid, prevPath, current.folderStack.dropLast(1))
         }
     }
 
@@ -182,7 +230,11 @@ class AppViewModel : ViewModel() {
         _browseState.value = _browseState.value.copy(isLoading = true, error = null)
         try {
             val s = _settings.value
-            val (folders, files) = filenRepo.listDirectory(s.apiKey, s.masterKeys, uuid)
+            val (folders, files) = when (s.selectedProvider) {
+                "filen" -> filenRepo.listDirectory(s.apiKey, s.masterKeys, uuid)
+                "google_drive" -> googleDriveRepo.listFolder(getGoogleAccessToken(), uuid)
+                else -> throw Exception("Unknown provider")
+            }
             _browseState.value = BrowseState(
                 isOpen = true,
                 currentFolderUuid = uuid,
@@ -217,6 +269,16 @@ class AppViewModel : ViewModel() {
 
     fun clearLogOperation() {
         _logState.value = LogOperationState.Idle
+    }
+
+    private fun getGoogleAccessToken(): String {
+        val account = GoogleSignIn.getLastSignedInAccount(appContext)
+            ?: throw Exception("Not signed in with Google")
+        return GoogleAuthUtil.getToken(
+            appContext,
+            account.account!!,
+            "oauth2:https://www.googleapis.com/auth/drive"
+        )
     }
 
     private fun getBatteryLevel(context: Context): Int {
