@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { AccountInfo } from '@/types';
 import type { CloudItem } from '@filen/sdk';
 
@@ -14,8 +15,7 @@ type CloudDir = Extract<CloudItem, { type: 'directory' }>;
 function fileIcon(item: CloudItem): string {
   if (item.type === 'directory') return '📁';
   const mime = (item as CloudFile).mime ?? '';
-  const name = item.name;
-  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
   if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'avif'].includes(ext)) return '🖼';
   if (mime.startsWith('video/') || ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext)) return '🎬';
   if (mime.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return '🎵';
@@ -33,7 +33,20 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
+function sortItems(list: CloudItem[]): CloudItem[] {
+  return [...list].sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
 export default function FilenExplorer({ account }: Props) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Capture initial folder from URL once on mount
+  const initialFolderRef = useRef(searchParams.get('folder'));
+
   const [rootUUID, setRootUUID] = useState('');
   const [folderUUID, setFolderUUID] = useState('');
   const [breadcrumbs, setBreadcrumbs] = useState<{ uuid: string; name: string }[]>([]);
@@ -49,48 +62,50 @@ export default function FilenExplorer({ account }: Props) {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/filen/${account.id}/list?parent=${encodeURIComponent(parent)}`);
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error(body.error ?? `HTTP ${res.status}`);
-        }
+        const res = await fetch(
+          `/api/filen/${account.id}/list?parent=${encodeURIComponent(parent)}`
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!rootUUID && data.root) setRootUUID(data.root);
-
         let list: CloudItem[] = data.items ?? [];
         if (query) list = list.filter((i) => i.name.toLowerCase().includes(query.toLowerCase()));
-        list.sort((a, b) => {
-          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        setItems(list);
+        setItems(sortItems(list));
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {
         setLoading(false);
       }
     },
-    [account.id, rootUUID]
+    [account.id]
   );
 
-  // Bootstrap: fetch root UUID then load root contents
+  // Bootstrap: get root UUID then navigate to initial folder (from URL or root)
   useEffect(() => {
     const bootstrap = async () => {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/filen/${account.id}/list`);
+        const folderFromUrl = initialFolderRef.current;
+        // Always fetch root first to get the root UUID; if a folder is in the URL, fetch that too
+        const target = folderFromUrl ?? '';
+        const res = await fetch(
+          `/api/filen/${account.id}/list${target ? `?parent=${encodeURIComponent(target)}` : ''}`
+        );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const root: string = data.root ?? '';
         setRootUUID(root);
-        setFolderUUID(root);
-        setBreadcrumbs([{ uuid: root, name: 'My Filen' }]);
-        const list: CloudItem[] = (data.items ?? []).sort((a: CloudItem, b: CloudItem) => {
-          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-        setItems(list);
+
+        const startFolder = folderFromUrl ?? root;
+        setFolderUUID(startFolder);
+
+        if (folderFromUrl && folderFromUrl !== root) {
+          setBreadcrumbs([{ uuid: root, name: 'My Filen' }, { uuid: folderFromUrl, name: '…' }]);
+        } else {
+          setBreadcrumbs([{ uuid: root, name: 'My Filen' }]);
+        }
+
+        setItems(sortItems(data.items ?? []));
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Failed to load');
       } finally {
@@ -100,28 +115,32 @@ export default function FilenExplorer({ account }: Props) {
     bootstrap();
   }, [account.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const openDir = (item: CloudDir) => {
-    setFolderUUID(item.uuid);
-    setBreadcrumbs((prev) => [...prev, { uuid: item.uuid, name: item.name }]);
+  function setFolderAndUrl(uuid: string, name: string, append: boolean) {
+    const nextCrumbs = append
+      ? [...breadcrumbs, { uuid, name }]
+      : breadcrumbs.slice(0, breadcrumbs.findIndex((c) => c.uuid === uuid) + 1);
+    setFolderUUID(uuid);
+    setBreadcrumbs(nextCrumbs);
     setSearch('');
-    fetchItems(item.uuid);
-  };
+    fetchItems(uuid);
+
+    const url = new URL(window.location.href);
+    if (uuid === rootUUID) url.searchParams.delete('folder');
+    else url.searchParams.set('folder', uuid);
+    router.replace(url.pathname + url.search, { scroll: false });
+  }
+
+  const openDir = (item: CloudDir) => setFolderAndUrl(item.uuid, item.name, true);
 
   const navigateTo = (index: number) => {
     const crumb = breadcrumbs[index];
-    setFolderUUID(crumb.uuid);
+    setFolderAndUrl(crumb.uuid, crumb.name, false);
     setBreadcrumbs((prev) => prev.slice(0, index + 1));
-    setSearch('');
-    fetchItems(crumb.uuid);
   };
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (search) {
-      fetchItems(folderUUID, search);
-    } else {
-      fetchItems(folderUUID);
-    }
+    fetchItems(folderUUID, search || undefined);
   };
 
   const handleDownload = async (item: CloudFile) => {
@@ -246,13 +265,11 @@ export default function FilenExplorer({ account }: Props) {
               <div key={item.uuid} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 group">
                 <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                 <div className="flex-1 min-w-0">
-                  <button
-                    onClick={() => item.type === 'directory' && openDir(item as CloudDir)}
+                  <button onClick={() => item.type === 'directory' && openDir(item as CloudDir)}
                     disabled={item.type !== 'directory'}
                     className={`text-sm font-medium truncate block text-left w-full ${
                       item.type === 'directory' ? 'hover:text-blue-600 cursor-pointer' : 'cursor-default text-gray-800'
-                    }`}
-                  >
+                    }`}>
                     {item.name}
                   </button>
                   <p className="text-xs text-gray-400">

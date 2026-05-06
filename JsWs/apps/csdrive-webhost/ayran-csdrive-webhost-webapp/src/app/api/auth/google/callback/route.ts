@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
       expiresAt: data.expiresAt,
       scope: 'https://www.googleapis.com/auth/drive',
     });
-    return NextResponse.redirect(`${origin}/?connected=1`);
+    return NextResponse.redirect(`${origin}/?connected=${data.id}&account=${encodeURIComponent(data.id)}`);
   } catch (err) {
     console.error('OAuth callback error:', err);
     return NextResponse.redirect(`${origin}/?error=auth_failed`);

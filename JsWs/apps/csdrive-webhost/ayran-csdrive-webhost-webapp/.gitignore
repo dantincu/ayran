@@ -18,3 +18,5 @@ next-env.d.ts
 
 # OAuth tokens — NEVER commit
 .tokens/
+
+certificates

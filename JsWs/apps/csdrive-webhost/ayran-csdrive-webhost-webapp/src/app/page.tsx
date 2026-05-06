@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { listAccounts } from '@/lib/token-store';
 import AppShell from '@/components/AppShell';
 
@@ -22,7 +23,7 @@ export default async function Home({ searchParams }: PageProps) {
   return (
     <main className="container mx-auto p-6 max-w-7xl">
       <header className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">CsDrive WebHost</h1>
+        <h1 className="text-3xl font-bold text-gray-900">Ayran CsDrive WebHost</h1>
         <p className="text-gray-500 mt-1">Access and manage your cloud storage</p>
       </header>
 
@@ -37,7 +38,9 @@ export default async function Home({ searchParams }: PageProps) {
         </div>
       )}
 
-      <AppShell serverAccounts={serverAccounts} />
+      <Suspense>
+        <AppShell serverAccounts={serverAccounts} />
+      </Suspense>
     </main>
   );
 }

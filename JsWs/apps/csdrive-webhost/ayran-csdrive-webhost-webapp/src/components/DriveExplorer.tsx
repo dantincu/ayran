@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { AccountInfo } from '@/types';
 
 interface DriveFile {
@@ -39,8 +40,18 @@ function formatSize(size?: string): string {
 }
 
 export default function DriveExplorer({ account }: Props) {
-  const [folderId, setFolderId] = useState('root');
-  const [breadcrumbs, setBreadcrumbs] = useState([{ id: 'root', name: 'My Drive' }]);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Read once on mount — state is the source of truth after that
+  const initialFolder = searchParams.get('folder') ?? 'root';
+  const [folderId, setFolderId] = useState(initialFolder);
+  const [breadcrumbs, setBreadcrumbs] = useState(() =>
+    initialFolder !== 'root'
+      ? [{ id: 'root', name: 'My Drive' }, { id: initialFolder, name: '…' }]
+      : [{ id: 'root', name: 'My Drive' }]
+  );
+
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,52 +59,66 @@ export default function DriveExplorer({ account }: Props) {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchFiles = useCallback(async (folder: string, query?: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      let q = `'${folder}' in parents and trashed = false`;
-      if (query) q = `name contains '${query}' and trashed = false`;
-      const params = new URLSearchParams({
-        q,
-        fields: 'files(id,name,mimeType,size,modifiedTime)',
-        orderBy: 'folder,name',
-        pageSize: '200',
-      });
-      const res = await fetch(`/api/drive/${account.id}/files?${params}`);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+  const fetchFiles = useCallback(
+    async (folder: string, query?: string) => {
+      setLoading(true);
+      setError(null);
+      try {
+        let q = `'${folder}' in parents and trashed = false`;
+        if (query) q = `name contains '${query}' and trashed = false`;
+        const params = new URLSearchParams({
+          q,
+          fields: 'files(id,name,mimeType,size,modifiedTime)',
+          orderBy: 'folder,name',
+          pageSize: '200',
+        });
+        const res = await fetch(`/api/drive/${account.id}/files?${params}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        setFiles(data.files ?? []);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to load files');
+      } finally {
+        setLoading(false);
       }
-      const data = await res.json();
-      setFiles(data.files ?? []);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load files');
-    } finally {
-      setLoading(false);
-    }
-  }, [account.id]);
+    },
+    [account.id]
+  );
 
   useEffect(() => {
     fetchFiles(folderId);
     setSearch('');
   }, [folderId, fetchFiles]);
 
+  function setFolderAndUrl(id: string, name: string, append: boolean) {
+    const nextCrumbs = append
+      ? [...breadcrumbs, { id, name }]
+      : breadcrumbs.slice(0, breadcrumbs.findIndex((c) => c.id === id) + 1);
+    setFolderId(id);
+    setBreadcrumbs(nextCrumbs);
+    setSearch('');
+
+    const url = new URL(window.location.href);
+    if (id === 'root') url.searchParams.delete('folder');
+    else url.searchParams.set('folder', id);
+    router.replace(url.pathname + url.search, { scroll: false });
+  }
+
   const openFolder = (file: DriveFile) => {
     if (file.mimeType !== FOLDER_MIME) return;
-    setFolderId(file.id);
-    setBreadcrumbs((prev) => [...prev, { id: file.id, name: file.name }]);
-    setSearch('');
+    setFolderAndUrl(file.id, file.name, true);
   };
 
   const navigateTo = (index: number) => {
     const crumb = breadcrumbs[index];
-    setFolderId(crumb.id);
+    setFolderAndUrl(crumb.id, crumb.name, false);
     setBreadcrumbs((prev) => prev.slice(0, index + 1));
-    setSearch('');
   };
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     fetchFiles(folderId, search || undefined);
   };
@@ -115,9 +140,7 @@ export default function DriveExplorer({ account }: Props) {
   const handleDelete = async (file: DriveFile) => {
     if (!confirm(`Delete "${file.name}"?`)) return;
     const res = await fetch(`/api/drive/${account.id}/files/${file.id}`, { method: 'DELETE' });
-    if (res.ok || res.status === 204) {
-      setFiles((prev) => prev.filter((f) => f.id !== file.id));
-    }
+    if (res.ok || res.status === 204) setFiles((prev) => prev.filter((f) => f.id !== file.id));
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -179,19 +202,13 @@ export default function DriveExplorer({ account }: Props) {
         </div>
 
         <form onSubmit={handleSearch} className="flex gap-2">
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Search files…"
-            className="flex-1 text-sm px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300"
-          />
+            className="flex-1 text-sm px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300" />
           <button type="submit" className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">Search</button>
           {search && (
             <button type="button" onClick={() => { setSearch(''); fetchFiles(folderId); }}
-              className="px-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200">
-              Clear
-            </button>
+              className="px-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200">Clear</button>
           )}
         </form>
 
@@ -199,10 +216,8 @@ export default function DriveExplorer({ account }: Props) {
           {breadcrumbs.map((crumb, i) => (
             <span key={crumb.id} className="flex items-center gap-1">
               {i > 0 && <span className="text-gray-300">/</span>}
-              <button
-                onClick={() => navigateTo(i)}
-                className={i === breadcrumbs.length - 1 ? 'text-gray-800 font-medium' : 'hover:text-blue-600'}
-              >
+              <button onClick={() => navigateTo(i)}
+                className={i === breadcrumbs.length - 1 ? 'text-gray-800 font-medium' : 'hover:text-blue-600'}>
                 {crumb.name}
               </button>
             </span>
@@ -224,13 +239,10 @@ export default function DriveExplorer({ account }: Props) {
               <div key={file.id} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 group">
                 <span className="text-lg select-none w-7 text-center">{fileIcon(file.mimeType)}</span>
                 <div className="flex-1 min-w-0">
-                  <button
-                    onClick={() => openFolder(file)}
-                    disabled={file.mimeType !== FOLDER_MIME}
+                  <button onClick={() => openFolder(file)} disabled={file.mimeType !== FOLDER_MIME}
                     className={`text-sm font-medium truncate block text-left w-full ${
                       file.mimeType === FOLDER_MIME ? 'hover:text-blue-600 cursor-pointer' : 'cursor-default text-gray-800'
-                    }`}
-                  >
+                    }`}>
                     {file.name}
                   </button>
                   <p className="text-xs text-gray-400">

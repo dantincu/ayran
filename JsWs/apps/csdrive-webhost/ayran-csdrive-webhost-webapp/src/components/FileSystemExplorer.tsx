@@ -87,7 +87,7 @@ export default function FileSystemExplorer({ entry }: Props) {
     setSearch('');
   };
 
-  const handleSearch = (e: React.FormEvent) => {
+  const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => {
     e.preventDefault();
     loadItems(dirHandle, search || undefined);
   };

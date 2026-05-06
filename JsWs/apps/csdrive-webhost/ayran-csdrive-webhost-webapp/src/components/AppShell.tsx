@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { AccountInfo, FsAccountInfo } from '@/types';
 import { listFsEntries, saveFsEntry, deleteFsEntry, type FsEntry } from '@/lib/fs-store';
 import AccountManager from './AccountManager';
@@ -14,17 +14,36 @@ interface Props {
   serverAccounts: AccountInfo[];
 }
 
+function replaceParams(updates: Record<string, string | null>) {
+  const url = new URL(window.location.href);
+  for (const [key, value] of Object.entries(updates)) {
+    if (value === null) url.searchParams.delete(key);
+    else url.searchParams.set(key, value);
+  }
+  return url.pathname + url.search;
+}
+
 export default function AppShell({ serverAccounts }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [fsEntries, setFsEntries] = useState<FsEntry[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(serverAccounts[0]?.id ?? null);
   const [showFilenLogin, setShowFilenLogin] = useState(false);
+
+  // Initialise once from URL; state owns the selection after that
+  const [selectedId, setSelectedId] = useState<string | null>(() => {
+    const fromUrl = searchParams.get('account');
+    if (fromUrl && serverAccounts.some((a) => a.id === fromUrl)) return fromUrl;
+    return serverAccounts[0]?.id ?? null;
+  });
 
   useEffect(() => {
     listFsEntries().then((entries) => {
       setFsEntries(entries);
       if (serverAccounts.length === 0 && entries.length > 0 && !selectedId) {
-        setSelectedId(entries[0].id);
+        const first = entries[0].id;
+        setSelectedId(first);
+        router.replace(replaceParams({ account: first }), { scroll: false });
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -48,6 +67,12 @@ export default function AppShell({ serverAccounts }: Props) {
   const selectedFilen = filenAccounts.find((a) => a.id === effectiveId) ?? null;
   const selectedFsEntry = fsEntries.find((e) => e.id === effectiveId) ?? null;
 
+  const handleSelectAccount = (id: string) => {
+    setSelectedId(id);
+    // Clear folder when switching accounts so the new explorer starts at root
+    router.replace(replaceParams({ account: id, folder: null }), { scroll: false });
+  };
+
   const handleConnectFs = async () => {
     if (!('showDirectoryPicker' in window)) {
       alert('Your browser does not support the File System Access API.\nPlease use Chrome or Edge.');
@@ -58,7 +83,7 @@ export default function AppShell({ serverAccounts }: Props) {
       const entry: FsEntry = { id: `fs-${Date.now()}`, name: handle.name, handle };
       await saveFsEntry(entry);
       setFsEntries((prev) => [...prev, entry]);
-      setSelectedId(entry.id);
+      handleSelectAccount(entry.id);
     } catch {
       // User cancelled
     }
@@ -66,20 +91,30 @@ export default function AppShell({ serverAccounts }: Props) {
 
   const handleFilenLoginSuccess = (id: string) => {
     setShowFilenLogin(false);
-    router.refresh();
     setSelectedId(id);
+    // router.push (not replace) so the server re-renders and picks up the new Filen account
+    router.push(replaceParams({ account: id, folder: null }), { scroll: false });
   };
 
   const handleDisconnectServer = async (id: string) => {
     await fetch(`/api/auth/accounts/${id}`, { method: 'DELETE' });
-    if (effectiveId === id) setSelectedId(null);
-    router.refresh();
+    if (effectiveId === id) {
+      const next = serverAccounts.find((a) => a.id !== id)?.id ?? fsEntries[0]?.id ?? null;
+      setSelectedId(next);
+      router.push(replaceParams({ account: next, folder: null }), { scroll: false });
+    } else {
+      router.refresh();
+    }
   };
 
   const handleDisconnectFs = async (id: string) => {
     await deleteFsEntry(id);
     setFsEntries((prev) => prev.filter((e) => e.id !== id));
-    if (effectiveId === id) setSelectedId(null);
+    if (effectiveId === id) {
+      const next = serverAccounts[0]?.id ?? null;
+      setSelectedId(next);
+      router.replace(replaceParams({ account: next, folder: null }), { scroll: false });
+    }
   };
 
   const hasAny = serverAccounts.length > 0 || fsEntries.length > 0;
@@ -100,7 +135,7 @@ export default function AppShell({ serverAccounts }: Props) {
             filenAccounts={filenAccounts}
             fsAccounts={fsAccountInfos}
             selectedId={effectiveId}
-            onSelect={setSelectedId}
+            onSelect={handleSelectAccount}
             onDisconnectServer={handleDisconnectServer}
             onDisconnectFs={handleDisconnectFs}
             onConnectFs={handleConnectFs}
