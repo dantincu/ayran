@@ -1,0 +1,277 @@
+'use client';
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import type { AccountInfo } from '@/types';
+import type { CloudItem } from '@filen/sdk';
+
+interface Props {
+  account: AccountInfo;
+}
+
+type CloudFile = Extract<CloudItem, { type: 'file' }>;
+type CloudDir = Extract<CloudItem, { type: 'directory' }>;
+
+function fileIcon(item: CloudItem): string {
+  if (item.type === 'directory') return '📁';
+  const mime = (item as CloudFile).mime ?? '';
+  const name = item.name;
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  if (mime.startsWith('image/') || ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'avif'].includes(ext)) return '🖼';
+  if (mime.startsWith('video/') || ['mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext)) return '🎬';
+  if (mime.startsWith('audio/') || ['mp3', 'wav', 'ogg', 'flac', 'm4a'].includes(ext)) return '🎵';
+  if (ext === 'pdf') return '📄';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return '📊';
+  if (['ppt', 'pptx'].includes(ext)) return '📑';
+  if (['doc', 'docx', 'txt', 'md'].includes(ext)) return '📝';
+  return '📄';
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+export default function FilenExplorer({ account }: Props) {
+  const [rootUUID, setRootUUID] = useState('');
+  const [folderUUID, setFolderUUID] = useState('');
+  const [breadcrumbs, setBreadcrumbs] = useState<{ uuid: string; name: string }[]>([]);
+  const [items, setItems] = useState<CloudItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const fetchItems = useCallback(
+    async (parent: string, query?: string) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/filen/${account.id}/list?parent=${encodeURIComponent(parent)}`);
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error ?? `HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (!rootUUID && data.root) setRootUUID(data.root);
+
+        let list: CloudItem[] = data.items ?? [];
+        if (query) list = list.filter((i) => i.name.toLowerCase().includes(query.toLowerCase()));
+        list.sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        setItems(list);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to load');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [account.id, rootUUID]
+  );
+
+  // Bootstrap: fetch root UUID then load root contents
+  useEffect(() => {
+    const bootstrap = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/filen/${account.id}/list`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        const root: string = data.root ?? '';
+        setRootUUID(root);
+        setFolderUUID(root);
+        setBreadcrumbs([{ uuid: root, name: 'My Filen' }]);
+        const list: CloudItem[] = (data.items ?? []).sort((a: CloudItem, b: CloudItem) => {
+          if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+        setItems(list);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to load');
+      } finally {
+        setLoading(false);
+      }
+    };
+    bootstrap();
+  }, [account.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const openDir = (item: CloudDir) => {
+    setFolderUUID(item.uuid);
+    setBreadcrumbs((prev) => [...prev, { uuid: item.uuid, name: item.name }]);
+    setSearch('');
+    fetchItems(item.uuid);
+  };
+
+  const navigateTo = (index: number) => {
+    const crumb = breadcrumbs[index];
+    setFolderUUID(crumb.uuid);
+    setBreadcrumbs((prev) => prev.slice(0, index + 1));
+    setSearch('');
+    fetchItems(crumb.uuid);
+  };
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (search) {
+      fetchItems(folderUUID, search);
+    } else {
+      fetchItems(folderUUID);
+    }
+  };
+
+  const handleDownload = async (item: CloudFile) => {
+    const res = await fetch(`/api/filen/${account.id}/download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uuid: item.uuid,
+        bucket: item.bucket,
+        region: item.region,
+        chunks: item.chunks,
+        version: item.version,
+        key: item.key,
+        size: item.size,
+        mime: item.mime,
+        name: item.name,
+      }),
+    });
+    if (!res.ok) return;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = item.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDelete = async (item: CloudItem) => {
+    if (!confirm(`Move "${item.name}" to trash?`)) return;
+    const res = await fetch(
+      `/api/filen/${account.id}/item?uuid=${encodeURIComponent(item.uuid)}&type=${item.type}`,
+      { method: 'DELETE' }
+    );
+    if (res.ok) setItems((prev) => prev.filter((i) => i.uuid !== item.uuid));
+  };
+
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const res = await fetch(
+        `/api/filen/${account.id}/upload?parent=${encodeURIComponent(folderUUID)}`,
+        { method: 'POST', body: form }
+      );
+      if (res.ok) fetchItems(folderUUID);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleNewFolder = async () => {
+    const name = prompt('Folder name:');
+    if (!name?.trim()) return;
+    const res = await fetch(`/api/filen/${account.id}/mkdir`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: name.trim(), parent: folderUUID }),
+    });
+    if (res.ok) fetchItems(folderUUID);
+  };
+
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+      <div className="p-4 border-b border-gray-100 space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Filen</span>
+          <span className="text-xs text-gray-400 truncate">{account.email}</span>
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={handleNewFolder} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors">
+              + New folder
+            </button>
+            <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
+              className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+              {uploading ? 'Uploading…' : 'Upload file'}
+            </button>
+            <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
+          </div>
+        </div>
+
+        <form onSubmit={handleSearch} className="flex gap-2">
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search files…"
+            className="flex-1 text-sm px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300" />
+          <button type="submit" className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">Search</button>
+          {search && (
+            <button type="button" onClick={() => { setSearch(''); fetchItems(folderUUID); }}
+              className="px-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200">Clear</button>
+          )}
+        </form>
+
+        <nav className="flex items-center flex-wrap gap-1 text-sm text-gray-500">
+          {breadcrumbs.map((crumb, i) => (
+            <span key={crumb.uuid} className="flex items-center gap-1">
+              {i > 0 && <span className="text-gray-300">/</span>}
+              <button onClick={() => navigateTo(i)}
+                className={i === breadcrumbs.length - 1 ? 'text-gray-800 font-medium' : 'hover:text-blue-600'}>
+                {crumb.name}
+              </button>
+            </span>
+          ))}
+        </nav>
+      </div>
+
+      <div className="p-4 min-h-48">
+        {loading && <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading…</div>}
+        {!loading && error && (
+          <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-lg text-sm">{error}</div>
+        )}
+        {!loading && !error && items.length === 0 && (
+          <div className="flex items-center justify-center h-32 text-gray-400 text-sm">This folder is empty</div>
+        )}
+        {!loading && !error && items.length > 0 && (
+          <div className="divide-y divide-gray-50">
+            {items.map((item) => (
+              <div key={item.uuid} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 group">
+                <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
+                <div className="flex-1 min-w-0">
+                  <button
+                    onClick={() => item.type === 'directory' && openDir(item as CloudDir)}
+                    disabled={item.type !== 'directory'}
+                    className={`text-sm font-medium truncate block text-left w-full ${
+                      item.type === 'directory' ? 'hover:text-blue-600 cursor-pointer' : 'cursor-default text-gray-800'
+                    }`}
+                  >
+                    {item.name}
+                  </button>
+                  <p className="text-xs text-gray-400">
+                    {item.type === 'file' && formatSize((item as CloudFile).size)}
+                    {item.type === 'file' && item.lastModified ? ' · ' : ''}
+                    {item.lastModified ? new Date(item.lastModified).toLocaleDateString() : ''}
+                  </p>
+                </div>
+                <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                  {item.type === 'file' && (
+                    <button onClick={() => handleDownload(item as CloudFile)} className="text-xs text-blue-600 hover:text-blue-800">Download</button>
+                  )}
+                  <button onClick={() => handleDelete(item)} className="text-xs text-red-500 hover:text-red-700">Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

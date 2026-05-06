@@ -14,7 +14,7 @@ const csp = [
 ].join('; ');
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ['googleapis', 'google-auth-library'],
+  serverExternalPackages: ['googleapis', 'google-auth-library', '@filen/sdk'],
   async headers() {
     return [
       {

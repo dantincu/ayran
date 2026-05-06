@@ -12,7 +12,7 @@ interface DriveFile {
 }
 
 interface Props {
-  accounts: AccountInfo[];
+  account: AccountInfo;
 }
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -38,8 +38,7 @@ function formatSize(size?: string): string {
   return `${(n / 1024 ** 3).toFixed(1)} GB`;
 }
 
-export default function DriveExplorer({ accounts }: Props) {
-  const [selectedId, setSelectedId] = useState(accounts[0]?.id ?? '');
+export default function DriveExplorer({ account }: Props) {
   const [folderId, setFolderId] = useState('root');
   const [breadcrumbs, setBreadcrumbs] = useState([{ id: 'root', name: 'My Drive' }]);
   const [files, setFiles] = useState<DriveFile[]>([]);
@@ -49,8 +48,7 @@ export default function DriveExplorer({ accounts }: Props) {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchFiles = useCallback(async (accountId: string, folder: string, query?: string) => {
-    if (!accountId) return;
+  const fetchFiles = useCallback(async (folder: string, query?: string) => {
     setLoading(true);
     setError(null);
     try {
@@ -62,7 +60,7 @@ export default function DriveExplorer({ accounts }: Props) {
         orderBy: 'folder,name',
         pageSize: '200',
       });
-      const res = await fetch(`/api/drive/${accountId}/files?${params}`);
+      const res = await fetch(`/api/drive/${account.id}/files?${params}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
@@ -74,18 +72,12 @@ export default function DriveExplorer({ accounts }: Props) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [account.id]);
 
   useEffect(() => {
-    fetchFiles(selectedId, folderId);
+    fetchFiles(folderId);
     setSearch('');
-  }, [selectedId, folderId, fetchFiles]);
-
-  const switchAccount = (id: string) => {
-    setSelectedId(id);
-    setFolderId('root');
-    setBreadcrumbs([{ id: 'root', name: 'My Drive' }]);
-  };
+  }, [folderId, fetchFiles]);
 
   const openFolder = (file: DriveFile) => {
     if (file.mimeType !== FOLDER_MIME) return;
@@ -103,11 +95,11 @@ export default function DriveExplorer({ accounts }: Props) {
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    fetchFiles(selectedId, folderId, search || undefined);
+    fetchFiles(folderId, search || undefined);
   };
 
   const handleDownload = async (file: DriveFile) => {
-    const res = await fetch(`/api/drive/${selectedId}/files/${file.id}?alt=media`);
+    const res = await fetch(`/api/drive/${account.id}/files/${file.id}?alt=media`);
     if (!res.ok) return;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -122,7 +114,7 @@ export default function DriveExplorer({ accounts }: Props) {
 
   const handleDelete = async (file: DriveFile) => {
     if (!confirm(`Delete "${file.name}"?`)) return;
-    const res = await fetch(`/api/drive/${selectedId}/files/${file.id}`, { method: 'DELETE' });
+    const res = await fetch(`/api/drive/${account.id}/files/${file.id}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) {
       setFiles((prev) => prev.filter((f) => f.id !== file.id));
     }
@@ -137,23 +129,20 @@ export default function DriveExplorer({ accounts }: Props) {
       const metadata = JSON.stringify({ name: file.name, parents: [folderId] });
       const fileBytes = await file.arrayBuffer();
       const enc = new TextEncoder();
-
       const pre = enc.encode(
         `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`
       );
       const post = enc.encode(`\r\n--${boundary}--`);
-
       const merged = new Uint8Array(pre.byteLength + fileBytes.byteLength + post.byteLength);
       merged.set(pre, 0);
       merged.set(new Uint8Array(fileBytes), pre.byteLength);
       merged.set(post, pre.byteLength + fileBytes.byteLength);
-
-      const res = await fetch(`/api/drive/${selectedId}/upload/files?uploadType=multipart`, {
+      const res = await fetch(`/api/drive/${account.id}/upload/files?uploadType=multipart`, {
         method: 'POST',
         headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
         body: merged,
       });
-      if (res.ok) fetchFiles(selectedId, folderId);
+      if (res.ok) fetchFiles(folderId);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -163,53 +152,32 @@ export default function DriveExplorer({ accounts }: Props) {
   const handleNewFolder = async () => {
     const name = prompt('Folder name:');
     if (!name?.trim()) return;
-    const res = await fetch(`/api/drive/${selectedId}/files`, {
+    const res = await fetch(`/api/drive/${account.id}/files`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: name.trim(), mimeType: FOLDER_MIME, parents: [folderId] }),
     });
-    if (res.ok) fetchFiles(selectedId, folderId);
+    if (res.ok) fetchFiles(folderId);
   };
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-200">
-      {/* Toolbar */}
       <div className="p-4 border-b border-gray-100 space-y-3">
-        {/* Account tabs */}
-        <div className="flex flex-wrap items-center gap-2">
-          {accounts.map((a) => (
-            <button
-              key={a.id}
-              onClick={() => switchAccount(a.id)}
-              className={`px-3 py-1 rounded-full text-sm transition-colors ${
-                selectedId === a.id
-                  ? 'bg-blue-100 text-blue-700 font-medium'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {a.displayName ?? a.email}
-            </button>
-          ))}
-
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">Google Drive</span>
+          <span className="text-xs text-gray-400 truncate">{account.displayName ?? account.email}</span>
           <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={handleNewFolder}
-              className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
-            >
+            <button onClick={handleNewFolder} className="px-3 py-1 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors">
               + New folder
             </button>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
-            >
+            <button onClick={() => fileInputRef.current?.click()} disabled={uploading}
+              className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
               {uploading ? 'Uploading…' : 'Upload file'}
             </button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
           </div>
         </div>
 
-        {/* Search */}
         <form onSubmit={handleSearch} className="flex gap-2">
           <input
             type="text"
@@ -218,21 +186,15 @@ export default function DriveExplorer({ accounts }: Props) {
             placeholder="Search files…"
             className="flex-1 text-sm px-3 py-1.5 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-300"
           />
-          <button type="submit" className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">
-            Search
-          </button>
+          <button type="submit" className="px-3 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700">Search</button>
           {search && (
-            <button
-              type="button"
-              onClick={() => { setSearch(''); fetchFiles(selectedId, folderId); }}
-              className="px-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200"
-            >
+            <button type="button" onClick={() => { setSearch(''); fetchFiles(folderId); }}
+              className="px-3 py-1.5 bg-gray-100 text-gray-600 text-sm rounded-lg hover:bg-gray-200">
               Clear
             </button>
           )}
         </form>
 
-        {/* Breadcrumbs */}
         <nav className="flex items-center flex-wrap gap-1 text-sm text-gray-500">
           {breadcrumbs.map((crumb, i) => (
             <span key={crumb.id} className="flex items-center gap-1">
@@ -248,11 +210,8 @@ export default function DriveExplorer({ accounts }: Props) {
         </nav>
       </div>
 
-      {/* File list */}
       <div className="p-4 min-h-48">
-        {loading && (
-          <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading…</div>
-        )}
+        {loading && <div className="flex items-center justify-center h-32 text-gray-400 text-sm">Loading…</div>}
         {!loading && error && (
           <div className="p-3 bg-red-50 border border-red-100 text-red-600 rounded-lg text-sm">{error}</div>
         )}
@@ -262,20 +221,14 @@ export default function DriveExplorer({ accounts }: Props) {
         {!loading && !error && files.length > 0 && (
           <div className="divide-y divide-gray-50">
             {files.map((file) => (
-              <div
-                key={file.id}
-                className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 group"
-              >
+              <div key={file.id} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 group">
                 <span className="text-lg select-none w-7 text-center">{fileIcon(file.mimeType)}</span>
-
                 <div className="flex-1 min-w-0">
                   <button
                     onClick={() => openFolder(file)}
                     disabled={file.mimeType !== FOLDER_MIME}
                     className={`text-sm font-medium truncate block text-left w-full ${
-                      file.mimeType === FOLDER_MIME
-                        ? 'hover:text-blue-600 cursor-pointer'
-                        : 'cursor-default text-gray-800'
+                      file.mimeType === FOLDER_MIME ? 'hover:text-blue-600 cursor-pointer' : 'cursor-default text-gray-800'
                     }`}
                   >
                     {file.name}
@@ -286,22 +239,11 @@ export default function DriveExplorer({ accounts }: Props) {
                     {file.modifiedTime && new Date(file.modifiedTime).toLocaleDateString()}
                   </p>
                 </div>
-
                 <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                   {file.mimeType !== FOLDER_MIME && (
-                    <button
-                      onClick={() => handleDownload(file)}
-                      className="text-xs text-blue-600 hover:text-blue-800"
-                    >
-                      Download
-                    </button>
+                    <button onClick={() => handleDownload(file)} className="text-xs text-blue-600 hover:text-blue-800">Download</button>
                   )}
-                  <button
-                    onClick={() => handleDelete(file)}
-                    className="text-xs text-red-500 hover:text-red-700"
-                  >
-                    Delete
-                  </button>
+                  <button onClick={() => handleDelete(file)} className="text-xs text-red-500 hover:text-red-700">Delete</button>
                 </div>
               </div>
             ))}

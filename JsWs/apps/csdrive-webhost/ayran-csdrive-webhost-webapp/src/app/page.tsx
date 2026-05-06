@@ -1,6 +1,5 @@
 import { listAccounts } from '@/lib/token-store';
-import AccountManager from '@/components/AccountManager';
-import DriveExplorer from '@/components/DriveExplorer';
+import AppShell from '@/components/AppShell';
 
 const ERROR_MESSAGES: Record<string, string> = {
   missing_code: 'Authentication failed: no authorization code received',
@@ -16,11 +15,8 @@ interface PageProps {
 export default async function Home({ searchParams }: PageProps) {
   const { connected, error } = await searchParams;
   const accounts = await listAccounts();
-  const accountInfos = accounts.map(({ id, email, displayName, provider }) => ({
-    id,
-    email,
-    displayName,
-    provider,
+  const serverAccounts = accounts.map(({ id, email, displayName, provider }) => ({
+    id, email, displayName, provider,
   }));
 
   return (
@@ -41,26 +37,7 @@ export default async function Home({ searchParams }: PageProps) {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <aside className="lg:col-span-1">
-          <AccountManager accounts={accountInfos} />
-        </aside>
-
-        <section className="lg:col-span-3">
-          {accountInfos.length > 0 ? (
-            <DriveExplorer accounts={accountInfos} />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-64 text-center text-gray-400 border-2 border-dashed border-gray-200 rounded-xl">
-              <svg className="w-12 h-12 mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                  d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-              </svg>
-              <p className="text-lg font-medium">No accounts connected</p>
-              <p className="text-sm mt-1">Connect a Google account to get started</p>
-            </div>
-          )}
-        </section>
-      </div>
+      <AppShell serverAccounts={serverAccounts} />
     </main>
   );
 }
