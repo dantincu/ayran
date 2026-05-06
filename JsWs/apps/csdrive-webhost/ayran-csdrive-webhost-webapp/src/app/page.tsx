@@ -1,6 +1,7 @@
 import { Suspense } from 'react';
 import { listAccounts } from '@/lib/token-store';
 import AppShell from '@/components/AppShell';
+import ThemeToggle from '@/components/ThemeToggle';
 
 const ERROR_MESSAGES: Record<string, string> = {
   missing_code: 'Authentication failed: no authorization code received',
@@ -22,18 +23,21 @@ export default async function Home({ searchParams }: PageProps) {
 
   return (
     <main className="container mx-auto p-6 max-w-7xl">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900">Ayran CsDrive WebHost</h1>
-        <p className="text-gray-500 mt-1">Access and manage your cloud storage</p>
+      <header className="mb-8 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Ayran CsDrive WebHost</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Access and manage your cloud storage</p>
+        </div>
+        <ThemeToggle />
       </header>
 
       {connected && (
-        <div className="mb-5 p-3 bg-green-50 border border-green-200 text-green-700 rounded-lg text-sm">
+        <div className="mb-5 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 text-green-700 dark:text-green-400 rounded-lg text-sm">
           Account connected successfully.
         </div>
       )}
       {error && (
-        <div className="mb-5 p-3 bg-red-50 border border-red-200 text-red-600 rounded-lg text-sm">
+        <div className="mb-5 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm">
           {ERROR_MESSAGES[error] ?? `Error: ${error.replace(/_/g, ' ')}`}
         </div>
       )}
