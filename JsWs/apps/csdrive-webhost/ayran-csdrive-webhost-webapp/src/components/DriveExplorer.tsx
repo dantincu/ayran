@@ -8,7 +8,7 @@ interface DriveFile {
   id: string; name: string; mimeType: string; size?: string; modifiedTime?: string;
 }
 
-interface Props { account: AccountInfo; }
+interface Props { account: AccountInfo; onDisconnect: () => void; }
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 
@@ -33,7 +33,7 @@ function formatSize(size?: string): string {
   return `${(n / 1024 ** 3).toFixed(1)} GB`;
 }
 
-export default function DriveExplorer({ account }: Props) {
+export default function DriveExplorer({ account, onDisconnect }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -139,6 +139,12 @@ export default function DriveExplorer({ account }: Props) {
               {uploading ? 'Uploading…' : 'Upload file'}
             </button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
+            <button
+              onClick={() => confirm(`Disconnect ${account.displayName ?? account.email} from Google Drive?`) && onDisconnect()}
+              className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+            >
+              Disconnect
+            </button>
           </div>
         </div>
 

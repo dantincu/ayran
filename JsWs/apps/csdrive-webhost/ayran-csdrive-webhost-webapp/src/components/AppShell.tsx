@@ -144,9 +144,9 @@ export default function AppShell({ serverAccounts }: Props) {
         </aside>
 
         <section className="lg:col-span-3">
-          {selectedGoogle && <DriveExplorer key={selectedGoogle.id} account={selectedGoogle} />}
-          {selectedFilen && <FilenExplorer key={selectedFilen.id} account={selectedFilen} />}
-          {selectedFsEntry && <FileSystemExplorer key={selectedFsEntry.id} entry={selectedFsEntry} />}
+          {selectedGoogle && <DriveExplorer key={selectedGoogle.id} account={selectedGoogle} onDisconnect={() => handleDisconnectServer(selectedGoogle.id)} />}
+          {selectedFilen && <FilenExplorer key={selectedFilen.id} account={selectedFilen} onDisconnect={() => handleDisconnectServer(selectedFilen.id)} />}
+          {selectedFsEntry && <FileSystemExplorer key={selectedFsEntry.id} entry={selectedFsEntry} onDisconnect={() => handleDisconnectFs(selectedFsEntry.id)} />}
           {!hasAny && <EmptyState />}
         </section>
       </div>

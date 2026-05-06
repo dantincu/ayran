@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import type { AccountInfo } from '@/types';
 import type { CloudItem } from '@filen/sdk';
 
-interface Props { account: AccountInfo; }
+interface Props { account: AccountInfo; onDisconnect: () => void; }
 
 type CloudFile = Extract<CloudItem, { type: 'file' }>;
 type CloudDir = Extract<CloudItem, { type: 'directory' }>;
@@ -38,7 +38,7 @@ function sortItems(list: CloudItem[]): CloudItem[] {
   });
 }
 
-export default function FilenExplorer({ account }: Props) {
+export default function FilenExplorer({ account, onDisconnect }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const initialFolderRef = useRef(searchParams.get('folder'));
@@ -150,6 +150,12 @@ export default function FilenExplorer({ account }: Props) {
               {uploading ? 'Uploading…' : 'Upload file'}
             </button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
+            <button
+              onClick={() => confirm(`Disconnect ${account.email} from Filen?`) && onDisconnect()}
+              className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+            >
+              Disconnect
+            </button>
           </div>
         </div>
 

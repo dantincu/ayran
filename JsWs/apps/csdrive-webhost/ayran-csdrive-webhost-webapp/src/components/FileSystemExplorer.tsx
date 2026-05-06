@@ -11,6 +11,7 @@ interface FsItem {
 
 interface Props {
   entry: FsEntry;
+  onDisconnect: () => void;
 }
 
 function fileIcon(name: string, kind: 'file' | 'directory'): string {
@@ -31,7 +32,7 @@ async function ensurePermission(handle: FileSystemDirectoryHandle, mode: 'read' 
   return (await handle.requestPermission({ mode })) === 'granted';
 }
 
-export default function FileSystemExplorer({ entry }: Props) {
+export default function FileSystemExplorer({ entry, onDisconnect }: Props) {
   const [dirHandle, setDirHandle] = useState<FileSystemDirectoryHandle>(entry.handle);
   const [breadcrumbs, setBreadcrumbs] = useState([{ name: entry.name, handle: entry.handle }]);
   const [items, setItems] = useState<FsItem[]>([]);
@@ -148,6 +149,18 @@ export default function FileSystemExplorer({ entry }: Props) {
               Upload file
             </button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
+            <button
+              onClick={() => {
+                const ok = confirm(
+                  `Remove "${entry.name}" from connected storage?\n\n` +
+                  `This app will lose access immediately. The permission grant your browser holds for this folder can be fully revoked in your browser's site settings.`
+                );
+                if (ok) onDisconnect();
+              }}
+              className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+            >
+              Revoke & remove
+            </button>
           </div>
         </div>
 
