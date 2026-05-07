@@ -1,39 +1,69 @@
-import FilenSDK from '@filen/sdk';
+import { invoke } from '@tauri-apps/api/core';
 import { upsertAccount } from './account-store';
 import type { StoredAccount } from '../types';
 
-// In-memory cache keyed by account ID.
-const cache = new Map<string, FilenSDK>();
-
-export function getFilenSDK(account: StoredAccount): FilenSDK {
-  if (cache.has(account.id)) return cache.get(account.id)!;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const sdk = new FilenSDK({ ...(account.providerData as any), connectToSocket: false });
-  cache.set(account.id, sdk);
-  return sdk;
+export interface FilenItem {
+  type: 'file' | 'directory';
+  uuid: string;
+  name: string;
+  mime?: string;
+  size?: number;
+  lastModified: number;
 }
 
 export async function loginFilen(
   email: string,
   password: string,
-  twoFactorCode?: string
+  twoFactorCode?: string,
 ): Promise<StoredAccount> {
-  const sdk = new FilenSDK({ connectToSocket: false });
-  await sdk.login({ email, password, twoFactorCode });
-
-  const config = sdk.config;
-  const id = `filen-${config.userId}`;
-
-  const account: StoredAccount = {
-    id,
+  const account = await invoke<StoredAccount>('filen_login', {
     email,
-    displayName: email.split('@')[0],
-    provider: 'filen',
-    accessToken: config.apiKey ?? '',
-    providerData: config as Record<string, unknown>,
-  };
-
+    password,
+    twoFactorCode: twoFactorCode ?? null,
+  });
   await upsertAccount(account);
-  cache.set(id, sdk);
   return account;
+}
+
+export async function listDirectory(
+  accountId: string,
+  uuid: string,
+): Promise<FilenItem[]> {
+  return invoke('filen_list_directory', { accountId, uuid });
+}
+
+export async function downloadFile(
+  accountId: string,
+  uuid: string,
+  destPath: string,
+): Promise<void> {
+  return invoke('filen_download_file', { accountId, uuid, destPath });
+}
+
+export async function uploadFile(
+  accountId: string,
+  parentUuid: string,
+  filePath: string,
+): Promise<void> {
+  return invoke('filen_upload_file', { accountId, parentUuid, filePath });
+}
+
+export async function createDirectory(
+  accountId: string,
+  parentUuid: string,
+  name: string,
+): Promise<string> {
+  return invoke('filen_create_directory', { accountId, parentUuid, name });
+}
+
+export async function trashFile(accountId: string, uuid: string): Promise<void> {
+  return invoke('filen_trash_file', { accountId, uuid });
+}
+
+export async function trashDirectory(accountId: string, uuid: string): Promise<void> {
+  return invoke('filen_trash_directory', { accountId, uuid });
+}
+
+export async function hasSession(accountId: string): Promise<boolean> {
+  return invoke('filen_has_session', { accountId });
 }

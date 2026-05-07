@@ -19,5 +19,16 @@ tauri-plugin-store = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tokio = { version = "1", features = ["net", "io-util"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["net", "io-util", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand = "0.8"
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+hmac = "0.12"
+hex = "0.4"
+uuid = { version = "1", features = ["v4"] }
+argon2 = "0.5"
