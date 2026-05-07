@@ -9,6 +9,7 @@ import {
   trashFile,
   trashDirectory,
   hasSession,
+  logout,
   type FilenItem,
 } from '../lib/filen-client';
 import type { StoredAccount } from '../types';
@@ -152,6 +153,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
 
   const handleDisconnect = async () => {
     if (!confirm(`Disconnect ${account.email} from Filen?`)) return;
+    logout(account.id);
     await deleteAccount(account.id);
     onDisconnect();
   };

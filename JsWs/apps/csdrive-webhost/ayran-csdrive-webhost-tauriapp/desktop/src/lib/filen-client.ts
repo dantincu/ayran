@@ -67,3 +67,7 @@ export async function trashDirectory(accountId: string, uuid: string): Promise<v
 export async function hasSession(accountId: string): Promise<boolean> {
   return invoke('filen_has_session', { accountId });
 }
+
+export function logout(accountId: string): void {
+  invoke('filen_logout', { accountId });
+}

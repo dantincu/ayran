@@ -257,6 +257,11 @@ pub fn run() {
         .manage(filen::FilenSessions(std::sync::Mutex::new(
             std::collections::HashMap::new(),
         )))
+        .setup(|app| {
+            let mut sessions = app.state::<filen::FilenSessions>().0.lock().unwrap();
+            filen::load_persisted(&app.handle(), &mut sessions);
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
@@ -269,6 +274,7 @@ pub fn run() {
             filen::filen_login,
             filen::filen_restore_session,
             filen::filen_has_session,
+            filen::filen_logout,
             filen::filen_list_directory,
             filen::filen_download_file,
             filen::filen_upload_file,

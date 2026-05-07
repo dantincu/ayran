@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use tauri_plugin_store::StoreExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+const STORE_FILE: &str = "filen_sessions.json";
+const STORE_KEY: &str = "sessions";
 
 // ── Session state ─────────────────────────────────────────────────────────────
 
@@ -21,6 +25,58 @@ pub struct FilenSession {
 }
 
 pub struct FilenSessions(pub Mutex<HashMap<String, FilenSession>>);
+
+// ── Persistence helpers ───────────────────────────────────────────────────────
+
+/// Serialisable subset of a session stored on disk.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct StoredSession {
+    pub api_key: String,
+    pub master_keys: Vec<String>,
+    pub base_folder_uuid: String,
+    pub user_id: u64,
+    pub email: String,
+}
+
+impl From<&FilenSession> for StoredSession {
+    fn from(s: &FilenSession) -> Self {
+        Self {
+            api_key: s.api_key.clone(),
+            master_keys: s.master_keys.clone(),
+            base_folder_uuid: s.base_folder_uuid.clone(),
+            user_id: s.user_id,
+            email: s.email.clone(),
+        }
+    }
+}
+
+fn persist(app: &tauri::AppHandle, sessions: &HashMap<String, FilenSession>) {
+    let stored: HashMap<String, StoredSession> =
+        sessions.iter().map(|(k, v)| (k.clone(), v.into())).collect();
+    if let Ok(store) = app.store(STORE_FILE) {
+        if let Ok(val) = serde_json::to_value(&stored) {
+            store.set(STORE_KEY, val);
+            let _ = store.save();
+        }
+    }
+}
+
+/// Called once on app startup to hydrate in-memory sessions from disk.
+pub fn load_persisted(app: &tauri::AppHandle, sessions: &mut HashMap<String, FilenSession>) {
+    let Ok(store) = app.store(STORE_FILE) else { return };
+    let Some(val) = store.get(STORE_KEY) else { return };
+    let Ok(map) = serde_json::from_value::<HashMap<String, StoredSession>>(val) else { return };
+    for (id, stored) in map {
+        sessions.entry(id).or_insert_with(|| FilenSession {
+            api_key: stored.api_key,
+            master_keys: stored.master_keys,
+            base_folder_uuid: stored.base_folder_uuid,
+            user_id: stored.user_id,
+            email: stored.email,
+            client: reqwest::Client::new(),
+        });
+    }
+}
 
 fn get_session(
     state: &tauri::State<'_, FilenSessions>,
@@ -151,6 +207,7 @@ struct CreateDirResponse {
 
 #[tauri::command]
 pub async fn filen_login(
+    app: tauri::AppHandle,
     state: tauri::State<'_, FilenSessions>,
     email: String,
     password: String,
@@ -216,7 +273,10 @@ pub async fn filen_login(
         client,
     };
 
-    state.0.lock().unwrap().insert(account_id.clone(), session);
+    let mut sessions = state.0.lock().unwrap();
+    sessions.insert(account_id.clone(), session);
+    persist(&app, &sessions);
+    drop(sessions);
 
     Ok(FilenAccountInfo {
         id: account_id,
@@ -258,6 +318,17 @@ pub fn filen_has_session(
     account_id: String,
 ) -> bool {
     state.0.lock().unwrap().contains_key(&account_id)
+}
+
+#[tauri::command]
+pub fn filen_logout(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+) {
+    let mut sessions = state.0.lock().unwrap();
+    sessions.remove(&account_id);
+    persist(&app, &sessions);
 }
 
 // ── Directory listing ─────────────────────────────────────────────────────────
