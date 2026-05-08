@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { save, open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount } from '../types';
-import { getValidAccessToken } from '../lib/google-auth';
 import { deleteAccount } from '../lib/account-store';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
 
@@ -14,7 +15,6 @@ interface Props {
 }
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
-const API = 'https://www.googleapis.com/drive/v3';
 
 function fileIcon(mimeType: string): string {
   if (mimeType === FOLDER_MIME) return '📁';
@@ -55,7 +55,6 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
-  const [uploading, setUploading] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -63,32 +62,28 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [folderPicker, setFolderPicker] = useState<{
     fileId: string;
     fileName: string;
     isDir: boolean;
     action: 'copy' | 'move';
   } | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const editInputRef = useRef<HTMLInputElement>(null);
-  const editTargetRef = useRef<string | null>(null);
 
-  const anyBusy = uploading || !!downloadingId || !!deletingId || !!editingId || !!renamingId || !!copyingId || !!movingId;
+  const anyBusy = !!uploadingId || !!downloadingId || !!deletingId || !!editingId || !!renamingId || !!copyingId || !!movingId;
 
   const fetchFiles = useCallback(async (folder: string, query?: string) => {
     setLoading(true); setError(null);
     try {
-      const token = await getValidAccessToken(account);
-      let q = `'${folder}' in parents and trashed = false`;
-      if (query) q = `name contains '${query}' and trashed = false`;
-      const params = new URLSearchParams({ q, fields: 'files(id,name,mimeType,size,modifiedTime)', orderBy: 'folder,name', pageSize: '200' });
-      const res = await fetch(`${API}/files?${params}`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b?.error?.message ?? `HTTP ${res.status}`); }
-      const data = await res.json();
-      setFiles(data.files ?? []);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); }
+      const list = await invoke<DriveFile[]>('gdrive_list_files', {
+        accountId: account.id,
+        folderId: folder,
+        query: query ?? null,
+      });
+      setFiles(list);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setLoading(false); }
-  }, [account]);
+  }, [account.id]);
 
   useEffect(() => { fetchFiles(folderId); setSearch(''); }, [folderId, fetchFiles]);
 
@@ -104,22 +99,20 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
     navigate(f.id, [...breadcrumbs, { id: f.id, name: f.name }]);
   };
 
-  const navigateTo = (i: number) => {
-    navigate(breadcrumbs[i].id, breadcrumbs.slice(0, i + 1));
+  const navigateTo = (i: number) => navigate(breadcrumbs[i].id, breadcrumbs.slice(0, i + 1));
+
+  const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => {
+    e.preventDefault(); fetchFiles(folderId, search || undefined);
   };
 
-  const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => { e.preventDefault(); fetchFiles(folderId, search || undefined); };
-
   const handleDownload = async (file: DriveFile) => {
+    const destPath = await save({ defaultPath: file.name });
+    if (!destPath) return;
     setDownloadingId(file.id);
     try {
-      const token = await getValidAccessToken(account);
-      const res = await fetch(`${API}/files/${file.id}?alt=media`, { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) return;
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = file.name;
-      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+      await invoke('gdrive_download_file', { accountId: account.id, fileId: file.id, destPath });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
     } finally {
       setDownloadingId(null);
     }
@@ -129,38 +122,26 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
     if (!confirm(`Delete "${file.name}"?`)) return;
     setDeletingId(file.id);
     try {
-      const token = await getValidAccessToken(account);
-      const res = await fetch(`${API}/files/${file.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } });
-      if (res.ok || res.status === 204) setFiles((p) => p.filter((f) => f.id !== file.id));
+      await invoke('gdrive_delete_file', { accountId: account.id, fileId: file.id });
+      setFiles((p) => p.filter((f) => f.id !== file.id));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
     } finally {
       setDeletingId(null);
     }
   };
 
-  const handleEditClick = (file: DriveFile) => {
-    editTargetRef.current = file.id;
-    editInputRef.current?.click();
-  };
-
-  const handleEditChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    const targetId = editTargetRef.current;
-    if (!f || !targetId) return;
-    setEditingId(targetId);
+  const handleEdit = async (file: DriveFile) => {
+    const filePath = await dialogOpen({ multiple: false, directory: false });
+    if (!filePath || typeof filePath !== 'string') return;
+    setEditingId(file.id);
     try {
-      const token = await getValidAccessToken(account);
-      const bytes = await f.arrayBuffer();
-      const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${targetId}?uploadType=media`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': f.type || 'application/octet-stream' },
-        body: bytes,
-      });
-      if (res.ok) fetchFiles(folderId);
-      else { const b = await res.json().catch(() => ({})); alert(b?.error?.message ?? `HTTP ${res.status}`); }
+      await invoke('gdrive_edit_file', { accountId: account.id, fileId: file.id, filePath });
+      fetchFiles(folderId);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
     } finally {
       setEditingId(null);
-      editTargetRef.current = null;
-      if (editInputRef.current) editInputRef.current.value = '';
     }
   };
 
@@ -169,47 +150,37 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
     if (!newName?.trim() || newName.trim() === file.name) return;
     setRenamingId(file.id);
     try {
-      const token = await getValidAccessToken(account);
-      const res = await fetch(`${API}/files/${file.id}`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName.trim() }),
-      });
-      if (res.ok) setFiles((p) => p.map((f) => f.id === file.id ? { ...f, name: newName.trim() } : f));
+      await invoke('gdrive_rename', { accountId: account.id, fileId: file.id, newName: newName.trim() });
+      setFiles((p) => p.map((f) => f.id === file.id ? { ...f, name: newName.trim() } : f));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
     } finally {
       setRenamingId(null);
     }
   };
 
-  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    setUploading(true);
+  const handleUpload = async () => {
+    const filePath = await dialogOpen({ multiple: false, directory: false });
+    if (!filePath || typeof filePath !== 'string') return;
+    setUploadingId('__upload__');
     try {
-      const token = await getValidAccessToken(account);
-      const boundary = 'csdrive_' + Date.now().toString(36);
-      const metadata = JSON.stringify({ name: file.name, parents: [folderId] });
-      const fileBytes = await file.arrayBuffer(); const enc = new TextEncoder();
-      const pre = enc.encode(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: ${file.type || 'application/octet-stream'}\r\n\r\n`);
-      const post = enc.encode(`\r\n--${boundary}--`);
-      const merged = new Uint8Array(pre.byteLength + fileBytes.byteLength + post.byteLength);
-      merged.set(pre, 0); merged.set(new Uint8Array(fileBytes), pre.byteLength); merged.set(post, pre.byteLength + fileBytes.byteLength);
-      const res = await fetch(`https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': `multipart/related; boundary=${boundary}` }, body: merged,
-      });
-      if (res.ok) fetchFiles(folderId);
-    } finally { setUploading(false); if (fileInputRef.current) fileInputRef.current.value = ''; }
+      await invoke('gdrive_upload_file', { accountId: account.id, folderId, filePath });
+      fetchFiles(folderId);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploadingId(null);
+    }
   };
 
   const handleNewFolder = async () => {
     const name = prompt('Folder name:'); if (!name?.trim()) return;
     setCreatingFolder(true);
     try {
-      const token = await getValidAccessToken(account);
-      const res = await fetch(`${API}/files`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), mimeType: FOLDER_MIME, parents: [folderId] }),
-      });
-      if (res.ok) fetchFiles(folderId);
+      await invoke('gdrive_create_folder', { accountId: account.id, parentId: folderId, name: name.trim() });
+      fetchFiles(folderId);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
     } finally {
       setCreatingFolder(false);
     }
@@ -222,38 +193,31 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
   };
 
   const listDriveFolders = async (id: string): Promise<FolderEntry[]> => {
-    const token = await getValidAccessToken(account);
-    const q = `'${id}' in parents and trashed = false and mimeType = '${FOLDER_MIME}'`;
-    const params = new URLSearchParams({ q, fields: 'files(id,name)', orderBy: 'name', pageSize: '100' });
-    const res = await fetch(`${API}/files?${params}`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    return (data.files ?? []).map((f: { id: string; name: string }) => ({ id: f.id, name: f.name }));
+    const list = await invoke<DriveFile[]>('gdrive_list_files', {
+      accountId: account.id,
+      folderId: id,
+      query: null,
+    });
+    return list
+      .filter((f) => f.mimeType === FOLDER_MIME)
+      .map((f) => ({ id: f.id, name: f.name }));
   };
 
   const handleFolderPickerConfirm = async (destId: string) => {
     if (!folderPicker) return;
     const { fileId, fileName, isDir, action } = folderPicker;
-    const token = await getValidAccessToken(account);
     try {
       if (action === 'copy') {
         setCopyingId(fileId);
-        const res = await fetch(`${API}/files/${fileId}/copy`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: fileName, parents: [destId] }),
+        await invoke('gdrive_copy_file', {
+          accountId: account.id, fileId, destFolderId: destId, name: fileName,
         });
-        if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b?.error?.message ?? `HTTP ${res.status}`); }
       } else {
         setMovingId(fileId);
-        const currentParent = isDir
-          ? breadcrumbs[breadcrumbs.length - 1].id
-          : folderId;
-        const res = await fetch(`${API}/files/${fileId}?addParents=${destId}&removeParents=${currentParent}`, {
-          method: 'PATCH',
-          headers: { Authorization: `Bearer ${token}` },
+        const fromFolderId = isDir ? breadcrumbs[breadcrumbs.length - 1].id : folderId;
+        await invoke('gdrive_move_file', {
+          accountId: account.id, fileId, fromFolderId, toFolderId: destId,
         });
-        if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b?.error?.message ?? `HTTP ${res.status}`); }
         setFiles((p) => p.filter((f) => f.id !== fileId));
       }
       setFolderPicker(null);
@@ -263,6 +227,8 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
     }
   };
 
+  const isUploading = uploadingId !== null;
+
   return (
     <>
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
@@ -271,11 +237,15 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
             <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">Google Drive</span>
             <span className="text-xs text-gray-400 dark:text-gray-500 truncate">{account.displayName ?? account.email}</span>
             <div className="ml-auto flex items-center gap-2">
-              <button onClick={handleNewFolder} disabled={creatingFolder || anyBusy} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">{creatingFolder ? 'Creating…' : '+ New folder'}</button>
-              <button onClick={() => fileInputRef.current?.click()} disabled={anyBusy} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">{uploading ? 'Uploading…' : 'Upload file'}</button>
-              <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
-              <input ref={editInputRef} type="file" className="hidden" onChange={handleEditChange} />
-              <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">Disconnect</button>
+              <button onClick={handleNewFolder} disabled={creatingFolder || anyBusy} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
+                {creatingFolder ? 'Creating…' : '+ New folder'}
+              </button>
+              <button onClick={handleUpload} disabled={anyBusy} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                {isUploading ? 'Uploading…' : 'Upload file'}
+              </button>
+              <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
+                Disconnect
+              </button>
             </div>
           </div>
           <form onSubmit={handleSearch} className="flex gap-2">
@@ -288,7 +258,9 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
             {breadcrumbs.map((c, i) => (
               <span key={c.id} className="flex items-center gap-1">
                 {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
-                <button onClick={() => navigateTo(i)} className={i === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-medium' : 'hover:text-blue-600 dark:hover:text-blue-400'}>{c.name}</button>
+                <button onClick={() => navigateTo(i)} className={i === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-medium' : 'hover:text-blue-600 dark:hover:text-blue-400'}>
+                  {c.name}
+                </button>
               </span>
             ))}
           </nav>
@@ -310,11 +282,14 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
                         className={`text-sm font-medium truncate block text-left w-full ${isFolder ? 'hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer' : 'cursor-default text-gray-800 dark:text-gray-200'}`}>
                         {file.name}
                       </button>
-                      <p className="text-xs text-gray-400 dark:text-gray-500">{formatSize(file.size)}{file.size && file.modifiedTime && ' · '}{file.modifiedTime && new Date(file.modifiedTime).toLocaleDateString()}</p>
+                      <p className="text-xs text-gray-400 dark:text-gray-500">
+                        {formatSize(file.size)}{file.size && file.modifiedTime && ' · '}
+                        {file.modifiedTime && new Date(file.modifiedTime).toLocaleDateString()}
+                      </p>
                     </div>
                     <div className={`flex gap-2 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                       {!isFolder && (
-                        <button onClick={() => handleEditClick(file)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">
+                        <button onClick={() => handleEdit(file)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">
                           {editingId === file.id ? 'Editing…' : 'Edit'}
                         </button>
                       )}

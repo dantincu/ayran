@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { upsertAccount } from './account-store';
 import type { StoredAccount } from '../types';
 
+
 export async function connectGoogleDrive(
   onSuccess: (account: StoredAccount) => void,
   onError: (msg: string) => void
@@ -29,17 +30,3 @@ export async function connectGoogleDrive(
   return () => { unlistenAccount(); unlistenErr(); };
 }
 
-export async function getValidAccessToken(account: StoredAccount): Promise<string> {
-  if (!account.expiresAt || account.expiresAt - 60_000 > Date.now()) {
-    return account.accessToken!;
-  }
-  if (!account.refreshToken) return account.accessToken!;
-
-  const [accessToken, expiresAt] = await invoke<[string, number]>('refresh_google_token', {
-    refreshToken: account.refreshToken,
-  });
-
-  const updated: StoredAccount = { ...account, accessToken, expiresAt };
-  await upsertAccount(updated);
-  return accessToken;
-}

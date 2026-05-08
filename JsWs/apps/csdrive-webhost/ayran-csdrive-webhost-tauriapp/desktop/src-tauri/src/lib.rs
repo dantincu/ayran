@@ -1,4 +1,5 @@
 pub mod filen;
+pub mod gdrive;
 pub mod storage;
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -37,7 +38,7 @@ pub struct StoredAccount {
     pub path: Option<String>,
 }
 
-fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+pub(crate) fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -45,7 +46,7 @@ fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
         .join("accounts.dat"))
 }
 
-fn load_accounts(app: &tauri::AppHandle) -> Result<HashMap<String, StoredAccount>, String> {
+pub(crate) fn load_accounts(app: &tauri::AppHandle) -> Result<HashMap<String, StoredAccount>, String> {
     let path = accounts_path(app)?;
     match storage::read::<HashMap<String, StoredAccount>>(&path) {
         Ok(opt) => Ok(opt.unwrap_or_default()),
@@ -161,7 +162,7 @@ fn extract_query_param(request: &str, key: &str) -> Option<String> {
     })
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -346,6 +347,15 @@ pub fn run() {
             // Google
             start_google_oauth,
             refresh_google_token,
+            gdrive::gdrive_list_files,
+            gdrive::gdrive_download_file,
+            gdrive::gdrive_upload_file,
+            gdrive::gdrive_delete_file,
+            gdrive::gdrive_create_folder,
+            gdrive::gdrive_rename,
+            gdrive::gdrive_copy_file,
+            gdrive::gdrive_move_file,
+            gdrive::gdrive_edit_file,
             // Filen
             filen::filen_login,
             filen::filen_restore_session,

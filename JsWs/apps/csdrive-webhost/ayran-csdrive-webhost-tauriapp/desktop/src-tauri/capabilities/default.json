@@ -12,6 +12,8 @@
     "fs:allow-write-file",
     "fs:allow-mkdir",
     "fs:allow-remove",
+    "fs:allow-rename",
+    "fs:allow-copy-file",
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save"
