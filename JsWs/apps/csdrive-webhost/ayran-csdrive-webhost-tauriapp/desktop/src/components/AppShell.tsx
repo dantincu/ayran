@@ -20,10 +20,17 @@ export default function AppShell() {
   useEffect(() => {
     listAccounts().then((accs) => {
       setAccounts(accs);
-      if (accs.length > 0 && !selectedId) setSelectedId(accs[0].id);
+      if (accs.length === 0) return;
+      const saved = localStorage.getItem('csdrive-selected-account');
+      const id = saved && accs.some((a) => a.id === saved) ? saved : accs[0].id;
+      setSelectedId(id);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (selectedId) localStorage.setItem('csdrive-selected-account', selectedId);
+  }, [selectedId]);
 
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
 

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import type { StoredAccount } from '../types';
 import { getValidAccessToken } from '../lib/google-auth';
 import { deleteAccount } from '../lib/account-store';
@@ -37,8 +37,19 @@ function formatSize(size?: string): string {
 }
 
 export default function DriveExplorer({ account, onDisconnect }: Props) {
-  const [folderId, setFolderId] = useState('root');
-  const [breadcrumbs, setBreadcrumbs] = useState([{ id: 'root', name: 'My Drive' }]);
+  const navKey = `csdrive-drive-nav-${account.id}`;
+
+  const savedNav = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(navKey);
+      return raw ? JSON.parse(raw) as { id: string; breadcrumbs: { id: string; name: string }[] } : null;
+    } catch { return null; }
+  }, [navKey]);
+
+  const [folderId, setFolderId] = useState(savedNav?.id ?? 'root');
+  const [breadcrumbs, setBreadcrumbs] = useState(
+    savedNav?.breadcrumbs ?? [{ id: 'root', name: 'My Drive' }],
+  );
   const [files, setFiles] = useState<DriveFile[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,18 +74,20 @@ export default function DriveExplorer({ account, onDisconnect }: Props) {
 
   useEffect(() => { fetchFiles(folderId); setSearch(''); }, [folderId, fetchFiles]);
 
+  function navigate(id: string, crumbs: { id: string; name: string }[]) {
+    setFolderId(id);
+    setBreadcrumbs(crumbs);
+    setSearch('');
+    localStorage.setItem(navKey, JSON.stringify({ id, breadcrumbs: crumbs }));
+  }
+
   const openFolder = (f: DriveFile) => {
     if (f.mimeType !== FOLDER_MIME) return;
-    setFolderId(f.id);
-    setBreadcrumbs((p) => [...p, { id: f.id, name: f.name }]);
-    setSearch('');
+    navigate(f.id, [...breadcrumbs, { id: f.id, name: f.name }]);
   };
 
   const navigateTo = (i: number) => {
-    const c = breadcrumbs[i];
-    setFolderId(c.id);
-    setBreadcrumbs((p) => p.slice(0, i + 1));
-    setSearch('');
+    navigate(breadcrumbs[i].id, breadcrumbs.slice(0, i + 1));
   };
 
   const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => { e.preventDefault(); fetchFiles(folderId, search || undefined); };

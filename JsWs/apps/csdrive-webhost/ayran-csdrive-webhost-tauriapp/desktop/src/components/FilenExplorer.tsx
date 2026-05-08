@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { deleteAccount } from '../lib/account-store';
 import {
@@ -43,9 +43,19 @@ function formatSize(bytes: number): string {
 
 export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }: Props) {
   const rootUuid = (account.providerData as { baseFolderUuid?: string } | undefined)?.baseFolderUuid ?? '';
+  const navKey = `csdrive-filen-nav-${account.id}`;
 
-  const [folderUUID, setFolderUUID] = useState(rootUuid);
-  const [breadcrumbs, setBreadcrumbs] = useState([{ uuid: rootUuid, name: 'My Filen' }]);
+  const savedNav = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(navKey);
+      return raw ? JSON.parse(raw) as { uuid: string; breadcrumbs: { uuid: string; name: string }[] } : null;
+    } catch { return null; }
+  }, [navKey]);
+
+  const [folderUUID, setFolderUUID] = useState(savedNav?.uuid ?? rootUuid);
+  const [breadcrumbs, setBreadcrumbs] = useState(
+    savedNav?.breadcrumbs ?? [{ uuid: rootUuid, name: 'My Filen' }],
+  );
   const [items, setItems] = useState<FilenItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -74,24 +84,27 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
       if (!active) {
         onNeedsRelogin();
       } else {
-        fetchItems(rootUuid);
+        fetchItems(folderUUID);
       }
     });
-  }, [account.id, rootUuid, fetchItems, onNeedsRelogin]);
+    // folderUUID is intentionally read once on mount (savedNav value)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account.id, fetchItems, onNeedsRelogin]);
+
+  function navigate(uuid: string, crumbs: { uuid: string; name: string }[]) {
+    setFolderUUID(uuid);
+    setBreadcrumbs(crumbs);
+    setSearch('');
+    localStorage.setItem(navKey, JSON.stringify({ uuid, breadcrumbs: crumbs }));
+    fetchItems(uuid);
+  }
 
   function navigateTo(index: number) {
-    const crumb = breadcrumbs[index];
-    setBreadcrumbs((p) => p.slice(0, index + 1));
-    setFolderUUID(crumb.uuid);
-    setSearch('');
-    fetchItems(crumb.uuid);
+    navigate(breadcrumbs[index].uuid, breadcrumbs.slice(0, index + 1));
   }
 
   function openDir(item: FilenItem) {
-    setBreadcrumbs((p) => [...p, { uuid: item.uuid, name: item.name }]);
-    setFolderUUID(item.uuid);
-    setSearch('');
-    fetchItems(item.uuid);
+    navigate(item.uuid, [...breadcrumbs, { uuid: item.uuid, name: item.name }]);
   }
 
   const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => {

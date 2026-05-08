@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { readDir, readFile, writeFile, remove, mkdir } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount } from '../types';
@@ -25,10 +25,21 @@ const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
 
 export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const rootPath = account.path ?? '';
-  const [currentPath, setCurrentPath] = useState(rootPath);
-  const [breadcrumbs, setBreadcrumbs] = useState<{ name: string; path: string }[]>([
-    { name: account.displayName ?? rootPath.split(/[\\/]/).pop() ?? rootPath, path: rootPath },
-  ]);
+  const navKey = `csdrive-fs-nav-${account.id}`;
+
+  const savedNav = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(navKey);
+      return raw ? JSON.parse(raw) as { path: string; breadcrumbs: { name: string; path: string }[] } : null;
+    } catch { return null; }
+  }, [navKey]);
+
+  const [currentPath, setCurrentPath] = useState(savedNav?.path ?? rootPath);
+  const [breadcrumbs, setBreadcrumbs] = useState<{ name: string; path: string }[]>(
+    savedNav?.breadcrumbs ?? [
+      { name: account.displayName ?? rootPath.split(/[\\/]/).pop() ?? rootPath, path: rootPath },
+    ],
+  );
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,18 +65,20 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
 
   useEffect(() => { loadDir(currentPath); setSearch(''); }, [currentPath, loadDir]);
 
+  function navigate(path: string, crumbs: { name: string; path: string }[]) {
+    setCurrentPath(path);
+    setBreadcrumbs(crumbs);
+    setSearch('');
+    localStorage.setItem(navKey, JSON.stringify({ path, breadcrumbs: crumbs }));
+  }
+
   const openDir = (entry: FsEntry) => {
     if (!entry.isDirectory) return;
-    setCurrentPath(entry.path);
-    setBreadcrumbs((p) => [...p, { name: entry.name, path: entry.path }]);
-    setSearch('');
+    navigate(entry.path, [...breadcrumbs, { name: entry.name, path: entry.path }]);
   };
 
   const navigateTo = (i: number) => {
-    const c = breadcrumbs[i];
-    setCurrentPath(c.path);
-    setBreadcrumbs((p) => p.slice(0, i + 1));
-    setSearch('');
+    navigate(breadcrumbs[i].path, breadcrumbs.slice(0, i + 1));
   };
 
   const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => { e.preventDefault(); loadDir(currentPath, search || undefined); };
