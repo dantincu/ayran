@@ -1,15 +1,13 @@
 pub mod api;
 pub mod crypto;
 
+use crate::storage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri_plugin_store::StoreExt;
+use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-const STORE_FILE: &str = "filen_sessions.json";
-const STORE_KEY: &str = "sessions";
 
 // ── Session state ─────────────────────────────────────────────────────────────
 
@@ -50,22 +48,23 @@ impl From<&FilenSession> for StoredSession {
     }
 }
 
+fn sessions_path(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path()
+        .app_data_dir()
+        .expect("app data dir unavailable")
+        .join("filen_sessions.dat")
+}
+
 fn persist(app: &tauri::AppHandle, sessions: &HashMap<String, FilenSession>) {
     let stored: HashMap<String, StoredSession> =
         sessions.iter().map(|(k, v)| (k.clone(), v.into())).collect();
-    if let Ok(store) = app.store(STORE_FILE) {
-        if let Ok(val) = serde_json::to_value(&stored) {
-            store.set(STORE_KEY, val);
-            let _ = store.save();
-        }
-    }
+    let _ = storage::write(&sessions_path(app), &stored);
 }
 
 /// Called once on app startup to hydrate in-memory sessions from disk.
 pub fn load_persisted(app: &tauri::AppHandle, sessions: &mut HashMap<String, FilenSession>) {
-    let Ok(store) = app.store(STORE_FILE) else { return };
-    let Some(val) = store.get(STORE_KEY) else { return };
-    let Ok(map) = serde_json::from_value::<HashMap<String, StoredSession>>(val) else { return };
+    let path = sessions_path(app);
+    let Ok(Some(map)) = storage::read::<HashMap<String, StoredSession>>(&path) else { return };
     for (id, stored) in map {
         sessions.entry(id).or_insert_with(|| FilenSession {
             api_key: stored.api_key,

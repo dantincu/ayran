@@ -1,11 +1,12 @@
 pub mod filen;
+pub mod storage;
 
-use tauri::Manager;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
-use tauri::Emitter;
+use std::collections::HashMap;
+use tauri::Manager;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -14,7 +15,67 @@ const GOOGLE_CLIENT_SECRET: &str = env!("GOOGLE_CLIENT_SECRET");
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
 
-// ── Serialisable types ────────────────────────────────────────────────────────
+// ── Shared account type (mirrors TypeScript's StoredAccount) ──────────────────
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredAccount {
+    pub id: String,
+    pub email: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_data: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("accounts.dat"))
+}
+
+fn load_accounts(app: &tauri::AppHandle) -> Result<HashMap<String, StoredAccount>, String> {
+    Ok(storage::read(&accounts_path(app)?)?.unwrap_or_default())
+}
+
+// ── Account CRUD commands ─────────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_accounts(app: tauri::AppHandle) -> Result<Vec<StoredAccount>, String> {
+    Ok(load_accounts(&app)?.into_values().collect())
+}
+
+#[tauri::command]
+fn get_account(app: tauri::AppHandle, id: String) -> Result<Option<StoredAccount>, String> {
+    Ok(load_accounts(&app)?.remove(&id))
+}
+
+#[tauri::command]
+fn upsert_account(app: tauri::AppHandle, account: StoredAccount) -> Result<(), String> {
+    let mut accounts = load_accounts(&app)?;
+    accounts.insert(account.id.clone(), account);
+    storage::write(&accounts_path(&app)?, &accounts)
+}
+
+#[tauri::command]
+fn delete_account(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let mut accounts = load_accounts(&app)?;
+    accounts.remove(&id);
+    storage::write(&accounts_path(&app)?, &accounts)
+}
+
+// ── Google OAuth types ────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -265,10 +326,14 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
+            // Accounts
+            list_accounts,
+            get_account,
+            upsert_account,
+            delete_account,
             // Google
             start_google_oauth,
             refresh_google_token,
