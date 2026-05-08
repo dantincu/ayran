@@ -1,5 +1,6 @@
 pub mod filen;
 
+use tauri::Manager;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -258,7 +259,8 @@ pub fn run() {
             std::collections::HashMap::new(),
         )))
         .setup(|app| {
-            let mut sessions = app.state::<filen::FilenSessions>().0.lock().unwrap();
+            let state = app.state::<filen::FilenSessions>();
+            let mut sessions = state.0.lock().unwrap();
             filen::load_persisted(&app.handle(), &mut sessions);
             Ok(())
         })

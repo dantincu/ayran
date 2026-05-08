@@ -489,8 +489,6 @@ pub async fn filen_upload_file(
     let mut chunk_index: u32 = 0;
     let mut total_size: u64 = 0;
     let mut content_hasher = Sha512::new();
-    let mut last_upload: Option<api::UploadChunkResponse> = None;
-
     loop {
         let n = file.read(&mut buf).await.map_err(|e| e.to_string())?;
         if n == 0 {
@@ -503,7 +501,7 @@ pub async fn filen_upload_file(
         let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
         let chunk_hash = hex::encode(Sha512::digest(&enc_chunk));
 
-        let resp = api::upload_chunk(
+        api::upload_chunk(
             &s.client,
             &file_uuid,
             chunk_index,
@@ -515,7 +513,6 @@ pub async fn filen_upload_file(
         )
         .await?;
 
-        last_upload = Some(resp);
         chunk_index += 1;
     }
 
@@ -548,9 +545,6 @@ pub async fn filen_upload_file(
     }
 
     let content_hash = hex::encode(content_hasher.finalize());
-    let (bucket, region) = last_upload
-        .map(|r| (r.bucket, r.region))
-        .unwrap_or_default();
 
     // Encrypt individual fields with file_key, metadata blob with master_key
     let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
@@ -573,7 +567,7 @@ pub async fn filen_upload_file(
             "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
             "size": size_enc, "chunks": chunk_index, "mime": mime_enc,
             "rm": rm, "metadata": metadata_enc, "version": 3,
-            "uploadKey": upload_key, "bucket": bucket, "region": region
+            "uploadKey": upload_key
         }),
         &s.api_key,
     )

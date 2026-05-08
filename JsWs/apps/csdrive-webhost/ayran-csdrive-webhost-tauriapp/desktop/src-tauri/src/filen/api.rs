@@ -121,12 +121,6 @@ pub async fn download_chunk(
 
 // ── Chunk upload (ingress) ────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub struct UploadChunkResponse {
-    pub bucket: String,
-    pub region: String,
-}
-
 pub async fn upload_chunk(
     client: &reqwest::Client,
     file_uuid: &str,
@@ -136,10 +130,12 @@ pub async fn upload_chunk(
     hash: &str,
     data: &[u8],
     api_key: &str,
-) -> Result<UploadChunkResponse, String> {
-    // Checksum = SHA-512 of the specific JSON object (key order matters for JS compat)
+) -> Result<(), String> {
+    // Checksum = SHA-512(JSON.stringify(parseURLParams(fullURL))).
+    // URLSearchParams coerces all values to strings, so index is "0" not 0.
+    // Key order matches query string order: uuid, index, parent, uploadKey, hash.
     let checksum_input = format!(
-        r#"{{"uuid":"{}","index":{},"parent":"{}","uploadKey":"{}","hash":"{}"}}"#,
+        r#"{{"uuid":"{}","index":"{}","parent":"{}","uploadKey":"{}","hash":"{}"}}"#,
         file_uuid, index, parent, upload_key, hash
     );
     let checksum = hex::encode(Sha512::digest(checksum_input.as_bytes()));
@@ -158,7 +154,10 @@ pub async fn upload_chunk(
         .await
         .map_err(|e| e.to_string())?;
 
-    let api_resp: ApiResponse<UploadChunkResponse> =
+    let api_resp: ApiResponse<serde_json::Value> =
         resp.json().await.map_err(|e| e.to_string())?;
-    check(api_resp)
+    if !api_resp.status {
+        return Err(api_resp.message.unwrap_or_else(|| "chunk upload failed".into()));
+    }
+    Ok(())
 }
