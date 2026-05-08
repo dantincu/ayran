@@ -4,9 +4,9 @@ pub mod storage;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha512};
+use sha2::{Digest, Sha256, Sha512};
 use std::collections::HashMap;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -46,7 +46,16 @@ fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 fn load_accounts(app: &tauri::AppHandle) -> Result<HashMap<String, StoredAccount>, String> {
-    Ok(storage::read(&accounts_path(app)?)?.unwrap_or_default())
+    let path = accounts_path(app)?;
+    match storage::read::<HashMap<String, StoredAccount>>(&path) {
+        Ok(opt) => Ok(opt.unwrap_or_default()),
+        Err(_) => {
+            // File exists but can't be decrypted (wrong key or written by an older
+            // code version). Wipe it so the app isn't permanently stuck.
+            let _ = std::fs::remove_file(&path);
+            Ok(HashMap::new())
+        }
+    }
 }
 
 // ── Account CRUD commands ─────────────────────────────────────────────────────
@@ -118,7 +127,7 @@ fn random_base64url(byte_count: usize) -> String {
 }
 
 fn pkce_challenge(verifier: &str) -> String {
-    URL_SAFE_NO_PAD.encode(Sha512::digest(verifier.as_bytes()))
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
 }
 
 fn percent_encode(s: &str) -> String {

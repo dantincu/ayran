@@ -22,7 +22,7 @@ export default function FilenLoginModal({ onSuccess, onClose }: Props) {
       const account = await loginFilen(email, password, twoFactor || undefined);
       onSuccess(account);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed');
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
