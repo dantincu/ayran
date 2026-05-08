@@ -124,7 +124,7 @@ export default function AppShell() {
               <DriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />
             )}
             {selected?.provider === 'filen' && (
-              <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />
+              <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} onNeedsRelogin={() => setShowFilenLogin(true)} />
             )}
             {selected?.provider === 'local-fs' && (
               <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />

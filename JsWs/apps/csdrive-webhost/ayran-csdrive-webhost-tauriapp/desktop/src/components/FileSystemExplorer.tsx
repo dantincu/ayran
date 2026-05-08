@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { readDir, readFile, writeFile, remove, mkdir } from '@tauri-apps/plugin-fs';
+import { readDir, readFile, writeFile, remove, mkdir, rename as fsRename, copyFile as fsCopyFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount } from '../types';
 import { deleteAccount } from '../lib/account-store';
@@ -47,7 +47,13 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [copyingPath, setCopyingPath] = useState<string | null>(null);
+  const [movingPath, setMovingPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath || !!copyingPath || !!movingPath;
 
   const loadDir = useCallback(async (path: string, query?: string) => {
     setLoading(true); setError(null);
@@ -109,6 +115,67 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
       alert(e instanceof Error ? e.message : 'Delete failed');
     } finally {
       setDeletingPath(null);
+    }
+  };
+
+  const handleEdit = async (entry: FsEntry) => {
+    const srcPath = await dialogOpen({ multiple: false, directory: false });
+    if (!srcPath || typeof srcPath !== 'string') return;
+    setEditingPath(entry.path);
+    try {
+      const data = await readFile(srcPath);
+      await writeFile(entry.path, data);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Edit failed');
+    } finally {
+      setEditingPath(null);
+    }
+  };
+
+  const handleRename = async (entry: FsEntry) => {
+    const newName = prompt('New name:', entry.name);
+    if (!newName?.trim() || newName.trim() === entry.name) return;
+    const dir = entry.path.substring(0, entry.path.lastIndexOf(SEP));
+    const newPath = `${dir}${SEP}${newName.trim()}`;
+    setRenamingPath(entry.path);
+    try {
+      await fsRename(entry.path, newPath);
+      setEntries((p) => p.map((e) => e.path === entry.path
+        ? { ...e, name: newName.trim(), path: newPath }
+        : e,
+      ));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Rename failed');
+    } finally {
+      setRenamingPath(null);
+    }
+  };
+
+  const handleCopy = async (entry: FsEntry) => {
+    const destDir = await dialogOpen({ multiple: false, directory: true });
+    if (!destDir || typeof destDir !== 'string') return;
+    setCopyingPath(entry.path);
+    try {
+      await fsCopyFile(entry.path, `${destDir}${SEP}${entry.name}`);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Copy failed');
+    } finally {
+      setCopyingPath(null);
+    }
+  };
+
+  const handleMove = async (entry: FsEntry) => {
+    const destDir = await dialogOpen({ multiple: false, directory: true });
+    if (!destDir || typeof destDir !== 'string') return;
+    setMovingPath(entry.path);
+    try {
+      const destPath = `${destDir}${SEP}${entry.name}`;
+      await fsRename(entry.path, destPath);
+      setEntries((p) => p.filter((e) => e.path !== entry.path));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Move failed');
+    } finally {
+      setMovingPath(null);
     }
   };
 
@@ -181,35 +248,46 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
         {!loading && !error && entries.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
         {!loading && !error && entries.length > 0 && (
           <div className="divide-y divide-gray-50 dark:divide-gray-700">
-            {entries.map((entry) => (
-              <div key={entry.path} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 group">
-                <span className="text-lg select-none w-7 text-center">{fileIcon(entry.name, entry.isDirectory)}</span>
-                <div className="flex-1 min-w-0">
-                  <button onClick={() => openDir(entry)} disabled={!entry.isDirectory}
-                    className={`text-sm font-medium truncate block text-left w-full ${entry.isDirectory ? 'hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer' : 'cursor-default text-gray-800 dark:text-gray-200'}`}>
-                    {entry.name}
-                  </button>
-                </div>
-                <div className={`flex gap-3 transition-opacity shrink-0 ${downloadingPath === entry.path || deletingPath === entry.path ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                  {!entry.isDirectory && (
-                    <button
-                      onClick={() => handleDownload(entry)}
-                      disabled={downloadingPath !== null || deletingPath !== null}
-                      className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50"
-                    >
-                      {downloadingPath === entry.path ? 'Downloading…' : 'Download'}
+            {entries.map((entry) => {
+              const activeOnThis = editingPath === entry.path || renamingPath === entry.path || copyingPath === entry.path || movingPath === entry.path || downloadingPath === entry.path || deletingPath === entry.path;
+              return (
+                <div key={entry.path} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 group">
+                  <span className="text-lg select-none w-7 text-center">{fileIcon(entry.name, entry.isDirectory)}</span>
+                  <div className="flex-1 min-w-0">
+                    <button onClick={() => openDir(entry)} disabled={!entry.isDirectory}
+                      className={`text-sm font-medium truncate block text-left w-full ${entry.isDirectory ? 'hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer' : 'cursor-default text-gray-800 dark:text-gray-200'}`}>
+                      {entry.name}
                     </button>
-                  )}
-                  <button
-                    onClick={() => handleDelete(entry)}
-                    disabled={downloadingPath !== null || deletingPath !== null}
-                    className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50"
-                  >
-                    {deletingPath === entry.path ? 'Deleting…' : 'Delete'}
-                  </button>
+                  </div>
+                  <div className={`flex gap-2 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                    {!entry.isDirectory && (
+                      <button onClick={() => handleEdit(entry)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">
+                        {editingPath === entry.path ? 'Editing…' : 'Edit'}
+                      </button>
+                    )}
+                    <button onClick={() => handleRename(entry)} disabled={anyBusy} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50">
+                      {renamingPath === entry.path ? 'Renaming…' : 'Rename'}
+                    </button>
+                    {!entry.isDirectory && (
+                      <button onClick={() => handleCopy(entry)} disabled={anyBusy} className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50">
+                        {copyingPath === entry.path ? 'Copying…' : 'Copy'}
+                      </button>
+                    )}
+                    <button onClick={() => handleMove(entry)} disabled={anyBusy} className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 disabled:opacity-50">
+                      {movingPath === entry.path ? 'Moving…' : 'Move'}
+                    </button>
+                    {!entry.isDirectory && (
+                      <button onClick={() => handleDownload(entry)} disabled={anyBusy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">
+                        {downloadingPath === entry.path ? 'Downloading…' : 'Download'}
+                      </button>
+                    )}
+                    <button onClick={() => handleDelete(entry)} disabled={anyBusy} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50">
+                      {deletingPath === entry.path ? 'Deleting…' : 'Delete'}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

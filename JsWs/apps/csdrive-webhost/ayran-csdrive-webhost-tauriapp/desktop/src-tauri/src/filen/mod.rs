@@ -202,6 +202,11 @@ struct CreateDirResponse {
     uuid: String,
 }
 
+#[derive(Deserialize)]
+struct CopyResponse {
+    uuid: String,
+}
+
 // ── Login ─────────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -638,6 +643,215 @@ pub async fn filen_trash_directory(
         &s.api_key,
     )
     .await
+}
+
+// ── Rename ────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn filen_rename_file(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    uuid: String,
+    new_name: String,
+) -> Result<(), String> {
+    let s = get_session(&state, &account_id)?;
+    let master_key = s.master_keys.last().ok_or("no master key")?.clone();
+
+    let info: FileInfoResponse = api::post(
+        &s.client, "/v3/file",
+        &serde_json::json!({ "uuid": uuid }),
+        Some(&s.api_key),
+    ).await?;
+
+    let plain = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
+    let meta: FileMetadata = serde_json::from_str(&plain).map_err(|e| e.to_string())?;
+
+    let name_enc = crypto::encrypt_metadata(&new_name, &meta.key)?;
+    let name_hashed = crypto::hash_filename(&new_name);
+    let meta_json = serde_json::json!({
+        "name": new_name, "size": meta.size, "mime": meta.mime,
+        "key": meta.key, "lastModified": meta.last_modified.unwrap_or(0)
+    }).to_string();
+    let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+
+    api::post_ok(
+        &s.client, "/v3/file/rename",
+        &serde_json::json!({
+            "uuid": uuid, "name": name_enc,
+            "nameHashed": name_hashed, "metadata": meta_enc
+        }),
+        &s.api_key,
+    ).await
+}
+
+#[tauri::command]
+pub async fn filen_rename_directory(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    uuid: String,
+    new_name: String,
+) -> Result<(), String> {
+    let s = get_session(&state, &account_id)?;
+    let master_key = s.master_keys.last().ok_or("no master key")?.clone();
+
+    let name_json = serde_json::json!({ "name": new_name }).to_string();
+    let name_enc = crypto::encrypt_metadata(&name_json, &master_key)?;
+    let name_hashed = crypto::hash_filename(&new_name);
+
+    api::post_ok(
+        &s.client, "/v3/dir/rename",
+        &serde_json::json!({ "uuid": uuid, "name": name_enc, "nameHashed": name_hashed }),
+        &s.api_key,
+    ).await
+}
+
+// ── Move ──────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn filen_move_file(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    uuid: String,
+    to_folder_uuid: String,
+) -> Result<(), String> {
+    let s = get_session(&state, &account_id)?;
+    api::post_ok(
+        &s.client, "/v3/file/move",
+        &serde_json::json!({ "uuid": uuid, "to": to_folder_uuid }),
+        &s.api_key,
+    ).await
+}
+
+#[tauri::command]
+pub async fn filen_move_directory(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    uuid: String,
+    to_folder_uuid: String,
+) -> Result<(), String> {
+    let s = get_session(&state, &account_id)?;
+    api::post_ok(
+        &s.client, "/v3/dir/move",
+        &serde_json::json!({ "uuid": uuid, "to": to_folder_uuid }),
+        &s.api_key,
+    ).await
+}
+
+// ── Copy ──────────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn filen_copy_file(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    uuid: String,
+    parent_uuid: String,
+) -> Result<String, String> {
+    let s = get_session(&state, &account_id)?;
+    let resp: CopyResponse = api::post(
+        &s.client, "/v3/file/copy",
+        &serde_json::json!({ "uuid": uuid, "parent": parent_uuid, "emptyTrash": false }),
+        Some(&s.api_key),
+    ).await?;
+    Ok(resp.uuid)
+}
+
+// ── Overwrite (edit contents) ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn filen_overwrite_file(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    file_uuid: String,
+    parent_uuid: String,
+    file_path: String,
+) -> Result<(), String> {
+    let s = get_session(&state, &account_id)?;
+    let master_key = s.master_keys.last().ok_or("no master key")?.clone();
+
+    // Keep existing name, mime, and encryption key — only replace content.
+    let info: FileInfoResponse = api::post(
+        &s.client, "/v3/file",
+        &serde_json::json!({ "uuid": file_uuid }),
+        Some(&s.api_key),
+    ).await?;
+    let plain = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
+    let meta: FileMetadata = serde_json::from_str(&plain).map_err(|e| e.to_string())?;
+
+    let file_key = meta.key;
+    let name = meta.name;
+    let mime = meta.mime;
+    let upload_key = crypto::generate_random_string(32);
+    let last_modified = std::fs::metadata(&file_path)
+        .and_then(|m| m.modified()).ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64).unwrap_or(0);
+
+    let mut file = tokio::fs::File::open(&file_path)
+        .await.map_err(|e| format!("open '{}': {}", file_path, e))?;
+
+    let mut buf = vec![0u8; CHUNK_SIZE];
+    let mut chunk_index: u32 = 0;
+    let mut total_size: u64 = 0;
+    let mut content_hasher = Sha512::new();
+
+    loop {
+        let n = file.read(&mut buf).await.map_err(|e| e.to_string())?;
+        if n == 0 { break; }
+        let chunk = &buf[..n];
+        total_size += n as u64;
+        content_hasher.update(chunk);
+        let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
+        let chunk_hash = hex::encode(Sha512::digest(&enc_chunk));
+        api::upload_chunk(
+            &s.client, &file_uuid, chunk_index, &parent_uuid,
+            &upload_key, &chunk_hash, &enc_chunk, &s.api_key,
+        ).await?;
+        chunk_index += 1;
+    }
+
+    if chunk_index == 0 {
+        let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
+        let name_hashed = crypto::hash_filename(&name);
+        let size_enc = crypto::encrypt_metadata("0", &file_key)?;
+        let mime_enc = crypto::encrypt_metadata(&mime, &file_key)?;
+        let rm = crypto::generate_random_string(32);
+        let meta_json = serde_json::json!({
+            "name": name, "size": 0u64, "mime": mime,
+            "key": file_key, "lastModified": last_modified
+        }).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        return api::post_ok(
+            &s.client, "/v3/upload/empty",
+            &serde_json::json!({
+                "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
+                "size": size_enc, "mime": mime_enc, "rm": rm,
+                "metadata": meta_enc, "version": 3, "parent": parent_uuid
+            }),
+            &s.api_key,
+        ).await;
+    }
+
+    let content_hash = hex::encode(content_hasher.finalize());
+    let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
+    let name_hashed = crypto::hash_filename(&name);
+    let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
+    let mime_enc = crypto::encrypt_metadata(&mime, &file_key)?;
+    let rm = crypto::generate_random_string(32);
+    let meta_json = serde_json::json!({
+        "name": name, "size": total_size, "mime": mime,
+        "key": file_key, "lastModified": last_modified, "hash": content_hash
+    }).to_string();
+    let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+
+    api::post_ok(
+        &s.client, "/v3/upload/done",
+        &serde_json::json!({
+            "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
+            "size": size_enc, "chunks": chunk_index, "mime": mime_enc,
+            "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key
+        }),
+        &s.api_key,
+    ).await
 }
 
 // ── MIME helper ───────────────────────────────────────────────────────────────

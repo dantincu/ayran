@@ -357,6 +357,12 @@ pub fn run() {
             filen::filen_create_directory,
             filen::filen_trash_file,
             filen::filen_trash_directory,
+            filen::filen_rename_file,
+            filen::filen_rename_directory,
+            filen::filen_move_file,
+            filen::filen_move_directory,
+            filen::filen_copy_file,
+            filen::filen_overwrite_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

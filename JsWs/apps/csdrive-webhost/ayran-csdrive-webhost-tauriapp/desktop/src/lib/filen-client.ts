@@ -64,6 +64,35 @@ export async function trashDirectory(accountId: string, uuid: string): Promise<v
   return invoke('filen_trash_directory', { accountId, uuid });
 }
 
+export async function renameFile(accountId: string, uuid: string, newName: string): Promise<void> {
+  return invoke('filen_rename_file', { accountId, uuid, newName });
+}
+
+export async function renameDirectory(accountId: string, uuid: string, newName: string): Promise<void> {
+  return invoke('filen_rename_directory', { accountId, uuid, newName });
+}
+
+export async function moveFile(accountId: string, uuid: string, toFolderUuid: string): Promise<void> {
+  return invoke('filen_move_file', { accountId, uuid, toFolderUuid });
+}
+
+export async function moveDirectory(accountId: string, uuid: string, toFolderUuid: string): Promise<void> {
+  return invoke('filen_move_directory', { accountId, uuid, toFolderUuid });
+}
+
+export async function copyFile(accountId: string, uuid: string, parentUuid: string): Promise<string> {
+  return invoke('filen_copy_file', { accountId, uuid, parentUuid });
+}
+
+export async function overwriteFile(
+  accountId: string,
+  fileUuid: string,
+  parentUuid: string,
+  filePath: string,
+): Promise<void> {
+  return invoke('filen_overwrite_file', { accountId, fileUuid, parentUuid, filePath });
+}
+
 export async function hasSession(accountId: string): Promise<boolean> {
   return invoke('filen_has_session', { accountId });
 }
