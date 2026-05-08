@@ -1,5 +1,5 @@
 use aes_gcm::{aead::Aead, Aes256Gcm, Key, KeyInit, Nonce};
-use rand::{RngCore, thread_rng};
+use rand::RngCore;
 use serde::{de::DeserializeOwned, Serialize};
 use std::path::Path;
 use std::sync::OnceLock;
@@ -14,6 +14,7 @@ static APP_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 /// opaque blob — only the same Windows user account can unwrap it.
 #[cfg(target_os = "windows")]
 mod platform {
+    use rand::RngCore;
     use std::path::Path;
     use std::ptr;
 
@@ -97,7 +98,7 @@ mod platform {
 
         // First run: generate → protect → persist.
         let mut key = [0u8; 32];
-        thread_rng().fill_bytes(&mut key);
+        rand::thread_rng().fill_bytes(&mut key);
         let blob = dpapi_protect(&key)?;
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         std::fs::write(&key_path, blob).map_err(|e| e.to_string())?;
@@ -109,6 +110,7 @@ mod platform {
 /// (Keychain on macOS, Secret Service on Linux).
 #[cfg(not(target_os = "windows"))]
 mod platform {
+    use rand::RngCore;
     use std::path::Path;
 
     const SERVICE: &str = "io.ayran.csdrive";
@@ -130,7 +132,7 @@ mod platform {
             }
             Err(keyring::Error::NoEntry) => {
                 let mut key = [0u8; 32];
-                thread_rng().fill_bytes(&mut key);
+                rand::thread_rng().fill_bytes(&mut key);
                 entry.set_password(&hex::encode(key)).map_err(|e| format!("keychain write: {e}"))?;
                 Ok(key)
             }
