@@ -61,6 +61,9 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const fetchItems = useCallback(
     async (uuid: string, query?: string) => {
@@ -115,18 +118,19 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const handleDownload = async (item: FilenItem) => {
     const destPath = await save({ defaultPath: item.name });
     if (!destPath) return;
-    setBusy(true);
+    setDownloadingId(item.uuid);
     try {
       await downloadFile(account.id, item.uuid, destPath);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setDownloadingId(null);
     }
   };
 
   const handleDelete = async (item: FilenItem) => {
     if (!confirm(`Move "${item.name}" to trash?`)) return;
+    setDeletingId(item.uuid);
     try {
       if (item.type === 'directory') {
         await trashDirectory(account.id, item.uuid);
@@ -136,6 +140,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
       setItems((p) => p.filter((i) => i.uuid !== item.uuid));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -156,11 +162,14 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const handleNewFolder = async () => {
     const name = prompt('Folder name:');
     if (!name?.trim()) return;
+    setCreatingFolder(true);
     try {
       await createDirectory(account.id, folderUUID, name.trim());
       fetchItems(folderUUID);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreatingFolder(false);
     }
   };
 
@@ -178,8 +187,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
           <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">Filen</span>
           <span className="text-xs text-gray-400 dark:text-gray-500 truncate">{account.email}</span>
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={handleNewFolder} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
-              + New folder
+            <button onClick={handleNewFolder} disabled={creatingFolder || busy} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
+              {creatingFolder ? 'Creating…' : '+ New folder'}
             </button>
             <button onClick={handleUpload} disabled={busy} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
               {busy ? 'Working…' : 'Upload file'}
@@ -246,14 +255,22 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
                     {item.lastModified ? new Date(item.lastModified).toLocaleDateString() : ''}
                   </p>
                 </div>
-                <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                <div className={`flex gap-3 transition-opacity shrink-0 ${downloadingId === item.uuid || deletingId === item.uuid ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                   {item.type === 'file' && (
-                    <button onClick={() => handleDownload(item)} disabled={busy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">
-                      Download
+                    <button
+                      onClick={() => handleDownload(item)}
+                      disabled={busy || downloadingId !== null || deletingId !== null}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50"
+                    >
+                      {downloadingId === item.uuid ? 'Downloading…' : 'Download'}
                     </button>
                   )}
-                  <button onClick={() => handleDelete(item)} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300">
-                    Delete
+                  <button
+                    onClick={() => handleDelete(item)}
+                    disabled={busy || downloadingId !== null || deletingId !== null}
+                    className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50"
+                  >
+                    {deletingId === item.uuid ? 'Deleting…' : 'Delete'}
                   </button>
                 </div>
               </div>

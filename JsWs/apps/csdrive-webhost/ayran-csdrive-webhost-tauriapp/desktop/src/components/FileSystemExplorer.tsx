@@ -44,6 +44,9 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
+  const [deletingPath, setDeletingPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const loadDir = useCallback(async (path: string, query?: string) => {
@@ -84,17 +87,29 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const handleSearch = (e: React.SyntheticEvent<HTMLFormElement>) => { e.preventDefault(); loadDir(currentPath, search || undefined); };
 
   const handleDownload = async (entry: FsEntry) => {
-    const data = await readFile(entry.path);
-    const blob = new Blob([data]);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = entry.name;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    setDownloadingPath(entry.path);
+    try {
+      const data = await readFile(entry.path);
+      const blob = new Blob([data]);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = entry.name;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingPath(null);
+    }
   };
 
   const handleDelete = async (entry: FsEntry) => {
     if (!confirm(`Delete "${entry.name}"?`)) return;
-    try { await remove(entry.path, { recursive: true }); setEntries((p) => p.filter((e) => e.path !== entry.path)); }
-    catch (e) { alert(e instanceof Error ? e.message : 'Delete failed'); }
+    setDeletingPath(entry.path);
+    try {
+      await remove(entry.path, { recursive: true });
+      setEntries((p) => p.filter((e) => e.path !== entry.path));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Delete failed');
+    } finally {
+      setDeletingPath(null);
+    }
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -120,8 +135,10 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
 
   const handleNewFolder = async () => {
     const name = prompt('Folder name:'); if (!name?.trim()) return;
+    setCreatingFolder(true);
     try { await mkdir(`${currentPath}${SEP}${name.trim()}`); loadDir(currentPath); }
     catch (e) { alert(e instanceof Error ? e.message : 'Failed to create folder'); }
+    finally { setCreatingFolder(false); }
   };
 
   const handleDisconnect = async () => {
@@ -137,7 +154,7 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">Local file system</span>
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={handleNewFolder} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">+ New folder</button>
+            <button onClick={handleNewFolder} disabled={creatingFolder} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">{creatingFolder ? 'Creating…' : '+ New folder'}</button>
             <button onClick={handlePickAndUpload} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Upload file</button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
             <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">Revoke & remove</button>
@@ -173,9 +190,23 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
                     {entry.name}
                   </button>
                 </div>
-                <div className="flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                  {!entry.isDirectory && <button onClick={() => handleDownload(entry)} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300">Download</button>}
-                  <button onClick={() => handleDelete(entry)} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300">Delete</button>
+                <div className={`flex gap-3 transition-opacity shrink-0 ${downloadingPath === entry.path || deletingPath === entry.path ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                  {!entry.isDirectory && (
+                    <button
+                      onClick={() => handleDownload(entry)}
+                      disabled={downloadingPath !== null || deletingPath !== null}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50"
+                    >
+                      {downloadingPath === entry.path ? 'Downloading…' : 'Download'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDelete(entry)}
+                    disabled={downloadingPath !== null || deletingPath !== null}
+                    className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50"
+                  >
+                    {deletingPath === entry.path ? 'Deleting…' : 'Delete'}
+                  </button>
                 </div>
               </div>
             ))}
