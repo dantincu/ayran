@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod filen;
 pub mod gdrive;
 pub mod storage;
@@ -321,6 +322,226 @@ async fn exchange_code_for_account(
     })
 }
 
+// ── Folder cache state ────────────────────────────────────────────────────────
+
+pub struct CacheState(pub cache::CacheDb);
+
+/// How long a cached folder listing is considered fresh before a re-fetch is needed.
+const CACHE_TTL_CLOUD_MS: i64 = 60_000;   // Google Drive and Filen
+const CACHE_TTL_LOCAL_MS: i64 = 10_000;   // local file system
+
+// ── Folder listing commands ───────────────────────────────────────────────────
+
+/// List a folder, writing every item into the SQLite cache.
+/// When `force` is false the cache is returned as-is if it is still within the
+/// TTL for the account's provider; pass `force: true` after any write operation
+/// to guarantee the view is always up to date.
+#[tauri::command]
+async fn list_folder(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    filen_sessions: tauri::State<'_, filen::FilenSessions>,
+    account_id: String,
+    parent_id: String,
+    force: bool,
+) -> Result<u64, String> {
+    let accounts = load_accounts(&app)?;
+    let account = accounts
+        .get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+
+    let ttl_ms = match account.provider.as_str() {
+        "local-fs" => CACHE_TTL_LOCAL_MS,
+        _ => CACHE_TTL_CLOUD_MS,
+    };
+
+    let db = std::sync::Arc::clone(&cache_state.0);
+
+    if !force {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        if let Some(cached_at) =
+            cache::get_folder_cached_at(&conn, &account_id, &parent_id)?
+        {
+            let age_ms = now_ms() as i64 - cached_at;
+            if age_ms < ttl_ms {
+                return Ok(0); // cache is still fresh
+            }
+        }
+    }
+
+    // Clear stale rows and re-fetch from the provider.
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        cache::clear_folder(&conn, &account_id, &parent_id)?;
+    }
+
+    match account.provider.as_str() {
+        "google-drive" => gdrive::list_to_cache(&app, &account_id, &parent_id, db).await,
+        "filen" => {
+            let session = filen_sessions
+                .0
+                .lock()
+                .map_err(|e| e.to_string())?
+                .get(&account_id)
+                .cloned()
+                .ok_or_else(|| {
+                    format!("No active Filen session for '{}'. Please log in again.", account_id)
+                })?;
+            filen::list_to_cache(session, &account_id, &parent_id, &account.email, db).await
+        }
+        "local-fs" => local_fs_list_to_cache(&account, &parent_id, db).await,
+        p => Err(format!("Unknown provider '{}'", p)),
+    }
+}
+
+/// Remove a single item from the cache after a client-side delete.
+/// Keeps the rest of the folder's cached rows intact.
+#[tauri::command]
+fn uncache_item(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+) -> Result<(), String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    cache::delete_item(&conn, &account_id, &item_id)
+}
+
+/// Update the name of a single cached item after a client-side rename.
+/// Keeps the rest of the folder's cached rows intact.
+#[tauri::command]
+fn rename_cached_item(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    new_name: String,
+) -> Result<(), String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    cache::rename_item(&conn, &account_id, &item_id, &new_name)
+}
+
+/// Queries the SQLite cache for a folder's contents.
+/// `sort_by` accepts `"name"`, `"size"`, or `"modified"`.
+#[tauri::command]
+async fn query_folder_items(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    parent_id: String,
+    search: Option<String>,
+    sort_by: String,
+    ascending: bool,
+) -> Result<Vec<cache::CachedItem>, String> {
+    let db = std::sync::Arc::clone(&cache_state.0);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        cache::query_items(
+            &conn,
+            &account_id,
+            &parent_id,
+            search.as_deref(),
+            &sort_by,
+            ascending,
+        )
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ── Local FS listing ──────────────────────────────────────────────────────────
+
+async fn local_fs_list_to_cache(
+    account: &StoredAccount,
+    path: &str,
+    db: cache::CacheDb,
+) -> Result<u64, String> {
+    let mut read_dir = tokio::fs::read_dir(path)
+        .await
+        .map_err(|e| format!("read_dir '{}': {}", path, e))?;
+
+    let mut items: Vec<cache::CachedItem> = Vec::new();
+
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let item_path = entry.path().to_string_lossy().to_string();
+        let meta = entry.metadata().await.ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta
+            .as_ref()
+            .filter(|m| m.is_file())
+            .map(|m| m.len() as i64);
+        let modified_ms = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64);
+        let mime_type = if is_dir {
+            None
+        } else {
+            let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            Some(local_mime_from_ext(&ext).to_string())
+        };
+        items.push(cache::CachedItem {
+            account_id: account.id.clone(),
+            account_email: account.email.clone(),
+            storage_type: cache::STORAGE_LOCAL_FS,
+            item_id: item_path,
+            parent_id: path.to_string(),
+            name,
+            is_dir,
+            size,
+            modified_ms,
+            mime_type,
+        });
+    }
+
+    let total = items.len() as u64;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        cache::insert_batch(&mut *conn, &items)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(total)
+}
+
+fn local_mime_from_ext(ext: &str) -> &'static str {
+    match ext {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "avif" => "image/avif",
+        "mp4" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "avi" => "video/x-msvideo",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "flac" => "audio/flac",
+        "m4a" => "audio/mp4",
+        "pdf" => "application/pdf",
+        "doc" | "docx" => "application/msword",
+        "xls" | "xlsx" => "application/vnd.ms-excel",
+        "ppt" | "pptx" => "application/vnd.ms-powerpoint",
+        "json" => "application/json",
+        "txt" => "text/plain",
+        "md" => "text/markdown",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" | "ts" => "text/javascript",
+        "csv" => "text/csv",
+        _ => "application/octet-stream",
+    }
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -330,9 +551,20 @@ pub fn run() {
             std::collections::HashMap::new(),
         )))
         .setup(|app| {
-            let state = app.state::<filen::FilenSessions>();
-            let mut sessions = state.0.lock().unwrap();
-            filen::load_persisted(&app.handle(), &mut sessions);
+            // Restore Filen sessions from disk.
+            {
+                let state = app.state::<filen::FilenSessions>();
+                let mut sessions = state.0.lock().unwrap();
+                filen::load_persisted(&app.handle(), &mut sessions);
+            }
+            // Open (or create) the SQLite folder-cache database.
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("app data dir unavailable");
+            std::fs::create_dir_all(&data_dir).ok();
+            let db = cache::open(&data_dir).expect("failed to open folder cache DB");
+            app.manage(CacheState(db));
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
@@ -344,6 +576,11 @@ pub fn run() {
             get_account,
             upsert_account,
             delete_account,
+            // Folder cache
+            list_folder,
+            query_folder_items,
+            uncache_item,
+            rename_cached_item,
             // Google
             start_google_oauth,
             refresh_google_token,

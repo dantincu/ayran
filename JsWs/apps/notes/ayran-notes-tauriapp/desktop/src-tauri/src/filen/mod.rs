@@ -390,6 +390,79 @@ pub async fn filen_list_directory(
     Ok(items)
 }
 
+/// Fetches a folder's contents and writes every item into the SQLite cache row by row.
+/// Returns the total number of items inserted.
+pub async fn list_to_cache(
+    session: FilenSession,
+    account_id: &str,
+    folder_uuid: &str,
+    account_email: &str,
+    db: crate::cache::CacheDb,
+) -> Result<u64, String> {
+    let s = session;
+
+    let content: DirContentResponse = api::post(
+        &s.client,
+        "/v3/dir/content",
+        &serde_json::json!({ "uuid": folder_uuid }),
+        Some(&s.api_key),
+    )
+    .await?;
+
+    let mut items: Vec<crate::cache::CachedItem> = Vec::with_capacity(
+        content.folders.len() + content.uploads.len(),
+    );
+
+    for folder in content.folders {
+        let name = decrypt_folder_name(&folder.name, &s.master_keys)?;
+        items.push(crate::cache::CachedItem {
+            account_id: account_id.to_string(),
+            account_email: account_email.to_string(),
+            storage_type: crate::cache::STORAGE_FILEN,
+            item_id: folder.uuid,
+            parent_id: folder_uuid.to_string(),
+            name,
+            is_dir: true,
+            size: None,
+            modified_ms: Some(folder.timestamp as i64 * 1_000),
+            mime_type: None,
+        });
+    }
+
+    for upload in content.uploads {
+        if let Ok(meta) = crypto::decrypt_metadata(&upload.metadata, &s.master_keys)
+            .and_then(|plain| {
+                serde_json::from_str::<FileMetadata>(&plain).map_err(|e| e.to_string())
+            })
+        {
+            let modified_ms = meta.last_modified.unwrap_or(upload.timestamp * 1_000) as i64;
+            let mime = if meta.mime.is_empty() { None } else { Some(meta.mime) };
+            items.push(crate::cache::CachedItem {
+                account_id: account_id.to_string(),
+                account_email: account_email.to_string(),
+                storage_type: crate::cache::STORAGE_FILEN,
+                item_id: upload.uuid,
+                parent_id: folder_uuid.to_string(),
+                name: meta.name,
+                is_dir: false,
+                size: Some(meta.size as i64),
+                modified_ms: Some(modified_ms),
+                mime_type: mime,
+            });
+        }
+    }
+
+    let total = items.len() as u64;
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        crate::cache::insert_batch(&mut *conn, &items)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(total)
+}
+
 fn decrypt_folder_name(enc: &str, master_keys: &[String]) -> Result<String, String> {
     let plain = crypto::decrypt_metadata(enc, master_keys)?;
     // Folder name is stored as JSON: {"name":"..."} or bare string

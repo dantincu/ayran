@@ -33,8 +33,11 @@ struct DriveFileRaw {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ListResponse {
+    #[serde(default)]
     files: Vec<DriveFileRaw>,
+    next_page_token: Option<String>,
 }
 
 // ── Public return type ────────────────────────────────────────────────────────
@@ -149,6 +152,118 @@ fn mime_from_ext(ext: &str) -> &'static str {
         "ppt" | "pptx" => "application/vnd.ms-powerpoint",
         _ => "application/octet-stream",
     }
+}
+
+/// Pages through an entire folder's contents, inserting every row into the
+/// SQLite cache as each page arrives.  Returns the total number of items inserted.
+pub async fn list_to_cache(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    folder_id: &str,
+    db: crate::cache::CacheDb,
+) -> Result<u64, String> {
+    let token = get_valid_token(app, account_id).await?;
+    let email = crate::load_accounts(app)?
+        .get(account_id)
+        .map(|a| a.email.clone())
+        .unwrap_or_default();
+
+    let q = format!("'{}' in parents and trashed = false", folder_id);
+    let mut page_token: Option<String> = None;
+    let mut total: u64 = 0;
+
+    loop {
+        let mut req = client()
+            .get(format!("{}/files", DRIVE_API))
+            .bearer_auth(&token)
+            .query(&[
+                ("q", q.as_str()),
+                ("fields", "nextPageToken,files(id,name,mimeType,size,modifiedTime)"),
+                ("orderBy", "folder,name"),
+                ("pageSize", "1000"),
+            ]);
+        if let Some(ref pt) = page_token {
+            req = req.query(&[("pageToken", pt.as_str())]);
+        }
+
+        let res = req.send().await.map_err(|e| e.to_string())?;
+        if !res.status().is_success() {
+            return Err(api_err(res).await);
+        }
+        let data: ListResponse = res.json().await.map_err(|e| e.to_string())?;
+
+        let items: Vec<crate::cache::CachedItem> = data
+            .files
+            .into_iter()
+            .map(|f| {
+                let is_dir = f.mime_type == "application/vnd.google-apps.folder";
+                let size = f.size.as_deref().and_then(|s| s.parse::<i64>().ok());
+                let modified_ms = f.modified_time.as_deref().and_then(parse_rfc3339_ms);
+                crate::cache::CachedItem {
+                    account_id: account_id.to_string(),
+                    account_email: email.clone(),
+                    storage_type: crate::cache::STORAGE_GOOGLE_DRIVE,
+                    item_id: f.id,
+                    parent_id: folder_id.to_string(),
+                    name: f.name,
+                    is_dir,
+                    size,
+                    modified_ms,
+                    mime_type: Some(f.mime_type),
+                }
+            })
+            .collect();
+
+        let count = items.len() as u64;
+        let db_clone = std::sync::Arc::clone(&db);
+        tokio::task::spawn_blocking(move || {
+            let mut conn = db_clone.lock().map_err(|e| e.to_string())?;
+            crate::cache::insert_batch(&mut *conn, &items)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        total += count;
+        page_token = data.next_page_token;
+        if page_token.is_none() {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+/// Parse an RFC 3339 timestamp (e.g. "2023-05-15T10:30:00.123Z") to Unix milliseconds.
+fn parse_rfc3339_ms(s: &str) -> Option<i64> {
+    let s = s.trim_end_matches('Z');
+    let (date_part, time_part) = s.split_once('T')?;
+    let mut dp = date_part.split('-');
+    let year: i64 = dp.next()?.parse().ok()?;
+    let month: i64 = dp.next()?.parse().ok()?;
+    let day: i64 = dp.next()?.parse().ok()?;
+    let (hms, frac) = time_part.split_once('.').unwrap_or((time_part, ""));
+    let mut tp = hms.split(':');
+    let h: i64 = tp.next()?.parse().ok()?;
+    let m: i64 = tp.next()?.parse().ok()?;
+    let sec: i64 = tp.next()?.parse().ok()?;
+    let ms: i64 = if frac.is_empty() {
+        0
+    } else {
+        format!("{:0<3}", &frac[..frac.len().min(3)]).parse().unwrap_or(0)
+    };
+    let days = gregorian_days_since_epoch(year, month, day)?;
+    Some((days * 86_400 + h * 3_600 + m * 60 + sec) * 1_000 + ms)
+}
+
+/// Days since 1970-01-01 using the proleptic Gregorian calendar (Julian Day Number method).
+fn gregorian_days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let a = (14 - month) / 12;
+    let y = year + 4800 - a;
+    let mo = month + 12 * a - 3;
+    let jdn = day + (153 * mo + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
+    Some(jdn - 2_440_588)
 }
 
 fn rand_hex(n: usize) -> String {

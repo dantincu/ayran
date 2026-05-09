@@ -13,6 +13,20 @@ export interface StoredAccount {
   path?: string;
 }
 
+/** Mirrors cache::CachedItem in Rust. storageType: 0=LocalFS 1=GoogleDrive 2=Filen */
+export interface CachedItem {
+  accountId: string;
+  accountEmail: string;
+  storageType: number;
+  itemId: string;
+  parentId: string;
+  name: string;
+  isDir: boolean;
+  size: number | null;
+  modifiedMs: number | null;
+  mimeType: string | null;
+}
+
 export interface AccountInfo {
   id: string;
   email: string;
