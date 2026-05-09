@@ -330,6 +330,29 @@ pub struct CacheState(pub cache::CacheDb);
 const CACHE_TTL_CLOUD_MS: i64 = 60_000;   // Google Drive and Filen
 const CACHE_TTL_LOCAL_MS: i64 = 10_000;   // local file system
 
+/// Rows older than this are purged on startup regardless of whether they are
+/// reachable from a live folder (safety net for long-running orphans).
+const CACHE_MAX_AGE_MS: i64 = 2 * 60 * 60 * 1_000; // 2 hours
+
+/// Returns the parent_id that serves as the tree root for an account.
+/// Root items (e.g. top-level GDrive files) are stored with this as their
+/// `parent_id` but no corresponding `item_id` row ever exists in the cache,
+/// so `cleanup_orphans` must know to exclude it.
+fn account_root_parent_id(account: &StoredAccount) -> String {
+    match account.provider.as_str() {
+        "google-drive" => "root".to_string(),
+        "filen" => account
+            .provider_data
+            .as_ref()
+            .and_then(|d| d.get("baseFolderUuid"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        "local-fs" => account.path.clone().unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
 // ── Folder listing commands ───────────────────────────────────────────────────
 
 /// List a folder, writing every item into the SQLite cache.
@@ -376,8 +399,11 @@ async fn list_folder(
         cache::clear_folder(&conn, &account_id, &parent_id)?;
     }
 
-    match account.provider.as_str() {
-        "google-drive" => gdrive::list_to_cache(&app, &account_id, &parent_id, db).await,
+    let total = match account.provider.as_str() {
+        "google-drive" => {
+            gdrive::list_to_cache(&app, &account_id, &parent_id, std::sync::Arc::clone(&db))
+                .await?
+        }
         "filen" => {
             let session = filen_sessions
                 .0
@@ -388,15 +414,36 @@ async fn list_folder(
                 .ok_or_else(|| {
                     format!("No active Filen session for '{}'. Please log in again.", account_id)
                 })?;
-            filen::list_to_cache(session, &account_id, &parent_id, &account.email, db).await
+            filen::list_to_cache(
+                session,
+                &account_id,
+                &parent_id,
+                &account.email,
+                std::sync::Arc::clone(&db),
+            )
+            .await?
         }
-        "local-fs" => local_fs_list_to_cache(&account, &parent_id, db).await,
-        p => Err(format!("Unknown provider '{}'", p)),
-    }
+        "local-fs" => local_fs_list_to_cache(&account, &parent_id, std::sync::Arc::clone(&db)).await?,
+        p => return Err(format!("Unknown provider '{}'", p)),
+    };
+
+    // Fire-and-forget: remove cached rows whose parent_id is a folder that no
+    // longer exists in the cache (grandchildren of externally-deleted folders).
+    // The user should not wait for this housekeeping work.
+    let root = account_root_parent_id(&account);
+    tauri::async_runtime::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = db.lock() {
+                let _ = cache::cleanup_orphans(&conn, &account_id, &root);
+            }
+        })
+        .await;
+    });
+
+    Ok(total)
 }
 
-/// Remove a single item from the cache after a client-side delete.
-/// Keeps the rest of the folder's cached rows intact.
+/// Remove an item and all its cached descendants after a client-side delete.
 #[tauri::command]
 fn uncache_item(
     cache_state: tauri::State<'_, CacheState>,
@@ -404,7 +451,7 @@ fn uncache_item(
     item_id: String,
 ) -> Result<(), String> {
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-    cache::delete_item(&conn, &account_id, &item_id)
+    cache::cascade_delete_item(&conn, &account_id, &item_id)
 }
 
 /// Update the name of a single cached item after a client-side rename.
@@ -564,6 +611,11 @@ pub fn run() {
                 .expect("app data dir unavailable");
             std::fs::create_dir_all(&data_dir).ok();
             let db = cache::open(&data_dir).expect("failed to open folder cache DB");
+            // Purge rows that are too old to be useful — catches orphans that
+            // slipped through the per-operation cleanup in previous sessions.
+            if let Ok(conn) = db.lock() {
+                let _ = cache::cleanup_old_rows(&conn, CACHE_MAX_AGE_MS);
+            }
             app.manage(CacheState(db));
             Ok(())
         })

@@ -103,11 +103,23 @@ pub fn get_folder_cached_at(
     .map_err(|e| e.to_string())
 }
 
-/// Remove a single item from the cache without touching the rest of the folder.
-/// Used after a client-side delete so the cache stays consistent.
-pub fn delete_item(conn: &Connection, account_id: &str, item_id: &str) -> Result<(), String> {
+/// Delete an item and every descendant that has been cached beneath it.
+/// Uses a recursive CTE so the whole subtree is removed in one statement.
+/// Used after a client-side folder (or file) delete.
+pub fn cascade_delete_item(
+    conn: &Connection,
+    account_id: &str,
+    item_id: &str,
+) -> Result<(), String> {
     conn.execute(
-        "DELETE FROM folder_items WHERE account_id = ?1 AND item_id = ?2",
+        "WITH RECURSIVE sub(id) AS (
+             SELECT ?2
+             UNION ALL
+             SELECT f.item_id FROM folder_items f
+             INNER JOIN sub ON f.parent_id = sub.id AND f.account_id = ?1
+         )
+         DELETE FROM folder_items
+         WHERE account_id = ?1 AND item_id IN (SELECT id FROM sub)",
         params![account_id, item_id],
     )
     .map(|_| ())
@@ -128,6 +140,44 @@ pub fn rename_item(
         params![account_id, item_id, new_name],
     )
     .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+/// Delete rows whose `parent_id` no longer exists as an `item_id` in the cache
+/// for this account — i.e. rows that are children of externally-deleted folders.
+/// `root_parent_id` is the account's top-level folder ID (never appears as an
+/// `item_id` row), which must be excluded from the orphan check.
+pub fn cleanup_orphans(
+    conn: &Connection,
+    account_id: &str,
+    root_parent_id: &str,
+) -> Result<u64, String> {
+    conn.execute(
+        "DELETE FROM folder_items
+         WHERE account_id = ?1
+           AND parent_id != ?2
+           AND parent_id NOT IN (
+               SELECT item_id FROM folder_items WHERE account_id = ?1
+           )",
+        params![account_id, root_parent_id],
+    )
+    .map(|n| n as u64)
+    .map_err(|e| e.to_string())
+}
+
+/// Delete all rows older than `max_age_ms` milliseconds across every account.
+/// Called once on app startup as a safety net for any orphans that slipped through.
+pub fn cleanup_old_rows(conn: &Connection, max_age_ms: i64) -> Result<u64, String> {
+    let cutoff_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+        - max_age_ms;
+    conn.execute(
+        "DELETE FROM folder_items WHERE cached_at < ?1",
+        params![cutoff_ms],
+    )
+    .map(|n| n as u64)
     .map_err(|e| e.to_string())
 }
 
