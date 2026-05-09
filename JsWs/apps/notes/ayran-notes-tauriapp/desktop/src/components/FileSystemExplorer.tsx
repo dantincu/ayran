@@ -25,7 +25,7 @@ const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
 
 export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const rootPath = account.path ?? '';
-  const navKey = `csdrive-fs-nav-${account.id}`;
+  const navKey = `notes-fs-nav-${account.id}`;
 
   const savedNav = useMemo(() => {
     try {

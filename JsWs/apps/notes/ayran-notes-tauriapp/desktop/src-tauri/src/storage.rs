@@ -113,7 +113,7 @@ mod platform {
     use rand::RngCore;
     use std::path::Path;
 
-    const SERVICE: &str = "io.ayran.csdrive";
+    const SERVICE: &str = "io.ayran.notes";
     const ACCOUNT: &str = "app-encryption-key";
 
     pub fn resolve_key(_data_dir: &Path) -> Result<[u8; 32], String> {

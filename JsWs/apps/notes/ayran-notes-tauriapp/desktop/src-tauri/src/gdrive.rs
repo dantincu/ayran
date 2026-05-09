@@ -245,7 +245,7 @@ pub async fn gdrive_upload_file(
         .await
         .map_err(|e| format!("read '{}': {}", file_path, e))?;
 
-    let boundary = format!("csdrive_{}", rand_hex(8));
+    let boundary = format!("notes_{}", rand_hex(8));
     let metadata = serde_json::json!({ "name": name, "parents": [folder_id] }).to_string();
     let pre = format!(
         "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\

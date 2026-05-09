@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ayran CsDrive",
+  "productName": "Ayran Notes",
   "version": "0.1.0",
-  "identifier": "io.ayran.csdrive",
+  "identifier": "io.ayran.notes",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Ayran CsDrive",
+        "title": "Ayran Notes",
         "width": 1280,
         "height": 800,
         "minWidth": 900,

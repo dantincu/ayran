@@ -37,8 +37,8 @@ function formatSize(size?: string): string {
   return `${(n / 1024 ** 3).toFixed(1)} GB`;
 }
 
-export default function DriveExplorer({ account, onDisconnect }: Props) {
-  const navKey = `csdrive-drive-nav-${account.id}`;
+export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
+  const navKey = `notes-gdrive-nav-${account.id}`;
 
   const savedNav = useMemo(() => {
     try {

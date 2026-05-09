@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ayran CsDrive",
+  "productName": "Ayran Notes",
   "version": "0.1.0",
-  "identifier": "io.ayran.csdrive.mobile",
+  "identifier": "io.ayran.notes.mobile",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1421",

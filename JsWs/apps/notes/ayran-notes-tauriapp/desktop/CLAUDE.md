@@ -1,110 +1,108 @@
-# Ayran CsDrive — Desktop (Tauri)
+# Ayran Notes — Desktop (Tauri)
 
-Cross-platform desktop app (Windows / macOS / Linux) built with Tauri 2.x + React 19 + Vite + TypeScript + Tailwind v4.
+Cross-platform desktop app (Windows / macOS / Linux) built with **Tauri 2.x + React 19 + Vite 7 + TypeScript + Tailwind v4**.
 
-This is the desktop counterpart of the `ayran-csdrive-webhost-webapp` Next.js web app. The feature set is the same; the architecture is fundamentally different because there is no server — everything runs locally on the user's machine.
+This project was forked from the completed **Ayran CsDrive** Tauri desktop app on 2026-05-09. All CsDrive features are fully implemented and working. Future development adds notes-specific functionality on top of this foundation.
 
-## Features to implement
+---
 
-- Connect to **Google Drive** (one or multiple accounts)
-- Connect to **Filen.io** (email + password, E2E encrypted)
-- Access the **local file system** (native, via Tauri)
-- Browse, upload, download, delete files and folders for all providers
-- Dark / light theme toggle (default light; persisted in localStorage)
+## What is already implemented
+
+### Storage providers (fully working)
+| Provider | Operations |
+|---|---|
+| Google Drive | List, download, upload, edit, rename, copy, move, delete, create folder |
+| Filen.io | List, download, upload, edit, rename, copy, move, trash, create folder |
+| Local file system | List, download, upload, edit, rename, copy, move, delete, create folder |
+
+### Auth & security
+- **Google OAuth:** Full PKCE flow implemented in Rust (`lib.rs` → `start_google_oauth`). Rust opens a loopback listener, receives the OAuth callback, exchanges the code with the client secret — credentials never reach JavaScript.
+- **Filen.io:** AuthV2 (PBKDF2-SHA512) and AuthV3 (Argon2id) login in Rust. API key and master keys live only in Rust memory and are persisted encrypted.
+- **Encrypted storage:** All accounts stored in `accounts.dat`; Filen sessions in `filen_sessions.dat`. Both use AES-256-GCM with a key protected by DPAPI (Windows) or OS keychain (macOS/Linux). Key is cached in a `OnceLock` per process so it survives page refreshes.
+- **CSP:** `connect-src` blocks all external HTTPS from JavaScript. Only Tauri IPC and localhost (dev HMR) are allowed. All Google Drive and Filen network requests are made by the Rust backend.
+
+### UI features
+- Breadcrumb navigation (persisted per account in `localStorage`)
+- Search within a folder
+- Dark / light theme toggle (persisted in `localStorage`, no FOUC)
+- Folder picker modal (shared between Google Drive and Filen copy/move)
+- Per-item loading states on all action buttons
+- Selected account persisted in `localStorage`
+
+---
 
 ## Architecture
 
-### No proxy — direct API calls
-
-The web app hid client secrets behind a Next.js server and proxied all cloud API requests. Here there is no server: the frontend (React) calls cloud APIs directly via `fetch`. For Google Drive this means the OAuth client secret is embedded in the app bundle — this is acceptable for a "Desktop application" OAuth client type in Google Cloud Console (the secret is not truly confidential for native apps).
-
-### Storage providers
-
-| Provider | Auth | Implementation |
-|---|---|---|
-| Google Drive | OAuth 2.0 PKCE via deep link | Direct Google Drive REST API via `fetch` + Bearer token |
-| Filen.io | Email + password | `@filen/sdk` running in the webview (Chromium) |
-| Local FS | None | `@tauri-apps/plugin-fs` + `@tauri-apps/plugin-dialog` |
-
-### Token / account persistence
-
-Use `@tauri-apps/plugin-store` (encrypted JSON store backed by the OS) instead of the web app's `.tokens/accounts.json` file. One store entry per connected account.
-
-### Google OAuth deep link flow
-
-1. Build the Google OAuth URL (PKCE, scope: `https://www.googleapis.com/auth/drive`)
-2. Open it in the system browser via `@tauri-apps/plugin-shell` (`open()`)
-3. Register a custom URI scheme `io.ayran.csdrive://` via `@tauri-apps/plugin-deep-link`
-4. Google redirects to `io.ayran.csdrive://auth/google/callback?code=...`
-5. Tauri deep-link listener fires; exchange code for tokens; store via plugin-store
-
-In Google Cloud Console create an **"Desktop application"** OAuth 2.0 client. Add `io.ayran.csdrive://auth/google/callback` as an authorized redirect URI.
-
-### Filen
-
-`@filen/sdk` works in the Chromium webview. After `sdk.login()` store `sdk.config` (including master keys) in the encrypted plugin-store. Reconstruct the SDK from stored config on subsequent launches without re-authenticating.
-
-### Local file system
-
-Replace the browser File System Access API (`showDirectoryPicker`, `FileSystemDirectoryHandle`) with:
-- `@tauri-apps/plugin-dialog` — `open({ directory: true })` to pick a folder
-- `@tauri-apps/plugin-fs` — `readDir`, `readFile`, `writeFile`, `remove`, `createDir`
-
-No need for IndexedDB handle persistence; store the chosen directory path as a string in plugin-store.
-
-## Stack
-
-- **Tauri 2.x** — native shell, plugin system
-- **React 19 + TypeScript** — frontend
-- **Vite 7** — bundler
-- **Tailwind v4** — styling (`@tailwindcss/vite` plugin, no postcss config)
-- **`@tailwindcss/vite`** — Tailwind plugin
-- `@tauri-apps/api` — core Tauri JS API
-- `@tauri-apps/plugin-opener` — open URLs in system browser
-- `@tauri-apps/plugin-store` — persistent encrypted key-value store
-- `@tauri-apps/plugin-fs` — file system read/write
-- `@tauri-apps/plugin-dialog` — native file/folder picker dialogs
-- `@tauri-apps/plugin-deep-link` — custom URI scheme handler for OAuth callbacks
-- `@filen/sdk` — Filen cloud storage SDK
-
-## Dark mode
-
-- Default: light
-- Toggled by setting `.dark` or `.light` class on `<html>`
-- Persisted in `localStorage` under key `theme`
-- Inline `<script>` in `index.html` reads localStorage before first paint — no flash
-- Tailwind configured with `@custom-variant dark (&:where(.dark, .dark *))` in `src/styles.css`
-- `ThemeToggle` component (sun/moon SVG icons, no emoji)
-
-## UI components to port from webapp
-
-All components from `ayran-csdrive-webhost-webapp/src/components/` are portable with minimal changes:
-
-| Webapp component | Desktop equivalent | Changes needed |
-|---|---|---|
-| `AccountManager.tsx` | Port as-is | Update button callbacks (no `/api/storage/...` routes) |
-| `DriveExplorer.tsx` | Port as-is | Change `fetch('/api/drive/...')` to direct Google Drive REST calls |
-| `FilenExplorer.tsx` | Port as-is | Call SDK methods directly instead of via `/api/filen/...` |
-| `FileSystemExplorer.tsx` | Rewrite | Use `@tauri-apps/plugin-fs` instead of browser File System Access API |
-| `ThemeToggle.tsx` | Port as-is | No changes needed |
-| `FilenLoginModal.tsx` | Port as-is | Call Filen SDK directly instead of POST `/api/storage/filen/login` |
-
-## Tauri plugins needed in Cargo.toml
-
-```toml
-[dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
-tauri-plugin-store = "2"
-tauri-plugin-fs = "2"
-tauri-plugin-dialog = "2"
-tauri-plugin-deep-link = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+### Rust crate (`src-tauri/src/`)
+```
+lib.rs          — App entry, account CRUD commands, Google OAuth commands,
+                  StoredAccount struct, pub(crate) helpers: accounts_path / load_accounts / now_ms
+storage.rs      — AES-256-GCM read/write; DPAPI (Win) / keyring (mac/Linux) key protection
+gdrive.rs       — All Google Drive REST calls: list, download, upload, delete,
+                  create_folder, rename, copy, move, edit; internal get_valid_token refreshes
+                  the token automatically and persists the new value
+filen/
+  mod.rs        — Filen session state (FilenSessions Mutex<HashMap>), login, restore,
+                  list_directory, download_file, upload_file, create_directory, trash_file,
+                  trash_directory, rename_file, rename_directory, move_file, move_directory,
+                  copy_file, overwrite_file; sessions persisted to filen_sessions.dat
+  crypto.rs     — "002"/"003" metadata decrypt/encrypt; AES-GCM chunk crypto;
+                  PBKDF2 / Argon2id key derivation
+  api.rs        — HTTP helpers for Filen gateway (Checksum: SHA-512 header) and ingest;
+                  upload checksum is SHA-512(JSON.stringify({...})) with ALL values as strings
 ```
 
-And register them in `src-tauri/src/lib.rs`.
+### TypeScript (`src/`)
+```
+lib/
+  account-store.ts   — invoke wrappers: list_accounts, get_account, upsert_account, delete_account
+  filen-client.ts    — invoke wrappers for every Filen command + FilenItem type
+  google-auth.ts     — connectGoogleDrive (OAuth connect flow only; token management is Rust-side)
+components/
+  AppShell.tsx            — Top-level layout; persists selected account in localStorage
+  AccountManager.tsx      — Sidebar account list + connect buttons
+  GoogleDriveExplorer.tsx — Google Drive file browser; all ops via invoke(), no fetch()
+  FilenExplorer.tsx       — Filen file browser; same pattern
+  FileSystemExplorer.tsx  — Local FS browser using @tauri-apps/plugin-fs
+  FolderPickerModal.tsx   — Generic folder picker modal for copy/move (provider-agnostic)
+  FilenLoginModal.tsx     — Filen email/password login
+  ThemeToggle.tsx         — Dark/light toggle
+```
 
-## Security note
+### Key Tauri capabilities (`src-tauri/capabilities/default.json`)
+`fs:allow-read-dir`, `fs:allow-read-file`, `fs:allow-write-file`, `fs:allow-mkdir`, `fs:allow-remove`, `fs:allow-rename`, `fs:allow-copy-file`, `dialog:allow-open`, `dialog:allow-save`
 
-The Google OAuth `client_secret` will be in the app bundle. This is standard practice for native desktop OAuth apps ("Desktop application" client type in Google). The secret is not truly confidential but Google accepts this. For Filen, user credentials are entered at runtime and stored in the OS encrypted store — they are never hardcoded.
+### Environment variables
+`desktop/.env` (NOT committed) must contain:
+```
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+```
+These are read by `build.rs` and injected as `cargo:rustc-env` — they are never exposed to JavaScript.
+
+---
+
+## Development
+
+```powershell
+cd desktop
+npm run tauri dev   # starts Vite dev server + Tauri window
+```
+
+```powershell
+cd desktop/src-tauri
+cargo check          # fast Rust type check without linking
+```
+
+---
+
+## Filen protocol notes (non-obvious)
+- Upload ingest checksum: SHA-512 of `JSON.stringify({uuid:"…", index:"0", parent:"…", uploadKey:"…", hash:"…"})` — the `index` value MUST be the string `"0"`, not the number `0`, because URLSearchParams coercion is replicated in the JSON
+- Metadata versions: "003" uses hex-decoded 32-byte key; "002" uses PBKDF2-SHA512(key, key, 1, 32) as key
+- Rename re-encrypts name + full metadata JSON; move calls `/v3/file/move` or `/v3/dir/move` with `to` field
+- Sessions restored from `filen_sessions.dat` on app startup via `load_persisted()` called in the Tauri `setup` hook
+
+## Google Drive notes (non-obvious)
+- Token refresh is fully internal to `gdrive::get_valid_token` — it checks `expires_at` with a 5-minute buffer and writes the new token back to `accounts.dat`
+- `gdrive_move_file` requires both `from_folder_id` and `to_folder_id` for the `addParents`/`removeParents` query params
+- Edit (overwrite content) uses `PATCH /upload/drive/v3/files/{id}?uploadType=media` — preserves name and parents

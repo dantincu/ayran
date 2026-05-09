@@ -50,7 +50,7 @@ function formatSize(bytes: number): string {
 
 export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }: Props) {
   const rootUuid = (account.providerData as { baseFolderUuid?: string } | undefined)?.baseFolderUuid ?? '';
-  const navKey = `csdrive-filen-nav-${account.id}`;
+  const navKey = `notes-filen-nav-${account.id}`;
 
   const savedNav = useMemo(() => {
     try {

@@ -4,7 +4,7 @@ import type { StoredAccount } from '../types';
 import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store';
 import { connectGoogleDrive } from '../lib/google-auth';
 import AccountManager from './AccountManager';
-import DriveExplorer from './DriveExplorer';
+import GoogleDriveExplorer from './GoogleDriveExplorer';
 import FilenExplorer from './FilenExplorer';
 import FileSystemExplorer from './FileSystemExplorer';
 import FilenLoginModal from './FilenLoginModal';
@@ -21,7 +21,7 @@ export default function AppShell() {
     listAccounts().then((accs) => {
       setAccounts(accs);
       if (accs.length === 0) return;
-      const saved = localStorage.getItem('csdrive-selected-account');
+      const saved = localStorage.getItem('notes-selected-account');
       const id = saved && accs.some((a) => a.id === saved) ? saved : accs[0].id;
       setSelectedId(id);
     });
@@ -29,7 +29,7 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => {
-    if (selectedId) localStorage.setItem('csdrive-selected-account', selectedId);
+    if (selectedId) localStorage.setItem('notes-selected-account', selectedId);
   }, [selectedId]);
 
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
@@ -93,7 +93,7 @@ export default function AppShell() {
       <div className="container mx-auto p-6 max-w-7xl">
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Ayran CsDrive</h1>
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Ayran Notes</h1>
             <p className="text-gray-500 dark:text-gray-400 mt-1">Access and manage your cloud storage</p>
           </div>
           <ThemeToggle />
@@ -121,7 +121,7 @@ export default function AppShell() {
 
           <section className="lg:col-span-3">
             {selected?.provider === 'google-drive' && (
-              <DriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />
+              <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />
             )}
             {selected?.provider === 'filen' && (
               <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} onNeedsRelogin={() => setShowFilenLogin(true)} />

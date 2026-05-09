@@ -1,4 +1,4 @@
-# Ayran CsDrive — Mobile (Tauri)
+# Ayran Notes — Mobile (Tauri)
 
 Cross-platform mobile app (Android + iOS) built with Tauri 2.x + React 19 + Vite + TypeScript + Tailwind v4.
 
@@ -21,7 +21,7 @@ See `../desktop/CLAUDE.md` for the full architecture overview. Key mobile differ
 On Android and iOS, the system browser OAuth redirect must use a custom URI scheme registered with the OS:
 - iOS: add the scheme to `Info.plist` (Tauri handles via `tauri.conf.json`)
 - Android: add an intent filter to `AndroidManifest.xml` (Tauri handles via `tauri.conf.json`)
-- Scheme: `io.ayran.csdrive.mobile://auth/google/callback`
+- Scheme: `io.ayran.notes.mobile://auth/google/callback`
 - Use `@tauri-apps/plugin-deep-link` for interception
 
 For Google Cloud Console, create a separate **"Android"** or **"iOS"** OAuth client (or an additional authorized redirect URI on the Desktop client).
