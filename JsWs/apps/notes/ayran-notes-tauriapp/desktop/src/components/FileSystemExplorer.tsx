@@ -63,6 +63,8 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const [copyingPath, setCopyingPath] = useState<string | null>(null);
   const [movingPath, setMovingPath] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
     || !!copyingPath || !!movingPath;
@@ -231,6 +233,22 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     onDisconnect();
   };
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  const handleRefresh = () => loadDir(currentPath, false);
+  const handleHardRefresh = () => { setMenuOpen(false); loadDir(currentPath, true); };
+  const handleClearCache = async () => {
+    setMenuOpen(false);
+    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: currentPath });
+  };
+
   const sortBtn = (col: SortBy, label: string) => (
     <button
       onClick={() => handleSort(col)}
@@ -253,6 +271,16 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
             <button onClick={handleNewFolder} disabled={creatingFolder} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">{creatingFolder ? 'Creating…' : '+ New folder'}</button>
             <button onClick={handlePickAndUpload} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Upload file</button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
+            <div ref={menuRef} className="relative flex items-center">
+              <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
+              <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1 z-10 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
+                  <button onClick={handleHardRefresh} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Hard refresh</button>
+                  <button onClick={handleClearCache} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Clear cached listing</button>
+                </div>
+              )}
+            </div>
             <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">Revoke & remove</button>
           </div>
         </div>

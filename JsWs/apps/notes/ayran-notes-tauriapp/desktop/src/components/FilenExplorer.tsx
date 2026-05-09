@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { deleteAccount } from '../lib/account-store';
@@ -80,6 +80,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [copyingId, setCopyingId] = useState<string | null>(null);
   const [movingId, setMovingId] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [folderPicker, setFolderPicker] = useState<{
     uuid: string; isDir: boolean; action: 'copy' | 'move';
   } | null>(null);
@@ -267,6 +269,22 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
     } finally { setCopyingId(null); setMovingId(null); }
   };
 
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  const handleRefresh = () => fetchItems(folderUUID, false);
+  const handleHardRefresh = () => { setMenuOpen(false); fetchItems(folderUUID, true); };
+  const handleClearCache = async () => {
+    setMenuOpen(false);
+    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderUUID });
+  };
+
   const sortBtn = (col: SortBy, label: string) => (
     <button
       onClick={() => handleSort(col)}
@@ -294,6 +312,16 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
               <button onClick={handleUpload} disabled={anyBusy} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
                 {busy ? 'Working…' : 'Upload file'}
               </button>
+              <div ref={menuRef} className="relative flex items-center">
+                <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
+                <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
+                {menuOpen && (
+                  <div className="absolute right-0 top-full mt-1 z-10 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
+                    <button onClick={handleHardRefresh} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Hard refresh</button>
+                    <button onClick={handleClearCache} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Clear cached listing</button>
+                  </div>
+                )}
+              </div>
               <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                 Disconnect
               </button>

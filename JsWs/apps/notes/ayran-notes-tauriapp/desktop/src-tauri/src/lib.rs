@@ -443,6 +443,18 @@ async fn list_folder(
     Ok(total)
 }
 
+/// Discard the cached listing for one folder so the next visit always goes to
+/// the network, without triggering a re-fetch right now.
+#[tauri::command]
+fn invalidate_folder_cache(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    parent_id: String,
+) -> Result<(), String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    cache::clear_folder(&conn, &account_id, &parent_id)
+}
+
 /// Remove an item and all its cached descendants after a client-side delete.
 #[tauri::command]
 fn uncache_item(
@@ -633,6 +645,7 @@ pub fn run() {
             query_folder_items,
             uncache_item,
             rename_cached_item,
+            invalidate_folder_cache,
             // Google
             start_google_oauth,
             refresh_google_token,
