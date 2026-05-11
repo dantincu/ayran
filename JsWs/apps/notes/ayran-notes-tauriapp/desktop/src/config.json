@@ -1,3 +1,8 @@
 {
-  "defaultListPageSize": 100
+  "defaultListPageSize": 100,
+  "storageProviders": {
+    "LocalFileSystem": { "enabled": true },
+    "GoogleDrive":     { "enabled": true },
+    "Filen":           { "enabled": true }
+  }
 }
