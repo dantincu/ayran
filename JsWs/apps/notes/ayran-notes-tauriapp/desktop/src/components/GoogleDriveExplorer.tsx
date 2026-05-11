@@ -176,7 +176,10 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
   const handleHardRefresh = () => { setMenuOpen(false); void loadFolder(folderId, true, page, search, sortBy, ascending); };
   const handleClearCache = async () => {
     setMenuOpen(false);
-    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderId });
+    try {
+      await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderId });
+      setFiles([]); setTotal(0);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
   // ── File actions ─────────────────────────────────────────────────────────────
@@ -331,16 +334,21 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
         </div>
         <div className="p-4 min-h-48">
           {loading && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>}
-          {!loading && error && <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm">{error}</div>}
+          {error && (
+            <div className="mb-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm flex items-start justify-between gap-2">
+              <span>{error}</span>
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 shrink-0 leading-none">✕</button>
+            </div>
+          )}
           {!loading && !error && files.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
-          {!loading && !error && files.length > 0 && (
+          {!loading && files.length > 0 && (
             <div className="divide-y divide-gray-50 dark:divide-gray-700">
               {files.map((item) => {
                 const activeOnThis = editingId === item.itemId || renamingId === item.itemId
                   || copyingId === item.itemId || movingId === item.itemId
                   || downloadingId === item.itemId || deletingId === item.itemId;
                 return (
-                  <div key={item.itemId} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 group">
+                  <div key={item.itemId} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 group">
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">
                       <button onClick={() => openFolder(item)} disabled={!item.isDir}
