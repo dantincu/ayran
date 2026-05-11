@@ -219,14 +219,25 @@ pub fn insert_batch(conn: &mut Connection, items: &[CachedItem]) -> Result<(), S
     tx.commit().map_err(|e| e.to_string())
 }
 
-pub fn query_items(
+/// Returned by [`query_items_paged`] — one page of items plus the unfiltered total
+/// (needed by the frontend to compute the page count).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderPage {
+    pub items: Vec<CachedItem>,
+    pub total: u64,
+}
+
+pub fn query_items_paged(
     conn: &Connection,
     account_id: &str,
     parent_id: &str,
     search: Option<&str>,
     sort_by: &str,
     ascending: bool,
-) -> Result<Vec<CachedItem>, String> {
+    page: u32,
+    page_size: u32,
+) -> Result<FolderPage, String> {
     let sort_col = match sort_by {
         "size" => "size",
         "modified" => "modified_ms",
@@ -237,30 +248,49 @@ pub fn query_items(
     // as a tiebreaker so the order is fully deterministic.
     let order = format!("is_dir DESC, {} {}, name ASC", sort_col, dir);
     let pattern = search.map(|q| format!("%{}%", q));
+
+    let total: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM folder_items
+             WHERE account_id = ?1 AND parent_id = ?2 AND (?3 IS NULL OR name LIKE ?3)",
+            params![account_id, parent_id, pattern.as_deref()],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let offset = (page as i64) * (page_size as i64);
+    let limit = page_size as i64;
     let sql = format!(
         "SELECT account_id, account_email, storage_type, item_id, parent_id,
                 name, is_dir, size, modified_ms, mime_type
          FROM folder_items
          WHERE account_id = ?1 AND parent_id = ?2 AND (?3 IS NULL OR name LIKE ?3)
-         ORDER BY {}",
+         ORDER BY {}
+         LIMIT ?4 OFFSET ?5",
         order
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![account_id, parent_id, pattern], |row| {
-            Ok(CachedItem {
-                account_id: row.get(0)?,
-                account_email: row.get(1)?,
-                storage_type: row.get(2)?,
-                item_id: row.get(3)?,
-                parent_id: row.get(4)?,
-                name: row.get(5)?,
-                is_dir: row.get::<_, i32>(6)? != 0,
-                size: row.get(7)?,
-                modified_ms: row.get(8)?,
-                mime_type: row.get(9)?,
-            })
-        })
+        .query_map(
+            params![account_id, parent_id, pattern.as_deref(), limit, offset],
+            |row| {
+                Ok(CachedItem {
+                    account_id: row.get(0)?,
+                    account_email: row.get(1)?,
+                    storage_type: row.get(2)?,
+                    item_id: row.get(3)?,
+                    parent_id: row.get(4)?,
+                    name: row.get(5)?,
+                    is_dir: row.get::<_, i32>(6)? != 0,
+                    size: row.get(7)?,
+                    modified_ms: row.get(8)?,
+                    mime_type: row.get(9)?,
+                })
+            },
+        )
         .map_err(|e| e.to_string())?;
-    rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    let items = rows
+        .map(|r| r.map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(FolderPage { items, total })
 }

@@ -479,8 +479,10 @@ fn rename_cached_item(
     cache::rename_item(&conn, &account_id, &item_id, &new_name)
 }
 
-/// Queries the SQLite cache for a folder's contents.
+/// Queries the SQLite cache for one page of a folder's contents.
 /// `sort_by` accepts `"name"`, `"size"`, or `"modified"`.
+/// `page` is 0-indexed; `page_size` is the number of rows per page.
+/// Returns `{ items, total }` where `total` is the full match count across all pages.
 #[tauri::command]
 async fn query_folder_items(
     cache_state: tauri::State<'_, CacheState>,
@@ -489,17 +491,21 @@ async fn query_folder_items(
     search: Option<String>,
     sort_by: String,
     ascending: bool,
-) -> Result<Vec<cache::CachedItem>, String> {
+    page: u32,
+    page_size: u32,
+) -> Result<cache::FolderPage, String> {
     let db = std::sync::Arc::clone(&cache_state.0);
     tokio::task::spawn_blocking(move || {
         let conn = db.lock().map_err(|e| e.to_string())?;
-        cache::query_items(
+        cache::query_items_paged(
             &conn,
             &account_id,
             &parent_id,
             search.as_deref(),
             &sort_by,
             ascending,
+            page,
+            page_size,
         )
     })
     .await

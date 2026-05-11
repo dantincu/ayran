@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { save, open as dialogOpen } from '@tauri-apps/plugin-dialog';
-import type { StoredAccount, CachedItem } from '../types';
+import type { StoredAccount, CachedItem, FolderPage } from '../types';
 import { deleteAccount } from '../lib/account-store';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
+import PaginationBar from './PaginationBar';
+import config from '../config.json';
+
+const PAGE_SIZE = config.defaultListPageSize;
 
 interface DriveFile {
   id: string; name: string; mimeType: string; size?: string; modifiedTime?: string;
@@ -46,7 +50,14 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
   const savedNav = useMemo(() => {
     try {
       const raw = localStorage.getItem(navKey);
-      return raw ? JSON.parse(raw) as { id: string; breadcrumbs: { id: string; name: string }[] } : null;
+      return raw ? JSON.parse(raw) as {
+        id: string;
+        breadcrumbs: { id: string; name: string }[];
+        page: number;
+        search: string;
+        sortBy: SortBy;
+        ascending: boolean;
+      } : null;
     } catch { return null; }
   }, [navKey]);
 
@@ -55,11 +66,13 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
     savedNav?.breadcrumbs ?? [{ id: 'root', name: 'My Drive' }],
   );
   const [files, setFiles] = useState<CachedItem[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<SortBy>('name');
-  const [ascending, setAscending] = useState(true);
+  const [search, setSearch] = useState(savedNav?.search ?? '');
+  const [sortBy, setSortBy] = useState<SortBy>(savedNav?.sortBy ?? 'name');
+  const [ascending, setAscending] = useState(savedNav?.ascending ?? true);
+  const [page, setPage] = useState(savedNav?.page ?? 0);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -77,73 +90,104 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
   const anyBusy = !!uploadingId || !!downloadingId || !!deletingId || !!editingId
     || !!renamingId || !!copyingId || !!movingId;
 
-  const queryCache = useCallback(
-    async (folder: string, sq: string, sb: SortBy, asc: boolean) => {
-      const items = await invoke<CachedItem[]>('query_folder_items', {
-        accountId: account.id, parentId: folder,
-        search: sq || null, sortBy: sb, ascending: asc,
-      });
-      setFiles(items);
-    },
-    [account.id],
-  );
+  // ── Persist state to localStorage whenever anything changes ──────────────────
+  useEffect(() => {
+    localStorage.setItem(navKey, JSON.stringify({ id: folderId, breadcrumbs, page, search, sortBy, ascending }));
+  }, [folderId, breadcrumbs, page, search, sortBy, ascending, navKey]);
 
-  const fetchFiles = useCallback(async (folder: string, force = false) => {
-    setLoading(true); setError(null); setSearch('');
+  // ── Query SQLite cache (no network call) ─────────────────────────────────────
+  const queryCache = useCallback(async (
+    folder: string, sq: string, sb: SortBy, asc: boolean, pg: number,
+  ) => {
+    const result = await invoke<FolderPage>('query_folder_items', {
+      accountId: account.id, parentId: folder,
+      search: sq || null, sortBy: sb, ascending: asc,
+      page: pg, pageSize: PAGE_SIZE,
+    });
+    setFiles(result.items);
+    setTotal(result.total);
+  }, [account.id]);
+
+  // ── Full folder load: network fetch (if needed) + cache query ────────────────
+  const loadFolder = useCallback(async (
+    folder: string, force: boolean, pg: number, sq: string, sb: SortBy, asc: boolean,
+  ) => {
+    setLoading(true); setError(null);
     try {
       await invoke('list_folder', { accountId: account.id, parentId: folder, force });
-      await queryCache(folder, '', sortBy, ascending);
+      await queryCache(folder, sq, sb, asc, pg);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [account.id, sortBy, ascending, queryCache]);
+  }, [account.id, queryCache]);
 
-  useEffect(() => { fetchFiles(folderId); setSearch(''); }, [folderId, fetchFiles]);
+  // ── Initial mount: restore saved state ───────────────────────────────────────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadFolder(folderId, false, page, search, sortBy, ascending); }, []);
 
+  // ── Close split-button menu on outside click ─────────────────────────────────
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(id: string, crumbs: { id: string; name: string }[]) {
-    setFolderId(id);
-    setBreadcrumbs(crumbs);
-    localStorage.setItem(navKey, JSON.stringify({ id, breadcrumbs: crumbs }));
+    setFolderId(id); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    void loadFolder(id, false, 0, '', sortBy, ascending);
   }
-
   const openFolder = (item: CachedItem) => {
     if (!item.isDir) return;
     navigate(item.itemId, [...breadcrumbs, { id: item.itemId, name: item.name }]);
   };
-
   const navigateTo = (i: number) => navigate(breadcrumbs[i].id, breadcrumbs.slice(0, i + 1));
 
+  // ── Search / sort / page ─────────────────────────────────────────────────────
   const handleSearch = async (e: React.SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    try { await queryCache(folderId, search, sortBy, ascending); }
+    e.preventDefault(); setPage(0);
+    try { await queryCache(folderId, search, sortBy, ascending, 0); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-
   const handleClearSearch = async () => {
-    setSearch('');
-    try { await queryCache(folderId, '', sortBy, ascending); }
+    setSearch(''); setPage(0);
+    try { await queryCache(folderId, '', sortBy, ascending, 0); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-
   const handleSort = async (col: SortBy) => {
     const newAsc = col === sortBy ? !ascending : true;
-    setSortBy(col); setAscending(newAsc);
-    try { await queryCache(folderId, search, col, newAsc); }
+    setSortBy(col); setAscending(newAsc); setPage(0);
+    try { await queryCache(folderId, search, col, newAsc, 0); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+  const handlePage = async (pg: number) => {
+    setPage(pg);
+    try { await queryCache(folderId, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
+  // ── Refresh split-button handlers ────────────────────────────────────────────
+  const handleRefresh = () => void loadFolder(folderId, false, page, search, sortBy, ascending);
+  const handleHardRefresh = () => { setMenuOpen(false); void loadFolder(folderId, true, page, search, sortBy, ascending); };
+  const handleClearCache = async () => {
+    setMenuOpen(false);
+    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderId });
+  };
+
+  // ── File actions ─────────────────────────────────────────────────────────────
   const handleDownload = async (item: CachedItem) => {
     const destPath = await save({ defaultPath: item.name });
     if (!destPath) return;
     setDownloadingId(item.itemId);
-    try {
-      await invoke('gdrive_download_file', { accountId: account.id, fileId: item.itemId, destPath });
-    } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
+    try { await invoke('gdrive_download_file', { accountId: account.id, fileId: item.itemId, destPath }); }
+    catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setDownloadingId(null); }
   };
-
   const handleDelete = async (item: CachedItem) => {
     if (!confirm(`Delete "${item.name}"?`)) return;
     setDeletingId(item.itemId);
@@ -154,18 +198,16 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setDeletingId(null); }
   };
-
   const handleEdit = async (item: CachedItem) => {
     const filePath = await dialogOpen({ multiple: false, directory: false });
     if (!filePath || typeof filePath !== 'string') return;
     setEditingId(item.itemId);
     try {
       await invoke('gdrive_edit_file', { accountId: account.id, fileId: item.itemId, filePath });
-      fetchFiles(folderId, true);
+      void loadFolder(folderId, true, 0, search, sortBy, ascending);
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setEditingId(null); }
   };
-
   const handleRename = async (item: CachedItem) => {
     const newName = prompt('New name:', item.name);
     if (!newName?.trim() || newName.trim() === item.name) return;
@@ -177,28 +219,25 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setRenamingId(null); }
   };
-
   const handleUpload = async () => {
     const filePath = await dialogOpen({ multiple: false, directory: false });
     if (!filePath || typeof filePath !== 'string') return;
     setUploadingId('__upload__');
     try {
       await invoke('gdrive_upload_file', { accountId: account.id, folderId, filePath });
-      fetchFiles(folderId, true);
+      void loadFolder(folderId, true, 0, search, sortBy, ascending);
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setUploadingId(null); }
   };
-
   const handleNewFolder = async () => {
     const name = prompt('Folder name:'); if (!name?.trim()) return;
     setCreatingFolder(true);
     try {
       await invoke('gdrive_create_folder', { accountId: account.id, parentId: folderId, name: name.trim() });
-      fetchFiles(folderId, true);
+      void loadFolder(folderId, true, 0, search, sortBy, ascending);
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setCreatingFolder(false); }
   };
-
   const handleDisconnect = async () => {
     if (!confirm(`Disconnect ${account.displayName ?? account.email} from Google Drive?`)) return;
     await deleteAccount(account.id);
@@ -209,7 +248,6 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
     const list = await invoke<DriveFile[]>('gdrive_list_files', { accountId: account.id, folderId: id, query: null });
     return list.filter((f) => f.mimeType === FOLDER_MIME).map((f) => ({ id: f.id, name: f.name }));
   };
-
   const handleFolderPickerConfirm = async (destId: string) => {
     if (!folderPicker) return;
     const { fileId, fileName, isDir, action } = folderPicker;
@@ -225,22 +263,6 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
       }
       setFolderPicker(null);
     } finally { setCopyingId(null); setMovingId(null); }
-  };
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
-
-  const handleRefresh = () => fetchFiles(folderId, false);
-  const handleHardRefresh = () => { setMenuOpen(false); fetchFiles(folderId, true); };
-  const handleClearCache = async () => {
-    setMenuOpen(false);
-    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderId });
   };
 
   const sortBtn = (col: SortBy, label: string) => (
@@ -331,30 +353,12 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
                       </p>
                     </div>
                     <div className={`flex gap-2 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                      {!item.isDir && (
-                        <button onClick={() => handleEdit(item)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">
-                          {editingId === item.itemId ? 'Editing…' : 'Edit'}
-                        </button>
-                      )}
-                      <button onClick={() => handleRename(item)} disabled={anyBusy} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50">
-                        {renamingId === item.itemId ? 'Renaming…' : 'Rename'}
-                      </button>
-                      {!item.isDir && (
-                        <button onClick={() => setFolderPicker({ fileId: item.itemId, fileName: item.name, isDir: false, action: 'copy' })} disabled={anyBusy} className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50">
-                          {copyingId === item.itemId ? 'Copying…' : 'Copy'}
-                        </button>
-                      )}
-                      <button onClick={() => setFolderPicker({ fileId: item.itemId, fileName: item.name, isDir: item.isDir, action: 'move' })} disabled={anyBusy} className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 disabled:opacity-50">
-                        {movingId === item.itemId ? 'Moving…' : 'Move'}
-                      </button>
-                      {!item.isDir && (
-                        <button onClick={() => handleDownload(item)} disabled={anyBusy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">
-                          {downloadingId === item.itemId ? 'Downloading…' : 'Download'}
-                        </button>
-                      )}
-                      <button onClick={() => handleDelete(item)} disabled={anyBusy} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50">
-                        {deletingId === item.itemId ? 'Deleting…' : 'Delete'}
-                      </button>
+                      {!item.isDir && <button onClick={() => handleEdit(item)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">{editingId === item.itemId ? 'Editing…' : 'Edit'}</button>}
+                      <button onClick={() => handleRename(item)} disabled={anyBusy} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50">{renamingId === item.itemId ? 'Renaming…' : 'Rename'}</button>
+                      {!item.isDir && <button onClick={() => setFolderPicker({ fileId: item.itemId, fileName: item.name, isDir: false, action: 'copy' })} disabled={anyBusy} className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50">{copyingId === item.itemId ? 'Copying…' : 'Copy'}</button>}
+                      <button onClick={() => setFolderPicker({ fileId: item.itemId, fileName: item.name, isDir: item.isDir, action: 'move' })} disabled={anyBusy} className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 disabled:opacity-50">{movingId === item.itemId ? 'Moving…' : 'Move'}</button>
+                      {!item.isDir && <button onClick={() => handleDownload(item)} disabled={anyBusy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">{downloadingId === item.itemId ? 'Downloading…' : 'Download'}</button>}
+                      <button onClick={() => handleDelete(item)} disabled={anyBusy} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50">{deletingId === item.itemId ? 'Deleting…' : 'Delete'}</button>
                     </div>
                   </div>
                 );
@@ -362,13 +366,13 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
             </div>
           )}
         </div>
+        <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
       </div>
 
       {folderPicker && (
         <FolderPickerModal
           title={folderPicker.action === 'copy' ? 'Copy to…' : 'Move to…'}
-          rootId="root"
-          rootName="My Drive"
+          rootId="root" rootName="My Drive"
           onList={listDriveFolders}
           onConfirm={handleFolderPickerConfirm}
           onClose={() => setFolderPicker(null)}

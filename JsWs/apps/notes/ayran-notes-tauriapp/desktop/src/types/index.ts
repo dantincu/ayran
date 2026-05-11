@@ -13,6 +13,12 @@ export interface StoredAccount {
   path?: string;
 }
 
+/** Returned by query_folder_items — one page of items plus the total match count. */
+export interface FolderPage {
+  items: CachedItem[];
+  total: number;
+}
+
 /** Mirrors cache::CachedItem in Rust. storageType: 0=LocalFS 1=GoogleDrive 2=Filen */
 export interface CachedItem {
   accountId: string;

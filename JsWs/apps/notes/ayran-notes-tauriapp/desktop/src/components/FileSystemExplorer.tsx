@@ -2,8 +2,12 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile, writeFile, remove, mkdir, rename as fsRename, copyFile as fsCopyFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
-import type { StoredAccount, CachedItem } from '../types';
+import type { StoredAccount, CachedItem, FolderPage } from '../types';
 import { deleteAccount } from '../lib/account-store';
+import PaginationBar from './PaginationBar';
+import config from '../config.json';
+
+const PAGE_SIZE = config.defaultListPageSize;
 
 interface Props { account: StoredAccount; onDisconnect: () => void; }
 
@@ -39,22 +43,29 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const savedNav = useMemo(() => {
     try {
       const raw = localStorage.getItem(navKey);
-      return raw ? JSON.parse(raw) as { path: string; breadcrumbs: { name: string; path: string }[] } : null;
+      return raw ? JSON.parse(raw) as {
+        path: string;
+        breadcrumbs: { name: string; path: string }[];
+        page: number;
+        search: string;
+        sortBy: SortBy;
+        ascending: boolean;
+      } : null;
     } catch { return null; }
   }, [navKey]);
 
   const [currentPath, setCurrentPath] = useState(savedNav?.path ?? rootPath);
   const [breadcrumbs, setBreadcrumbs] = useState<{ name: string; path: string }[]>(
-    savedNav?.breadcrumbs ?? [
-      { name: account.displayName ?? rootPath.split(/[\\/]/).pop() ?? rootPath, path: rootPath },
-    ],
+    savedNav?.breadcrumbs ?? [{ name: account.displayName ?? rootPath.split(/[\\/]/).pop() ?? rootPath, path: rootPath }],
   );
   const [entries, setEntries] = useState<CachedItem[]>([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [sortBy, setSortBy] = useState<SortBy>('name');
-  const [ascending, setAscending] = useState(true);
+  const [search, setSearch] = useState(savedNav?.search ?? '');
+  const [sortBy, setSortBy] = useState<SortBy>(savedNav?.sortBy ?? 'name');
+  const [ascending, setAscending] = useState(savedNav?.ascending ?? true);
+  const [page, setPage] = useState(savedNav?.page ?? 0);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
@@ -69,66 +80,96 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
     || !!copyingPath || !!movingPath;
 
-  const queryCache = useCallback(
-    async (path: string, sq: string, sb: SortBy, asc: boolean) => {
-      const result = await invoke<CachedItem[]>('query_folder_items', {
-        accountId: account.id, parentId: path,
-        search: sq || null, sortBy: sb, ascending: asc,
-      });
-      setEntries(result);
-    },
-    [account.id],
-  );
+  // ── Persist state to localStorage whenever anything changes ──────────────────
+  useEffect(() => {
+    localStorage.setItem(navKey, JSON.stringify({ path: currentPath, breadcrumbs, page, search, sortBy, ascending }));
+  }, [currentPath, breadcrumbs, page, search, sortBy, ascending, navKey]);
 
-  const loadDir = useCallback(async (path: string, force = false) => {
-    setLoading(true); setError(null); setSearch('');
+  // ── Query SQLite cache (no network call) ─────────────────────────────────────
+  const queryCache = useCallback(async (
+    path: string, sq: string, sb: SortBy, asc: boolean, pg: number,
+  ) => {
+    const result = await invoke<FolderPage>('query_folder_items', {
+      accountId: account.id, parentId: path,
+      search: sq || null, sortBy: sb, ascending: asc,
+      page: pg, pageSize: PAGE_SIZE,
+    });
+    setEntries(result.items);
+    setTotal(result.total);
+  }, [account.id]);
+
+  // ── Full folder load: disk read (if needed) + cache query ────────────────────
+  const loadDir = useCallback(async (
+    path: string, force: boolean, pg: number, sq: string, sb: SortBy, asc: boolean,
+  ) => {
+    setLoading(true); setError(null);
     try {
       await invoke('list_folder', { accountId: account.id, parentId: path, force });
-      await queryCache(path, '', sortBy, ascending);
+      await queryCache(path, sq, sb, asc, pg);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to read directory');
     } finally {
       setLoading(false);
     }
-  }, [account.id, sortBy, ascending, queryCache]);
+  }, [account.id, queryCache]);
 
-  useEffect(() => { loadDir(currentPath); setSearch(''); }, [currentPath, loadDir]);
+  // ── Initial mount: restore saved state ───────────────────────────────────────
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { void loadDir(currentPath, false, page, search, sortBy, ascending); }, []);
 
+  // ── Close split-button menu on outside click ─────────────────────────────────
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [menuOpen]);
+
+  // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(path: string, crumbs: { name: string; path: string }[]) {
-    setCurrentPath(path);
-    setBreadcrumbs(crumbs);
-    setSearch('');
-    localStorage.setItem(navKey, JSON.stringify({ path, breadcrumbs: crumbs }));
+    setCurrentPath(path); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    void loadDir(path, false, 0, '', sortBy, ascending);
   }
-
   const openDir = (item: CachedItem) => {
     if (!item.isDir) return;
     navigate(item.itemId, [...breadcrumbs, { name: item.name, path: item.itemId }]);
   };
+  const navigateTo = (i: number) => navigate(breadcrumbs[i].path, breadcrumbs.slice(0, i + 1));
 
-  const navigateTo = (i: number) => {
-    navigate(breadcrumbs[i].path, breadcrumbs.slice(0, i + 1));
-  };
-
+  // ── Search / sort / page ─────────────────────────────────────────────────────
   const handleSearch = async (e: React.SyntheticEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    try { await queryCache(currentPath, search, sortBy, ascending); }
+    e.preventDefault(); setPage(0);
+    try { await queryCache(currentPath, search, sortBy, ascending, 0); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-
   const handleClearSearch = async () => {
-    setSearch('');
-    try { await queryCache(currentPath, '', sortBy, ascending); }
+    setSearch(''); setPage(0);
+    try { await queryCache(currentPath, '', sortBy, ascending, 0); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
-
   const handleSort = async (col: SortBy) => {
     const newAsc = col === sortBy ? !ascending : true;
-    setSortBy(col); setAscending(newAsc);
-    try { await queryCache(currentPath, search, col, newAsc); }
+    setSortBy(col); setAscending(newAsc); setPage(0);
+    try { await queryCache(currentPath, search, col, newAsc, 0); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+  const handlePage = async (pg: number) => {
+    setPage(pg);
+    try { await queryCache(currentPath, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
+  // ── Refresh split-button handlers ────────────────────────────────────────────
+  const handleRefresh = () => void loadDir(currentPath, false, page, search, sortBy, ascending);
+  const handleHardRefresh = () => { setMenuOpen(false); void loadDir(currentPath, true, page, search, sortBy, ascending); };
+  const handleClearCache = async () => {
+    setMenuOpen(false);
+    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: currentPath });
+  };
+
+  // ── File actions ─────────────────────────────────────────────────────────────
   const handleDownload = async (item: CachedItem) => {
     setDownloadingPath(item.itemId);
     try {
@@ -139,7 +180,6 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
       document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
     } finally { setDownloadingPath(null); }
   };
-
   const handleDelete = async (item: CachedItem) => {
     if (!confirm(`Delete "${item.name}"?`)) return;
     setDeletingPath(item.itemId);
@@ -150,18 +190,14 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     } catch (e) { alert(e instanceof Error ? e.message : 'Delete failed'); }
     finally { setDeletingPath(null); }
   };
-
   const handleEdit = async (item: CachedItem) => {
     const srcPath = await dialogOpen({ multiple: false, directory: false });
     if (!srcPath || typeof srcPath !== 'string') return;
     setEditingPath(item.itemId);
-    try {
-      const data = await readFile(srcPath);
-      await writeFile(item.itemId, data);
-    } catch (err) { alert(err instanceof Error ? err.message : 'Edit failed'); }
+    try { const data = await readFile(srcPath); await writeFile(item.itemId, data); }
+    catch (err) { alert(err instanceof Error ? err.message : 'Edit failed'); }
     finally { setEditingPath(null); }
   };
-
   const handleRename = async (item: CachedItem) => {
     const newName = prompt('New name:', item.name);
     if (!newName?.trim() || newName.trim() === item.name) return;
@@ -170,22 +206,18 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     setRenamingPath(item.itemId);
     try {
       await fsRename(item.itemId, newPath);
-      // itemId (path) changes on rename, so force a full re-read from disk.
-      loadDir(currentPath, true);
+      void loadDir(currentPath, true, 0, search, sortBy, ascending);
     } catch (err) { alert(err instanceof Error ? err.message : 'Rename failed'); }
     finally { setRenamingPath(null); }
   };
-
   const handleCopy = async (item: CachedItem) => {
     const destDir = await dialogOpen({ multiple: false, directory: true });
     if (!destDir || typeof destDir !== 'string') return;
     setCopyingPath(item.itemId);
-    try {
-      await fsCopyFile(item.itemId, `${destDir}${SEP}${item.name}`);
-    } catch (err) { alert(err instanceof Error ? err.message : 'Copy failed'); }
+    try { await fsCopyFile(item.itemId, `${destDir}${SEP}${item.name}`); }
+    catch (err) { alert(err instanceof Error ? err.message : 'Copy failed'); }
     finally { setCopyingPath(null); }
   };
-
   const handleMove = async (item: CachedItem) => {
     const destDir = await dialogOpen({ multiple: false, directory: true });
     if (!destDir || typeof destDir !== 'string') return;
@@ -196,17 +228,15 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     } catch (err) { alert(err instanceof Error ? err.message : 'Move failed'); }
     finally { setMovingPath(null); }
   };
-
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     try {
       const data = new Uint8Array(await file.arrayBuffer());
       await writeFile(`${currentPath}${SEP}${file.name}`, data);
-      loadDir(currentPath, true);
+      void loadDir(currentPath, true, 0, search, sortBy, ascending);
     } catch (err) { alert(err instanceof Error ? err.message : 'Upload failed'); }
     finally { if (fileInputRef.current) fileInputRef.current.value = ''; }
   };
-
   const handlePickAndUpload = async () => {
     const selected = await dialogOpen({ multiple: false, directory: false });
     if (!selected || typeof selected !== 'string') return;
@@ -214,39 +244,21 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
       const name = selected.split(/[\\/]/).pop() ?? 'file';
       const data = await readFile(selected);
       await writeFile(`${currentPath}${SEP}${name}`, data);
-      loadDir(currentPath, true);
+      void loadDir(currentPath, true, 0, search, sortBy, ascending);
     } catch (err) { alert(err instanceof Error ? err.message : 'Upload failed'); }
   };
-
   const handleNewFolder = async () => {
     const name = prompt('Folder name:'); if (!name?.trim()) return;
     setCreatingFolder(true);
-    try { await mkdir(`${currentPath}${SEP}${name.trim()}`); loadDir(currentPath, true); }
+    try { await mkdir(`${currentPath}${SEP}${name.trim()}`); void loadDir(currentPath, true, 0, search, sortBy, ascending); }
     catch (e) { alert(e instanceof Error ? e.message : 'Failed to create folder'); }
     finally { setCreatingFolder(false); }
   };
-
   const handleDisconnect = async () => {
     const ok = confirm(`Remove "${account.displayName ?? rootPath}" from connected storage?\n\nThis app will lose access immediately.`);
     if (!ok) return;
     await deleteAccount(account.id);
     onDisconnect();
-  };
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
-
-  const handleRefresh = () => loadDir(currentPath, false);
-  const handleHardRefresh = () => { setMenuOpen(false); loadDir(currentPath, true); };
-  const handleClearCache = async () => {
-    setMenuOpen(false);
-    await invoke('invalidate_folder_cache', { accountId: account.id, parentId: currentPath });
   };
 
   const sortBtn = (col: SortBy, label: string) => (
@@ -328,30 +340,12 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
                     </p>
                   </div>
                   <div className={`flex gap-2 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                    {!item.isDir && (
-                      <button onClick={() => handleEdit(item)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">
-                        {editingPath === item.itemId ? 'Editing…' : 'Edit'}
-                      </button>
-                    )}
-                    <button onClick={() => handleRename(item)} disabled={anyBusy} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50">
-                      {renamingPath === item.itemId ? 'Renaming…' : 'Rename'}
-                    </button>
-                    {!item.isDir && (
-                      <button onClick={() => handleCopy(item)} disabled={anyBusy} className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50">
-                        {copyingPath === item.itemId ? 'Copying…' : 'Copy'}
-                      </button>
-                    )}
-                    <button onClick={() => handleMove(item)} disabled={anyBusy} className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 disabled:opacity-50">
-                      {movingPath === item.itemId ? 'Moving…' : 'Move'}
-                    </button>
-                    {!item.isDir && (
-                      <button onClick={() => handleDownload(item)} disabled={anyBusy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">
-                        {downloadingPath === item.itemId ? 'Downloading…' : 'Download'}
-                      </button>
-                    )}
-                    <button onClick={() => handleDelete(item)} disabled={anyBusy} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50">
-                      {deletingPath === item.itemId ? 'Deleting…' : 'Delete'}
-                    </button>
+                    {!item.isDir && <button onClick={() => handleEdit(item)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">{editingPath === item.itemId ? 'Editing…' : 'Edit'}</button>}
+                    <button onClick={() => handleRename(item)} disabled={anyBusy} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50">{renamingPath === item.itemId ? 'Renaming…' : 'Rename'}</button>
+                    {!item.isDir && <button onClick={() => handleCopy(item)} disabled={anyBusy} className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50">{copyingPath === item.itemId ? 'Copying…' : 'Copy'}</button>}
+                    <button onClick={() => handleMove(item)} disabled={anyBusy} className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 disabled:opacity-50">{movingPath === item.itemId ? 'Moving…' : 'Move'}</button>
+                    {!item.isDir && <button onClick={() => handleDownload(item)} disabled={anyBusy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">{downloadingPath === item.itemId ? 'Downloading…' : 'Download'}</button>}
+                    <button onClick={() => handleDelete(item)} disabled={anyBusy} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50">{deletingPath === item.itemId ? 'Deleting…' : 'Delete'}</button>
                   </div>
                 </div>
               );
@@ -359,6 +353,7 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
           </div>
         )}
       </div>
+      <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
     </div>
   );
 }
