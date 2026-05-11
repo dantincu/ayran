@@ -87,6 +87,9 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const [cacheCleared, setCacheCleared] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<'copy' | 'move' | null>(null);
+  const lastCheckedIdxRef = useRef<number | null>(null);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [folderPicker, setFolderPicker] = useState<{
     uuid: string; isDir: boolean; action: 'copy' | 'move';
@@ -149,7 +152,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(uuid: string, crumbs: { uuid: string; name: string }[]) {
-    setFolderUUID(uuid); setBreadcrumbs(crumbs); setPage(0); setSearch(''); setSelectedIds(new Set());
+    setFolderUUID(uuid); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     void loadFolder(uuid, false, 0, '', sortBy, ascending);
   }
   function navigateTo(index: number) { navigate(breadcrumbs[index].uuid, breadcrumbs.slice(0, index + 1)); }
@@ -173,7 +177,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const handlePage = async (pg: number) => {
-    setPage(pg); setSelectedIds(new Set());
+    setPage(pg); setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     try { await queryCache(folderUUID, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -277,6 +281,21 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
   });
+  const handleCheck = (idx: number, shiftHeld: boolean) => {
+    if (shiftHeld && lastCheckedIdxRef.current !== null) {
+      const lo = Math.min(lastCheckedIdxRef.current, idx);
+      const hi = Math.max(lastCheckedIdxRef.current, idx);
+      setSelectedIds((prev) => { const next = new Set(prev); items.slice(lo, hi + 1).forEach((i) => next.add(i.itemId)); return next; });
+    } else {
+      toggleSelect(items[idx].itemId);
+      lastCheckedIdxRef.current = idx;
+    }
+  };
+  const handleTouchStart = (idx: number) => {
+    longPressTriggeredRef.current = false;
+    longPressRef.current = setTimeout(() => { longPressTriggeredRef.current = true; handleCheck(idx, true); }, 500);
+  };
+  const handleTouchEnd = () => { if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null; } };
   const allSelected = items.length > 0 && items.every((i) => selectedIds.has(i.itemId));
   const someSelected = items.some((i) => selectedIds.has(i.itemId));
   const selectedHasDir = items.some((i) => selectedIds.has(i.itemId) && i.isDir);
@@ -401,13 +420,15 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
           {!loading && !error && items.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
           {!loading && items.length > 0 && (
             <div className="divide-y divide-gray-300 dark:divide-gray-700">
-              {items.map((item) => {
+              {items.map((item, idx) => {
                 const activeOnThis = editingId === item.itemId || renamingId === item.itemId
                   || copyingId === item.itemId || movingId === item.itemId
                   || downloadingId === item.itemId || deletingId === item.itemId;
                 return (
                   <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
-                    <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => toggleSelect(item.itemId)}
+                    <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
+                      onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey); }}
+                      onTouchStart={() => handleTouchStart(idx)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchEnd}
                       className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">

@@ -184,6 +184,8 @@ struct FileMetadata {
     mime: String,
     key: String,
     last_modified: Option<u64>,
+    #[serde(default)]
+    hash: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -202,10 +204,6 @@ struct CreateDirResponse {
     uuid: String,
 }
 
-#[derive(Deserialize)]
-struct CopyResponse {
-    uuid: String,
-}
 
 // ── Login ─────────────────────────────────────────────────────────────────────
 
@@ -812,6 +810,9 @@ pub async fn filen_move_directory(
 
 // ── Copy ──────────────────────────────────────────────────────────────────────
 
+// Filen has no server-side copy (E2E encrypted — server lacks the keys).
+// We download the already-encrypted chunks and re-upload them to a new UUID,
+// preserving the same file key so no client-side decrypt/re-encrypt is needed.
 #[tauri::command]
 pub async fn filen_copy_file(
     state: tauri::State<'_, FilenSessions>,
@@ -820,12 +821,75 @@ pub async fn filen_copy_file(
     parent_uuid: String,
 ) -> Result<String, String> {
     let s = get_session(&state, &account_id)?;
-    let resp: CopyResponse = api::post(
-        &s.client, "/v3/file/copy",
-        &serde_json::json!({ "uuid": uuid, "parent": parent_uuid, "emptyTrash": false }),
+    let master_key = s.master_keys.last().ok_or("no master key")?.clone();
+
+    let info: FileInfoResponse = api::post(
+        &s.client, "/v3/file",
+        &serde_json::json!({ "uuid": uuid }),
         Some(&s.api_key),
     ).await?;
-    Ok(resp.uuid)
+    let plain_meta = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
+    let meta: FileMetadata = serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
+
+    let file_key = &meta.key;
+    let new_uuid = uuid::Uuid::new_v4().to_string();
+    let upload_key = crypto::generate_random_string(32);
+
+    // Download each encrypted chunk and re-upload as-is under the new UUID.
+    for index in 0..info.chunks {
+        let enc_chunk = api::download_chunk(&s.client, &info.region, &info.bucket, &uuid, index).await?;
+        let chunk_hash = hex::encode(Sha512::digest(&enc_chunk));
+        api::upload_chunk(
+            &s.client, &new_uuid, index, &parent_uuid,
+            &upload_key, &chunk_hash, &enc_chunk, &s.api_key,
+        ).await?;
+    }
+
+    let name_enc = crypto::encrypt_metadata(&meta.name, file_key)?;
+    let name_hashed = crypto::hash_filename(&meta.name);
+    let mime_enc = crypto::encrypt_metadata(&meta.mime, file_key)?;
+    let rm = crypto::generate_random_string(32);
+
+    if info.chunks == 0 {
+        let size_enc = crypto::encrypt_metadata("0", file_key)?;
+        let meta_json = serde_json::json!({
+            "name": meta.name, "size": 0u64, "mime": meta.mime,
+            "key": file_key, "lastModified": meta.last_modified.unwrap_or(0)
+        }).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        api::post_ok(
+            &s.client, "/v3/upload/empty",
+            &serde_json::json!({
+                "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed,
+                "size": size_enc, "mime": mime_enc, "rm": rm,
+                "metadata": meta_enc, "version": 3, "parent": parent_uuid
+            }),
+            &s.api_key,
+        ).await?;
+        return Ok(new_uuid);
+    }
+
+    let size_enc = crypto::encrypt_metadata(&meta.size.to_string(), file_key)?;
+    let mut meta_obj = serde_json::json!({
+        "name": meta.name, "size": meta.size, "mime": meta.mime,
+        "key": file_key, "lastModified": meta.last_modified.unwrap_or(0)
+    });
+    if let Some(ref h) = meta.hash {
+        meta_obj["hash"] = serde_json::Value::String(h.clone());
+    }
+    let meta_enc = crypto::encrypt_metadata(&meta_obj.to_string(), &master_key)?;
+
+    api::post_ok(
+        &s.client, "/v3/upload/done",
+        &serde_json::json!({
+            "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed,
+            "size": size_enc, "chunks": info.chunks, "mime": mime_enc,
+            "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key
+        }),
+        &s.api_key,
+    ).await?;
+
+    Ok(new_uuid)
 }
 
 // ── Overwrite (edit contents) ─────────────────────────────────────────────────

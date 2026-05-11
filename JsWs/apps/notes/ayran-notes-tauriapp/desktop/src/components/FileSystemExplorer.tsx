@@ -77,6 +77,9 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const lastCheckedIdxRef = useRef<number | null>(null);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
@@ -131,7 +134,8 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(path: string, crumbs: { name: string; path: string }[]) {
-    setCurrentPath(path); setBreadcrumbs(crumbs); setPage(0); setSearch(''); setSelectedIds(new Set());
+    setCurrentPath(path); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     void loadDir(path, false, 0, '', sortBy, ascending);
   }
   const openDir = (item: CachedItem) => {
@@ -158,7 +162,7 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const handlePage = async (pg: number) => {
-    setPage(pg); setSelectedIds(new Set());
+    setPage(pg); setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     try { await queryCache(currentPath, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -270,6 +274,21 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
   });
+  const handleCheck = (idx: number, shiftHeld: boolean) => {
+    if (shiftHeld && lastCheckedIdxRef.current !== null) {
+      const lo = Math.min(lastCheckedIdxRef.current, idx);
+      const hi = Math.max(lastCheckedIdxRef.current, idx);
+      setSelectedIds((prev) => { const next = new Set(prev); entries.slice(lo, hi + 1).forEach((e) => next.add(e.itemId)); return next; });
+    } else {
+      toggleSelect(entries[idx].itemId);
+      lastCheckedIdxRef.current = idx;
+    }
+  };
+  const handleTouchStart = (idx: number) => {
+    longPressTriggeredRef.current = false;
+    longPressRef.current = setTimeout(() => { longPressTriggeredRef.current = true; handleCheck(idx, true); }, 500);
+  };
+  const handleTouchEnd = () => { if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null; } };
   const allSelected = entries.length > 0 && entries.every((e) => selectedIds.has(e.itemId));
   const someSelected = entries.some((e) => selectedIds.has(e.itemId));
   const selectedHasDir = entries.some((e) => selectedIds.has(e.itemId) && e.isDir);
@@ -393,13 +412,15 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
         {!loading && !error && entries.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
         {!loading && entries.length > 0 && (
           <div className="divide-y divide-gray-300 dark:divide-gray-700">
-            {entries.map((item) => {
+            {entries.map((item, idx) => {
               const activeOnThis = editingPath === item.itemId || renamingPath === item.itemId
                 || copyingPath === item.itemId || movingPath === item.itemId
                 || downloadingPath === item.itemId || deletingPath === item.itemId;
               return (
                 <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
-                  <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => toggleSelect(item.itemId)}
+                  <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
+                    onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey); }}
+                    onTouchStart={() => handleTouchStart(idx)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchEnd}
                     className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                   <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                   <div className="flex-1 min-w-0">

@@ -85,6 +85,9 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
   const [cacheCleared, setCacheCleared] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<'copy' | 'move' | null>(null);
+  const lastCheckedIdxRef = useRef<number | null>(null);
+  const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressTriggeredRef = useRef(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [folderPicker, setFolderPicker] = useState<{
     fileId: string; fileName: string; isDir: boolean; action: 'copy' | 'move';
@@ -142,7 +145,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(id: string, crumbs: { id: string; name: string }[]) {
-    setFolderId(id); setBreadcrumbs(crumbs); setPage(0); setSearch(''); setSelectedIds(new Set());
+    setFolderId(id); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     void loadFolder(id, false, 0, '', sortBy, ascending);
   }
   const openFolder = (item: CachedItem) => {
@@ -169,7 +173,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const handlePage = async (pg: number) => {
-    setPage(pg); setSelectedIds(new Set());
+    setPage(pg); setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     try { await queryCache(folderId, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -275,6 +279,21 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
   });
+  const handleCheck = (idx: number, shiftHeld: boolean) => {
+    if (shiftHeld && lastCheckedIdxRef.current !== null) {
+      const lo = Math.min(lastCheckedIdxRef.current, idx);
+      const hi = Math.max(lastCheckedIdxRef.current, idx);
+      setSelectedIds((prev) => { const next = new Set(prev); files.slice(lo, hi + 1).forEach((f) => next.add(f.itemId)); return next; });
+    } else {
+      toggleSelect(files[idx].itemId);
+      lastCheckedIdxRef.current = idx;
+    }
+  };
+  const handleTouchStart = (idx: number) => {
+    longPressTriggeredRef.current = false;
+    longPressRef.current = setTimeout(() => { longPressTriggeredRef.current = true; handleCheck(idx, true); }, 500);
+  };
+  const handleTouchEnd = () => { if (longPressRef.current) { clearTimeout(longPressRef.current); longPressRef.current = null; } };
   const allSelected = files.length > 0 && files.every((f) => selectedIds.has(f.itemId));
   const someSelected = files.some((f) => selectedIds.has(f.itemId));
   const selectedHasDir = files.some((f) => selectedIds.has(f.itemId) && f.isDir);
@@ -398,13 +417,15 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
           {!loading && !error && files.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
           {!loading && files.length > 0 && (
             <div className="divide-y divide-gray-300 dark:divide-gray-700">
-              {files.map((item) => {
+              {files.map((item, idx) => {
                 const activeOnThis = editingId === item.itemId || renamingId === item.itemId
                   || copyingId === item.itemId || movingId === item.itemId
                   || downloadingId === item.itemId || deletingId === item.itemId;
                 return (
                   <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
-                    <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => toggleSelect(item.itemId)}
+                    <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
+                      onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey); }}
+                      onTouchStart={() => handleTouchStart(idx)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchEnd}
                       className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">
