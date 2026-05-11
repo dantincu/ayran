@@ -853,6 +853,11 @@ pub async fn filen_overwrite_file(
     let file_key = meta.key;
     let name = meta.name;
     let mime = meta.mime;
+
+    // Filen stores the upload_key per UUID from the original upload session.
+    // Re-uploading to the same UUID with a new key causes "invalid_upload_key".
+    // Fix: upload new content under a fresh UUID, then trash the old one.
+    let new_uuid = uuid::Uuid::new_v4().to_string();
     let upload_key = crypto::generate_random_string(32);
     let last_modified = std::fs::metadata(&file_path)
         .and_then(|m| m.modified()).ok()
@@ -876,7 +881,7 @@ pub async fn filen_overwrite_file(
         let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
         let chunk_hash = hex::encode(Sha512::digest(&enc_chunk));
         api::upload_chunk(
-            &s.client, &file_uuid, chunk_index, &parent_uuid,
+            &s.client, &new_uuid, chunk_index, &parent_uuid,
             &upload_key, &chunk_hash, &enc_chunk, &s.api_key,
         ).await?;
         chunk_index += 1;
@@ -893,38 +898,46 @@ pub async fn filen_overwrite_file(
             "key": file_key, "lastModified": last_modified
         }).to_string();
         let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
-        return api::post_ok(
+        api::post_ok(
             &s.client, "/v3/upload/empty",
             &serde_json::json!({
-                "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
+                "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed,
                 "size": size_enc, "mime": mime_enc, "rm": rm,
                 "metadata": meta_enc, "version": 3, "parent": parent_uuid
             }),
             &s.api_key,
-        ).await;
+        ).await?;
+    } else {
+        let content_hash = hex::encode(content_hasher.finalize());
+        let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
+        let name_hashed = crypto::hash_filename(&name);
+        let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
+        let mime_enc = crypto::encrypt_metadata(&mime, &file_key)?;
+        let rm = crypto::generate_random_string(32);
+        let meta_json = serde_json::json!({
+            "name": name, "size": total_size, "mime": mime,
+            "key": file_key, "lastModified": last_modified, "hash": content_hash
+        }).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        api::post_ok(
+            &s.client, "/v3/upload/done",
+            &serde_json::json!({
+                "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed,
+                "size": size_enc, "chunks": chunk_index, "mime": mime_enc,
+                "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key
+            }),
+            &s.api_key,
+        ).await?;
     }
 
-    let content_hash = hex::encode(content_hasher.finalize());
-    let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
-    let name_hashed = crypto::hash_filename(&name);
-    let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
-    let mime_enc = crypto::encrypt_metadata(&mime, &file_key)?;
-    let rm = crypto::generate_random_string(32);
-    let meta_json = serde_json::json!({
-        "name": name, "size": total_size, "mime": mime,
-        "key": file_key, "lastModified": last_modified, "hash": content_hash
-    }).to_string();
-    let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
-
-    api::post_ok(
-        &s.client, "/v3/upload/done",
-        &serde_json::json!({
-            "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
-            "size": size_enc, "chunks": chunk_index, "mime": mime_enc,
-            "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key
-        }),
+    // Trash the old file — ignore errors (new content is already uploaded).
+    let _ = api::post_ok(
+        &s.client, "/v3/file/trash",
+        &serde_json::json!({ "uuid": file_uuid }),
         &s.api_key,
-    ).await
+    ).await;
+
+    Ok(())
 }
 
 // ── MIME helper ───────────────────────────────────────────────────────────────

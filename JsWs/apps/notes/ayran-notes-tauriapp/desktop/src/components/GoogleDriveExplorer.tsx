@@ -82,6 +82,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
   const [movingId, setMovingId] = useState<string | null>(null);
   const [uploadingId, setUploadingId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [cacheCleared, setCacheCleared] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const [folderPicker, setFolderPicker] = useState<{
     fileId: string; fileName: string; isDir: boolean; action: 'copy' | 'move';
@@ -178,7 +179,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
     setMenuOpen(false);
     try {
       await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderId });
-      setFiles([]); setTotal(0);
+      setCacheCleared(true);
+      setTimeout(() => setCacheCleared(false), 2000);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
@@ -295,6 +297,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
               <button onClick={handleUpload} disabled={anyBusy} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
                 {uploadingId ? 'Uploading…' : 'Upload file'}
               </button>
+              {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cache cleared</span>}
               <div ref={menuRef} className="relative flex items-center">
                 <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
                 <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
@@ -342,13 +345,13 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
           )}
           {!loading && !error && files.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
           {!loading && files.length > 0 && (
-            <div className="divide-y divide-gray-50 dark:divide-gray-700">
+            <div className="divide-y divide-gray-300 dark:divide-gray-700">
               {files.map((item) => {
                 const activeOnThis = editingId === item.itemId || renamingId === item.itemId
                   || copyingId === item.itemId || movingId === item.itemId
                   || downloadingId === item.itemId || deletingId === item.itemId;
                 return (
-                  <div key={item.itemId} className="flex items-center gap-3 py-2 px-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 group">
+                  <div key={item.itemId} className="flex items-center gap-3 py-2 px-2 rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 group">
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">
                       <button onClick={() => openFolder(item)} disabled={!item.isDir}
