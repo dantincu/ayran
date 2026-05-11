@@ -76,6 +76,7 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const menuRef = useRef<HTMLDivElement>(null);
 
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
@@ -130,7 +131,7 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(path: string, crumbs: { name: string; path: string }[]) {
-    setCurrentPath(path); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    setCurrentPath(path); setBreadcrumbs(crumbs); setPage(0); setSearch(''); setSelectedIds(new Set());
     void loadDir(path, false, 0, '', sortBy, ascending);
   }
   const openDir = (item: CachedItem) => {
@@ -157,7 +158,7 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const handlePage = async (pg: number) => {
-    setPage(pg);
+    setPage(pg); setSelectedIds(new Set());
     try { await queryCache(currentPath, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -266,6 +267,48 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
     onDisconnect();
   };
 
+  const toggleSelect = (id: string) => setSelectedIds((prev) => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const allSelected = entries.length > 0 && entries.every((e) => selectedIds.has(e.itemId));
+  const someSelected = entries.some((e) => selectedIds.has(e.itemId));
+  const selectedHasDir = entries.some((e) => selectedIds.has(e.itemId) && e.isDir);
+  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(entries.map((e) => e.itemId)));
+
+  const handleBulkDelete = async () => {
+    if (!confirm(`Delete ${selectedIds.size} item(s)?`)) return;
+    const ids = [...selectedIds]; setSelectedIds(new Set());
+    for (const id of ids) {
+      try {
+        await remove(id, { recursive: true });
+        invoke('uncache_item', { accountId: account.id, itemId: id }).catch(() => {});
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    }
+    void loadDir(currentPath, true, 0, search, sortBy, ascending);
+  };
+  const handleBulkCopy = async () => {
+    const destDir = await dialogOpen({ multiple: false, directory: true });
+    if (!destDir || typeof destDir !== 'string') return;
+    const ids = [...selectedIds]; setSelectedIds(new Set());
+    for (const id of ids) {
+      const item = entries.find((e) => e.itemId === id);
+      if (!item || item.isDir) continue;
+      try { await fsCopyFile(id, `${destDir}${SEP}${item.name}`); }
+      catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    }
+  };
+  const handleBulkMove = async () => {
+    const destDir = await dialogOpen({ multiple: false, directory: true });
+    if (!destDir || typeof destDir !== 'string') return;
+    const ids = [...selectedIds]; setSelectedIds(new Set());
+    for (const id of ids) {
+      const item = entries.find((e) => e.itemId === id); if (!item) continue;
+      try { await fsRename(id, `${destDir}${SEP}${item.name}`); }
+      catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    }
+    void loadDir(currentPath, true, 0, search, sortBy, ascending);
+  };
+
   const sortBtn = (col: SortBy, label: string) => (
     <button
       onClick={() => handleSort(col)}
@@ -318,11 +361,28 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
             ))}
           </nav>
           <div className="flex items-center gap-1">
+            {entries.length > 0 && (
+              <input type="checkbox" checked={allSelected}
+                ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                onChange={toggleSelectAll}
+                className="w-4 h-4 mr-1 rounded accent-blue-600" title="Select all on this page" />
+            )}
             {sortBtn('name', 'Name')}{sortBtn('size', 'Size')}{sortBtn('modified', 'Date')}
           </div>
         </div>
       </div>
       <div className="p-4 min-h-48">
+        {selectedIds.size > 0 && (
+          <div className="mb-3 flex items-center gap-3 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+            <span className="font-medium text-blue-700 dark:text-blue-300">{selectedIds.size} selected</span>
+            <div className="flex gap-1 ml-auto">
+              {!selectedHasDir && <button onClick={handleBulkCopy} className="px-2 py-1 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded transition-colors">Copy</button>}
+              <button onClick={handleBulkMove} className="px-2 py-1 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded transition-colors">Move</button>
+              <button onClick={handleBulkDelete} className="px-2 py-1 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors">Delete</button>
+              <button onClick={() => setSelectedIds(new Set())} className="px-2 py-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">✕</button>
+            </div>
+          </div>
+        )}
         {loading && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>}
         {error && (
           <div className="mb-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm flex items-start justify-between gap-2">
@@ -338,7 +398,9 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
                 || copyingPath === item.itemId || movingPath === item.itemId
                 || downloadingPath === item.itemId || deletingPath === item.itemId;
               return (
-                <div key={item.itemId} className="flex items-center gap-3 py-2 px-2 rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 group">
+                <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                  <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => toggleSelect(item.itemId)}
+                    className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                   <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                   <div className="flex-1 min-w-0">
                     <button onClick={() => openDir(item)} disabled={!item.isDir}

@@ -85,6 +85,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
   const [movingId, setMovingId] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkAction, setBulkAction] = useState<'copy' | 'move' | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const [folderPicker, setFolderPicker] = useState<{
     uuid: string; isDir: boolean; action: 'copy' | 'move';
@@ -147,7 +149,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(uuid: string, crumbs: { uuid: string; name: string }[]) {
-    setFolderUUID(uuid); setBreadcrumbs(crumbs); setPage(0); setSearch('');
+    setFolderUUID(uuid); setBreadcrumbs(crumbs); setPage(0); setSearch(''); setSelectedIds(new Set());
     void loadFolder(uuid, false, 0, '', sortBy, ascending);
   }
   function navigateTo(index: number) { navigate(breadcrumbs[index].uuid, breadcrumbs.slice(0, index + 1)); }
@@ -171,7 +173,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
   const handlePage = async (pg: number) => {
-    setPage(pg);
+    setPage(pg); setSelectedIds(new Set());
     try { await queryCache(folderUUID, search, sortBy, ascending, pg); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
@@ -272,6 +274,42 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
     } finally { setCopyingId(null); setMovingId(null); }
   };
 
+  const toggleSelect = (id: string) => setSelectedIds((prev) => {
+    const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
+  });
+  const allSelected = items.length > 0 && items.every((i) => selectedIds.has(i.itemId));
+  const someSelected = items.some((i) => selectedIds.has(i.itemId));
+  const selectedHasDir = items.some((i) => selectedIds.has(i.itemId) && i.isDir);
+  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(items.map((i) => i.itemId)));
+
+  const handleBulkDelete = async () => {
+    if (!confirm(`Move ${selectedIds.size} item(s) to trash?`)) return;
+    const ids = [...selectedIds]; setSelectedIds(new Set());
+    for (const id of ids) {
+      const item = items.find((i) => i.itemId === id); if (!item) continue;
+      try {
+        if (item.isDir) await trashDirectory(account.id, id);
+        else await trashFile(account.id, id);
+        invoke('uncache_item', { accountId: account.id, itemId: id }).catch(() => {});
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    }
+    void loadFolder(folderUUID, true, 0, search, sortBy, ascending);
+  };
+  const handleBulkPickerConfirm = async (destUuid: string) => {
+    const action = bulkAction;
+    const ids = [...selectedIds]; setSelectedIds(new Set());
+    for (const id of ids) {
+      const item = items.find((i) => i.itemId === id); if (!item) continue;
+      try {
+        if (action === 'copy') await copyFile(account.id, id, destUuid);
+        else if (item.isDir) await moveDirectory(account.id, id, destUuid);
+        else await moveFile(account.id, id, destUuid);
+      } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    }
+    setBulkAction(null);
+    void loadFolder(folderUUID, true, 0, search, sortBy, ascending);
+  };
+
   const sortBtn = (col: SortBy, label: string) => (
     <button
       onClick={() => handleSort(col)}
@@ -331,11 +369,28 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
               ))}
             </nav>
             <div className="flex items-center gap-1">
+              {items.length > 0 && (
+                <input type="checkbox" checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+                  onChange={toggleSelectAll}
+                  className="w-4 h-4 mr-1 rounded accent-blue-600" title="Select all on this page" />
+              )}
               {sortBtn('name', 'Name')}{sortBtn('size', 'Size')}{sortBtn('modified', 'Date')}
             </div>
           </div>
         </div>
         <div className="p-4 min-h-48">
+          {selectedIds.size > 0 && (
+            <div className="mb-3 flex items-center gap-3 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
+              <span className="font-medium text-blue-700 dark:text-blue-300">{selectedIds.size} selected</span>
+              <div className="flex gap-1 ml-auto">
+                {!selectedHasDir && <button onClick={() => setBulkAction('copy')} className="px-2 py-1 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded transition-colors">Copy</button>}
+                <button onClick={() => setBulkAction('move')} className="px-2 py-1 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded transition-colors">Move</button>
+                <button onClick={handleBulkDelete} className="px-2 py-1 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors">Delete</button>
+                <button onClick={() => setSelectedIds(new Set())} className="px-2 py-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">✕</button>
+              </div>
+            </div>
+          )}
           {loading && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>}
           {error && (
             <div className="mb-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm flex items-start justify-between gap-2">
@@ -351,7 +406,9 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
                   || copyingId === item.itemId || movingId === item.itemId
                   || downloadingId === item.itemId || deletingId === item.itemId;
                 return (
-                  <div key={item.itemId} className="flex items-center gap-3 py-2 px-2 rounded-lg bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 group">
+                  <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                    <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => toggleSelect(item.itemId)}
+                      className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">
                       <button onClick={() => item.isDir && openDir(item)} disabled={!item.isDir}
@@ -387,6 +444,15 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin }:
           onList={listFoldersForPicker}
           onConfirm={handleFolderPickerConfirm}
           onClose={() => setFolderPicker(null)}
+        />
+      )}
+      {bulkAction && (
+        <FolderPickerModal
+          title={bulkAction === 'copy' ? `Copy ${selectedIds.size} item(s) to…` : `Move ${selectedIds.size} item(s) to…`}
+          rootId={rootUuid} rootName="My Filen"
+          onList={listFoldersForPicker}
+          onConfirm={handleBulkPickerConfirm}
+          onClose={() => setBulkAction(null)}
         />
       )}
     </>
