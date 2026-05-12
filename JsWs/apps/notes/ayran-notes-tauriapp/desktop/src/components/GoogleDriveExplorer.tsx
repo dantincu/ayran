@@ -425,6 +425,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect }: Props) {
                   <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
                     <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
                       onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey); }}
+                      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleCheck(idx, true); }}
                       onTouchStart={() => handleTouchStart(idx)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchEnd}
                       className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
