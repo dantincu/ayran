@@ -274,11 +274,15 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
   });
-  const handleCheck = (idx: number, shiftHeld: boolean) => {
+  const handleCheck = (idx: number, shiftHeld: boolean, deselect = false) => {
     if (shiftHeld && lastCheckedIdxRef.current !== null) {
       const lo = Math.min(lastCheckedIdxRef.current, idx);
       const hi = Math.max(lastCheckedIdxRef.current, idx);
-      setSelectedIds((prev) => { const next = new Set(prev); entries.slice(lo, hi + 1).forEach((e) => next.add(e.itemId)); return next; });
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        entries.slice(lo, hi + 1).forEach((e) => deselect ? next.delete(e.itemId) : next.add(e.itemId));
+        return next;
+      });
     } else {
       toggleSelect(entries[idx].itemId);
       lastCheckedIdxRef.current = idx;
@@ -419,8 +423,8 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
               return (
                 <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
                   <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
-                    onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey); }}
-                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleCheck(idx, true); }}
+                    onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey, e.shiftKey && selectedIds.has(item.itemId)); }}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleCheck(idx, true, selectedIds.has(item.itemId)); }}
                     onTouchStart={() => handleTouchStart(idx)} onTouchEnd={handleTouchEnd} onTouchMove={handleTouchEnd}
                     className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                   <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
