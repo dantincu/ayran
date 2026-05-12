@@ -455,15 +455,100 @@ fn invalidate_folder_cache(
     cache::clear_folder(&conn, &account_id, &parent_id)
 }
 
+fn content_cache_path(app: &tauri::AppHandle, account_id: &str, item_id: &str) -> Option<std::path::PathBuf> {
+    Some(
+        app.path().app_data_dir().ok()?
+            .join("c")
+            .join(account_id)
+            .join(item_id),
+    )
+}
+
+/// Open a file for viewing: returns the local filesystem path to the file.
+/// For cloud providers the file is downloaded to a persistent content cache on first access.
+/// For local-fs the original path is returned directly (no caching needed).
+/// Pass `force = true` to force a fresh download even when the cache file exists.
+#[tauri::command]
+async fn open_file(
+    app: tauri::AppHandle,
+    filen_sessions: tauri::State<'_, filen::FilenSessions>,
+    account_id: String,
+    item_id: String,
+    force: bool,
+) -> Result<String, String> {
+    let accounts = load_accounts(&app)?;
+    let account = accounts
+        .get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+
+    if account.provider == "local-fs" {
+        return Ok(item_id);
+    }
+
+    let cache_path = content_cache_path(&app, &account_id, &item_id)
+        .ok_or("could not compute content cache path")?;
+
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    if !force && cache_path.exists() {
+        return Ok(cache_path.to_string_lossy().into_owned());
+    }
+
+    let dest = cache_path.to_string_lossy().into_owned();
+
+    match account.provider.as_str() {
+        "google-drive" => {
+            gdrive::download_to_path(&app, &account_id, &item_id, &dest).await?;
+        }
+        "filen" => {
+            let session = filen_sessions
+                .0
+                .lock()
+                .map_err(|e| e.to_string())?
+                .get(&account_id)
+                .cloned()
+                .ok_or_else(|| format!("No active Filen session for '{}'", account_id))?;
+            filen::download_to_path(session, &item_id, &dest).await?;
+        }
+        p => return Err(format!("Unsupported provider '{}'", p)),
+    }
+
+    Ok(dest)
+}
+
+/// Delete the cached file content for one item without touching the folder metadata cache.
+#[tauri::command]
+fn invalidate_file_content_cache(
+    app: tauri::AppHandle,
+    account_id: String,
+    item_id: String,
+) -> Result<(), String> {
+    if let Some(path) = content_cache_path(&app, &account_id, &item_id) {
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Remove an item and all its cached descendants after a client-side delete.
 #[tauri::command]
 fn uncache_item(
+    app: tauri::AppHandle,
     cache_state: tauri::State<'_, CacheState>,
     account_id: String,
     item_id: String,
 ) -> Result<(), String> {
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-    cache::cascade_delete_item(&conn, &account_id, &item_id)
+    cache::cascade_delete_item(&conn, &account_id, &item_id)?;
+    // Best-effort: also remove the content cache file for this item.
+    if let Some(path) = content_cache_path(&app, &account_id, &item_id) {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
 }
 
 /// Update the name of a single cached item after a client-side rename.
@@ -633,6 +718,28 @@ pub fn run() {
             // slipped through the per-operation cleanup in previous sessions.
             if let Ok(conn) = db.lock() {
                 let _ = cache::cleanup_old_rows(&conn, CACHE_MAX_AGE_MS);
+
+                // Remove content-cache files whose item_id no longer exists in the
+                // metadata cache (e.g. files deleted from the drive on another device).
+                let content_cache_dir = data_dir.join("c");
+                if let Ok(accounts) = load_accounts(app.handle()) {
+                    for (account_id, account) in &accounts {
+                        if account.provider == "local-fs" { continue; }
+                        let acct_dir = content_cache_dir.join(account_id);
+                        if !acct_dir.exists() { continue; }
+                        if let Ok(live_ids) = cache::all_item_ids_for_account(&conn, account_id) {
+                            let live: std::collections::HashSet<String> = live_ids.into_iter().collect();
+                            if let Ok(entries) = std::fs::read_dir(&acct_dir) {
+                                for entry in entries.flatten() {
+                                    let name = entry.file_name().to_string_lossy().to_string();
+                                    if !live.contains(&name) {
+                                        let _ = std::fs::remove_file(entry.path());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             app.manage(CacheState(db));
             Ok(())
@@ -652,6 +759,9 @@ pub fn run() {
             uncache_item,
             rename_cached_item,
             invalidate_folder_cache,
+            // File content cache
+            open_file,
+            invalidate_file_content_cache,
             // Google
             start_google_oauth,
             refresh_google_token,

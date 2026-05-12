@@ -480,6 +480,24 @@ fn item_name(i: &FilenItem) -> &str {
 
 // ── File download ─────────────────────────────────────────────────────────────
 
+pub async fn download_to_path(session: FilenSession, uuid: &str, dest_path: &str) -> Result<(), String> {
+    let info: FileInfoResponse = api::post(
+        &session.client, "/v3/file",
+        &serde_json::json!({ "uuid": uuid }),
+        Some(&session.api_key),
+    ).await?;
+    let plain_meta = crypto::decrypt_metadata(&info.metadata, &session.master_keys)?;
+    let meta: FileMetadata = serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
+    let mut file = tokio::fs::File::create(dest_path)
+        .await.map_err(|e| format!("create '{}': {}", dest_path, e))?;
+    for index in 0..info.chunks {
+        let enc_chunk = api::download_chunk(&session.client, &info.region, &info.bucket, uuid, index).await?;
+        let plain_chunk = crypto::decrypt_chunk(&enc_chunk, &meta.key, info.version)?;
+        file.write_all(&plain_chunk).await.map_err(|e| e.to_string())?;
+    }
+    file.flush().await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn filen_download_file(
     state: tauri::State<'_, FilenSessions>,
@@ -487,35 +505,8 @@ pub async fn filen_download_file(
     uuid: String,
     dest_path: String,
 ) -> Result<(), String> {
-    let s = get_session(&state, &account_id)?;
-
-    // Fetch file info
-    let info: FileInfoResponse = api::post(
-        &s.client,
-        "/v3/file",
-        &serde_json::json!({ "uuid": uuid }),
-        Some(&s.api_key),
-    )
-    .await?;
-
-    let plain_meta = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
-    let meta: FileMetadata =
-        serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
-
-    let mut file = tokio::fs::File::create(&dest_path)
-        .await
-        .map_err(|e| format!("create '{}': {}", dest_path, e))?;
-
-    for index in 0..info.chunks {
-        let enc_chunk =
-            api::download_chunk(&s.client, &info.region, &info.bucket, &uuid, index).await?;
-        let plain_chunk = crypto::decrypt_chunk(&enc_chunk, &meta.key, info.version)?;
-        file.write_all(&plain_chunk)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
-    file.flush().await.map_err(|e| e.to_string())?;
-    Ok(())
+    let session = get_session(&state, &account_id)?;
+    download_to_path(session, &uuid, &dest_path).await
 }
 
 // ── File upload ───────────────────────────────────────────────────────────────

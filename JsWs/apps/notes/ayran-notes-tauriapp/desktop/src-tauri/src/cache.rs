@@ -181,6 +181,19 @@ pub fn cleanup_old_rows(conn: &Connection, max_age_ms: i64) -> Result<u64, Strin
     .map_err(|e| e.to_string())
 }
 
+/// Returns all item_ids for an account — used by content-cache orphan cleanup.
+pub fn all_item_ids_for_account(conn: &Connection, account_id: &str) -> Result<Vec<String>, String> {
+    let mut stmt = conn
+        .prepare("SELECT item_id FROM folder_items WHERE account_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([account_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(ids)
+}
+
 pub fn insert_batch(conn: &mut Connection, items: &[CachedItem]) -> Result<(), String> {
     if items.is_empty() {
         return Ok(());

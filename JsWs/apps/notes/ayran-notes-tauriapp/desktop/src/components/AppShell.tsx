@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
-import type { StoredAccount } from '../types';
+import type { StoredAccount, CachedItem } from '../types';
 import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store';
 import { connectGoogleDrive } from '../lib/google-auth';
 import AccountManager from './AccountManager';
@@ -8,6 +8,7 @@ import GoogleDriveExplorer from './GoogleDriveExplorer';
 import FilenExplorer from './FilenExplorer';
 import FileSystemExplorer from './FileSystemExplorer';
 import FilenLoginModal from './FilenLoginModal';
+import FileViewer from './FileViewer';
 import ThemeToggle from './ThemeToggle';
 
 export default function AppShell() {
@@ -16,6 +17,7 @@ export default function AppShell() {
   const [connecting, setConnecting] = useState(false);
   const [showFilenLogin, setShowFilenLogin] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [viewingFile, setViewingFile] = useState<{ account: StoredAccount; item: CachedItem } | null>(null);
 
   useEffect(() => {
     listAccounts().then((accs) => {
@@ -90,6 +92,14 @@ export default function AppShell() {
         <FilenLoginModal onSuccess={handleFilenSuccess} onClose={() => setShowFilenLogin(false)} />
       )}
 
+      {viewingFile && (
+        <FileViewer
+          account={viewingFile.account}
+          item={viewingFile.item}
+          onClose={() => setViewingFile(null)}
+        />
+      )}
+
       <div className="container mx-auto p-6 max-w-7xl">
         <header className="mb-8 flex items-start justify-between gap-4">
           <div>
@@ -121,13 +131,17 @@ export default function AppShell() {
 
           <section className="lg:col-span-3">
             {selected?.provider === 'google-drive' && (
-              <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />
+              <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
+                onOpenFile={(item) => setViewingFile({ account: selected!, item })} />
             )}
             {selected?.provider === 'filen' && (
-              <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} onNeedsRelogin={() => setShowFilenLogin(true)} />
+              <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
+                onNeedsRelogin={() => setShowFilenLogin(true)}
+                onOpenFile={(item) => setViewingFile({ account: selected!, item })} />
             )}
             {selected?.provider === 'local-fs' && (
-              <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect} />
+              <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
+                onOpenFile={(item) => setViewingFile({ account: selected!, item })} />
             )}
             {!selected && (
               <div className="flex flex-col items-center justify-center h-64 text-center text-gray-400 dark:text-gray-500 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">

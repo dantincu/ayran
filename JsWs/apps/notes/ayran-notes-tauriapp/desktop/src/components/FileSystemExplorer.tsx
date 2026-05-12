@@ -9,7 +9,7 @@ import config from '../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
 
-interface Props { account: StoredAccount; onDisconnect: () => void; }
+interface Props { account: StoredAccount; onDisconnect: () => void; onOpenFile: (item: CachedItem) => void; }
 
 type SortBy = 'name' | 'size' | 'modified';
 
@@ -36,7 +36,7 @@ function formatSize(bytes: number | null): string {
 
 const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
 
-export default function FileSystemExplorer({ account, onDisconnect }: Props) {
+export default function FileSystemExplorer({ account, onDisconnect, onOpenFile }: Props) {
   const rootPath = account.path ?? '';
   const navKey = `notes-fs-nav-${account.id}`;
 
@@ -429,8 +429,8 @@ export default function FileSystemExplorer({ account, onDisconnect }: Props) {
                     className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                   <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                   <div className="flex-1 min-w-0">
-                    <button onClick={() => openDir(item)} disabled={!item.isDir}
-                      className={`text-sm font-medium truncate block text-left w-full ${item.isDir ? 'hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer' : 'cursor-default text-gray-800 dark:text-gray-200'}`}>
+                    <button onClick={() => item.isDir ? openDir(item) : onOpenFile(item)}
+                      className={`text-sm font-medium truncate block text-left w-full hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer ${item.isDir ? '' : 'text-gray-800 dark:text-gray-200'}`}>
                       {item.name}
                     </button>
                     <p className="text-xs text-gray-400 dark:text-gray-500">

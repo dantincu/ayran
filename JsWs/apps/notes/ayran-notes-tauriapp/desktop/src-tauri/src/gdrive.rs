@@ -313,6 +313,28 @@ pub async fn gdrive_list_files(
     }).collect())
 }
 
+pub(crate) async fn download_to_path(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    file_id: &str,
+    dest_path: &str,
+) -> Result<(), String> {
+    let token = get_valid_token(app, account_id).await?;
+    let res = client()
+        .get(format!("{}/files/{}?alt=media", DRIVE_API, file_id))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(api_err(res).await);
+    }
+    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
+    tokio::fs::write(dest_path, &bytes)
+        .await
+        .map_err(|e| format!("write '{}': {}", dest_path, e))
+}
+
 #[tauri::command]
 pub async fn gdrive_download_file(
     app: tauri::AppHandle,
@@ -320,23 +342,7 @@ pub async fn gdrive_download_file(
     file_id: String,
     dest_path: String,
 ) -> Result<(), String> {
-    let token = get_valid_token(&app, &account_id).await?;
-
-    let res = client()
-        .get(format!("{}/files/{}?alt=media", DRIVE_API, file_id))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if !res.status().is_success() {
-        return Err(api_err(res).await);
-    }
-
-    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
-    tokio::fs::write(&dest_path, &bytes)
-        .await
-        .map_err(|e| format!("write '{}': {}", dest_path, e))
+    download_to_path(&app, &account_id, &file_id, &dest_path).await
 }
 
 #[tauri::command]
