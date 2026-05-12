@@ -75,7 +75,48 @@ pub fn open(data_dir: &Path) -> Result<CacheDb, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // Content-cache path index — never auto-expired; persists across restarts.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS content_cache (
+             account_id    TEXT NOT NULL,
+             item_id       TEXT NOT NULL,
+             relative_path TEXT NOT NULL,
+             PRIMARY KEY (account_id, item_id)
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+// ── Content-cache path index ──────────────────────────────────────────────────
+
+pub fn get_content_cache_path(conn: &Connection, account_id: &str, item_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT relative_path FROM content_cache WHERE account_id=?1 AND item_id=?2",
+        params![account_id, item_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap_or(None)
+}
+
+pub fn set_content_cache_path(conn: &Connection, account_id: &str, item_id: &str, relative_path: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO content_cache (account_id, item_id, relative_path) VALUES (?1,?2,?3)",
+        params![account_id, item_id, relative_path],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+pub fn delete_content_cache_entry(conn: &Connection, account_id: &str, item_id: &str) -> Result<(), String> {
+    conn.execute(
+        "DELETE FROM content_cache WHERE account_id=?1 AND item_id=?2",
+        params![account_id, item_id],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 pub fn clear_folder(conn: &Connection, account_id: &str, parent_id: &str) -> Result<(), String> {

@@ -893,6 +893,80 @@ pub async fn filen_copy_file(
     Ok(new_uuid)
 }
 
+/// Upload new content for an existing file directly from bytes.
+/// Generates a new UUID for the chunks, then trashes the old UUID.
+pub async fn overwrite_bytes(
+    session: FilenSession,
+    file_uuid: &str,
+    parent_uuid: &str,
+    content: &[u8],
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
+    let master_key = session.master_keys.last().ok_or("no master key")?.clone();
+
+    let info: FileInfoResponse = api::post(
+        &session.client, "/v3/file",
+        &serde_json::json!({ "uuid": file_uuid }),
+        Some(&session.api_key),
+    ).await?;
+    let plain_meta = crypto::decrypt_metadata(&info.metadata, &session.master_keys)?;
+    let meta: FileMetadata = serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
+
+    let file_key = meta.key;
+    let name = meta.name;
+    let mime = meta.mime;
+    let new_uuid = uuid::Uuid::new_v4().to_string();
+    let upload_key = crypto::generate_random_string(32);
+    let last_modified = crate::now_ms();
+    let total_size = content.len() as u64;
+
+    let mut sha_content = sha2::Sha512::new();
+    let mut chunk_index: u32 = 0;
+
+    for chunk in content.chunks(CHUNK_SIZE) {
+        sha_content.update(chunk);
+        let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
+        let chunk_hash = hex::encode(sha2::Sha512::digest(&enc_chunk));
+        api::upload_chunk(
+            &session.client, &new_uuid, chunk_index, parent_uuid,
+            &upload_key, &chunk_hash, &enc_chunk, &session.api_key,
+        ).await?;
+        chunk_index += 1;
+        let _ = app.emit("file-download-progress",
+            serde_json::json!({ "loaded": (chunk_index as u64) * CHUNK_SIZE as u64, "total": total_size }));
+    }
+
+    if chunk_index == 0 {
+        let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
+        let name_hashed = crypto::hash_filename(&name);
+        let size_enc = crypto::encrypt_metadata("0", &file_key)?;
+        let mime_enc = crypto::encrypt_metadata(&mime, &file_key)?;
+        let rm = crypto::generate_random_string(32);
+        let meta_json = serde_json::json!({ "name": name, "size": 0u64, "mime": mime, "key": file_key, "lastModified": last_modified }).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        api::post_ok(&session.client, "/v3/upload/empty",
+            &serde_json::json!({ "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 3, "parent": parent_uuid }),
+            &session.api_key,
+        ).await?;
+    } else {
+        let content_hash = hex::encode(sha_content.finalize());
+        let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
+        let name_hashed = crypto::hash_filename(&name);
+        let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
+        let mime_enc = crypto::encrypt_metadata(&mime, &file_key)?;
+        let rm = crypto::generate_random_string(32);
+        let meta_json = serde_json::json!({ "name": name, "size": total_size, "mime": mime, "key": file_key, "lastModified": last_modified, "hash": content_hash }).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        api::post_ok(&session.client, "/v3/upload/done",
+            &serde_json::json!({ "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "chunks": chunk_index, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key }),
+            &session.api_key,
+        ).await?;
+    }
+
+    let _ = api::post_ok(&session.client, "/v3/file/trash", &serde_json::json!({ "uuid": file_uuid }), &session.api_key).await;
+    Ok(())
+}
+
 // ── Overwrite (edit contents) ─────────────────────────────────────────────────
 
 #[tauri::command]

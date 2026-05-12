@@ -527,6 +527,28 @@ pub async fn gdrive_move_file(
     Ok(())
 }
 
+pub(crate) async fn edit_bytes(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    file_id: &str,
+    bytes: &[u8],
+    name: &str,
+) -> Result<(), String> {
+    let token = get_valid_token(app, account_id).await?;
+    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    let mime = mime_from_ext(&ext);
+    let res = client()
+        .patch(format!("https://www.googleapis.com/upload/drive/v3/files/{}?uploadType=media", file_id))
+        .bearer_auth(&token)
+        .header("Content-Type", mime)
+        .body(bytes.to_vec())
+        .send().await.map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(api_err(res).await);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn gdrive_edit_file(
     app: tauri::AppHandle,

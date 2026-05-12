@@ -571,7 +571,20 @@ async fn open_file(
     let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
     let acct_dir = account_content_cache_dir(&c_dir, &account)?;
 
-    // Reconstruct the human-readable relative path (e.g. "Photos/vacation.jpg").
+    // 1. Check the persistent content-cache index (survives metadata-cache TTL).
+    let known_rel = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        cache::get_content_cache_path(&conn, &account_id, &item_id)
+    };
+    if let Some(ref rel) = known_rel {
+        let existing = acct_dir.join(rel);
+        if !force && existing.exists() {
+            return Ok(existing.to_string_lossy().into_owned());
+        }
+    }
+
+    // 2. Compute the human-readable relative path from the folder-metadata cache
+    //    (may not be populated after a restart, falls back to item_id as filename).
     let root_parent = account_root_parent_id(&account);
     let path_parts = {
         let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
@@ -583,10 +596,6 @@ async fn open_file(
 
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    if !force && cache_path.exists() {
-        return Ok(cache_path.to_string_lossy().into_owned());
     }
 
     let dest = cache_path.to_string_lossy().into_owned();
@@ -603,16 +612,107 @@ async fn open_file(
         p => return Err(format!("Unsupported provider '{}'", p)),
     }
 
+    // Record the relative path so future lookups survive metadata-cache expiry.
+    let rel_str = rel.to_string_lossy();
+    {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        let _ = cache::set_content_cache_path(&conn, &account_id, &item_id, &rel_str);
+    }
+
     Ok(dest)
 }
 
-/// Delete a content-cache file by its absolute path (the path returned by `open_file`).
-/// The FileViewer holds this path in its state and passes it directly.
+/// Save edited text-file content back to the provider and update the local cache.
+/// Takes the content as a UTF-8 string so no file path crosses the IPC boundary.
 #[tauri::command]
-fn delete_cached_file(path: String) -> Result<(), String> {
-    let p = std::path::Path::new(&path);
-    if p.exists() {
-        std::fs::remove_file(p).map_err(|e| e.to_string())?;
+async fn save_text_file(
+    app: tauri::AppHandle,
+    filen_sessions: tauri::State<'_, filen::FilenSessions>,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    parent_id: String,
+    content: String,
+) -> Result<(), String> {
+    let bytes = content.into_bytes();
+    let accounts = load_accounts(&app)?;
+    let account = accounts
+        .get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+
+    // LocalFS: write directly to the original file path.
+    if account.provider == "local-fs" {
+        tokio::fs::write(&item_id, &bytes).await.map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    // Cloud: write to cache then upload.
+    let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
+    let acct_dir = account_content_cache_dir(&c_dir, &account)?;
+    // Use the persistent content-cache index first so path is stable across restarts.
+    let rel_str: String = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        if let Some(r) = cache::get_content_cache_path(&conn, &account_id, &item_id) {
+            r
+        } else {
+            let root_parent = account_root_parent_id(&account);
+            let parts = cache::item_path_from_root(&conn, &account_id, &item_id, &root_parent);
+            let p: std::path::PathBuf = parts.iter().map(|s| sanitize_path_component(s)).collect();
+            p.to_string_lossy().into_owned()
+        }
+    };
+    let cache_path = acct_dir.join(&rel_str);
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    tokio::fs::write(&cache_path, &bytes).await.map_err(|e| e.to_string())?;
+
+    let name = std::path::Path::new(&rel_str)
+        .file_name().and_then(|n| n.to_str()).unwrap_or(&rel_str);
+    // Update the index so future lookups use this path even after metadata-cache expiry.
+    {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        let _ = cache::set_content_cache_path(&conn, &account_id, &item_id, &rel_str);
+    }
+
+    match account.provider.as_str() {
+        "google-drive" => {
+            gdrive::edit_bytes(&app, &account_id, &item_id, &bytes, name).await?;
+        }
+        "filen" => {
+            let session = filen_sessions
+                .0.lock().map_err(|e| e.to_string())?
+                .get(&account_id).cloned()
+                .ok_or_else(|| format!("No Filen session for '{}'", account_id))?;
+            filen::overwrite_bytes(session, &item_id, &parent_id, &bytes, &app).await?;
+        }
+        p => return Err(format!("Unsupported provider '{}'", p)),
+    }
+    Ok(())
+}
+
+/// Delete the cached file content for one item and remove it from the index.
+#[tauri::command]
+fn delete_cached_file(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+) -> Result<(), String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    if let Some(rel) = cache::get_content_cache_path(&conn, &account_id, &item_id) {
+        if let (Ok(c_dir), Ok(accounts)) = (
+            app.path().app_data_dir().map(|d| d.join("c")),
+            load_accounts(&app),
+        ) {
+            if let Some(account) = accounts.get(&account_id) {
+                if let Ok(acct_dir) = account_content_cache_dir(&c_dir, account) {
+                    let _ = std::fs::remove_file(acct_dir.join(&rel));
+                }
+            }
+        }
+        let _ = cache::delete_content_cache_entry(&conn, &account_id, &item_id);
     }
     Ok(())
 }
@@ -647,6 +747,7 @@ fn uncache_item(
         }
     }
 
+    let _ = cache::delete_content_cache_entry(&conn, &account_id, &item_id);
     cache::cascade_delete_item(&conn, &account_id, &item_id)
 }
 
@@ -869,6 +970,7 @@ pub fn run() {
             invalidate_folder_cache,
             // File content cache
             open_file,
+            save_text_file,
             delete_cached_file,
             // Google
             start_google_oauth,

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { readFile } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, CachedItem } from '../types';
 
 interface DownloadProgress { loaded: number; total: number | null; }
@@ -49,7 +49,6 @@ export default function FileViewer({ account, item, onClose }: Props) {
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [cachePath, setCachePath] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
 
@@ -86,19 +85,18 @@ export default function FileViewer({ account, item, onClose }: Props) {
 
   const loadFile = useCallback(async (force: boolean) => {
     setLoading(true); setError(null); setProgress(null);
-    if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
+    setBlobUrl(null);
     try {
       const path = await invoke<string>('open_file', { accountId: account.id, itemId: item.itemId, force });
-      setCachePath(path);
 
       if (mode === 'text') {
         const bytes = await readFile(path);
         const text = new TextDecoder('utf-8').decode(bytes);
         setTextContent(text); setEditedText(text); setIsDirty(false);
       } else if (mode !== 'unsupported') {
-        const bytes = await readFile(path);
-        const url = URL.createObjectURL(new Blob([bytes], { type: item.mimeType || 'application/octet-stream' }));
-        setBlobUrl(url);
+        // Use asset protocol — no file is loaded into JS memory, supports range
+        // requests for seeking, and handles any file size safely.
+        setBlobUrl(convertFileSrc(path));
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -126,20 +124,15 @@ export default function FileViewer({ account, item, onClose }: Props) {
   // ── Save (text only) ─────────────────────────────────────────────────────────
 
   const handleSave = async () => {
-    if (!cachePath || !isDirty || saving) return;
+    if (!isDirty || saving) return;
     setSaving(true); setSaveError(null);
     try {
-      const bytes = new TextEncoder().encode(editedText);
-      if (account.provider === 'local-fs') {
-        await writeFile(item.itemId, bytes);
-      } else {
-        await writeFile(cachePath, bytes);
-        if (account.provider === 'google-drive') {
-          await invoke('gdrive_edit_file', { accountId: account.id, fileId: item.itemId, filePath: cachePath });
-        } else if (account.provider === 'filen') {
-          await invoke('filen_overwrite_file', { accountId: account.id, fileUuid: item.itemId, parentUuid: item.parentId, filePath: cachePath });
-        }
-      }
+      await invoke('save_text_file', {
+        accountId: account.id,
+        itemId: item.itemId,
+        parentId: item.parentId,
+        content: editedText,
+      });
       setTextContent(editedText); setIsDirty(false);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -153,8 +146,8 @@ export default function FileViewer({ account, item, onClose }: Props) {
   const handleHardRefresh = () => { setCacheMenuOpen(false); void loadFile(true); };
   const handleClearCache = async () => {
     setCacheMenuOpen(false);
-    if (cachePath && account.provider !== 'local-fs') {
-      await invoke('delete_cached_file', { path: cachePath }).catch(() => {});
+    if (account.provider !== 'local-fs') {
+      await invoke('delete_cached_file', { accountId: account.id, itemId: item.itemId }).catch(() => {});
     }
   };
 
