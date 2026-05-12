@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // ── Session state ─────────────────────────────────────────────────────────────
@@ -480,7 +480,12 @@ fn item_name(i: &FilenItem) -> &str {
 
 // ── File download ─────────────────────────────────────────────────────────────
 
-pub async fn download_to_path(session: FilenSession, uuid: &str, dest_path: &str) -> Result<(), String> {
+pub async fn download_to_path(
+    session: FilenSession,
+    uuid: &str,
+    dest_path: &str,
+    app: &tauri::AppHandle,
+) -> Result<(), String> {
     let info: FileInfoResponse = api::post(
         &session.client, "/v3/file",
         &serde_json::json!({ "uuid": uuid }),
@@ -488,25 +493,30 @@ pub async fn download_to_path(session: FilenSession, uuid: &str, dest_path: &str
     ).await?;
     let plain_meta = crypto::decrypt_metadata(&info.metadata, &session.master_keys)?;
     let meta: FileMetadata = serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
+    let total: u64 = meta.size;
     let mut file = tokio::fs::File::create(dest_path)
         .await.map_err(|e| format!("create '{}': {}", dest_path, e))?;
+    let mut loaded: u64 = 0;
     for index in 0..info.chunks {
         let enc_chunk = api::download_chunk(&session.client, &info.region, &info.bucket, uuid, index).await?;
         let plain_chunk = crypto::decrypt_chunk(&enc_chunk, &meta.key, info.version)?;
         file.write_all(&plain_chunk).await.map_err(|e| e.to_string())?;
+        loaded += plain_chunk.len() as u64;
+        let _ = app.emit("file-download-progress", serde_json::json!({ "loaded": loaded, "total": total }));
     }
     file.flush().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn filen_download_file(
+    app: tauri::AppHandle,
     state: tauri::State<'_, FilenSessions>,
     account_id: String,
     uuid: String,
     dest_path: String,
 ) -> Result<(), String> {
     let session = get_session(&state, &account_id)?;
-    download_to_path(session, &uuid, &dest_path).await
+    download_to_path(session, &uuid, &dest_path, &app).await
 }
 
 // ── File upload ───────────────────────────────────────────────────────────────

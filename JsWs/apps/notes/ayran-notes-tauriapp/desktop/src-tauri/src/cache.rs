@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -179,6 +179,43 @@ pub fn cleanup_old_rows(conn: &Connection, max_age_ms: i64) -> Result<u64, Strin
     )
     .map(|n| n as u64)
     .map_err(|e| e.to_string())
+}
+
+/// Reconstructs the path components from the drive root down to `item_id`,
+/// using the human-readable names stored in the metadata cache.
+/// Returns `["FolderA", "FolderB", "filename.txt"]` (root→item order).
+/// Falls back to `[item_id]` when the item is not in the cache.
+pub fn item_path_from_root(
+    conn: &Connection,
+    account_id: &str,
+    item_id: &str,
+    root_parent_id: &str,
+) -> Vec<String> {
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = item_id.to_string();
+    for _ in 0..100 {
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT name, parent_id FROM folder_items WHERE account_id=?1 AND item_id=?2",
+                params![account_id, &current],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .unwrap_or(None);
+        match row {
+            Some((name, parent_id)) => {
+                parts.push(name);
+                if parent_id == root_parent_id { break; }
+                current = parent_id;
+            }
+            None => {
+                if parts.is_empty() { parts.push(current); }
+                break;
+            }
+        }
+    }
+    parts.reverse();
+    parts
 }
 
 /// Returns all item_ids for an account — used by content-cache orphan cleanup.

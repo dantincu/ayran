@@ -2,6 +2,8 @@ use crate::storage;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+use tauri::Emitter;
+use tokio::io::AsyncWriteExt;
 
 const GOOGLE_CLIENT_ID: &str = env!("GOOGLE_CLIENT_ID");
 const GOOGLE_CLIENT_SECRET: &str = env!("GOOGLE_CLIENT_SECRET");
@@ -320,7 +322,7 @@ pub(crate) async fn download_to_path(
     dest_path: &str,
 ) -> Result<(), String> {
     let token = get_valid_token(app, account_id).await?;
-    let res = client()
+    let mut res = client()
         .get(format!("{}/files/{}?alt=media", DRIVE_API, file_id))
         .bearer_auth(&token)
         .send()
@@ -329,10 +331,17 @@ pub(crate) async fn download_to_path(
     if !res.status().is_success() {
         return Err(api_err(res).await);
     }
-    let bytes = res.bytes().await.map_err(|e| e.to_string())?;
-    tokio::fs::write(dest_path, &bytes)
+    let total = res.content_length();
+    let mut file = tokio::fs::File::create(dest_path)
         .await
-        .map_err(|e| format!("write '{}': {}", dest_path, e))
+        .map_err(|e| format!("create '{}': {}", dest_path, e))?;
+    let mut loaded: u64 = 0;
+    while let Some(chunk) = res.chunk().await.map_err(|e| e.to_string())? {
+        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        loaded += chunk.len() as u64;
+        let _ = app.emit("file-download-progress", serde_json::json!({ "loaded": loaded, "total": total }));
+    }
+    file.flush().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

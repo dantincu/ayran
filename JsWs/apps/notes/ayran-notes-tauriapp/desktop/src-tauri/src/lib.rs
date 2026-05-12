@@ -455,23 +455,105 @@ fn invalidate_folder_cache(
     cache::clear_folder(&conn, &account_id, &parent_id)
 }
 
-fn content_cache_path(app: &tauri::AppHandle, account_id: &str, item_id: &str) -> Option<std::path::PathBuf> {
-    Some(
-        app.path().app_data_dir().ok()?
-            .join("c")
-            .join(account_id)
-            .join(item_id),
-    )
+// ── Content-cache folder naming ───────────────────────────────────────────────
+//
+// Under {app_data}/c/ each account gets a *pair* of directories:
+//   {idx}                           ← actual cache files live here (short path)
+//   {idx}-{provider}-{email}-{id}   ← empty descriptor, human-readable
+// where {idx} is a zero-padded 3-digit integer (000, 001, …) assigned once and
+// never changed.  Finding the next free index = max(existing leading digits) + 1.
+
+fn sanitize_path_component(s: &str) -> String {
+    if s.is_empty() { return "_".to_string(); }
+    s.chars()
+        .map(|c| if matches!(c, '/'|'\\'|':'|'*'|'?'|'"'|'<'|'>'|'|'|'\0') { '_' } else { c })
+        .collect()
 }
 
-/// Open a file for viewing: returns the local filesystem path to the file.
-/// For cloud providers the file is downloaded to a persistent content cache on first access.
+/// Finds the numeric content-cache directory for `account` under `c_dir`,
+/// creating it (and its descriptor sibling) if it does not exist yet.
+fn account_content_cache_dir(
+    c_dir: &std::path::Path,
+    account: &StoredAccount,
+) -> Result<std::path::PathBuf, String> {
+    let short_id = account.id
+        .strip_prefix(&format!("{}-", account.provider))
+        .unwrap_or(&account.id);
+    // Use @@ as separator: it can never appear inside any segment (email has
+    // exactly one @, provider keys and ids are alphanumeric/hyphens only).
+    let descriptor_suffix = format!("@@{}@@{}@@{}", account.provider, account.email, short_id);
+
+    // Check if an existing descriptor folder already belongs to this account.
+    if c_dir.exists() {
+        if let Ok(rd) = std::fs::read_dir(c_dir) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.ends_with(&descriptor_suffix) && entry.path().is_dir() {
+                    let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if !digits.is_empty() && name[digits.len()..].starts_with("@@") {
+                        return Ok(c_dir.join(&digits));
+                    }
+                }
+            }
+        }
+    }
+
+    // No existing folder — pick the next free index.
+    std::fs::create_dir_all(c_dir).map_err(|e| e.to_string())?;
+    let next_idx: u32 = {
+        let mut max: Option<u32> = None;
+        if let Ok(rd) = std::fs::read_dir(c_dir) {
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() {
+                    if let Ok(n) = digits.parse::<u32>() {
+                        max = Some(max.map_or(n, |m| m.max(n)));
+                    }
+                }
+            }
+        }
+        max.map_or(1, |m| m + 1)
+    };
+
+    let idx = format!("{:03}", next_idx);
+    let content_dir = c_dir.join(&idx);
+    let descriptor_dir = c_dir.join(format!("{}{}", idx, descriptor_suffix));
+    std::fs::create_dir_all(&content_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&descriptor_dir).map_err(|e| e.to_string())?;
+    Ok(content_dir)
+}
+
+/// Finds the numeric content-cache directory for an account *without* creating
+/// one — used by cleanup paths where we don't want a side-effect creation.
+fn find_account_cache_dir(c_dir: &std::path::Path, account: &StoredAccount) -> Option<std::path::PathBuf> {
+    let short_id = account.id
+        .strip_prefix(&format!("{}-", account.provider))
+        .unwrap_or(&account.id);
+    let descriptor_suffix = format!("@@{}@@{}@@{}", account.provider, account.email, short_id);
+    if !c_dir.exists() { return None; }
+    for entry in std::fs::read_dir(c_dir).ok()?.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with(&descriptor_suffix) && entry.path().is_dir() {
+            let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if !digits.is_empty() && name[digits.len()..].starts_with("@@") {
+                return Some(c_dir.join(&digits));
+            }
+        }
+    }
+    None
+}
+
+/// Open a file for viewing: returns the local filesystem path to the file content.
+/// For cloud providers the file is downloaded into a persistent content cache that mirrors
+/// the drive's folder/file hierarchy using human-readable names.
 /// For local-fs the original path is returned directly (no caching needed).
-/// Pass `force = true` to force a fresh download even when the cache file exists.
+/// Pass `force = true` to force a fresh download even when the cache file already exists.
 #[tauri::command]
 async fn open_file(
     app: tauri::AppHandle,
     filen_sessions: tauri::State<'_, filen::FilenSessions>,
+    cache_state: tauri::State<'_, CacheState>,
     account_id: String,
     item_id: String,
     force: bool,
@@ -486,8 +568,18 @@ async fn open_file(
         return Ok(item_id);
     }
 
-    let cache_path = content_cache_path(&app, &account_id, &item_id)
-        .ok_or("could not compute content cache path")?;
+    let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
+    let acct_dir = account_content_cache_dir(&c_dir, &account)?;
+
+    // Reconstruct the human-readable relative path (e.g. "Photos/vacation.jpg").
+    let root_parent = account_root_parent_id(&account);
+    let path_parts = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        cache::item_path_from_root(&conn, &account_id, &item_id, &root_parent)
+    };
+
+    let rel: std::path::PathBuf = path_parts.iter().map(|p| sanitize_path_component(p)).collect();
+    let cache_path = acct_dir.join(&rel);
 
     if let Some(parent) = cache_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -500,18 +592,13 @@ async fn open_file(
     let dest = cache_path.to_string_lossy().into_owned();
 
     match account.provider.as_str() {
-        "google-drive" => {
-            gdrive::download_to_path(&app, &account_id, &item_id, &dest).await?;
-        }
+        "google-drive" => gdrive::download_to_path(&app, &account_id, &item_id, &dest).await?,
         "filen" => {
             let session = filen_sessions
-                .0
-                .lock()
-                .map_err(|e| e.to_string())?
-                .get(&account_id)
-                .cloned()
+                .0.lock().map_err(|e| e.to_string())?
+                .get(&account_id).cloned()
                 .ok_or_else(|| format!("No active Filen session for '{}'", account_id))?;
-            filen::download_to_path(session, &item_id, &dest).await?;
+            filen::download_to_path(session, &item_id, &dest, &app).await?;
         }
         p => return Err(format!("Unsupported provider '{}'", p)),
     }
@@ -519,17 +606,13 @@ async fn open_file(
     Ok(dest)
 }
 
-/// Delete the cached file content for one item without touching the folder metadata cache.
+/// Delete a content-cache file by its absolute path (the path returned by `open_file`).
+/// The FileViewer holds this path in its state and passes it directly.
 #[tauri::command]
-fn invalidate_file_content_cache(
-    app: tauri::AppHandle,
-    account_id: String,
-    item_id: String,
-) -> Result<(), String> {
-    if let Some(path) = content_cache_path(&app, &account_id, &item_id) {
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|e| e.to_string())?;
-        }
+fn delete_cached_file(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.exists() {
+        std::fs::remove_file(p).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -543,12 +626,28 @@ fn uncache_item(
     item_id: String,
 ) -> Result<(), String> {
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-    cache::cascade_delete_item(&conn, &account_id, &item_id)?;
-    // Best-effort: also remove the content cache file for this item.
-    if let Some(path) = content_cache_path(&app, &account_id, &item_id) {
-        let _ = std::fs::remove_file(path);
+
+    // Best-effort: delete the content-cache file before wiping the SQLite row
+    // (path reconstruction needs the row to still exist).
+    if let Ok(accounts) = load_accounts(&app) {
+        if let Some(account) = accounts.get(&account_id) {
+            if account.provider != "local-fs" {
+                if let Ok(c_dir) = app.path().app_data_dir().map(|d| d.join("c")) {
+                    if let Some(acct_dir) = find_account_cache_dir(&c_dir, account) {
+                        let root = account_root_parent_id(account);
+                        let parts = cache::item_path_from_root(&conn, &account_id, &item_id, &root);
+                        if !parts.is_empty() {
+                            let rel: std::path::PathBuf =
+                                parts.iter().map(|p| sanitize_path_component(p)).collect();
+                            let _ = std::fs::remove_file(acct_dir.join(rel));
+                        }
+                    }
+                }
+            }
+        }
     }
-    Ok(())
+
+    cache::cascade_delete_item(&conn, &account_id, &item_id)
 }
 
 /// Update the name of a single cached item after a client-side rename.
@@ -719,22 +818,31 @@ pub fn run() {
             if let Ok(conn) = db.lock() {
                 let _ = cache::cleanup_old_rows(&conn, CACHE_MAX_AGE_MS);
 
-                // Remove content-cache files whose item_id no longer exists in the
-                // metadata cache (e.g. files deleted from the drive on another device).
-                let content_cache_dir = data_dir.join("c");
-                if let Ok(accounts) = load_accounts(app.handle()) {
-                    for (account_id, account) in &accounts {
-                        if account.provider == "local-fs" { continue; }
-                        let acct_dir = content_cache_dir.join(account_id);
-                        if !acct_dir.exists() { continue; }
-                        if let Ok(live_ids) = cache::all_item_ids_for_account(&conn, account_id) {
-                            let live: std::collections::HashSet<String> = live_ids.into_iter().collect();
-                            if let Ok(entries) = std::fs::read_dir(&acct_dir) {
-                                for entry in entries.flatten() {
-                                    let name = entry.file_name().to_string_lossy().to_string();
-                                    if !live.contains(&name) {
-                                        let _ = std::fs::remove_file(entry.path());
-                                    }
+                // Remove content-cache folder pairs whose account no longer exists.
+                let c_dir = data_dir.join("c");
+                if c_dir.exists() {
+                    if let Ok(accounts) = load_accounts(app.handle()) {
+                        if let Ok(rd) = std::fs::read_dir(&c_dir) {
+                            for entry in rd.flatten() {
+                                let name = entry.file_name().to_string_lossy().to_string();
+                                // Only look at descriptor folders: leading digits + '-' + ...
+                                let digits: String =
+                                    name.chars().take_while(|c| c.is_ascii_digit()).collect();
+                                if digits.is_empty()
+                                    || name.len() <= digits.len()
+                                    || !name[digits.len()..].starts_with("@@")
+                                {
+                                    continue;
+                                }
+                                let known = accounts.values().any(|a| {
+                                    let short = a.id
+                                        .strip_prefix(&format!("{}-", a.provider))
+                                        .unwrap_or(&a.id);
+                                    name.ends_with(&format!("@@{}", short))
+                                });
+                                if !known {
+                                    let _ = std::fs::remove_dir_all(entry.path()); // descriptor
+                                    let _ = std::fs::remove_dir_all(c_dir.join(&digits)); // content
                                 }
                             }
                         }
@@ -761,7 +869,7 @@ pub fn run() {
             invalidate_folder_cache,
             // File content cache
             open_file,
-            invalidate_file_content_cache,
+            delete_cached_file,
             // Google
             start_google_oauth,
             refresh_google_token,

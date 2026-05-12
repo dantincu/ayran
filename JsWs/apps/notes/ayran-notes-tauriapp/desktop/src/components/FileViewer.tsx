@@ -1,7 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { readFile, writeFile } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, CachedItem } from '../types';
+
+interface DownloadProgress { loaded: number; total: number | null; }
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
+  return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
 
 interface Props {
   account: StoredAccount;
@@ -41,6 +51,7 @@ export default function FileViewer({ account, item, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [cachePath, setCachePath] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [progress, setProgress] = useState<DownloadProgress | null>(null);
 
   // text editor
   const [textContent, setTextContent] = useState('');
@@ -65,8 +76,16 @@ export default function FileViewer({ account, item, onClose }: Props) {
 
   // ── Load file ────────────────────────────────────────────────────────────────
 
+  // Listen for download progress events emitted by the Rust backend.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<DownloadProgress>('file-download-progress', (e) => setProgress(e.payload))
+      .then((fn) => { unlisten = fn; });
+    return () => { if (unlisten) unlisten(); };
+  }, []);
+
   const loadFile = useCallback(async (force: boolean) => {
-    setLoading(true); setError(null);
+    setLoading(true); setError(null); setProgress(null);
     if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(null); }
     try {
       const path = await invoke<string>('open_file', { accountId: account.id, itemId: item.itemId, force });
@@ -134,7 +153,9 @@ export default function FileViewer({ account, item, onClose }: Props) {
   const handleHardRefresh = () => { setCacheMenuOpen(false); void loadFile(true); };
   const handleClearCache = async () => {
     setCacheMenuOpen(false);
-    await invoke('invalidate_file_content_cache', { accountId: account.id, itemId: item.itemId }).catch(() => {});
+    if (cachePath && account.provider !== 'local-fs') {
+      await invoke('delete_cached_file', { path: cachePath }).catch(() => {});
+    }
   };
 
   // ── Video controls ───────────────────────────────────────────────────────────
@@ -214,7 +235,29 @@ export default function FileViewer({ account, item, onClose }: Props) {
   if (loading) return (
     <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-gray-900">
       <HeaderBar />
-      <div className="flex-1 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">Loading…</div>
+      <div className="flex-1 flex items-center justify-center p-8">
+        <div className="flex flex-col items-center gap-4 w-full max-w-sm">
+          <p className="text-sm text-gray-500 dark:text-gray-400 truncate max-w-full">{item.name}</p>
+          {progress ? (
+            <>
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+                <div
+                  className="h-2 rounded-full bg-blue-600 transition-all duration-150"
+                  style={{ width: progress.total ? `${Math.min(100, progress.loaded / progress.total * 100).toFixed(1)}%` : '40%' }}
+                />
+              </div>
+              <p className="text-xs text-gray-400 dark:text-gray-500 tabular-nums">
+                {formatBytes(progress.loaded)}
+                {progress.total != null ? ` / ${formatBytes(progress.total)} · ${Math.min(100, Math.round(progress.loaded / progress.total * 100))}%` : ''}
+              </p>
+            </>
+          ) : (
+            <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2 overflow-hidden">
+              <div className="h-2 rounded-full bg-blue-600 animate-pulse w-1/3" />
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 
