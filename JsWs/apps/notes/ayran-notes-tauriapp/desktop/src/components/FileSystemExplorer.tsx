@@ -415,13 +415,15 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile }
         )}
         {!loading && !error && entries.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
         {!loading && entries.length > 0 && (
-          <div className="divide-y divide-gray-300 dark:divide-gray-700">
+          <div className="divide-y divide-gray-300 dark:divide-gray-700 cursor-pointer">
             {entries.map((item, idx) => {
               const activeOnThis = editingPath === item.itemId || renamingPath === item.itemId
                 || copyingPath === item.itemId || movingPath === item.itemId
                 || downloadingPath === item.itemId || deletingPath === item.itemId;
               return (
-                <div key={item.itemId} className={`flex items-center gap-3 py-2 px-2 rounded-lg group ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}>
+                <div key={item.itemId}
+                  className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; item.isDir ? openDir(item) : onOpenFile(item); }}>
                   <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
                     onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey, e.shiftKey && selectedIds.has(item.itemId)); }}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleCheck(idx, true, selectedIds.has(item.itemId)); }}
