@@ -27,7 +27,7 @@ interface Props {
   account: StoredAccount;
   item: CachedItem;
   onClose: () => void;
-  onOpenNotebook?: (info: { title: string; itemId: string; parentId: string }) => void;
+  onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string }) => void;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -327,8 +327,8 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook }: P
             <button
               onClick={() => {
                 let title = '';
-                try { title = (JSON.parse(editedText) as { title?: string }).title ?? ''; } catch { /* empty */ }
-                onOpenNotebook({ title, itemId: effectiveItemId, parentId: item.parentId });
+                try { title = (JSON.parse(editedText) as { Title?: string }).Title ?? ''; } catch { /* empty */ }
+                onOpenNotebook({ title, itemId: effectiveItemId, parentId: item.parentId, displayName: item.name });
               }}
               className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
             >

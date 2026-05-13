@@ -121,9 +121,9 @@ export default function AppShell() {
 
   const navigateTo = (page: Page) => { setCurrentPage(page); setMenuOpen(false); };
 
-  const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string }) => {
+  const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string }) => {
     if (!selected) return;
-    const displayPath = info.itemId;
+    const displayPath = selected.provider === 'local-fs' ? info.itemId : info.displayName;
     const entry = await addNotebook({
       accountId: selected.id,
       provider: selected.provider,

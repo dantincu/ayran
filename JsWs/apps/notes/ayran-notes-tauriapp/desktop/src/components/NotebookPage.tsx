@@ -76,7 +76,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
         let parsedTitle = '';
         if (content) {
           try {
-            parsedTitle = (JSON.parse(content) as { title?: string }).title ?? '';
+            parsedTitle = (JSON.parse(content) as { Title?: string }).Title ?? '';
           } catch { /* empty */ }
         }
 
@@ -124,15 +124,17 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     return () => { if (unlisten) unlisten(); };
   }, [notebookId]);
 
-  // Escape key to exit iframe fullscreen
+  // Sync iframeFullscreen state with actual window fullscreen (user can exit via Escape / OS chrome)
   useEffect(() => {
-    if (!iframeFullscreen) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setIframeFullscreen(false);
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [iframeFullscreen]);
+    let unlisten: (() => void) | undefined;
+    getCurrentWebviewWindow().listen('tauri://resize', async () => {
+      try {
+        const full = await getCurrentWebviewWindow().isFullscreen();
+        setIframeFullscreen(full);
+      } catch { /* non-fatal */ }
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { if (unlisten) unlisten(); };
+  }, []);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -163,9 +165,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     await deleteNotebook(notebookId);
     onDeleted();
   };
-  const handleCtxToggleFullscreen = () => {
+  const handleCtxToggleFullscreen = async () => {
     setCtxMenu(null);
-    setIframeFullscreen((prev) => !prev);
+    try {
+      const win = getCurrentWebviewWindow();
+      const current = await win.isFullscreen();
+      await win.setFullscreen(!current);
+      setIframeFullscreen(!current);
+    } catch { /* non-fatal */ }
   };
   const handleCtxNewWindow = async () => {
     setCtxMenu(null);
@@ -224,7 +231,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       if (fileContent !== null) {
         try {
           const parsed = JSON.parse(fileContent) as Record<string, unknown>;
-          parsed.title = editTitle;
+          parsed.Title = editTitle;
           const updatedJson = JSON.stringify(parsed, null, 2);
           const newId = await invoke<string>('save_text_file', {
             accountId: entry.accountId,
@@ -260,7 +267,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       if (fileContent !== null) {
         try {
           const parsed = JSON.parse(fileContent) as Record<string, unknown>;
-          parsed.title = promptTitle;
+          parsed.Title = promptTitle;
           const updatedJson = JSON.stringify(parsed, null, 2);
           const newId = await invoke<string>('save_text_file', {
             accountId: entry.accountId,
@@ -385,13 +392,13 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
               type="text"
               value={promptTitle}
               onChange={(e) => setPromptTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && promptTitle.trim()) void handlePromptSave(); }}
               placeholder="Notebook title"
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
               className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
             />
-            <div className="flex justify-end gap-2">
-              <button onClick={() => setShowTitlePrompt(false)} className="px-4 py-2 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600">
-                Skip
-              </button>
+            <div className="flex justify-end">
               <button onClick={handlePromptSave} disabled={saving || !promptTitle.trim()} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40">
                 {saving ? 'Saving…' : 'Save'}
               </button>
@@ -429,20 +436,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       )}
 
       {/* Content area */}
-      <iframe
-        src="about:blank"
-        className={iframeFullscreen ? 'fixed inset-0 z-50 w-full h-full border-none' : 'flex-1 w-full border-none'}
-      />
-
-      {/* Fullscreen exit button */}
-      {iframeFullscreen && (
-        <button
-          onClick={() => setIframeFullscreen(false)}
-          className="fixed top-3 right-3 z-[51] px-3 py-1.5 text-xs bg-black/60 text-white rounded-lg hover:bg-black/80 cursor-pointer"
-        >
-          ✕ Exit
-        </button>
-      )}
+      <iframe src="about:blank" className="flex-1 w-full border-none" />
     </div>
   );
 }

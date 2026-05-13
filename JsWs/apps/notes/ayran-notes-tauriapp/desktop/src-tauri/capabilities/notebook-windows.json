@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "identifier": "notebook-windows",
+  "description": "Capabilities for notebook popup windows",
+  "windows": ["nb-*"],
   "permissions": [
     "core:default",
     "opener:default",
@@ -18,9 +18,6 @@
       "identifier": "fs:scope",
       "allow": [{ "path": "$APPDATA/c/**" }]
     },
-    "dialog:default",
-    "dialog:allow-open",
-    "dialog:allow-save",
     "core:webview:allow-create-webview-window"
   ]
 }
