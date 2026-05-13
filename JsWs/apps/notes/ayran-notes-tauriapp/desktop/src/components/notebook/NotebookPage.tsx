@@ -26,6 +26,8 @@ function NotebookIcon() {
 }
 
 export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedInNewWindow }: Props) {
+  const isSecondaryWindow = !!new URLSearchParams(window.location.search).get('wlabel');
+
   const [entry, setEntry] = useState<NotebookEntry | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -322,9 +324,11 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
           className="fixed z-50 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1"
           style={{ left: ctxMenu.x, top: ctxMenu.y }}
         >
-          <button onClick={handleCtxBack} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Back
-          </button>
+          {!isSecondaryWindow && (
+            <button onClick={handleCtxBack} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+              Back
+            </button>
+          )}
           <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             Edit
           </button>

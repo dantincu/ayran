@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { getCurrentWebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount, CachedItem } from '../types';
 import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store';
@@ -59,6 +60,22 @@ export default function AppShell() {
   useEffect(() => {
     localStorage.setItem(PAGE_KEY, currentPage);
   }, [currentPage]);
+
+  // When main window closes, destroy all secondary notebook windows first
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    getCurrentWebviewWindow().onCloseRequested(async (e) => {
+      e.preventDefault();
+      try {
+        const windows = await getAllWebviewWindows();
+        await Promise.all(windows.filter((w) => w.label !== 'main').map((w) => w.destroy().catch(() => {})));
+      } catch { /* non-fatal */ }
+      try {
+        await getCurrentWebviewWindow().destroy();
+      } catch { /* non-fatal */ }
+    }).then((fn) => { unlisten = fn; }).catch(() => {});
+    return () => { if (unlisten) unlisten(); };
+  }, []);
 
   // Close menu on outside click
   useEffect(() => {

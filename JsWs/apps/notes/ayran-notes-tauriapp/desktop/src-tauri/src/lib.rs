@@ -1039,6 +1039,12 @@ pub fn run() {
             app.manage(CacheState(db));
             Ok(())
         })
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
