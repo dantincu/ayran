@@ -895,13 +895,15 @@ pub async fn filen_copy_file(
 
 /// Upload new content for an existing file directly from bytes.
 /// Generates a new UUID for the chunks, then trashes the old UUID.
+/// Returns the new UUID assigned to the uploaded file so the caller can
+/// update any caches that were keyed on the old UUID.
 pub async fn overwrite_bytes(
     session: FilenSession,
     file_uuid: &str,
     parent_uuid: &str,
     content: &[u8],
     app: &tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let master_key = session.master_keys.last().ok_or("no master key")?.clone();
 
     let info: FileInfoResponse = api::post(
@@ -912,7 +914,12 @@ pub async fn overwrite_bytes(
     let plain_meta = crypto::decrypt_metadata(&info.metadata, &session.master_keys)?;
     let meta: FileMetadata = serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
 
-    let file_key = meta.key;
+    // v2 keys are raw ASCII (not valid hex); normalise to a fresh v3 hex key.
+    let file_key = if meta.key.len() == 64 && meta.key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        meta.key
+    } else {
+        crypto::generate_file_key()
+    };
     let name = meta.name;
     let mime = meta.mime;
     let new_uuid = uuid::Uuid::new_v4().to_string();
@@ -964,7 +971,7 @@ pub async fn overwrite_bytes(
     }
 
     let _ = api::post_ok(&session.client, "/v3/file/trash", &serde_json::json!({ "uuid": file_uuid }), &session.api_key).await;
-    Ok(())
+    Ok(new_uuid)
 }
 
 // ── Overwrite (edit contents) ─────────────────────────────────────────────────
@@ -989,13 +996,14 @@ pub async fn filen_overwrite_file(
     let plain = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
     let meta: FileMetadata = serde_json::from_str(&plain).map_err(|e| e.to_string())?;
 
-    let file_key = meta.key;
+    let file_key = if meta.key.len() == 64 && meta.key.bytes().all(|b| b.is_ascii_hexdigit()) {
+        meta.key
+    } else {
+        crypto::generate_file_key()
+    };
     let name = meta.name;
     let mime = meta.mime;
 
-    // Filen stores the upload_key per UUID from the original upload session.
-    // Re-uploading to the same UUID with a new key causes "invalid_upload_key".
-    // Fix: upload new content under a fresh UUID, then trash the old one.
     let new_uuid = uuid::Uuid::new_v4().to_string();
     let upload_key = crypto::generate_random_string(32);
     let last_modified = std::fs::metadata(&file_path)
@@ -1069,13 +1077,11 @@ pub async fn filen_overwrite_file(
         ).await?;
     }
 
-    // Trash the old file — ignore errors (new content is already uploaded).
     let _ = api::post_ok(
         &s.client, "/v3/file/trash",
         &serde_json::json!({ "uuid": file_uuid }),
         &s.api_key,
     ).await;
-
     Ok(())
 }
 

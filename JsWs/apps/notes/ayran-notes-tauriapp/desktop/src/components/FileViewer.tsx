@@ -13,6 +13,15 @@ function formatBytes(n: number): string {
   return `${(n / 1024 ** 3).toFixed(2)} GB`;
 }
 
+function formatTime(s: number): string {
+  if (!isFinite(s) || isNaN(s)) return '0:00';
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
 interface Props {
   account: StoredAccount;
   item: CachedItem;
@@ -47,6 +56,9 @@ function fileIcon(mode: Mode): string {
 export default function FileViewer({ account, item, onClose }: Props) {
   const mode = detectMode(item);
 
+  // Filen creates a new UUID on every overwrite; track the live item ID here.
+  const [effectiveItemId, setEffectiveItemId] = useState(item.itemId);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
@@ -64,18 +76,35 @@ export default function FileViewer({ account, item, onClose }: Props) {
 
   // video controls
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoContainerRef = useRef<HTMLDivElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const isPlayingRef = useRef(false);
   const [showVideoControls, setShowVideoControls] = useState(true);
   const videoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   // cache management dropdown
   const [cacheMenuOpen, setCacheMenuOpen] = useState(false);
   const cacheMenuRef = useRef<HTMLDivElement>(null);
 
+  // Guard against stale async completions after unmount.
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => { isMountedRef.current = false; };
+  }, []);
+
+  // Prevent body scroll while viewer is open.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
+
   // ── Load file ────────────────────────────────────────────────────────────────
 
-  // Listen for download progress events emitted by the Rust backend.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     listen<DownloadProgress>('file-download-progress', (e) => setProgress(e.payload))
@@ -87,28 +116,45 @@ export default function FileViewer({ account, item, onClose }: Props) {
     setLoading(true); setError(null); setProgress(null);
     setBlobUrl(null);
     try {
-      const path = await invoke<string>('open_file', { accountId: account.id, itemId: item.itemId, force });
+      const path = await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
+      if (!isMountedRef.current) return;
 
       if (mode === 'text') {
         const bytes = await readFile(path);
+        if (!isMountedRef.current) return;
         const text = new TextDecoder('utf-8').decode(bytes);
         setTextContent(text); setEditedText(text); setIsDirty(false);
       } else if (mode !== 'unsupported') {
-        // Use asset protocol — no file is loaded into JS memory, supports range
-        // requests for seeking, and handles any file size safely.
         setBlobUrl(convertFileSrc(path));
       }
     } catch (e) {
+      if (!isMountedRef.current) return;
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) setLoading(false);
     }
-  }, [account.id, item.itemId, item.mimeType, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [account.id, effectiveItemId, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     void loadFile(false);
-    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Fullscreen ───────────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onChange);
+    return () => document.removeEventListener('fullscreenchange', onChange);
+  }, []);
+
+  const toggleFullscreen = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!document.fullscreenElement) {
+      videoContainerRef.current?.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  };
 
   // ── Close cache menu on outside click ───────────────────────────────────────
 
@@ -127,12 +173,13 @@ export default function FileViewer({ account, item, onClose }: Props) {
     if (!isDirty || saving) return;
     setSaving(true); setSaveError(null);
     try {
-      await invoke('save_text_file', {
+      const newId = await invoke<string>('save_text_file', {
         accountId: account.id,
-        itemId: item.itemId,
+        itemId: effectiveItemId,
         parentId: item.parentId,
         content: editedText,
       });
+      if (newId !== effectiveItemId) setEffectiveItemId(newId);
       setTextContent(editedText); setIsDirty(false);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -147,19 +194,19 @@ export default function FileViewer({ account, item, onClose }: Props) {
   const handleClearCache = async () => {
     setCacheMenuOpen(false);
     if (account.provider !== 'local-fs') {
-      await invoke('delete_cached_file', { accountId: account.id, itemId: item.itemId }).catch(() => {});
+      await invoke('delete_cached_file', { accountId: account.id, itemId: effectiveItemId }).catch(() => {});
     }
   };
 
   // ── Video controls ───────────────────────────────────────────────────────────
 
-  const showVideoControlsBriefly = () => {
+  const showVideoControlsBriefly = useCallback(() => {
     setShowVideoControls(true);
     if (videoTimerRef.current) clearTimeout(videoTimerRef.current);
     if (isPlayingRef.current) {
       videoTimerRef.current = setTimeout(() => setShowVideoControls(false), 3000);
     }
-  };
+  }, []);
 
   const togglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -296,7 +343,7 @@ export default function FileViewer({ account, item, onClose }: Props) {
   // ── Image viewer (fullscreen, tap to toggle header) ──────────────────────────
 
   if (mode === 'image') return (
-    <div className="fixed inset-0 z-50 bg-black flex items-center justify-center cursor-pointer"
+    <div className="fixed inset-0 z-50 bg-black flex items-center justify-center cursor-pointer overflow-hidden"
       onClick={() => setShowImageHeader(h => !h)}>
       {showImageHeader && (
         <div className="absolute top-0 inset-x-0 flex items-center px-4 py-3 bg-gradient-to-b from-black/80 to-transparent text-white gap-2 z-10"
@@ -338,10 +385,11 @@ export default function FileViewer({ account, item, onClose }: Props) {
     </div>
   );
 
-  // ── Video player (fullscreen, overlay on click) ───────────────────────────────
+  // ── Video player (fullscreen, overlay on interaction) ────────────────────────
 
   if (mode === 'video') return (
-    <div className="fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden"
+    <div ref={videoContainerRef}
+      className="fixed inset-0 z-50 bg-black flex items-center justify-center overflow-hidden"
       onClick={showVideoControlsBriefly}
       onMouseMove={showVideoControlsBriefly}
       onTouchStart={showVideoControlsBriefly}>
@@ -351,7 +399,10 @@ export default function FileViewer({ account, item, onClose }: Props) {
           onPlay={() => { setIsPlaying(true); isPlayingRef.current = true; showVideoControlsBriefly(); }}
           onPause={() => { setIsPlaying(false); isPlayingRef.current = false; if (videoTimerRef.current) clearTimeout(videoTimerRef.current); setShowVideoControls(true); }}
           onEnded={() => { setIsPlaying(false); isPlayingRef.current = false; setShowVideoControls(true); }}
-          onClick={e => e.stopPropagation()} />
+          onTimeUpdate={() => { if (videoRef.current) setCurrentTime(videoRef.current.currentTime); }}
+          onLoadedMetadata={() => { if (videoRef.current) setDuration(videoRef.current.duration); }}
+          onClick={(e) => { e.stopPropagation(); showVideoControlsBriefly(); }}
+        />
       )}
       {showVideoControls && (
         <div className="absolute inset-0 flex flex-col pointer-events-none">
@@ -374,8 +425,31 @@ export default function FileViewer({ account, item, onClose }: Props) {
               {isPlaying ? '⏸' : '▶'}
             </button>
           </div>
-          {/* bottom spacer for visual balance */}
-          <div className="h-12" />
+          {/* bottom: seek bar + time + fullscreen */}
+          <div className="flex items-center gap-3 px-4 py-3 bg-gradient-to-t from-black/70 to-transparent text-white pointer-events-auto">
+            <span className="text-xs tabular-nums shrink-0 min-w-[2.5rem] text-right">{formatTime(currentTime)}</span>
+            <input
+              type="range"
+              min={0}
+              max={duration || 0}
+              step={0.5}
+              value={currentTime}
+              onChange={(e) => {
+                const t = parseFloat(e.target.value);
+                setCurrentTime(t);
+                if (videoRef.current) videoRef.current.currentTime = t;
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="flex-1 h-1 accent-white cursor-pointer"
+            />
+            <span className="text-xs tabular-nums shrink-0 min-w-[2.5rem]">{formatTime(duration)}</span>
+            <button
+              onClick={toggleFullscreen}
+              title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+              className="text-white/80 hover:text-white w-7 h-7 flex items-center justify-center rounded hover:bg-white/20 transition-colors text-base leading-none">
+              {isFullscreen ? '⊡' : '⛶'}
+            </button>
+          </div>
         </div>
       )}
     </div>

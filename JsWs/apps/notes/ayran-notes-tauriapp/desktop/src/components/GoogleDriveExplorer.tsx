@@ -52,8 +52,9 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile 
     try {
       const raw = localStorage.getItem(navKey);
       return raw ? JSON.parse(raw) as {
-        id: string;
-        breadcrumbs: { id: string; name: string }[];
+        path?: string;
+        id?: string; // old format — kept for graceful migration
+        breadcrumbs: { name: string }[];
         page: number;
         search: string;
         sortBy: SortBy;
@@ -62,18 +63,18 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile 
     } catch { return null; }
   }, [navKey]);
 
-  const [folderId, setFolderId] = useState(savedNav?.id ?? 'root');
-  const [breadcrumbs, setBreadcrumbs] = useState(
-    savedNav?.breadcrumbs ?? [{ id: 'root', name: 'My Drive' }],
+  const [folderId, setFolderId] = useState('root');
+  const [breadcrumbs, setBreadcrumbs] = useState<{ id: string; name: string }[]>(
+    [{ id: 'root', name: 'My Drive' }],
   );
   const [files, setFiles] = useState<CachedItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState(savedNav?.search ?? '');
-  const [sortBy, setSortBy] = useState<SortBy>(savedNav?.sortBy ?? 'name');
-  const [ascending, setAscending] = useState(savedNav?.ascending ?? true);
-  const [page, setPage] = useState(savedNav?.page ?? 0);
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<SortBy>('name');
+  const [ascending, setAscending] = useState(true);
+  const [page, setPage] = useState(0);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -99,7 +100,12 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile 
 
   // ── Persist state to localStorage whenever anything changes ──────────────────
   useEffect(() => {
-    localStorage.setItem(navKey, JSON.stringify({ id: folderId, breadcrumbs, page, search, sortBy, ascending }));
+    const crumbNames = breadcrumbs.map(b => b.name);
+    const path = crumbNames.slice(1).join('/'); // skip root label "My Drive"
+    localStorage.setItem(navKey, JSON.stringify({
+      path, breadcrumbs: crumbNames.map(name => ({ name })),
+      page, search, sortBy, ascending,
+    }));
   }, [folderId, breadcrumbs, page, search, sortBy, ascending, navKey]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
@@ -131,8 +137,51 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile 
   }, [account.id, queryCache]);
 
   // ── Initial mount: restore saved state ───────────────────────────────────────
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { void loadFolder(folderId, false, page, search, sortBy, ascending); }, []);
+  useEffect(() => {
+    const init = async () => {
+      let startId = 'root';
+      let startCrumbs: { id: string; name: string }[] = [{ id: 'root', name: 'My Drive' }];
+      let startPage = 0;
+      let startSearch = '';
+      let startSort: SortBy = 'name';
+      let startAsc = true;
+
+      if (savedNav) {
+        startPage = savedNav.page ?? 0;
+        startSearch = savedNav.search ?? '';
+        startSort = savedNav.sortBy ?? 'name';
+        startAsc = savedNav.ascending ?? true;
+
+        // Support both old format (id field) and new format (path field).
+        const crumbNames: string[] = (savedNav.breadcrumbs ?? []).map((b: { name: string }) => b.name);
+        const pathComponents = crumbNames.slice(1); // skip root "My Drive"
+        if (pathComponents.length > 0) {
+          const allPaths = pathComponents.map((_, i) =>
+            pathComponents.slice(0, i + 1).join('/'));
+          try {
+            const resolved = await invoke<(string | null)[]>('resolve_folder_paths', {
+              accountId: account.id, paths: allPaths,
+            });
+            if (resolved.every(r => r !== null)) {
+              startCrumbs = [
+                { id: 'root', name: crumbNames[0] ?? 'My Drive' },
+                ...pathComponents.map((name, i) => ({ id: resolved[i]!, name })),
+              ];
+              startId = resolved[resolved.length - 1]!;
+            }
+          } catch { /* fall back to root */ }
+        }
+      }
+
+      setFolderId(startId);
+      setBreadcrumbs(startCrumbs);
+      setSortBy(startSort);
+      setAscending(startAsc);
+      await loadFolder(startId, false, startPage, startSearch, startSort, startAsc);
+    };
+    void init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Close split-button menu on outside click ─────────────────────────────────
   useEffect(() => {

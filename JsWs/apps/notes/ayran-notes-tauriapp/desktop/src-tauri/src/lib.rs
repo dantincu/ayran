@@ -3,6 +3,7 @@ pub mod filen;
 pub mod gdrive;
 pub mod storage;
 
+use rusqlite::params;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -427,10 +428,68 @@ async fn list_folder(
         p => return Err(format!("Unknown provider '{}'", p)),
     };
 
+    let root = account_root_parent_id(&account);
+
+    // Populate path_index for the items we just listed.
+    {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        let folder_path = if parent_id == root {
+            String::new()
+        } else {
+            cache::get_path_for_item(&conn, &account_id, &parent_id).unwrap_or_else(|| {
+                let parts =
+                    cache::item_path_from_root(&conn, &account_id, &parent_id, &root);
+                // item_path_from_root falls back to [item_id] when not cached;
+                // treat that as "unknown" so we don't store a garbage path.
+                if parts.len() == 1 && parts[0] == parent_id {
+                    String::new()
+                } else {
+                    parts.join("/")
+                }
+            })
+        };
+        // Collect (item_id, name, is_dir) for all items in this folder.
+        let child_rows: Vec<(String, String, bool)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT item_id, name, is_dir FROM folder_items \
+                     WHERE account_id = ?1 AND parent_id = ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<_> = stmt.query_map(params![&account_id, &parent_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)? != 0,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+            rows
+        };
+        drop(conn);
+
+        if !child_rows.is_empty() {
+            let entries: Vec<(String, String, bool)> = child_rows
+                .into_iter()
+                .map(|(item_id, name, is_dir)| {
+                    let path = if folder_path.is_empty() {
+                        name
+                    } else {
+                        format!("{}/{}", folder_path, name)
+                    };
+                    (path, item_id, is_dir)
+                })
+                .collect();
+            let mut conn = db.lock().map_err(|e| e.to_string())?;
+            let _ = cache::upsert_path_index_batch(&mut conn, &account_id, &entries);
+        }
+    }
+
     // Fire-and-forget: remove cached rows whose parent_id is a folder that no
     // longer exists in the cache (grandchildren of externally-deleted folders).
     // The user should not wait for this housekeeping work.
-    let root = account_root_parent_id(&account);
     tauri::async_runtime::spawn(async move {
         let _ = tokio::task::spawn_blocking(move || {
             if let Ok(conn) = db.lock() {
@@ -624,6 +683,8 @@ async fn open_file(
 
 /// Save edited text-file content back to the provider and update the local cache.
 /// Takes the content as a UTF-8 string so no file path crosses the IPC boundary.
+/// Returns the effective item ID after upload: unchanged for GDrive/LocalFS, but a
+/// *new* UUID for Filen because Filen creates a new file on every overwrite.
 #[tauri::command]
 async fn save_text_file(
     app: tauri::AppHandle,
@@ -633,7 +694,7 @@ async fn save_text_file(
     item_id: String,
     parent_id: String,
     content: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let bytes = content.into_bytes();
     let accounts = load_accounts(&app)?;
     let account = accounts
@@ -644,7 +705,7 @@ async fn save_text_file(
     // LocalFS: write directly to the original file path.
     if account.provider == "local-fs" {
         tokio::fs::write(&item_id, &bytes).await.map_err(|e| e.to_string())?;
-        return Ok(());
+        return Ok(item_id);
     }
 
     // Cloud: write to cache then upload.
@@ -670,26 +731,35 @@ async fn save_text_file(
 
     let name = std::path::Path::new(&rel_str)
         .file_name().and_then(|n| n.to_str()).unwrap_or(&rel_str);
-    // Update the index so future lookups use this path even after metadata-cache expiry.
-    {
-        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-        let _ = cache::set_content_cache_path(&conn, &account_id, &item_id, &rel_str);
-    }
 
-    match account.provider.as_str() {
+    let new_item_id = match account.provider.as_str() {
         "google-drive" => {
             gdrive::edit_bytes(&app, &account_id, &item_id, &bytes, name).await?;
+            {
+                let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+                let _ = cache::set_content_cache_path(&conn, &account_id, &item_id, &rel_str);
+            }
+            item_id
         }
         "filen" => {
             let session = filen_sessions
                 .0.lock().map_err(|e| e.to_string())?
                 .get(&account_id).cloned()
                 .ok_or_else(|| format!("No Filen session for '{}'", account_id))?;
-            filen::overwrite_bytes(session, &item_id, &parent_id, &bytes, &app).await?;
+            let new_uuid = filen::overwrite_bytes(session, &item_id, &parent_id, &bytes, &app).await?;
+            // Old UUID is now trashed; re-key the content-cache entry to the new UUID
+            // so future open_file calls hit the correct file.
+            {
+                let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+                let _ = cache::delete_content_cache_entry(&conn, &account_id, &item_id);
+                let _ = cache::set_content_cache_path(&conn, &account_id, &new_uuid, &rel_str);
+            }
+            new_uuid
         }
         p => return Err(format!("Unsupported provider '{}'", p)),
-    }
-    Ok(())
+    };
+
+    Ok(new_item_id)
 }
 
 /// Delete the cached file content for one item and remove it from the index.
@@ -892,6 +962,21 @@ fn local_mime_from_ext(ext: &str) -> &'static str {
     }
 }
 
+/// Resolve a list of human-readable folder paths to their item IDs.
+/// Returns one entry per input path: `Some(item_id)` if found, `None` otherwise.
+#[tauri::command]
+fn resolve_folder_paths(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    paths: Vec<String>,
+) -> Result<Vec<Option<String>>, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    paths
+        .iter()
+        .map(|p| Ok(cache::get_item_id_by_path(&conn, &account_id, p)))
+        .collect()
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -918,6 +1003,7 @@ pub fn run() {
             // slipped through the per-operation cleanup in previous sessions.
             if let Ok(conn) = db.lock() {
                 let _ = cache::cleanup_old_rows(&conn, CACHE_MAX_AGE_MS);
+                let _ = cache::cleanup_path_index_orphans(&conn);
 
                 // Remove content-cache folder pairs whose account no longer exists.
                 let c_dir = data_dir.join("c");
@@ -968,6 +1054,7 @@ pub fn run() {
             uncache_item,
             rename_cached_item,
             invalidate_folder_cache,
+            resolve_folder_paths,
             // File content cache
             open_file,
             save_text_file,

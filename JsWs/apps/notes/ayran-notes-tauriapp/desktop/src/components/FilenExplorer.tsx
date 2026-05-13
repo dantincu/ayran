@@ -54,8 +54,9 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     try {
       const raw = localStorage.getItem(navKey);
       return raw ? JSON.parse(raw) as {
-        uuid: string;
-        breadcrumbs: { uuid: string; name: string }[];
+        path?: string;
+        uuid?: string; // old format — kept for graceful migration
+        breadcrumbs: { name: string }[];
         page: number;
         search: string;
         sortBy: SortBy;
@@ -64,18 +65,18 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     } catch { return null; }
   }, [navKey]);
 
-  const [folderUUID, setFolderUUID] = useState(savedNav?.uuid ?? rootUuid);
-  const [breadcrumbs, setBreadcrumbs] = useState(
-    savedNav?.breadcrumbs ?? [{ uuid: rootUuid, name: 'My Filen' }],
+  const [folderUUID, setFolderUUID] = useState(rootUuid);
+  const [breadcrumbs, setBreadcrumbs] = useState<{ uuid: string; name: string }[]>(
+    [{ uuid: rootUuid, name: 'My Filen' }],
   );
   const [items, setItems] = useState<CachedItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [search, setSearch] = useState(savedNav?.search ?? '');
-  const [sortBy, setSortBy] = useState<SortBy>(savedNav?.sortBy ?? 'name');
-  const [ascending, setAscending] = useState(savedNav?.ascending ?? true);
-  const [page, setPage] = useState(savedNav?.page ?? 0);
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState<SortBy>('name');
+  const [ascending, setAscending] = useState(true);
+  const [page, setPage] = useState(0);
   const [busy, setBusy] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
@@ -101,7 +102,12 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
 
   // ── Persist state to localStorage whenever anything changes ──────────────────
   useEffect(() => {
-    localStorage.setItem(navKey, JSON.stringify({ uuid: folderUUID, breadcrumbs, page, search, sortBy, ascending }));
+    const crumbNames = breadcrumbs.map(b => b.name);
+    const path = crumbNames.slice(1).join('/'); // skip root label "My Filen"
+    localStorage.setItem(navKey, JSON.stringify({
+      path, breadcrumbs: crumbNames.map(name => ({ name })),
+      page, search, sortBy, ascending,
+    }));
   }, [folderUUID, breadcrumbs, page, search, sortBy, ascending, navKey]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
@@ -134,10 +140,51 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
 
   // ── Initial mount: check session, then restore saved state ───────────────────
   useEffect(() => {
-    hasSession(account.id).then((active) => {
+    const init = async () => {
+      const active = await hasSession(account.id);
       if (!active) { onNeedsRelogin(); return; }
-      void loadFolder(folderUUID, false, page, search, sortBy, ascending);
-    });
+
+      let startUuid = rootUuid;
+      let startCrumbs: { uuid: string; name: string }[] = [{ uuid: rootUuid, name: 'My Filen' }];
+      let startPage = 0;
+      let startSearch = '';
+      let startSort: SortBy = 'name';
+      let startAsc = true;
+
+      if (savedNav) {
+        startPage = savedNav.page ?? 0;
+        startSearch = savedNav.search ?? '';
+        startSort = savedNav.sortBy ?? 'name';
+        startAsc = savedNav.ascending ?? true;
+
+        // Support both old format (uuid field) and new format (path field).
+        const crumbNames: string[] = (savedNav.breadcrumbs ?? []).map((b: { name: string }) => b.name);
+        const pathComponents = crumbNames.slice(1); // skip root "My Filen"
+        if (pathComponents.length > 0) {
+          const allPaths = pathComponents.map((_, i) =>
+            pathComponents.slice(0, i + 1).join('/'));
+          try {
+            const resolved = await invoke<(string | null)[]>('resolve_folder_paths', {
+              accountId: account.id, paths: allPaths,
+            });
+            if (resolved.every(r => r !== null)) {
+              startCrumbs = [
+                { uuid: rootUuid, name: crumbNames[0] ?? 'My Filen' },
+                ...pathComponents.map((name, i) => ({ uuid: resolved[i]!, name })),
+              ];
+              startUuid = resolved[resolved.length - 1]!;
+            }
+          } catch { /* fall back to root */ }
+        }
+      }
+
+      setFolderUUID(startUuid);
+      setBreadcrumbs(startCrumbs);
+      setSortBy(startSort);
+      setAscending(startAsc);
+      await loadFolder(startUuid, false, startPage, startSearch, startSort, startAsc);
+    };
+    void init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

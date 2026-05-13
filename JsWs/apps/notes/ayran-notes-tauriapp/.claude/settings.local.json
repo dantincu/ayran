@@ -4,7 +4,9 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:api.github.com)",
       "PowerShell(ls \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\\" | ForEach-Object { $_.Name })",
-      "PowerShell(tree \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\\" -L 2)"
+      "PowerShell(tree \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\\" -L 2)",
+      "Bash(cargo check *)",
+      "Bash(npx tsc *)"
     ]
   }
 }

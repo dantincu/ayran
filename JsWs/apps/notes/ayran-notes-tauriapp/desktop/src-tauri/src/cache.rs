@@ -86,6 +86,22 @@ pub fn open(data_dir: &Path) -> Result<CacheDb, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS path_index (
+             account_id TEXT    NOT NULL,
+             path       TEXT    NOT NULL,
+             path_hash  INTEGER NOT NULL,
+             item_id    TEXT    NOT NULL,
+             is_dir     INTEGER NOT NULL DEFAULT 0,
+             PRIMARY KEY (account_id, path)
+         );
+         CREATE INDEX IF NOT EXISTS idx_path_index_hash
+             ON path_index(account_id, path_hash);
+         CREATE INDEX IF NOT EXISTS idx_path_index_item
+             ON path_index(account_id, item_id);",
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -119,7 +135,123 @@ pub fn delete_content_cache_entry(conn: &Connection, account_id: &str, item_id: 
     .map_err(|e| e.to_string())
 }
 
+// ── Path index ────────────────────────────────────────────────────────────────
+
+/// FNV-1a 64-bit hash, stored as SQLite INTEGER for fast prefix filtering.
+fn path_hash(s: &str) -> i64 {
+    let mut h: u64 = 14695981039346656037;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(1099511628211);
+    }
+    h as i64
+}
+
+/// Escape special LIKE characters (`\`, `%`, `_`) using backslash as the escape char.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// Look up the indexed path for an item (used when computing children's paths).
+pub fn get_path_for_item(conn: &Connection, account_id: &str, item_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT path FROM path_index WHERE account_id = ?1 AND item_id = ?2",
+        params![account_id, item_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap_or(None)
+}
+
+/// Resolve a human-readable path to an item_id.
+pub fn get_item_id_by_path(conn: &Connection, account_id: &str, path: &str) -> Option<String> {
+    let h = path_hash(path);
+    conn.query_row(
+        "SELECT item_id FROM path_index \
+         WHERE account_id = ?1 AND path_hash = ?2 AND path = ?3",
+        params![account_id, h, path],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap_or(None)
+}
+
+/// Insert or update path entries for a batch of items (called after every listing).
+/// `entries` = (path, item_id, is_dir).
+pub fn upsert_path_index_batch(
+    conn: &mut Connection,
+    account_id: &str,
+    entries: &[(String, String, bool)],
+) -> Result<(), String> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut stmt = tx
+            .prepare_cached(
+                "INSERT OR REPLACE INTO path_index \
+                 (account_id, path, path_hash, item_id, is_dir) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .map_err(|e| e.to_string())?;
+        for (path, item_id, is_dir) in entries {
+            stmt.execute(params![
+                account_id,
+                path,
+                path_hash(path),
+                item_id,
+                *is_dir as i32,
+            ])
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// Delete a path_index entry and all of its descendants (subtree under `path/`).
+/// Also falls back to an item_id delete in case the item was never indexed by path.
+fn delete_path_subtree(conn: &Connection, account_id: &str, path: &str, item_id: &str) {
+    let prefix = format!("{}/", escape_like(path));
+    let _ = conn.execute(
+        "DELETE FROM path_index \
+         WHERE account_id = ?1 AND (path = ?2 OR path LIKE ?3 || '%' ESCAPE ?4)",
+        params![account_id, path, prefix, "\\"],
+    );
+    // Belt-and-suspenders: remove by item_id too (handles un-indexed items).
+    let _ = conn.execute(
+        "DELETE FROM path_index WHERE account_id = ?1 AND item_id = ?2",
+        params![account_id, item_id],
+    );
+}
+
+/// Remove path_index rows whose item_id no longer exists in folder_items.
+/// Called once at startup after the TTL-based row cleanup.
+pub fn cleanup_path_index_orphans(conn: &Connection) -> Result<u64, String> {
+    conn.execute(
+        "DELETE FROM path_index \
+         WHERE NOT EXISTS ( \
+             SELECT 1 FROM folder_items f \
+             WHERE f.account_id = path_index.account_id \
+               AND f.item_id    = path_index.item_id \
+         )",
+        [],
+    )
+    .map(|n| n as u64)
+    .map_err(|e| e.to_string())
+}
+
 pub fn clear_folder(conn: &Connection, account_id: &str, parent_id: &str) -> Result<(), String> {
+    // Delete path_index entries for direct children before their folder_items rows
+    // are gone (the subquery still finds them at this point).
+    let _ = conn.execute(
+        "DELETE FROM path_index \
+         WHERE account_id = ?1 AND item_id IN ( \
+             SELECT item_id FROM folder_items \
+             WHERE account_id = ?1 AND parent_id = ?2 \
+         )",
+        params![account_id, parent_id],
+    );
     conn.execute(
         "DELETE FROM folder_items WHERE account_id = ?1 AND parent_id = ?2",
         params![account_id, parent_id],
@@ -152,6 +284,16 @@ pub fn cascade_delete_item(
     account_id: &str,
     item_id: &str,
 ) -> Result<(), String> {
+    // Capture the indexed path before the rows are gone.
+    let item_path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM path_index WHERE account_id = ?1 AND item_id = ?2",
+            params![account_id, item_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+
     conn.execute(
         "WITH RECURSIVE sub(id) AS (
              SELECT ?2
@@ -164,7 +306,17 @@ pub fn cascade_delete_item(
         params![account_id, item_id],
     )
     .map(|_| ())
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    if let Some(ref p) = item_path {
+        delete_path_subtree(conn, account_id, p, item_id);
+    } else {
+        let _ = conn.execute(
+            "DELETE FROM path_index WHERE account_id = ?1 AND item_id = ?2",
+            params![account_id, item_id],
+        );
+    }
+    Ok(())
 }
 
 /// Update the name of a single cached item without re-fetching the whole folder.
@@ -181,7 +333,27 @@ pub fn rename_item(
         params![account_id, item_id, new_name],
     )
     .map(|_| ())
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    // Stale paths (old name and every descendant) are removed so the next
+    // listing rebuilds them with the correct new name.
+    let old_path: Option<String> = conn
+        .query_row(
+            "SELECT path FROM path_index WHERE account_id = ?1 AND item_id = ?2",
+            params![account_id, item_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    if let Some(ref op) = old_path {
+        delete_path_subtree(conn, account_id, op, item_id);
+    } else {
+        let _ = conn.execute(
+            "DELETE FROM path_index WHERE account_id = ?1 AND item_id = ?2",
+            params![account_id, item_id],
+        );
+    }
+    Ok(())
 }
 
 /// Delete rows whose `parent_id` no longer exists as an `item_id` in the cache
