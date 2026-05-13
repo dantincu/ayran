@@ -1,5 +1,6 @@
 {
   "defaultListPageSize": 100,
+  "notebookFileName": "[note-book].json",
   "storageProviders": {
     "LocalFileSystem": { "enabled": true },
     "GoogleDrive":     { "enabled": true },

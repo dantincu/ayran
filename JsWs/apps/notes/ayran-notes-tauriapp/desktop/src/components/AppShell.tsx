@@ -3,6 +3,7 @@ import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount, CachedItem } from '../types';
 import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store';
 import { connectGoogleDrive } from '../lib/google-auth';
+import { addNotebook } from '../lib/notebooks-db';
 import AccountManager from './AccountManager';
 import GoogleDriveExplorer from './GoogleDriveExplorer';
 import FilenExplorer from './FilenExplorer';
@@ -11,8 +12,10 @@ import FilenLoginModal from './FilenLoginModal';
 import FileViewer from './FileViewer';
 import ThemeToggle from './ThemeToggle';
 import DevToolsPage from './DevToolsPage';
+import ManageNotebooksPage from './ManageNotebooksPage';
+import NotebookPage from './NotebookPage';
 
-type Page = 'files' | 'notebooks' | 'devtools';
+type Page = 'files' | 'notebooks' | 'devtools' | 'notebook';
 
 const PAGE_KEY = 'notes-current-page';
 
@@ -23,9 +26,14 @@ export default function AppShell() {
   const [showFilenLogin, setShowFilenLogin] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<{ account: StoredAccount; item: CachedItem } | null>(null);
-  const [currentPage, setCurrentPage] = useState<Page>(
-    () => (localStorage.getItem(PAGE_KEY) as Page | null) ?? 'files',
-  );
+  const [currentPage, setCurrentPage] = useState<Page>(() => {
+    if (new URLSearchParams(window.location.search).get('notebook')) return 'notebook';
+    return (localStorage.getItem(PAGE_KEY) as Page | null) ?? 'files';
+  });
+  const [notebookNavId, setNotebookNavId] = useState<string | null>(() => {
+    const urlParam = new URLSearchParams(window.location.search).get('notebook');
+    return urlParam ?? localStorage.getItem('notes-notebook-id');
+  });
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -43,6 +51,10 @@ export default function AppShell() {
   useEffect(() => {
     if (selectedId) localStorage.setItem('notes-selected-account', selectedId);
   }, [selectedId]);
+
+  useEffect(() => {
+    if (notebookNavId) localStorage.setItem('notes-notebook-id', notebookNavId);
+  }, [notebookNavId]);
 
   useEffect(() => {
     localStorage.setItem(PAGE_KEY, currentPage);
@@ -109,6 +121,22 @@ export default function AppShell() {
 
   const navigateTo = (page: Page) => { setCurrentPage(page); setMenuOpen(false); };
 
+  const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string }) => {
+    if (!selected) return;
+    const displayPath = info.itemId;
+    const entry = await addNotebook({
+      accountId: selected.id,
+      provider: selected.provider,
+      itemId: info.itemId,
+      parentId: info.parentId,
+      displayPath,
+      title: info.title,
+    });
+    setViewingFile(null);
+    setNotebookNavId(entry.id);
+    setCurrentPage('notebook');
+  };
+
   return (
     <>
       {showFilenLogin && (
@@ -120,6 +148,7 @@ export default function AppShell() {
           account={viewingFile.account}
           item={viewingFile.item}
           onClose={() => setViewingFile(null)}
+          onOpenNotebook={handleOpenNotebook}
         />
       )}
 
@@ -154,7 +183,7 @@ export default function AppShell() {
                   </button>
                   <button
                     onClick={() => navigateTo('notebooks')}
-                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'notebooks' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
+                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'notebooks' || currentPage === 'notebook' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
                   >
                     Notebooks
                   </button>
@@ -177,10 +206,24 @@ export default function AppShell() {
         )}
 
         {currentPage === 'notebooks' && (
-          <div className="flex flex-col items-center justify-center h-64 text-center text-gray-400 dark:text-gray-500 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
-            <p className="text-lg font-medium text-gray-700 dark:text-gray-300">Notebooks</p>
-            <p className="text-sm mt-1">Coming soon</p>
-          </div>
+          <ManageNotebooksPage
+            onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
+          />
+        )}
+
+        {currentPage === 'notebook' && notebookNavId && (
+          <NotebookPage
+            notebookId={notebookNavId}
+            onBack={() => setCurrentPage('notebooks')}
+            onDeleted={() => setCurrentPage('notebooks')}
+            onOpenedInNewWindow={() => setCurrentPage('notebooks')}
+          />
+        )}
+
+        {currentPage === 'notebook' && !notebookNavId && (
+          <ManageNotebooksPage
+            onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
+          />
         )}
 
         {currentPage === 'devtools' && <DevToolsPage />}

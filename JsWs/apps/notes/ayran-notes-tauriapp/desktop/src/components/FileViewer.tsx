@@ -3,6 +3,7 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, CachedItem } from '../types';
+import config from '../config.json';
 
 interface DownloadProgress { loaded: number; total: number | null; }
 
@@ -26,6 +27,7 @@ interface Props {
   account: StoredAccount;
   item: CachedItem;
   onClose: () => void;
+  onOpenNotebook?: (info: { title: string; itemId: string; parentId: string }) => void;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -53,7 +55,7 @@ function fileIcon(mode: Mode): string {
   }
 }
 
-export default function FileViewer({ account, item, onClose }: Props) {
+export default function FileViewer({ account, item, onClose, onOpenNotebook }: Props) {
   const mode = detectMode(item);
 
   // Filen creates a new UUID on every overwrite; track the live item ID here.
@@ -320,10 +322,24 @@ export default function FileViewer({ account, item, onClose }: Props) {
   if (mode === 'text') return (
     <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-gray-900">
       <HeaderBar right={
-        <button onClick={handleSave} disabled={!isDirty || saving}
-          className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors">
-          {saving ? 'Saving…' : '💾 Save'}
-        </button>
+        <>
+          {item.name === config.notebookFileName && onOpenNotebook && (
+            <button
+              onClick={() => {
+                let title = '';
+                try { title = (JSON.parse(editedText) as { title?: string }).title ?? ''; } catch { /* empty */ }
+                onOpenNotebook({ title, itemId: effectiveItemId, parentId: item.parentId });
+              }}
+              className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
+            >
+              Open as Notebook
+            </button>
+          )}
+          <button onClick={handleSave} disabled={!isDirty || saving}
+            className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors">
+            {saving ? 'Saving…' : '💾 Save'}
+          </button>
+        </>
       } />
       {saveError && (
         <div className="px-4 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 text-sm flex items-center justify-between">
