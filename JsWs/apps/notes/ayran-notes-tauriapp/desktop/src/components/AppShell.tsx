@@ -61,8 +61,11 @@ export default function AppShell() {
     localStorage.setItem(PAGE_KEY, currentPage);
   }, [currentPage]);
 
-  // When main window closes, destroy all secondary notebook windows first
+  // When main window closes, destroy all secondary notebook windows first.
+  // Guard: only register this handler in the actual main window, not in nb-* secondary windows
+  // (which also render AppShell and would otherwise close every window when they themselves close).
   useEffect(() => {
+    if (getCurrentWebviewWindow().label !== 'main') return;
     let unlisten: (() => void) | undefined;
     getCurrentWebviewWindow().onCloseRequested(async (e) => {
       e.preventDefault();
