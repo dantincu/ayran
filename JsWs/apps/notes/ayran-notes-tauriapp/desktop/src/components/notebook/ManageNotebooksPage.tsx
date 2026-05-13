@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen } from '@tauri-apps/api/event';
 import { emit } from '@tauri-apps/api/event';
-import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, type NotebookEntry } from '../lib/notebooks-db';
+import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, type NotebookEntry } from '../../lib/notebooks-db';
 
 interface Props {
   onOpenNotebook: (notebookId: string) => void;
@@ -39,32 +39,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const all = await getAllNotebooks();
-
-      // Stale-label cleanup: clear windowLabel for notebooks whose window no longer exists
-      let windows: Awaited<ReturnType<typeof getAllWebviewWindows>> = [];
-      try {
-        windows = await getAllWebviewWindows();
-      } catch { /* non-fatal */ }
-
-      const cleaned: NotebookEntry[] = [];
-      for (const nb of all) {
-        if (nb.windowLabel) {
-          const found = windows.some((w) => w.label === nb.windowLabel);
-          if (!found) {
-            try {
-              await updateNotebook(nb.id, { windowLabel: undefined });
-            } catch { /* non-fatal */ }
-            cleaned.push({ ...nb, windowLabel: undefined });
-          } else {
-            cleaned.push(nb);
-          }
-        } else {
-          cleaned.push(nb);
-        }
-      }
-
-      setNotebooks(cleaned);
+      setNotebooks(await getAllNotebooks());
     } finally {
       setLoading(false);
     }
@@ -76,16 +51,24 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
 
-    listen('notebook-window-closed', () => { void reload(); })
+    listen<{ notebookId: string }>('notebook-window-closed', (event) => {
+      setNotebooks((prev) =>
+        prev.map((n) => n.id === event.payload.notebookId ? { ...n, windowLabel: undefined } : n)
+      );
+    })
       .then((fn) => unlisteners.push(fn))
       .catch(() => { /* non-fatal */ });
 
-    listen('notebook-window-opened', () => { void reload(); })
+    listen<{ notebookId: string; windowLabel: string }>('notebook-window-opened', (event) => {
+      setNotebooks((prev) =>
+        prev.map((n) => n.id === event.payload.notebookId ? { ...n, windowLabel: event.payload.windowLabel } : n)
+      );
+    })
       .then((fn) => unlisteners.push(fn))
       .catch(() => { /* non-fatal */ });
 
     return () => { unlisteners.forEach((fn) => fn()); };
-  }, [reload]);
+  }, []);
 
   // Close context menu on outside click
   useEffect(() => {
@@ -131,14 +114,16 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
       return;
     }
     // Highlighted row: try to focus existing window
+    let found = false;
     try {
       const windows = await getAllWebviewWindows();
       const win = windows.find((w) => w.label === nb.windowLabel);
       if (win) {
-        await win.setFocus();
-        return;
+        found = true;
+        try { await win.setFocus(); } catch { /* non-fatal */ }
       }
     } catch { /* non-fatal */ }
+    if (found) return;
     // Stale label — clear and open normally
     try {
       await updateNotebook(nb.id, { windowLabel: undefined });
@@ -168,10 +153,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
     await deleteNotebook(id);
     await reload();
   };
-  const handleCtxCloseWindow = async () => {
-    if (!ctxMenu) return;
-    const entry = ctxMenu.entry;
-    setCtxMenu(null);
+  const closeWindowForEntry = async (entry: NotebookEntry) => {
     if (!entry.windowLabel) return;
     try {
       const windows = await getAllWebviewWindows();
@@ -181,7 +163,13 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
     try {
       await updateNotebook(entry.id, { windowLabel: undefined });
     } catch { /* non-fatal */ }
-    await reload();
+    setNotebooks((prev) => prev.map((n) => n.id === entry.id ? { ...n, windowLabel: undefined } : n));
+  };
+  const handleCtxCloseWindow = async () => {
+    if (!ctxMenu) return;
+    const entry = ctxMenu.entry;
+    setCtxMenu(null);
+    await closeWindowForEntry(entry);
   };
   const handleCtxNewWindow = async () => {
     if (!ctxMenu) return;
@@ -190,14 +178,16 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
 
     // If already open and window found, just focus it
     if (entry.windowLabel) {
+      let found = false;
       try {
         const windows = await getAllWebviewWindows();
         const win = windows.find((w) => w.label === entry.windowLabel);
         if (win) {
-          await win.setFocus();
-          return;
+          found = true;
+          try { await win.setFocus(); } catch { /* non-fatal */ }
         }
       } catch { /* non-fatal */ }
+      if (found) return;
       // Stale label — clear it
       try {
         await updateNotebook(entry.id, { windowLabel: undefined });
@@ -223,7 +213,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
       await emit('notebook-window-opened', { notebookId: entry.id, windowLabel: label });
     } catch { /* non-fatal */ }
 
-    await reload();
+    setNotebooks((prev) => prev.map((n) => n.id === entry.id ? { ...n, windowLabel: label } : n));
   };
 
   const handleEditSave = async () => {
@@ -264,11 +254,11 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
           </button>
           {ctxMenu.entry.windowLabel && (
             <button onClick={() => { void handleCtxCloseWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-              Close window
+              Close
             </button>
           )}
           <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Delete
+            Remove
           </button>
           <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             Open in new window
@@ -371,9 +361,18 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
                   )}
                 </div>
                 {isOpen && (
-                  <span className="shrink-0 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded mt-0.5">
-                    ↗ open
-                  </span>
+                  <div className="shrink-0 flex items-center gap-1.5 mt-0.5">
+                    <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded">
+                      ↗ open
+                    </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void closeWindowForEntry(nb); }}
+                      className="text-xs text-gray-400 hover:text-red-500 dark:hover:text-red-400 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                      title="Close window"
+                    >
+                      ✕
+                    </button>
+                  </div>
                 )}
               </div>
             );

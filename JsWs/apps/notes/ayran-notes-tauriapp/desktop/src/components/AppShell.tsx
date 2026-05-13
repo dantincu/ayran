@@ -12,8 +12,8 @@ import FilenLoginModal from './FilenLoginModal';
 import FileViewer from './FileViewer';
 import ThemeToggle from './ThemeToggle';
 import DevToolsPage from './DevToolsPage';
-import ManageNotebooksPage from './ManageNotebooksPage';
-import NotebookPage from './NotebookPage';
+import ManageNotebooksPage from './notebook/ManageNotebooksPage';
+import NotebookPage from './notebook/NotebookPage';
 
 type Page = 'files' | 'notebooks' | 'devtools' | 'notebook';
 

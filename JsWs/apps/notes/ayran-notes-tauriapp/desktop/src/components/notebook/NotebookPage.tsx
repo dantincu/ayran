@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { WebviewWindow, getAllWebviewWindows, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
-import { getNotebook, updateNotebook, deleteNotebook, type NotebookEntry } from '../lib/notebooks-db';
+import { getNotebook, updateNotebook, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
 
 interface Props {
   notebookId: string;
@@ -39,7 +39,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<string | null>(null);
-  const [iframeFullscreen, setIframeFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
   const ctxMenuRef = useRef<HTMLDivElement>(null);
 
@@ -102,7 +102,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     return () => { cancelled = true; };
   }, [notebookId]);
 
-  // Close window listener: when this page is opened as a dedicated window (wlabel param present)
+  // Close window listener: when this page is opened as a dedicated window (wlabel param present).
   useEffect(() => {
     const wlabel = new URLSearchParams(window.location.search).get('wlabel');
     if (!wlabel) return;
@@ -117,20 +117,20 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
         await emit('notebook-window-closed', { notebookId });
       } catch { /* non-fatal */ }
       try {
-        await getCurrentWebviewWindow().close();
+        await getCurrentWebviewWindow().destroy();
       } catch { /* non-fatal */ }
     }).then((fn) => { unlisten = fn; }).catch(() => { /* non-fatal */ });
 
     return () => { if (unlisten) unlisten(); };
   }, [notebookId]);
 
-  // Sync iframeFullscreen state with actual window fullscreen (user can exit via Escape / OS chrome)
+  // Sync isFullscreen state with actual window fullscreen (user can exit via Escape / OS chrome)
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     getCurrentWebviewWindow().listen('tauri://resize', async () => {
       try {
         const full = await getCurrentWebviewWindow().isFullscreen();
-        setIframeFullscreen(full);
+        setIsFullscreen(full);
       } catch { /* non-fatal */ }
     }).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => { if (unlisten) unlisten(); };
@@ -171,7 +171,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       const win = getCurrentWebviewWindow();
       const current = await win.isFullscreen();
       await win.setFullscreen(!current);
-      setIframeFullscreen(!current);
+      setIsFullscreen(!current);
     } catch { /* non-fatal */ }
   };
   const handleCtxNewWindow = async () => {
@@ -180,14 +180,16 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
 
     // Check if already open in a window
     if (entry.windowLabel) {
+      let found = false;
       try {
         const windows = await getAllWebviewWindows();
         const existing = windows.find((w) => w.label === entry.windowLabel);
         if (existing) {
-          await existing.setFocus();
-          return;
+          found = true;
+          try { await existing.setFocus(); } catch { /* non-fatal */ }
         }
       } catch { /* non-fatal */ }
+      if (found) return;
       // Stale label — clear it
       try {
         await updateNotebook(entry.id, { windowLabel: undefined });
@@ -327,10 +329,10 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
             Edit
           </button>
           <button onClick={handleCtxToggleFullscreen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            {iframeFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
+            {isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
           </button>
           <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Delete
+            Remove
           </button>
           <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             Open in new window
@@ -435,8 +437,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
         </div>
       )}
 
-      {/* Content area */}
-      <iframe src="about:blank" className="flex-1 w-full border-none" />
     </div>
   );
 }

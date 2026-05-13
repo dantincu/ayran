@@ -21,6 +21,10 @@
     "dialog:default",
     "dialog:allow-open",
     "dialog:allow-save",
-    "core:webview:allow-create-webview-window"
+    "core:webview:allow-create-webview-window",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
+    "core:window:allow-close",
+    "core:window:allow-set-focus"
   ]
 }
