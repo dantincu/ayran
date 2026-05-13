@@ -2,3 +2,22 @@
 
 /* Use .dark class on <html> instead of prefers-color-scheme */
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* ── Desert theme: replace the entire gray scale and white ── */
+@theme {
+  /* white → warm parchment (card / modal surfaces in light mode) */
+  --color-white: #FBF4E2;
+
+  /* gray scale → sun-baked sand (light) → scorched earth (dark) */
+  --color-gray-50:  #F7EDD5;
+  --color-gray-100: #EFE0BE;
+  --color-gray-200: #E3CDA0;
+  --color-gray-300: #D0B47A;
+  --color-gray-400: #AE8F57;
+  --color-gray-500: #876D3C;
+  --color-gray-600: #655028;
+  --color-gray-700: #45341A;
+  --color-gray-800: #2A1D0C;
+  --color-gray-900: #180F04;
+  --color-gray-950: #0C0702;
+}

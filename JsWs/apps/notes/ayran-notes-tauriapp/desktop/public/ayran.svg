@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
   <defs>
+    <!-- Golden background radial gradient: sun-baked amber -->
+    <radialGradient id="bg" cx="42%" cy="38%" r="60%">
+      <stop offset="0%"   stop-color="#FCD34D"/>
+      <stop offset="55%"  stop-color="#D97706"/>
+      <stop offset="100%" stop-color="#92400E"/>
+    </radialGradient>
     <!-- Glass body gradient: creamy white yogurt drink -->
     <linearGradient id="drink" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%"   stop-color="#e8e0d5"/>
@@ -18,6 +24,12 @@
       <stop offset="100%" stop-color="#9ab8cc" stop-opacity="0.45"/>
     </linearGradient>
   </defs>
+
+  <!-- ── Rounded golden background ── -->
+  <rect x="2" y="2" width="96" height="96" rx="20" ry="20" fill="url(#bg)"/>
+  <!-- Subtle inner highlight at top-left for depth -->
+  <rect x="2" y="2" width="96" height="96" rx="20" ry="20"
+        fill="none" stroke="#FDE68A" stroke-width="1.5" opacity="0.5"/>
 
   <!-- ── Glass body (trapezoid: wider at top) ── -->
   <path d="M22 32 L25 88 Q25 92 30 92 L70 92 Q75 92 75 88 L78 32 Z"

@@ -11,8 +11,8 @@
   line-height: 24px;
   font-weight: 400;
 
-  color: #0f0f0f;
-  background-color: #f6f6f6;
+  color: #180F04;
+  background-color: #F2E4C2;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -97,20 +97,20 @@ button {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+    color: #F2E4C2;
+    background-color: #180F04;
   }
 
   a:hover {
-    color: #24c8db;
+    color: #D97706;
   }
 
   input,
   button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+    color: #F2E4C2;
+    background-color: #2A1D0C;
   }
   button:active {
-    background-color: #0f0f0f69;
+    background-color: #45341A;
   }
 }
