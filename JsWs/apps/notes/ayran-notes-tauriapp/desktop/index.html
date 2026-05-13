@@ -23,19 +23,71 @@
     <script type="module" src="/src/main.tsx"></script>
     <style id="initial_style">
       .dark {
-        background-color: #000000;
-        color: #ffffff;
+        background-color: #111827;
+        color: #f9fafb;
       }
 
       .light {
         background-color: #ffffff;
-        color: #000000;
+        color: #111827;
       }
 
       #app_loader {
-        font-family: "Arial";
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        font-family: Arial, sans-serif;
+      }
+
+      #app_loader svg {
+        width: 48px;
+        height: 48px;
+        animation: spin 1s linear infinite;
+      }
+
+      .light #app_loader svg circle {
+        stroke: #d1d5db;
+      }
+      .light #app_loader svg path {
+        stroke: #3b82f6;
+      }
+
+      .dark #app_loader svg circle {
+        stroke: #374151;
+      }
+      .dark #app_loader svg path {
+        stroke: #60a5fa;
+      }
+
+      #app_loader span {
+        font-size: 14px;
+        letter-spacing: 0.05em;
+      }
+
+      .light #app_loader span {
+        color: #6b7280;
+      }
+      .dark #app_loader span {
+        color: #9ca3af;
+      }
+
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
       }
     </style>
-    <div id="app_loader"><h1>Loading...</h1></div>
+    <div id="app_loader">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Track -->
+        <circle cx="24" cy="24" r="20" stroke-width="4" fill="none" />
+        <!-- Spinner arc -->
+        <path d="M24 4 A20 20 0 0 1 44 24" stroke-width="4" stroke-linecap="round" fill="none" />
+      </svg>
+      <span>Loading…</span>
+    </div>
   </body>
 </html>
