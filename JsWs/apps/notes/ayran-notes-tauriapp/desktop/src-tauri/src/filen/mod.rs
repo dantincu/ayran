@@ -970,7 +970,15 @@ pub async fn overwrite_bytes(
         ).await?;
     }
 
-    let _ = api::post_ok(&session.client, "/v3/file/trash", &serde_json::json!({ "uuid": file_uuid }), &session.api_key).await;
+    // Verify the new file is accessible before trashing the original.
+    let verify: Result<FileInfoResponse, _> = api::post(
+        &session.client, "/v3/file",
+        &serde_json::json!({ "uuid": new_uuid }),
+        Some(&session.api_key),
+    ).await;
+    if verify.is_ok() {
+        let _ = api::post_ok(&session.client, "/v3/file/trash", &serde_json::json!({ "uuid": file_uuid }), &session.api_key).await;
+    }
     Ok(new_uuid)
 }
 
