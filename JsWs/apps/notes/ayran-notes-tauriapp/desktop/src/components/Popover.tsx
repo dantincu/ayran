@@ -1,17 +1,18 @@
-import { useState } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useDraggable } from '../hooks/useDraggable';
 
 interface Props {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   /**
-   * Tailwind classes for the panel when not maximised — include position, sizing, etc.
+   * Tailwind classes for the panel when not maximised and not dragged.
    * Examples:
    *   anchor-attached : 'absolute right-0 top-full mt-1 min-w-[160px]'
    *   cursor-positioned: use panelStyle instead (leave this at default 'fixed')
    */
   panelClassName?: string;
-  /** Inline style for cursor-positioned panels (context menus). Ignored when maximised. */
+  /** Inline style for cursor-positioned panels (context menus). Ignored when maximised or dragged. */
   panelStyle?: React.CSSProperties;
 }
 
@@ -39,6 +40,62 @@ export default function Popover({
   panelStyle,
 }: Props) {
   const [maximized, setMaximized] = useState(false);
+  const [adjustedStyle, setAdjustedStyle] = useState<React.CSSProperties | undefined>(panelStyle);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const { dragPos, setDragPos, onHeaderMouseDown } = useDraggable(panelRef, maximized);
+
+  // Clamp cursor-positioned panels within the viewport after first render.
+  useLayoutEffect(() => {
+    if (!panelStyle || maximized || dragPos) return;
+    const el = panelRef.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const dl = (panelStyle.left as number | undefined) ?? 0;
+    const dt = (panelStyle.top as number | undefined) ?? 0;
+    setAdjustedStyle({
+      ...panelStyle,
+      left: Math.max(4, Math.min(dl, window.innerWidth - width - 4)),
+      top: Math.max(4, Math.min(dt, window.innerHeight - height - 4)),
+    });
+  }, [panelStyle, maximized, dragPos]);
+
+  // Re-clamp on window resize.
+  useEffect(() => {
+    const handler = () => {
+      const el = panelRef.current;
+      if (!el) return;
+      const { width, height } = el.getBoundingClientRect();
+      setDragPos(prev =>
+        prev
+          ? { x: Math.max(0, Math.min(prev.x, window.innerWidth - width)), y: Math.max(0, Math.min(prev.y, window.innerHeight - height)), w: prev.w }
+          : prev,
+      );
+      if (panelStyle && !maximized) {
+        const dl = (panelStyle.left as number | undefined) ?? 0;
+        const dt = (panelStyle.top as number | undefined) ?? 0;
+        setAdjustedStyle({
+          ...panelStyle,
+          left: Math.max(4, Math.min(dl, window.innerWidth - width - 4)),
+          top: Math.max(4, Math.min(dt, window.innerHeight - height - 4)),
+        });
+      }
+    };
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, [panelStyle, maximized, setDragPos]);
+
+  // Leaving maximized → reset drag so panel returns to its original position.
+  useEffect(() => { if (!maximized) setDragPos(null); }, [maximized, setDragPos]);
+
+  const resolvedStyle: React.CSSProperties | undefined = maximized
+    ? { inset: '10px' }
+    : dragPos
+    ? { position: 'fixed', left: dragPos.x, top: dragPos.y, width: dragPos.w, margin: 0 }
+    : adjustedStyle ?? panelStyle;
+
+  const panelCls = `z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg flex flex-col ${
+    maximized ? 'fixed rounded-xl' : dragPos ? '' : panelClassName
+  }`;
 
   const btnCls =
     'w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
@@ -52,15 +109,13 @@ export default function Popover({
       />
 
       {/* Panel */}
-      <div
-        className={`z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg flex flex-col ${
-          maximized ? 'fixed rounded-xl' : panelClassName
-        }`}
-        style={maximized ? { inset: '10px' } : panelStyle}
-      >
-        {/* Controls bar */}
-        <div className="flex items-center justify-between pl-3 pr-1 py-1 border-b border-gray-100 dark:border-gray-700 shrink-0">
-          <span className="text-xs font-medium text-gray-500 dark:text-gray-400 truncate pr-1">{title}</span>
+      <div ref={panelRef} className={panelCls} style={resolvedStyle}>
+        {/* Controls bar — doubles as drag handle */}
+        <div
+          className={`flex items-center justify-between pl-3 pr-1 py-1 border-b border-gray-100 dark:border-gray-700 shrink-0 ${!maximized ? 'cursor-grab active:cursor-grabbing' : ''}`}
+          onMouseDown={onHeaderMouseDown}
+        >
+          <span className="text-xs font-medium text-gray-500 dark:text-gray-400 truncate pr-1 select-none">{title}</span>
           <div className="flex items-center gap-0.5 shrink-0">
             <button onClick={(e) => { e.stopPropagation(); setMaximized((m) => !m); }} title={maximized ? 'Restore' : 'Maximize'} className={btnCls}>
               {maximized ? <RestoreIcon /> : <MaximizeIcon />}

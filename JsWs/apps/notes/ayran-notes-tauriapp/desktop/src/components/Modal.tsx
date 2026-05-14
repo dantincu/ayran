@@ -1,5 +1,6 @@
-import { useState, useLayoutEffect } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useModalStack } from './ModalStack';
+import { useDraggable } from '../hooks/useDraggable';
 
 interface Props {
   title: string;
@@ -30,12 +31,17 @@ export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' 
   const [id] = useState(() => crypto.randomUUID());
   const [isRegistered, setIsRegistered] = useState(false);
   const { stack, register, unregister } = useModalStack();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const { dragPos, setDragPos, onHeaderMouseDown } = useDraggable(panelRef, maximized);
 
   useLayoutEffect(() => {
     register(id);
     setIsRegistered(true);
     return () => unregister(id);
   }, [id, register, unregister]);
+
+  // Leaving maximized → reset drag so the modal returns to the centered position.
+  useEffect(() => { if (!maximized) setDragPos(null); }, [maximized, setDragPos]);
 
   // Before registration (first render) show unconditionally to avoid a flash.
   // Once registered, only the stack-top modal is shown.
@@ -48,12 +54,21 @@ export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' 
   // Instead we use CSS visibility which:
   //   • hides the whole modal when not on top (visibility: hidden)
   //   • lets a nested Modal that IS on top override with visibility: visible
-  //     (CSS visibility is inherited but descendants can override it)
-  //   • keeps children in the React tree at the same position always,
-  //     so component instances (and their state) are preserved
+  //   • keeps children in the React tree at the same position always
   //
   // The backdrop and header use display:none when not on top so they take no
   // space, but the content wrapper always exists so children stay mounted.
+
+  const panelCls = `relative bg-white dark:bg-gray-800 shadow-xl flex flex-col rounded-xl ${
+    maximized ? 'fixed' : dragPos ? `${maxWidth} max-h-[90vh]` : `w-full ${maxWidth} mx-4 max-h-[90vh]`
+  }`;
+
+  const panelStyle: React.CSSProperties | undefined = maximized
+    ? { inset: '10px' }
+    : dragPos
+    ? { position: 'fixed', left: dragPos.x, top: dragPos.y, width: dragPos.w, margin: 0 }
+    : undefined;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
@@ -69,19 +84,14 @@ export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' 
       />
 
       {/* Panel */}
-      <div
-        className={`relative bg-white dark:bg-gray-800 shadow-xl flex flex-col rounded-xl ${
-          maximized ? 'fixed' : `w-full ${maxWidth} mx-4 max-h-[90vh]`
-        }`}
-        style={maximized ? { inset: '10px' } : undefined}
-      >
-        {/* Header — hidden (no space) when not top, but kept in the same
-            index position so the content div index never shifts */}
+      <div ref={panelRef} className={panelCls} style={panelStyle}>
+        {/* Header — doubles as drag handle; hidden (no space) when not top */}
         <div
-          className="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0"
+          className={`flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0 ${!maximized ? 'cursor-grab active:cursor-grabbing' : ''}`}
+          onMouseDown={onHeaderMouseDown}
           style={{ display: isTop ? undefined : 'none' }}
         >
-          <h2 className="text-base font-semibold text-gray-900 dark:text-white truncate pr-2">{title}</h2>
+          <h2 className="text-base font-semibold text-gray-900 dark:text-white truncate pr-2 select-none">{title}</h2>
           <div className="flex items-center gap-0.5 shrink-0">
             <button
               onClick={() => setMaximized((m) => !m)}

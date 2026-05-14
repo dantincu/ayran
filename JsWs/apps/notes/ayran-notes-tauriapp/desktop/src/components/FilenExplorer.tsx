@@ -20,7 +20,7 @@ interface Props {
   account: StoredAccount;
   onDisconnect: () => void;
   onNeedsRelogin: () => void;
-  onOpenFile: (item: CachedItem) => void;
+  onOpenFile: (item: CachedItem, displayPath: string) => void;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -472,7 +472,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
                 return (
                   <div key={item.itemId}
                     className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
-                    onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; item.isDir ? openDir(item) : onOpenFile(item); }}>
+                    onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; item.isDir ? openDir(item) : onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / ')); }}>
                     <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
                       onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey, e.shiftKey && selectedIds.has(item.itemId)); }}
                       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleCheck(idx, true, selectedIds.has(item.itemId)); }}
@@ -480,7 +480,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
                       className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">
-                      <button onClick={() => item.isDir ? openDir(item) : onOpenFile(item)}
+                      <button onClick={() => item.isDir ? openDir(item) : onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '))}
                         className={`text-sm font-medium truncate block text-left w-full hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer ${item.isDir ? '' : 'text-gray-800 dark:text-gray-200'}`}>
                         {item.name}
                       </button>

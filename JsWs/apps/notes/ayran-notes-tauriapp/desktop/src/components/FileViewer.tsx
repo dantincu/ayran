@@ -28,6 +28,7 @@ interface Props {
   item: CachedItem;
   onClose: () => void;
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string }) => void;
+  displayPath?: string;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -55,7 +56,7 @@ function fileIcon(mode: Mode): string {
   }
 }
 
-export default function FileViewer({ account, item, onClose, onOpenNotebook }: Props) {
+export default function FileViewer({ account, item, onClose, onOpenNotebook, displayPath }: Props) {
   const mode = detectMode(item);
 
   // Filen creates a new UUID on every overwrite; track the live item ID here.
@@ -328,7 +329,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook }: P
               onClick={() => {
                 let title = '';
                 try { title = (JSON.parse(editedText) as { Title?: string }).Title ?? ''; } catch { /* empty */ }
-                onOpenNotebook({ title, itemId: effectiveItemId, parentId: item.parentId, displayName: item.name });
+                onOpenNotebook({ title, itemId: effectiveItemId, parentId: item.parentId, displayName: displayPath ?? item.name });
               }}
               className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
             >

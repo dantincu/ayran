@@ -27,7 +27,7 @@ export default function AppShell() {
   const [connecting, setConnecting] = useState(false);
   const [showFilenLogin, setShowFilenLogin] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [viewingFile, setViewingFile] = useState<{ account: StoredAccount; item: CachedItem } | null>(null);
+  const [viewingFile, setViewingFile] = useState<{ account: StoredAccount; item: CachedItem; displayPath: string } | null>(null);
   const [currentPage, setCurrentPage] = useState<Page>(() => {
     if (new URLSearchParams(window.location.search).get('notebook')) return 'notebook';
     return (localStorage.getItem(PAGE_KEY) as Page | null) ?? 'files';
@@ -134,13 +134,12 @@ export default function AppShell() {
 
   const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string }) => {
     if (!selected) return;
-    const displayPath = selected.provider === 'local-fs' ? info.itemId : info.displayName;
     const entry = await addNotebook({
       accountId: selected.id,
       provider: selected.provider,
       itemId: info.itemId,
       parentId: info.parentId,
-      displayPath,
+      displayPath: info.displayName,
       title: info.title,
     });
     setViewingFile(null);
@@ -158,6 +157,7 @@ export default function AppShell() {
         <FileViewer
           account={viewingFile.account}
           item={viewingFile.item}
+          displayPath={viewingFile.displayPath}
           onClose={() => setViewingFile(null)}
           onOpenNotebook={handleOpenNotebook}
         />
@@ -250,16 +250,16 @@ export default function AppShell() {
             <section className="lg:col-span-3">
               {selected?.provider === 'google-drive' && (
                 <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onOpenFile={(item) => setViewingFile({ account: selected!, item })} />
+                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })} />
               )}
               {selected?.provider === 'filen' && (
                 <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                   onNeedsRelogin={() => setShowFilenLogin(true)}
-                  onOpenFile={(item) => setViewingFile({ account: selected!, item })} />
+                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })} />
               )}
               {selected?.provider === 'local-fs' && (
                 <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onOpenFile={(item) => setViewingFile({ account: selected!, item })} />
+                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })} />
               )}
               {!selected && (
                 <div className="flex flex-col items-center justify-center h-64 text-center text-gray-400 dark:text-gray-500 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">

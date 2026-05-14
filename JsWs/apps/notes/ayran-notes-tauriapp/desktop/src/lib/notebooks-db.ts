@@ -48,6 +48,18 @@ export async function addNotebook(
     const tx = db.transaction(STORE, 'readonly');
     const store = tx.objectStore(STORE);
     const all = await idbOp<NotebookEntry[]>(store.getAll());
+
+    // If the same file is already tracked, update title/displayPath instead of duplicating.
+    const existing = all.find(
+      (e) => e.accountId === entry.accountId && e.provider === entry.provider && e.itemId === entry.itemId,
+    );
+    if (existing) {
+      const updated: NotebookEntry = { ...existing, title: entry.title, displayPath: entry.displayPath, openedAt: Date.now() };
+      const tx2 = db.transaction(STORE, 'readwrite');
+      await idbOp(tx2.objectStore(STORE).put(updated));
+      return updated;
+    }
+
     const maxOrder = all.length > 0 ? Math.max(...all.map((e) => e.order)) : -1;
     const full: NotebookEntry = {
       ...entry,
