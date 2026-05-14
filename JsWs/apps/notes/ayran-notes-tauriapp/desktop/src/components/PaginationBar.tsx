@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import Popover from './Popover';
 import Modal from './Modal';
+import config from '../config.json';
 
 interface Props {
   page: number;      // 0-indexed
@@ -82,18 +83,31 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
       </div>
 
       {/* Page-picker modal (left-click) */}
-      {pickerOpen && (
-        <Modal title="Go to page" onClose={() => setPickerOpen(false)} maxWidth="max-w-xs">
-          <div className="py-2 overflow-y-auto max-h-64">
-            {Array.from({ length: totalPages }, (_, i) => (
-              <button key={i} onClick={() => { onPage(i); setPickerOpen(false); }}
-                className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${i === page ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                {i + 1}
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
+      {pickerOpen && (() => {
+        const half = Math.floor(config.defaultListPageSize / 2);
+        const windowed = totalPages > config.defaultListPageSize;
+        const startPage = windowed ? Math.max(0, page - half) : 0;
+        const endPage   = windowed ? Math.min(totalPages - 1, page + half) : totalPages - 1;
+        const pages = Array.from({ length: endPage - startPage + 1 }, (_, i) => startPage + i);
+        return (
+          <Modal title="Go to page" onClose={() => setPickerOpen(false)} maxWidth="max-w-xs">
+            <div className="py-2 overflow-y-auto max-h-64">
+              {startPage > 0 && (
+                <p className="px-4 py-1 text-xs text-gray-400 dark:text-gray-500">… pages 1 – {startPage} not shown</p>
+              )}
+              {pages.map((i) => (
+                <button key={i} onClick={() => { onPage(i); setPickerOpen(false); }}
+                  className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${i === page ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                  {i + 1}
+                </button>
+              ))}
+              {endPage < totalPages - 1 && (
+                <p className="px-4 py-1 text-xs text-gray-400 dark:text-gray-500">… pages {endPage + 2} – {totalPages} not shown</p>
+              )}
+            </div>
+          </Modal>
+        );
+      })()}
     </>
   );
 }
