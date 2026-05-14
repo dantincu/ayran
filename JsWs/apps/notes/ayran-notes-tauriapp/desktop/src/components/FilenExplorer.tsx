@@ -510,6 +510,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
         <FolderPickerModal
           title={folderPicker.action === 'copy' ? 'Copy to…' : 'Move to…'}
           rootId={rootUuid} rootName="My Filen"
+          initialFolderId={folderUUID}
+          initialBreadcrumbs={breadcrumbs.map(b => ({ id: b.uuid, name: b.name }))}
           onList={listFoldersForPicker}
           onConfirm={handleFolderPickerConfirm}
           onClose={() => setFolderPicker(null)}
@@ -519,6 +521,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
         <FolderPickerModal
           title={bulkAction === 'copy' ? `Copy ${selectedIds.size} item(s) to…` : `Move ${selectedIds.size} item(s) to…`}
           rootId={rootUuid} rootName="My Filen"
+          initialFolderId={folderUUID}
+          initialBreadcrumbs={breadcrumbs.map(b => ({ id: b.uuid, name: b.name }))}
           onList={listFoldersForPicker}
           onConfirm={handleBulkPickerConfirm}
           onClose={() => setBulkAction(null)}

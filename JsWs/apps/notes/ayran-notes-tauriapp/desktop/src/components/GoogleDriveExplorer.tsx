@@ -509,6 +509,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile 
         <FolderPickerModal
           title={folderPicker.action === 'copy' ? 'Copy to…' : 'Move to…'}
           rootId="root" rootName="My Drive"
+          initialFolderId={folderId}
+          initialBreadcrumbs={breadcrumbs}
           onList={listDriveFolders}
           onConfirm={handleFolderPickerConfirm}
           onClose={() => setFolderPicker(null)}
@@ -518,6 +520,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile 
         <FolderPickerModal
           title={bulkAction === 'copy' ? `Copy ${selectedIds.size} item(s) to…` : `Move ${selectedIds.size} item(s) to…`}
           rootId="root" rootName="My Drive"
+          initialFolderId={folderId}
+          initialBreadcrumbs={breadcrumbs}
           onList={listDriveFolders}
           onConfirm={handleBulkPickerConfirm}
           onClose={() => setBulkAction(null)}

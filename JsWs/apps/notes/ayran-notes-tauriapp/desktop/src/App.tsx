@@ -1,5 +1,6 @@
 import React from 'react';
 import AppShell from './components/AppShell';
+import { ModalStackProvider } from './components/ModalStack';
 
 function App() {
   React.useEffect(() => {
@@ -10,9 +11,11 @@ function App() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 antialiased">
-      <AppShell />
-    </div>
+    <ModalStackProvider>
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 antialiased">
+        <AppShell />
+      </div>
+    </ModalStackProvider>
   );
 }
 
