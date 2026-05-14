@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { listen } from '@tauri-apps/api/event';
-import { emit } from '@tauri-apps/api/event';
+import { listen, emit } from '@tauri-apps/api/event';
+import { readFile } from '@tauri-apps/plugin-fs';
 import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, updateNotebooksByFile, type NotebookEntry } from '../../lib/notebooks-db';
 import Modal from '../Modal';
 import Popover from '../Popover';
@@ -211,9 +212,29 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
     setEditSaving(true);
     setEditError(null);
     try {
+      const oldItemId = editEntry.itemId;
+
+      // Download (or hit cache), update the Title field, and save back to the provider.
+      const path = await invoke<string>('open_file', {
+        accountId: editEntry.accountId,
+        itemId: oldItemId,
+        force: false,
+      });
+      const bytes = await readFile(path);
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+      parsed.Title = editTitle;
+      const updatedJson = JSON.stringify(parsed, null, 2);
+      const newItemId = await invoke<string>('save_text_file', {
+        accountId: editEntry.accountId,
+        itemId: oldItemId,
+        parentId: editEntry.parentId,
+        content: updatedJson,
+      });
+
       // Update title on every instance that references the same file.
-      await updateNotebooksByFile(editEntry.accountId, editEntry.provider, editEntry.itemId, {
+      await updateNotebooksByFile(editEntry.accountId, editEntry.provider, oldItemId, {
         title: editTitle,
+        ...(newItemId !== oldItemId ? { itemId: newItemId } : {}),
       });
       // Description is per-instance — update only this entry.
       await updateNotebook(editEntry.id, { description: editDesc || undefined });

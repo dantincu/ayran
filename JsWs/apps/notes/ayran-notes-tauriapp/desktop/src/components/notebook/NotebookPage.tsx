@@ -220,18 +220,16 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       let newItemId = oldItemId;
 
       if (fileContent !== null) {
-        try {
-          const parsed = JSON.parse(fileContent) as Record<string, unknown>;
-          parsed.Title = editTitle;
-          const updatedJson = JSON.stringify(parsed, null, 2);
-          newItemId = await invoke<string>('save_text_file', {
-            accountId: entry.accountId,
-            itemId: oldItemId,
-            parentId: entry.parentId,
-            content: updatedJson,
-          });
-          setFileContent(updatedJson);
-        } catch { /* file update failure is non-fatal */ }
+        const parsed = JSON.parse(fileContent) as Record<string, unknown>;
+        parsed.Title = editTitle;
+        const updatedJson = JSON.stringify(parsed, null, 2);
+        newItemId = await invoke<string>('save_text_file', {
+          accountId: entry.accountId,
+          itemId: oldItemId,
+          parentId: entry.parentId,
+          content: updatedJson,
+        });
+        setFileContent(updatedJson);
       }
 
       // Update title (and itemId if the file provider changed it) on all
@@ -261,18 +259,16 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       let newItemId = oldItemId;
 
       if (fileContent !== null) {
-        try {
-          const parsed = JSON.parse(fileContent) as Record<string, unknown>;
-          parsed.Title = promptTitle;
-          const updatedJson = JSON.stringify(parsed, null, 2);
-          newItemId = await invoke<string>('save_text_file', {
-            accountId: entry.accountId,
-            itemId: oldItemId,
-            parentId: entry.parentId,
-            content: updatedJson,
-          });
-          setFileContent(updatedJson);
-        } catch { /* file update failure is non-fatal */ }
+        const parsed = JSON.parse(fileContent) as Record<string, unknown>;
+        parsed.Title = promptTitle;
+        const updatedJson = JSON.stringify(parsed, null, 2);
+        newItemId = await invoke<string>('save_text_file', {
+          accountId: entry.accountId,
+          itemId: oldItemId,
+          parentId: entry.parentId,
+          content: updatedJson,
+        });
+        setFileContent(updatedJson);
       }
 
       await updateNotebooksByFile(entry.accountId, entry.provider, oldItemId, {

@@ -543,8 +543,13 @@ fn account_content_cache_dir(
         .get_or_init(|| std::sync::Mutex::new(()))
         .lock()
         .map_err(|e| e.to_string())?;
+    // Strip the provider prefix to get a compact short ID.
+    // Falls back to stripping up to the first '-' to handle cases where the
+    // account ID prefix doesn't match the provider string (e.g. Google Drive
+    // has provider "google-drive" but IDs start with "google-{permission_id}").
     let short_id = account.id
         .strip_prefix(&format!("{}-", account.provider))
+        .or_else(|| account.id.find('-').map(|i| &account.id[i + 1..]))
         .unwrap_or(&account.id);
     // Use @@ as separator: it can never appear inside any segment (email has
     // exactly one @, provider keys and ids are alphanumeric/hyphens only).
@@ -596,6 +601,7 @@ fn account_content_cache_dir(
 fn find_account_cache_dir(c_dir: &std::path::Path, account: &StoredAccount) -> Option<std::path::PathBuf> {
     let short_id = account.id
         .strip_prefix(&format!("{}-", account.provider))
+        .or_else(|| account.id.find('-').map(|i| &account.id[i + 1..]))
         .unwrap_or(&account.id);
     let descriptor_suffix = format!("@@{}@@{}@@{}", account.provider, account.email, short_id);
     if !c_dir.exists() { return None; }
@@ -1151,6 +1157,7 @@ pub fn run() {
                                 let known = accounts.values().any(|a| {
                                     let short = a.id
                                         .strip_prefix(&format!("{}-", a.provider))
+                                        .or_else(|| a.id.find('-').map(|i| &a.id[i + 1..]))
                                         .unwrap_or(&a.id);
                                     name.ends_with(&format!("@@{}", short))
                                 });
