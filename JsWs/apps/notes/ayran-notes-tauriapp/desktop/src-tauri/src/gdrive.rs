@@ -403,6 +403,45 @@ pub async fn gdrive_upload_file(
     Ok(())
 }
 
+/// Upload bytes as a new file. Returns the new Drive file ID.
+pub async fn upload_bytes(
+    app: &tauri::AppHandle,
+    account_id: &str,
+    folder_id: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> Result<String, String> {
+    let token = get_valid_token(app, account_id).await?;
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let mime = mime_from_ext(&ext);
+    let boundary = format!("notes_{}", rand_hex(8));
+    let metadata = serde_json::json!({ "name": filename, "parents": [folder_id] }).to_string();
+    let pre = format!(
+        "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{metadata}\r\n\
+         --{boundary}\r\nContent-Type: {mime}\r\n\r\n"
+    );
+    let post = format!("\r\n--{boundary}--");
+    let mut body = Vec::with_capacity(pre.len() + bytes.len() + post.len());
+    body.extend_from_slice(pre.as_bytes());
+    body.extend_from_slice(bytes);
+    body.extend_from_slice(post.as_bytes());
+
+    #[derive(serde::Deserialize)]
+    struct UploadResp { id: String }
+
+    let res = client()
+        .post("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart")
+        .bearer_auth(&token)
+        .header("Content-Type", format!("multipart/related; boundary={}", boundary))
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Err(api_err(res).await); }
+    let json: UploadResp = res.json().await.map_err(|e| e.to_string())?;
+    Ok(json.id)
+}
+
 #[tauri::command]
 pub async fn gdrive_delete_file(
     app: tauri::AppHandle,

@@ -892,6 +892,61 @@ pub async fn filen_copy_file(
     Ok(new_uuid)
 }
 
+/// Create a brand-new file from bytes. Returns the new file UUID.
+pub async fn upload_file_bytes(
+    session: FilenSession,
+    parent_uuid: &str,
+    filename: &str,
+    content: &[u8],
+) -> Result<String, String> {
+    let master_key = session.master_keys.last().ok_or("no master key")?.clone();
+    let file_uuid = uuid::Uuid::new_v4().to_string();
+    let file_key = crypto::generate_file_key_v2();
+    let upload_key = crypto::generate_random_string(32);
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
+    let mime = mime_from_ext(&ext);
+    let last_modified = crate::now_ms();
+    let total_size = content.len() as u64;
+
+    let mut sha_content = sha2::Sha512::new();
+    let mut chunk_index: u32 = 0;
+    for chunk in content.chunks(CHUNK_SIZE) {
+        sha_content.update(chunk);
+        let enc_chunk = crypto::encrypt_chunk_v2(chunk, &file_key)?;
+        let chunk_hash = hex::encode(sha2::Sha512::digest(&enc_chunk));
+        api::upload_chunk(&session.client, &file_uuid, chunk_index, parent_uuid, &upload_key, &chunk_hash, &enc_chunk, &session.api_key).await?;
+        chunk_index += 1;
+    }
+
+    if chunk_index == 0 {
+        let name_enc = crypto::encrypt_metadata(filename, &file_key)?;
+        let name_hashed = crypto::hash_filename(filename);
+        let size_enc = crypto::encrypt_metadata("0", &file_key)?;
+        let mime_enc = crypto::encrypt_metadata(mime, &file_key)?;
+        let rm = crypto::generate_random_string(32);
+        let meta_json = serde_json::json!({"name": filename, "size": 0u64, "mime": mime, "key": file_key, "lastModified": last_modified}).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        api::post_ok(&session.client, "/v3/upload/empty",
+            &serde_json::json!({"uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 2, "parent": parent_uuid}),
+            &session.api_key,
+        ).await?;
+    } else {
+        let content_hash = hex::encode(sha_content.finalize());
+        let name_enc = crypto::encrypt_metadata(filename, &file_key)?;
+        let name_hashed = crypto::hash_filename(filename);
+        let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
+        let mime_enc = crypto::encrypt_metadata(mime, &file_key)?;
+        let rm = crypto::generate_random_string(32);
+        let meta_json = serde_json::json!({"name": filename, "size": total_size, "mime": mime, "key": file_key, "lastModified": last_modified, "hash": content_hash}).to_string();
+        let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
+        api::post_ok(&session.client, "/v3/upload/done",
+            &serde_json::json!({"uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "chunks": chunk_index, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 2, "parent": parent_uuid, "uploadKey": upload_key}),
+            &session.api_key,
+        ).await?;
+    }
+    Ok(file_uuid)
+}
+
 /// Upload new content for an existing file directly from bytes.
 /// Generates a new UUID for the chunks, then trashes the old UUID.
 /// Returns the new UUID assigned to the uploaded file so the caller can

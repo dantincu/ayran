@@ -762,6 +762,43 @@ async fn save_text_file(
     Ok(new_item_id)
 }
 
+/// Create a new text file in the given parent folder. Returns the new file's item ID.
+#[tauri::command]
+async fn create_text_file(
+    app: tauri::AppHandle,
+    filen_sessions: tauri::State<'_, filen::FilenSessions>,
+    account_id: String,
+    parent_id: String,
+    filename: String,
+    content: String,
+) -> Result<String, String> {
+    let bytes = content.into_bytes();
+    let accounts = load_accounts(&app)?;
+    let account = accounts
+        .get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+
+    match account.provider.as_str() {
+        "local-fs" => {
+            let path = std::path::Path::new(&parent_id).join(&filename);
+            tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
+            Ok(path.to_string_lossy().into_owned())
+        }
+        "filen" => {
+            let session = filen_sessions
+                .0.lock().map_err(|e| e.to_string())?
+                .get(&account_id).cloned()
+                .ok_or_else(|| format!("No Filen session for '{}'", account_id))?;
+            filen::upload_file_bytes(session, &parent_id, &filename, &bytes).await
+        }
+        "google-drive" => {
+            gdrive::upload_bytes(&app, &account_id, &parent_id, &filename, &bytes).await
+        }
+        p => Err(format!("Unsupported provider '{}'", p)),
+    }
+}
+
 /// Delete the cached file content for one item and remove it from the index.
 #[tauri::command]
 fn delete_cached_file(
@@ -1094,6 +1131,7 @@ pub fn run() {
             filen::filen_move_directory,
             filen::filen_copy_file,
             filen::filen_overwrite_file,
+            create_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

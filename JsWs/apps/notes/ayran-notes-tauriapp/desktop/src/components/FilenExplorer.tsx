@@ -12,6 +12,7 @@ import {
 import type { StoredAccount, CachedItem, FolderPage } from '../types';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
 import PaginationBar from './PaginationBar';
+import NewNotebookModal from './NewNotebookModal';
 import config from '../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
@@ -21,6 +22,7 @@ interface Props {
   onDisconnect: () => void;
   onNeedsRelogin: () => void;
   onOpenFile: (item: CachedItem, displayPath: string) => void;
+  onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -47,7 +49,7 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
-export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, onOpenFile }: Props) {
+export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, onOpenFile, onOpenNotebook }: Props) {
   const rootUuid = (account.providerData as { baseFolderUuid?: string } | undefined)?.baseFolderUuid ?? '';
   const navKey = `notes-filen-nav-${account.id}`;
 
@@ -385,14 +387,37 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     </button>
   );
 
+  const [showNewNb, setShowNewNb] = useState(false);
+
+  const handleCreateNotebook = async (title: string, description?: string) => {
+    if (items.some(i => i.name === config.notebookFileName)) {
+      throw new Error('A notebook already exists in this folder. Open a different folder to create one there.');
+    }
+    const content = JSON.stringify({ Title: title }, null, 2);
+    const itemId = await invoke<string>('create_text_file', {
+      accountId: account.id, parentId: folderUUID,
+      filename: config.notebookFileName, content,
+    });
+    setShowNewNb(false);
+    onOpenNotebook?.({
+      title, itemId, parentId: folderUUID,
+      displayName: [...breadcrumbs.map(b => b.name), config.notebookFileName].join(' / '),
+      description,
+    });
+  };
+
   return (
     <>
+      {showNewNb && <NewNotebookModal onConfirm={handleCreateNotebook} onClose={() => setShowNewNb(false)} />}
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
         <div className="p-4 border-b border-gray-100 dark:border-gray-700 space-y-3">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">Filen</span>
             <span className="text-xs text-gray-400 dark:text-gray-500 truncate">{account.email}</span>
             <div className="ml-auto flex items-center gap-2">
+              {onOpenNotebook && (
+                <button onClick={() => setShowNewNb(true)} disabled={anyBusy} className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors">+ Notebook</button>
+              )}
               <button onClick={handleNewFolder} disabled={creatingFolder || anyBusy} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
                 {creatingFolder ? 'Creating…' : '+ New folder'}
               </button>
@@ -402,7 +427,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
               {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cache cleared</span>}
               <div className="relative flex items-center">
                 <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
-                <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
+                <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
                 {menuOpen && (
                   <Popover title="Options" onClose={() => setMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
                     <div className="py-1">

@@ -132,7 +132,7 @@ export default function AppShell() {
 
   const navigateTo = (page: Page) => { setCurrentPage(page); setMenuOpen(false); };
 
-  const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string }) => {
+  const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => {
     if (!selected) return;
     const entry = await addNotebook({
       accountId: selected.id,
@@ -141,6 +141,7 @@ export default function AppShell() {
       parentId: info.parentId,
       displayPath: info.displayName,
       title: info.title,
+      description: info.description,
     });
     setViewingFile(null);
     setNotebookNavId(entry.id);
@@ -250,16 +251,19 @@ export default function AppShell() {
             <section className="lg:col-span-3">
               {selected?.provider === 'google-drive' && (
                 <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })} />
+                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })}
+                  onOpenNotebook={handleOpenNotebook} />
               )}
               {selected?.provider === 'filen' && (
                 <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                   onNeedsRelogin={() => setShowFilenLogin(true)}
-                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })} />
+                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })}
+                  onOpenNotebook={handleOpenNotebook} />
               )}
               {selected?.provider === 'local-fs' && (
                 <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })} />
+                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })}
+                  onOpenNotebook={handleOpenNotebook} />
               )}
               {!selected && (
                 <div className="flex flex-col items-center justify-center h-64 text-center text-gray-400 dark:text-gray-500 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
