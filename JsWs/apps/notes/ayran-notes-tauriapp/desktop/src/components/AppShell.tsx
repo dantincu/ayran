@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
+import Popover from './Popover';
 import { getCurrentWebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount, CachedItem } from '../types';
@@ -36,7 +37,6 @@ export default function AppShell() {
     return urlParam ?? localStorage.getItem('notes-notebook-id');
   });
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     listAccounts().then((accs) => {
@@ -80,15 +80,6 @@ export default function AppShell() {
     return () => { if (unlisten) unlisten(); };
   }, []);
 
-  // Close menu on outside click
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
 
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
 
@@ -181,7 +172,7 @@ export default function AppShell() {
           <div className="flex items-center gap-2">
             <ThemeToggle />
             {/* Three-dots menu */}
-            <div ref={menuRef} className="relative">
+            <div className="relative">
               <button
                 onClick={() => setMenuOpen((o) => !o)}
                 className="p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
@@ -194,26 +185,19 @@ export default function AppShell() {
                 </svg>
               </button>
               {menuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[160px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
-                  <button
-                    onClick={() => navigateTo('files')}
-                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'files' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                  >
-                    Files
-                  </button>
-                  <button
-                    onClick={() => navigateTo('notebooks')}
-                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'notebooks' || currentPage === 'notebook' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                  >
-                    Notebooks
-                  </button>
-                  <button
-                    onClick={() => navigateTo('devtools')}
-                    className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}
-                  >
-                    DevTools
-                  </button>
-                </div>
+                <Popover title="Navigation" onClose={() => setMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-[160px]">
+                  <div className="py-1">
+                    <button onClick={() => navigateTo('files')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'files' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                      Files
+                    </button>
+                    <button onClick={() => navigateTo('notebooks')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'notebooks' || currentPage === 'notebook' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                      Notebooks
+                    </button>
+                    <button onClick={() => navigateTo('devtools')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                      DevTools
+                    </button>
+                  </div>
+                </Popover>
               )}
             </div>
           </div>

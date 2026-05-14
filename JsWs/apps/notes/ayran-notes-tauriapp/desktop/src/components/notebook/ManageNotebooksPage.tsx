@@ -1,8 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen } from '@tauri-apps/api/event';
 import { emit } from '@tauri-apps/api/event';
 import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import Modal from '../Modal';
+import Popover from '../Popover';
 
 interface Props {
   onOpenNotebook: (notebookId: string) => void;
@@ -34,7 +36,6 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
-  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -70,17 +71,6 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
     return () => { unlisteners.forEach((fn) => fn()); };
   }, []);
 
-  // Close context menu on outside click
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = (e: MouseEvent) => {
-      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
-        setCtxMenu(null);
-      }
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [ctxMenu]);
 
   const handleDragStart = (idx: number) => setDragIdx(idx);
   const handleDragOver = (e: React.DragEvent, idx: number) => {
@@ -241,36 +231,23 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
 
       {/* Context menu */}
       {ctxMenu && (
-        <div
-          ref={ctxMenuRef}
-          className="fixed z-50 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-        >
-          <button onClick={handleCtxOpen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Open
-          </button>
-          <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Edit
-          </button>
-          {ctxMenu.entry.windowLabel && (
-            <button onClick={() => { void handleCtxCloseWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-              Close
-            </button>
-          )}
-          <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Remove
-          </button>
-          <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Open in new window
-          </button>
-        </div>
+        <Popover title={ctxMenu.entry.title || '(Untitled)'} onClose={() => setCtxMenu(null)} panelStyle={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          <div className="py-1">
+            <button onClick={handleCtxOpen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open</button>
+            <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Edit</button>
+            {ctxMenu.entry.windowLabel && (
+              <button onClick={() => { void handleCtxCloseWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Close</button>
+            )}
+            <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">Remove</button>
+            <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new window</button>
+          </div>
+        </Popover>
       )}
 
       {/* Edit modal */}
       {showEdit && editEntry && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 w-full max-w-md space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Edit Notebook</h2>
+        <Modal title="Edit Notebook">
+          <div className="p-6 space-y-4">
             {editError && <p className="text-sm text-red-500 dark:text-red-400">{editError}</p>}
             <div className="space-y-3">
               <div>
@@ -309,7 +286,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {loading ? (

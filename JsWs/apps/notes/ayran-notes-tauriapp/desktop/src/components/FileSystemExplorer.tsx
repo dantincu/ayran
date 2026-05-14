@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import Popover from './Popover';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile, writeFile, remove, mkdir, rename as fsRename, copyFile as fsCopyFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
@@ -80,7 +81,6 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile }
   const lastCheckedIdxRef = useRef<number | null>(null);
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
     || !!copyingPath || !!movingPath;
@@ -122,15 +122,6 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { void loadDir(currentPath, false, page, search, sortBy, ascending); }, []);
 
-  // ── Close split-button menu on outside click ─────────────────────────────────
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [menuOpen]);
 
   // ── Navigation ───────────────────────────────────────────────────────────────
   function navigate(path: string, crumbs: { name: string; path: string }[]) {
@@ -355,14 +346,16 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile }
             <button onClick={handlePickAndUpload} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Upload file</button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
             {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cache cleared</span>}
-            <div ref={menuRef} className="relative flex items-center">
+            <div className="relative flex items-center">
               <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
               <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
               {menuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-10 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
-                  <button onClick={handleHardRefresh} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Hard refresh</button>
-                  <button onClick={handleClearCache} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Clear cached listing</button>
-                </div>
+                <Popover title="Options" onClose={() => setMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
+                  <div className="py-1">
+                    <button onClick={handleHardRefresh} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Hard refresh</button>
+                    <button onClick={handleClearCache} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Clear cached listing</button>
+                  </div>
+                </Popover>
               )}
             </div>
             <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">Revoke & remove</button>

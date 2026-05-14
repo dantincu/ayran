@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import Modal from './Modal';
 
 export interface FolderEntry {
   id: string;
@@ -22,7 +23,6 @@ export default function FolderPickerModal({ title, rootId, rootName, onList, onC
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Keep onList ref stable so the effect only re-runs when folderId changes.
   const onListRef = useRef(onList);
   onListRef.current = onList;
 
@@ -59,14 +59,9 @@ export default function FolderPickerModal({ title, rootId, rootName, onList, onC
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-200 dark:border-gray-700 w-full max-w-md mx-4">
-        <div className="p-4 border-b border-gray-100 dark:border-gray-700 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-800 dark:text-gray-200">{title}</h3>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none">&times;</button>
-        </div>
-
-        <nav className="px-4 py-2 border-b border-gray-100 dark:border-gray-700 flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400">
+    <Modal title={title} onClose={onClose}>
+      <div className="flex flex-col h-full">
+        <nav className="px-4 py-2 border-b border-gray-100 dark:border-gray-700 flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400 shrink-0">
           {breadcrumbs.map((c, i) => (
             <span key={c.id + i} className="flex items-center gap-1">
               {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
@@ -80,7 +75,7 @@ export default function FolderPickerModal({ title, rootId, rootName, onList, onC
           ))}
         </nav>
 
-        <div className="p-2 min-h-40 max-h-64 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto min-h-40 p-2">
           {loading && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>}
           {!loading && error && <div className="p-3 text-sm text-red-500 dark:text-red-400">{error}</div>}
           {!loading && !error && folders.length === 0 && (
@@ -98,7 +93,7 @@ export default function FolderPickerModal({ title, rootId, rootName, onList, onC
           ))}
         </div>
 
-        <div className="p-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-2">
+        <div className="p-4 border-t border-gray-100 dark:border-gray-700 flex justify-end gap-2 shrink-0">
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
@@ -114,6 +109,6 @@ export default function FolderPickerModal({ title, rootId, rootName, onList, onC
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

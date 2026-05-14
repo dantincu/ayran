@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Popover from './Popover';
 import PaginationBar from './PaginationBar';
 import config from '../config.json';
 
@@ -89,9 +90,6 @@ function RecordsView({ db, storeName, onBack }: { db: IDBDatabase; storeName: st
   const [selectedDisplayKeys, setSelectedDisplayKeys] = useState<Set<string>>(new Set());
   const lastCheckedIdxRef = useRef<number | null>(null);
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
-  const bulkMenuRef = useRef<HTMLDivElement>(null);
-  const ctxRef = useRef<HTMLDivElement>(null);
-
   const load = useCallback(async (p: number) => {
     setLoading(true); setError(null); setExpanded(null); lastCheckedIdxRef.current = null;
     try {
@@ -103,21 +101,6 @@ function RecordsView({ db, storeName, onBack }: { db: IDBDatabase; storeName: st
 
   useEffect(() => { void load(0); }, [load]);
 
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [ctxMenu]);
-
-  useEffect(() => {
-    if (!bulkMenuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (bulkMenuRef.current && !bulkMenuRef.current.contains(e.target as Node)) setBulkMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [bulkMenuOpen]);
 
   // ── Selection ────────────────────────────────────────────────────────────
 
@@ -218,7 +201,7 @@ function RecordsView({ db, storeName, onBack }: { db: IDBDatabase; storeName: st
               className="w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm">
               ✕
             </button>
-            <div ref={bulkMenuRef} className="relative">
+            <div className="relative">
               <button onClick={() => setBulkMenuOpen((o) => !o)} title="Bulk actions"
                 className="w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -228,12 +211,14 @@ function RecordsView({ db, storeName, onBack }: { db: IDBDatabase; storeName: st
                 </svg>
               </button>
               {bulkMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[150px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
-                  <button onClick={handleDeleteSelected}
-                    className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-                    Delete Selected
-                  </button>
-                </div>
+                <Popover title="Bulk actions" onClose={() => setBulkMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-[150px]">
+                  <div className="py-1">
+                    <button onClick={handleDeleteSelected}
+                      className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                      Delete Selected
+                    </button>
+                  </div>
+                </Popover>
               )}
             </div>
           </>
@@ -314,15 +299,14 @@ function RecordsView({ db, storeName, onBack }: { db: IDBDatabase; storeName: st
 
       {/* Single-row context menu */}
       {ctxMenu && (
-        <div ref={ctxRef}
-          className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[130px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onMouseDown={(e) => e.stopPropagation()}>
-          <button onClick={() => handleDelete(ctxMenu.key)}
-            className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-            Delete
-          </button>
-        </div>
+        <Popover title={String(ctxMenu.key)} onClose={() => setCtxMenu(null)} panelStyle={{ top: ctxMenu.y, left: ctxMenu.x }}>
+          <div className="py-1">
+            <button onClick={() => handleDelete(ctxMenu.key)}
+              className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+              Delete
+            </button>
+          </div>
+        </Popover>
       )}
     </div>
   );
@@ -332,19 +316,12 @@ function RecordsView({ db, storeName, onBack }: { db: IDBDatabase; storeName: st
 
 function BulkBar({ count, onClear, onDelete }: { count: number; onClear: () => void; onDelete: () => void }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
   return (
     <>
       <span className="text-xs text-blue-600 dark:text-blue-400 tabular-nums">{count} selected</span>
       <button onClick={onClear} title="Clear selection"
         className="w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm">✕</button>
-      <div ref={ref} className="relative">
+      <div className="relative">
         <button onClick={() => setOpen((o) => !o)} title="Bulk actions"
           className="w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -352,12 +329,14 @@ function BulkBar({ count, onClear, onDelete }: { count: number; onClear: () => v
           </svg>
         </button>
         {open && (
-          <div className="absolute right-0 top-full mt-1 z-50 min-w-[150px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
-            <button onClick={() => { setOpen(false); onDelete(); }}
-              className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-              Delete Selected
-            </button>
-          </div>
+          <Popover title="Bulk actions" onClose={() => setOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-[150px]">
+            <div className="py-1">
+              <button onClick={() => { setOpen(false); onDelete(); }}
+                className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                Delete Selected
+              </button>
+            </div>
+          </Popover>
         )}
       </div>
     </>
@@ -378,8 +357,6 @@ function StoresView({ dbInfo, onBack }: { dbInfo: DbInfo; onBack: () => void }) 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const lastCheckedIdxRef = useRef<number | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; name: string } | null>(null);
-  const ctxRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     let idb: IDBDatabase | null = null;
     setLoading(true); setError(null);
@@ -398,13 +375,6 @@ function StoresView({ dbInfo, onBack }: { dbInfo: DbInfo; onBack: () => void }) 
       .finally(() => setLoading(false));
     return () => { idb?.close(); };
   }, [dbInfo.name, version]);
-
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [ctxMenu]);
 
   const handleCheck = useCallback((idx: number, shiftHeld: boolean, deselect = false) => {
     setSelected((prev) => {
@@ -538,15 +508,14 @@ function StoresView({ dbInfo, onBack }: { dbInfo: DbInfo; onBack: () => void }) 
       )}
 
       {ctxMenu && (
-        <div ref={ctxRef}
-          className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[130px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onMouseDown={(e) => e.stopPropagation()}>
-          <button onClick={() => { setCtxMenu(null); deleteStores(new Set([ctxMenu.name])); }}
-            className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-            Delete
-          </button>
-        </div>
+        <Popover title={ctxMenu.name} onClose={() => setCtxMenu(null)} panelStyle={{ top: ctxMenu.y, left: ctxMenu.x }}>
+          <div className="py-1">
+            <button onClick={() => { setCtxMenu(null); deleteStores(new Set([ctxMenu.name])); }}
+              className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+              Delete
+            </button>
+          </div>
+        </Popover>
       )}
     </div>
   );
@@ -561,7 +530,6 @@ export default function IndexedDbPage() {
   const [selected, setSelected] = useState<DbInfo | null>(null);
   const [page, setPage] = useState(0);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; db: DbInfo } | null>(null);
-  const ctxRef = useRef<HTMLDivElement>(null);
   const [selectedDbs, setSelectedDbs] = useState<Set<string>>(new Set());
   const lastCheckedIdxRef = useRef<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -584,13 +552,6 @@ export default function IndexedDbPage() {
   }, []);
 
   useEffect(() => { loadDbs(); }, [loadDbs]);
-
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [ctxMenu]);
 
   const handleCheck = useCallback((idx: number, shiftHeld: boolean, deselect = false) => {
     const items = databases.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -739,15 +700,14 @@ export default function IndexedDbPage() {
       )}
 
       {ctxMenu && (
-        <div ref={ctxRef}
-          className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[150px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onMouseDown={(e) => e.stopPropagation()}>
-          <button onClick={() => handleDeleteDb(ctxMenu.db)}
-            className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-            Delete database
-          </button>
-        </div>
+        <Popover title={ctxMenu.db.name} onClose={() => setCtxMenu(null)} panelStyle={{ top: ctxMenu.y, left: ctxMenu.x }}>
+          <div className="py-1">
+            <button onClick={() => handleDeleteDb(ctxMenu.db)}
+              className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+              Delete database
+            </button>
+          </div>
+        </Popover>
       )}
     </div>
   );

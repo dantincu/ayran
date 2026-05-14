@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import Popover from './Popover';
 import PaginationBar from './PaginationBar';
 import config from '../config.json';
 
@@ -26,9 +27,6 @@ export default function LocalStoragePage() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const lastCheckedIdxRef = useRef<number | null>(null);
   const [bulkMenuOpen, setBulkMenuOpen] = useState(false);
-  const bulkMenuRef = useRef<HTMLDivElement>(null);
-
-  const ctxRef = useRef<HTMLDivElement>(null);
 
   const reload = useCallback(() => {
     const list: { key: string; value: string }[] = [];
@@ -42,21 +40,6 @@ export default function LocalStoragePage() {
 
   useEffect(() => { reload(); }, [reload]);
 
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [ctxMenu]);
-
-  useEffect(() => {
-    if (!bulkMenuOpen) return;
-    const close = (e: MouseEvent) => {
-      if (bulkMenuRef.current && !bulkMenuRef.current.contains(e.target as Node)) setBulkMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [bulkMenuOpen]);
 
   const filtered = useMemo(() => {
     const q = filter.toLowerCase();
@@ -176,7 +159,7 @@ export default function LocalStoragePage() {
               ✕
             </button>
             {/* Three-dots bulk menu */}
-            <div ref={bulkMenuRef} className="relative shrink-0">
+            <div className="relative shrink-0">
               <button onClick={() => setBulkMenuOpen((o) => !o)} title="Bulk actions"
                 className="w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
@@ -186,12 +169,14 @@ export default function LocalStoragePage() {
                 </svg>
               </button>
               {bulkMenuOpen && (
-                <div className="absolute right-0 top-full mt-1 z-50 min-w-[150px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
-                  <button onClick={handleDeleteSelected}
-                    className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-                    Delete Selected
-                  </button>
-                </div>
+                <Popover title="Bulk actions" onClose={() => setBulkMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-[150px]">
+                  <div className="py-1">
+                    <button onClick={handleDeleteSelected}
+                      className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+                      Delete Selected
+                    </button>
+                  </div>
+                </Popover>
               )}
             </div>
           </>
@@ -288,19 +273,18 @@ export default function LocalStoragePage() {
 
       {/* Single-row context menu */}
       {ctxMenu && (
-        <div ref={ctxRef}
-          className="fixed z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 min-w-[130px]"
-          style={{ top: ctxMenu.y, left: ctxMenu.x }}
-          onMouseDown={(e) => e.stopPropagation()}>
-          <button onClick={() => { startEdit(ctxMenu.key, localStorage.getItem(ctxMenu.key) ?? ''); setCtxMenu(null); }}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Edit
-          </button>
-          <button onClick={() => handleDelete(ctxMenu.key)}
-            className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
-            Delete
-          </button>
-        </div>
+        <Popover title={ctxMenu.key} onClose={() => setCtxMenu(null)} panelStyle={{ top: ctxMenu.y, left: ctxMenu.x }}>
+          <div className="py-1">
+            <button onClick={() => { startEdit(ctxMenu.key, localStorage.getItem(ctxMenu.key) ?? ''); setCtxMenu(null); }}
+              className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+              Edit
+            </button>
+            <button onClick={() => handleDelete(ctxMenu.key)}
+              className="w-full text-left px-4 py-2 text-sm text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+              Delete
+            </button>
+          </div>
+        </Popover>
       )}
     </div>
   );

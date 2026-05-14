@@ -1,4 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
+import Popover from './Popover';
+import Modal from './Modal';
 
 interface Props {
   page: number;      // 0-indexed
@@ -11,17 +13,7 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editValue, setEditValue] = useState('');
-  const editRef = useRef<HTMLDivElement>(null);
   const totalPages = pageSize > 0 ? Math.ceil(total / pageSize) : 1;
-
-  useEffect(() => {
-    if (!editOpen) return;
-    const close = (e: MouseEvent) => {
-      if (editRef.current && !editRef.current.contains(e.target as Node)) setEditOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [editOpen]);
 
   if (totalPages <= 1) return null;
 
@@ -44,7 +36,7 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
           className="px-2.5 py-0.5 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors"
           title="Previous page">←</button>
 
-        {/* Page label — left-click: dropdown · right-click: numeric input */}
+        {/* Page label — left-click: picker modal · right-click: numeric input popover */}
         <div className="relative">
           <button
             onClick={() => setPickerOpen(true)}
@@ -56,35 +48,31 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
           </button>
 
           {editOpen && (
-            <div ref={editRef}
-              className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg p-3 min-w-[190px]">
-              <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                Go to page (1 – {totalPages})
-              </p>
-              <div className="flex items-center gap-1">
-                <input
-                  type="number" min={1} max={totalPages} value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') submitEdit();
-                    if (e.key === 'Escape') setEditOpen(false);
-                  }}
-                  className="flex-1 min-w-0 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  // eslint-disable-next-line jsx-a11y/no-autofocus
-                  autoFocus
-                />
-                {/* Done */}
-                <button onClick={submitEdit} title="Confirm"
-                  className="w-7 h-7 flex items-center justify-center rounded text-green-600 dark:text-green-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-base">
-                  ✓
-                </button>
-                {/* Cancel */}
-                <button onClick={() => setEditOpen(false)} title="Cancel"
-                  className="w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-sm">
-                  ✕
-                </button>
+            <Popover
+              title={`Go to page (1 – ${totalPages})`}
+              onClose={() => setEditOpen(false)}
+              panelClassName="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 min-w-[200px]"
+            >
+              <div className="p-3">
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number" min={1} max={totalPages} value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') submitEdit();
+                      if (e.key === 'Escape') setEditOpen(false);
+                    }}
+                    className="flex-1 min-w-0 px-2 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    // eslint-disable-next-line jsx-a11y/no-autofocus
+                    autoFocus
+                  />
+                  <button onClick={submitEdit} title="Confirm"
+                    className="w-7 h-7 flex items-center justify-center rounded text-green-600 dark:text-green-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-base">
+                    ✓
+                  </button>
+                </div>
               </div>
-            </div>
+            </Popover>
           )}
         </div>
 
@@ -93,15 +81,10 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
           title="Next page">→</button>
       </div>
 
-      {/* Page-picker dropdown (left-click) */}
+      {/* Page-picker modal (left-click) */}
       {pickerOpen && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
-          onMouseDown={() => setPickerOpen(false)}>
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl py-2 overflow-y-auto max-h-72 min-w-36"
-            onMouseDown={(e) => e.stopPropagation()}>
-            <p className="px-4 pt-1 pb-2 text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">
-              Go to page
-            </p>
+        <Modal title="Go to page" onClose={() => setPickerOpen(false)} maxWidth="max-w-xs">
+          <div className="py-2 overflow-y-auto max-h-64">
             {Array.from({ length: totalPages }, (_, i) => (
               <button key={i} onClick={() => { onPage(i); setPickerOpen(false); }}
                 className={`w-full text-left px-4 py-1.5 text-sm transition-colors ${i === page ? 'bg-blue-600 text-white' : 'text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
@@ -109,7 +92,7 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
               </button>
             ))}
           </div>
-        </div>
+        </Modal>
       )}
     </>
   );

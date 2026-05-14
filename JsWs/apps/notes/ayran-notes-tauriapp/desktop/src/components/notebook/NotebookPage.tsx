@@ -1,9 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { WebviewWindow, getAllWebviewWindows, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
 import { getNotebook, updateNotebook, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import Modal from '../Modal';
+import Popover from '../Popover';
 
 interface Props {
   notebookId: string;
@@ -43,7 +45,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  const ctxMenuRef = useRef<HTMLDivElement>(null);
 
   // Load notebook entry and file content
   useEffect(() => {
@@ -138,17 +139,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     return () => { if (unlisten) unlisten(); };
   }, []);
 
-  // Close context menu on outside click
-  useEffect(() => {
-    if (!ctxMenu) return;
-    const close = (e: MouseEvent) => {
-      if (ctxMenuRef.current && !ctxMenuRef.current.contains(e.target as Node)) {
-        setCtxMenu(null);
-      }
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [ctxMenu]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -319,39 +309,26 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     <div className="fixed inset-0 z-40 flex flex-col bg-white dark:bg-gray-900">
       {/* Context menu */}
       {ctxMenu && (
-        <div
-          ref={ctxMenuRef}
-          className="fixed z-50 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1"
-          style={{ left: ctxMenu.x, top: ctxMenu.y }}
-        >
-          {!isSecondaryWindow && (
-            <button onClick={handleCtxBack} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-              Back
+        <Popover title={entry?.title || '(Untitled)'} onClose={() => setCtxMenu(null)} panelStyle={{ left: ctxMenu.x, top: ctxMenu.y }}>
+          <div className="py-1">
+            {!isSecondaryWindow && (
+              <button onClick={handleCtxBack} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Back</button>
+            )}
+            <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Edit</button>
+            <button onClick={handleCtxToggleFullscreen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+              {isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
             </button>
-          )}
-          <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Edit
-          </button>
-          <button onClick={handleCtxToggleFullscreen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            {isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-          </button>
-          <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Remove
-          </button>
-          <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Open in new window
-          </button>
-        </div>
+            <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">Remove</button>
+            <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new window</button>
+          </div>
+        </Popover>
       )}
 
       {/* Edit modal */}
       {showEdit && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 w-full max-w-md space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Edit Notebook</h2>
-            {saveError && (
-              <p className="text-sm text-red-500 dark:text-red-400">{saveError}</p>
-            )}
+        <Modal title="Edit Notebook">
+          <div className="p-6 space-y-4">
+            {saveError && <p className="text-sm text-red-500 dark:text-red-400">{saveError}</p>}
             <div className="space-y-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Title</label>
@@ -382,18 +359,15 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Title prompt modal */}
       {showTitlePrompt && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl p-6 w-full max-w-md space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Name this Notebook</h2>
+        <Modal title="Name this Notebook">
+          <div className="p-6 space-y-4">
             <p className="text-sm text-gray-500 dark:text-gray-400">This notebook has no title yet.</p>
-            {saveError && (
-              <p className="text-sm text-red-500 dark:text-red-400">{saveError}</p>
-            )}
+            {saveError && <p className="text-sm text-red-500 dark:text-red-400">{saveError}</p>}
             <input
               type="text"
               value={promptTitle}
@@ -410,7 +384,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
               </button>
             </div>
           </div>
-        </div>
+        </Modal>
       )}
 
       {/* Header */}
