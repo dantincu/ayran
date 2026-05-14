@@ -3,6 +3,48 @@
 /* Use .dark class on <html> instead of prefers-color-scheme */
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+/* CSS custom properties let scrollbar pseudo-elements pick up theme changes
+   even though descendant selectors don't work reliably on WebKit scrollbars. */
+:root {
+  --sb-track: #EFE0BE;
+  --sb-thumb: #AE8F57;
+  --sb-thumb-hover: #876D3C;
+}
+html.dark {
+  --sb-track: #2A1D0C;
+  --sb-thumb: #45341A;
+  --sb-thumb-hover: #655028;
+}
+
+/* Standard (Firefox) */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb) var(--sb-track);
+}
+
+/* WebKit / Blink (Tauri WebView2 on Windows, WebKit on macOS, WebKitGTK on Linux) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--sb-track);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--sb-thumb);
+  border-radius: 4px;
+  border: 2px solid var(--sb-track);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--sb-thumb-hover);
+}
+::-webkit-scrollbar-corner {
+  background: var(--sb-track);
+}
+
 /* ── Desert theme: replace the entire gray scale and white ── */
 @theme {
   /* white → warm parchment (card / modal surfaces in light mode) */
