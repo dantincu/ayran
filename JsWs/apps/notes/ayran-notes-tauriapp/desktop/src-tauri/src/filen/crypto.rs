@@ -69,13 +69,12 @@ fn aes_gcm_decrypt(key: &[u8], iv: &[u8], body_with_tag: &[u8]) -> Result<String
 
 // ── Metadata encrypt ──────────────────────────────────────────────────────────
 
-/// Encrypt with "003" if key is 64 hex chars, else "002".
+/// Always encrypt with "002" for maximum compatibility with all Filen SDK versions.
+/// The Filen desktop app has a known issue decrypting "003"-format metadata produced
+/// by third-party clients, while the web app handles both formats. "002" uses
+/// AES-256-GCM with a PBKDF2-derived key and is supported by every SDK release.
 pub fn encrypt_metadata(plaintext: &str, key: &str) -> Result<String, String> {
-    if key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()) {
-        encrypt_003(plaintext, key)
-    } else {
-        encrypt_002(plaintext, key)
-    }
+    encrypt_002(plaintext, key)
 }
 
 fn encrypt_002(plaintext: &str, key: &str) -> Result<String, String> {
@@ -193,6 +192,28 @@ pub fn generate_file_key() -> String {
     let mut bytes = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
+}
+
+/// 32-char ASCII random string — v2 file key (used as raw bytes, not hex-decoded).
+pub fn generate_file_key_v2() -> String {
+    random_ascii(32)
+}
+
+/// V2 chunk encryption: key is interpreted as raw ASCII bytes (32 chars → 32 bytes).
+pub fn encrypt_chunk_v2(data: &[u8], key: &str) -> Result<Vec<u8>, String> {
+    let key_bytes = key.as_bytes();
+    if key_bytes.len() != 32 {
+        return Err(format!("v2 chunk key must be 32 bytes, got {}", key_bytes.len()));
+    }
+    let mut iv = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut iv);
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key_bytes));
+    let nonce = Nonce::from_slice(&iv);
+    let ct = cipher.encrypt(nonce, data).map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(12 + ct.len());
+    out.extend_from_slice(&iv);
+    out.extend_from_slice(&ct);
+    Ok(out)
 }
 
 /// 32-char alphanumeric string (upload key / rm).

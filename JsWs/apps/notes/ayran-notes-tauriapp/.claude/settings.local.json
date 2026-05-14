@@ -6,7 +6,12 @@
       "PowerShell(ls \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\\" | ForEach-Object { $_.Name })",
       "PowerShell(tree \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\\" -L 2)",
       "Bash(cargo check *)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(curl -s https://raw.githubusercontent.com/FilenCloudDienste/filen-sdk-ts/main/src/crypto/decrypt.ts)",
+      "Bash(curl -s https://raw.githubusercontent.com/FilenCloudDienste/filen-sdk-ts/main/src/user/index.ts)",
+      "Bash(curl -s https://raw.githubusercontent.com/FilenCloudDienste/filen-sdk-ts/main/src/crypto/utils.ts)",
+      "Read(//tmp/**)",
+      "Bash(curl -s 'https://raw.githubusercontent.com/FilenCloudDienste/filen-sdk-ts/main/src/crypto/decrypt.ts')"
     ]
   }
 }

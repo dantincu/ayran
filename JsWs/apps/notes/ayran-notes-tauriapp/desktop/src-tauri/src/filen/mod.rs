@@ -534,7 +534,7 @@ pub async fn filen_upload_file(
     let master_key = s.master_keys.last().ok_or("no master key")?;
 
     let file_uuid = uuid::Uuid::new_v4().to_string();
-    let file_key = crypto::generate_file_key();
+    let file_key = crypto::generate_file_key_v2();
     let upload_key = crypto::generate_random_string(32);
 
     // Derive name, mime, last_modified from the path
@@ -574,7 +574,7 @@ pub async fn filen_upload_file(
         total_size += n as u64;
         content_hasher.update(chunk);
 
-        let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
+        let enc_chunk = crypto::encrypt_chunk_v2(chunk, &file_key)?;
         let chunk_hash = hex::encode(Sha512::digest(&enc_chunk));
 
         api::upload_chunk(
@@ -612,7 +612,7 @@ pub async fn filen_upload_file(
             &serde_json::json!({
                 "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
                 "size": size_enc, "mime": mime_enc, "rm": rm,
-                "metadata": metadata_enc, "version": 3, "parent": parent_uuid
+                "metadata": metadata_enc, "version": 2, "parent": parent_uuid
             }),
             &s.api_key,
         )
@@ -622,7 +622,6 @@ pub async fn filen_upload_file(
 
     let content_hash = hex::encode(content_hasher.finalize());
 
-    // Encrypt individual fields with file_key, metadata blob with master_key
     let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
     let name_hashed = crypto::hash_filename(&name);
     let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
@@ -642,7 +641,7 @@ pub async fn filen_upload_file(
         &serde_json::json!({
             "uuid": file_uuid, "name": name_enc, "nameHashed": name_hashed,
             "size": size_enc, "chunks": chunk_index, "mime": mime_enc,
-            "rm": rm, "metadata": metadata_enc, "version": 3,
+            "rm": rm, "metadata": metadata_enc, "version": 2, "parent": parent_uuid,
             "uploadKey": upload_key
         }),
         &s.api_key,
@@ -914,12 +913,7 @@ pub async fn overwrite_bytes(
     let plain_meta = crypto::decrypt_metadata(&info.metadata, &session.master_keys)?;
     let meta: FileMetadata = serde_json::from_str(&plain_meta).map_err(|e| e.to_string())?;
 
-    // v2 keys are raw ASCII (not valid hex); normalise to a fresh v3 hex key.
-    let file_key = if meta.key.len() == 64 && meta.key.bytes().all(|b| b.is_ascii_hexdigit()) {
-        meta.key
-    } else {
-        crypto::generate_file_key()
-    };
+    let file_key = crypto::generate_file_key_v2();
     let name = meta.name;
     let mime = meta.mime;
     let new_uuid = uuid::Uuid::new_v4().to_string();
@@ -932,7 +926,7 @@ pub async fn overwrite_bytes(
 
     for chunk in content.chunks(CHUNK_SIZE) {
         sha_content.update(chunk);
-        let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
+        let enc_chunk = crypto::encrypt_chunk_v2(chunk, &file_key)?;
         let chunk_hash = hex::encode(sha2::Sha512::digest(&enc_chunk));
         api::upload_chunk(
             &session.client, &new_uuid, chunk_index, parent_uuid,
@@ -952,7 +946,7 @@ pub async fn overwrite_bytes(
         let meta_json = serde_json::json!({ "name": name, "size": 0u64, "mime": mime, "key": file_key, "lastModified": last_modified }).to_string();
         let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
         api::post_ok(&session.client, "/v3/upload/empty",
-            &serde_json::json!({ "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 3, "parent": parent_uuid }),
+            &serde_json::json!({ "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 2, "parent": parent_uuid }),
             &session.api_key,
         ).await?;
     } else {
@@ -965,7 +959,7 @@ pub async fn overwrite_bytes(
         let meta_json = serde_json::json!({ "name": name, "size": total_size, "mime": mime, "key": file_key, "lastModified": last_modified, "hash": content_hash }).to_string();
         let meta_enc = crypto::encrypt_metadata(&meta_json, &master_key)?;
         api::post_ok(&session.client, "/v3/upload/done",
-            &serde_json::json!({ "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "chunks": chunk_index, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key }),
+            &serde_json::json!({ "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed, "size": size_enc, "chunks": chunk_index, "mime": mime_enc, "rm": rm, "metadata": meta_enc, "version": 2, "uploadKey": upload_key }),
             &session.api_key,
         ).await?;
     }
@@ -1004,11 +998,7 @@ pub async fn filen_overwrite_file(
     let plain = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
     let meta: FileMetadata = serde_json::from_str(&plain).map_err(|e| e.to_string())?;
 
-    let file_key = if meta.key.len() == 64 && meta.key.bytes().all(|b| b.is_ascii_hexdigit()) {
-        meta.key
-    } else {
-        crypto::generate_file_key()
-    };
+    let file_key = crypto::generate_file_key_v2();
     let name = meta.name;
     let mime = meta.mime;
 
@@ -1033,7 +1023,7 @@ pub async fn filen_overwrite_file(
         let chunk = &buf[..n];
         total_size += n as u64;
         content_hasher.update(chunk);
-        let enc_chunk = crypto::encrypt_chunk(chunk, &file_key)?;
+        let enc_chunk = crypto::encrypt_chunk_v2(chunk, &file_key)?;
         let chunk_hash = hex::encode(Sha512::digest(&enc_chunk));
         api::upload_chunk(
             &s.client, &new_uuid, chunk_index, &parent_uuid,
@@ -1058,7 +1048,7 @@ pub async fn filen_overwrite_file(
             &serde_json::json!({
                 "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed,
                 "size": size_enc, "mime": mime_enc, "rm": rm,
-                "metadata": meta_enc, "version": 3, "parent": parent_uuid
+                "metadata": meta_enc, "version": 2, "parent": parent_uuid
             }),
             &s.api_key,
         ).await?;
@@ -1079,7 +1069,7 @@ pub async fn filen_overwrite_file(
             &serde_json::json!({
                 "uuid": new_uuid, "name": name_enc, "nameHashed": name_hashed,
                 "size": size_enc, "chunks": chunk_index, "mime": mime_enc,
-                "rm": rm, "metadata": meta_enc, "version": 3, "uploadKey": upload_key
+                "rm": rm, "metadata": meta_enc, "version": 2, "uploadKey": upload_key
             }),
             &s.api_key,
         ).await?;
