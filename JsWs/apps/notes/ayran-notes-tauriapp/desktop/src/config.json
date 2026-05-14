@@ -3,9 +3,10 @@
   "notebookFileName": "[note-book].json",
   "thumbnailMaxConcurrent": 4,
   "thumbnailMaxTotalMB": 50,
+  "thumbnailMaxFileSizeMB": 100,
   "storageProviders": {
     "LocalFileSystem": { "enabled": true },
-    "GoogleDrive":     { "enabled": true },
-    "Filen":           { "enabled": true }
+    "GoogleDrive": { "enabled": true },
+    "Filen": { "enabled": true }
   }
 }

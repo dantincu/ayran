@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { acquireThumbnailSlot } from '../lib/thumbnailQueue';
+import config from '../config.json';
+
+const MAX_FILE_BYTES = config.thumbnailMaxFileSizeMB * 1024 * 1024;
 
 interface Props {
   accountId: string;
@@ -12,7 +15,10 @@ export default function ThumbnailImage({ accountId, itemId, size }: Props) {
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
+  const tooLarge = size != null && size > MAX_FILE_BYTES;
+
   useEffect(() => {
+    if (tooLarge) return;
     let cancelled = false;
     setSrc(null);
     setFailed(false);
@@ -40,7 +46,7 @@ export default function ThumbnailImage({ accountId, itemId, size }: Props) {
     };
   }, [accountId, itemId, size]);
 
-  if (failed) {
+  if (tooLarge || failed) {
     return (
       <div className="w-20 h-20 flex items-center justify-center text-3xl text-gray-300 dark:text-gray-600">🖼</div>
     );
