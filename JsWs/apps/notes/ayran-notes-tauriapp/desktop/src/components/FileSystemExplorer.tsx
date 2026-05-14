@@ -7,6 +7,7 @@ import type { StoredAccount, CachedItem, FolderPage } from '../types';
 import { deleteAccount } from '../lib/account-store';
 import PaginationBar from './PaginationBar';
 import NewNotebookModal from './NewNotebookModal';
+import ThumbnailImage from './ThumbnailImage';
 import config from '../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
@@ -36,9 +37,15 @@ function fileIcon(item: CachedItem): string {
 function formatSize(bytes: number | null): string {
   if (bytes == null) return '';
   if (bytes < 1024) return `${bytes} B`;
+
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function isImageItem(item: CachedItem): boolean {
+  const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
+  return ['jpg','jpeg','png','gif','webp','bmp','avif'].includes(ext);
 }
 
 const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
@@ -57,6 +64,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
         search: string;
         sortBy: SortBy;
         ascending: boolean;
+        viewMode?: 'list' | 'thumbnails';
       } : null;
     } catch { return null; }
   }, [navKey]);
@@ -73,6 +81,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   const [sortBy, setSortBy] = useState<SortBy>(savedNav?.sortBy ?? 'name');
   const [ascending, setAscending] = useState(savedNav?.ascending ?? true);
   const [page, setPage] = useState(savedNav?.page ?? 0);
+  const [viewMode, setViewMode] = useState<'list' | 'thumbnails'>(savedNav?.viewMode ?? 'list');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingPath, setDownloadingPath] = useState<string | null>(null);
   const [deletingPath, setDeletingPath] = useState<string | null>(null);
@@ -93,8 +102,8 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
 
   // ── Persist state to localStorage whenever anything changes ──────────────────
   useEffect(() => {
-    localStorage.setItem(navKey, JSON.stringify({ path: currentPath, breadcrumbs, page, search, sortBy, ascending }));
-  }, [currentPath, breadcrumbs, page, search, sortBy, ascending, navKey]);
+    localStorage.setItem(navKey, JSON.stringify({ path: currentPath, breadcrumbs, page, search, sortBy, ascending, viewMode }));
+  }, [currentPath, breadcrumbs, page, search, sortBy, ascending, viewMode, navKey]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
   const queryCache = useCallback(async (
@@ -376,6 +385,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
             <button onClick={handlePickAndUpload} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Upload file</button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
             {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cache cleared</span>}
+            <button onClick={() => setViewMode(m => m === 'list' ? 'thumbnails' : 'list')} title={viewMode === 'list' ? 'Thumbnail view' : 'List view'} className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">{viewMode === 'list' ? '⊞' : '≡'}</button>
             <div className="relative flex items-center">
               <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
               <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
@@ -437,7 +447,21 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           </div>
         )}
         {!loading && !error && entries.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
-        {!loading && entries.length > 0 && (
+        {!loading && entries.length > 0 && viewMode === 'thumbnails' && (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-3">
+            {entries.map((item) => (
+              <div key={item.itemId}
+                className={`flex flex-col items-center gap-1 p-2 rounded-lg cursor-pointer border ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700' : 'bg-white dark:bg-gray-800 border-transparent hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; item.isDir ? openDir(item) : onOpenFile(item, item.itemId); }}>
+                {!item.isDir && isImageItem(item)
+                  ? <ThumbnailImage accountId={account.id} itemId={item.itemId} size={item.size} />
+                  : <div className="w-20 h-20 flex items-center justify-center text-4xl select-none">{fileIcon(item)}</div>}
+                <span className="text-xs text-center text-gray-700 dark:text-gray-300 line-clamp-2 w-full break-words leading-tight">{item.name}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {!loading && entries.length > 0 && viewMode === 'list' && (
           <div className="divide-y divide-gray-300 dark:divide-gray-700 cursor-pointer">
             {entries.map((item, idx) => {
               const activeOnThis = editingPath === item.itemId || renamingPath === item.itemId

@@ -24,7 +24,7 @@ const PAGE_KEY = 'notes-current-page';
 export default function AppShell() {
   const [accounts, setAccounts] = useState<StoredAccount[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [connecting, setConnecting] = useState(false);
+  const [, setConnecting] = useState(false);
   const [showFilenLogin, setShowFilenLogin] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<{ account: StoredAccount; item: CachedItem; displayPath: string } | null>(null);
@@ -239,7 +239,6 @@ export default function AppShell() {
               <AccountManager
                 accounts={accounts}
                 selectedId={selectedId}
-                connecting={connecting}
                 onSelect={setSelectedId}
                 onDisconnect={handleDisconnect}
                 onConnectGoogle={handleConnectGoogle}

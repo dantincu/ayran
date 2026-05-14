@@ -6,7 +6,6 @@ const p = config.storageProviders;
 interface Props {
   accounts: StoredAccount[];
   selectedId: string | null;
-  connecting: boolean;
   onSelect: (id: string) => void;
   onDisconnect: (id: string) => void;
   onConnectGoogle: () => void;
@@ -15,7 +14,7 @@ interface Props {
 }
 
 export default function AccountManager({
-  accounts, selectedId, connecting,
+  accounts, selectedId,
   onSelect, onDisconnect,
   onConnectGoogle, onConnectFilen, onConnectFs,
 }: Props) {

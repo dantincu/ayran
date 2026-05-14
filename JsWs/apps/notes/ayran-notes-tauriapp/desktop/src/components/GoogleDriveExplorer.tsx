@@ -7,6 +7,7 @@ import { deleteAccount } from '../lib/account-store';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
 import PaginationBar from './PaginationBar';
 import NewNotebookModal from './NewNotebookModal';
+import ThumbnailImage from './ThumbnailImage';
 import config from '../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
@@ -48,6 +49,12 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
+function isImageItem(item: CachedItem): boolean {
+  const mime = item.mimeType ?? '';
+  const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
+  return mime.startsWith('image/') || ['jpg','jpeg','png','gif','webp','bmp','avif'].includes(ext);
+}
+
 export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook }: Props) {
   const navKey = `notes-gdrive-nav-${account.id}`;
 
@@ -62,6 +69,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
         search: string;
         sortBy: SortBy;
         ascending: boolean;
+        viewMode?: 'list' | 'thumbnails';
       } : null;
     } catch { return null; }
   }, [navKey]);
@@ -78,6 +86,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
   const [sortBy, setSortBy] = useState<SortBy>('name');
   const [ascending, setAscending] = useState(true);
   const [page, setPage] = useState(0);
+  const [viewMode, setViewMode] = useState<'list' | 'thumbnails'>(savedNav?.viewMode ?? 'list');
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -106,9 +115,9 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     const path = crumbNames.slice(1).join('/'); // skip root label "My Drive"
     localStorage.setItem(navKey, JSON.stringify({
       path, breadcrumbs: crumbNames.map(name => ({ name })),
-      page, search, sortBy, ascending,
+      page, search, sortBy, ascending, viewMode,
     }));
-  }, [folderId, breadcrumbs, page, search, sortBy, ascending, navKey]);
+  }, [folderId, breadcrumbs, page, search, sortBy, ascending, viewMode, navKey]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
   const queryCache = useCallback(async (
@@ -422,6 +431,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                 {uploadingId ? 'Uploading…' : 'Upload file'}
               </button>
               {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cache cleared</span>}
+              <button onClick={() => setViewMode(m => m === 'list' ? 'thumbnails' : 'list')} title={viewMode === 'list' ? 'Thumbnail view' : 'List view'} className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">{viewMode === 'list' ? '⊞' : '≡'}</button>
               <div className="relative flex items-center">
                 <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
                 <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
@@ -487,7 +497,21 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
             </div>
           )}
           {!loading && !error && files.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
-          {!loading && files.length > 0 && (
+          {!loading && files.length > 0 && viewMode === 'thumbnails' && (
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-3 p-1">
+              {files.map(item => (
+                <button key={item.itemId}
+                  onClick={() => item.isDir ? openFolder(item) : onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '))}
+                  className="flex flex-col items-center gap-1.5 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-center">
+                  {!item.isDir && isImageItem(item)
+                    ? <ThumbnailImage accountId={account.id} itemId={item.itemId} size={item.size} />
+                    : <div className="w-20 h-20 flex items-center justify-center text-4xl">{fileIcon(item)}</div>}
+                  <span className="text-xs text-gray-700 dark:text-gray-300 truncate w-full">{item.name}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {!loading && files.length > 0 && viewMode === 'list' && (
             <div className="divide-y divide-gray-300 dark:divide-gray-700 cursor-pointer">
               {files.map((item, idx) => {
                 const activeOnThis = editingId === item.itemId || renamingId === item.itemId

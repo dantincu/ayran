@@ -1,6 +1,8 @@
 {
   "defaultListPageSize": 100,
   "notebookFileName": "[note-book].json",
+  "thumbnailMaxConcurrent": 4,
+  "thumbnailMaxTotalMB": 50,
   "storageProviders": {
     "LocalFileSystem": { "enabled": true },
     "GoogleDrive":     { "enabled": true },

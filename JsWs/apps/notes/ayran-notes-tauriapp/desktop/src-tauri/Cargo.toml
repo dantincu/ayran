@@ -33,6 +33,7 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 argon2 = "0.5"
 rusqlite = { version = "0.31", features = ["bundled"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp"] }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 keyring = "3"

@@ -603,10 +603,73 @@ fn find_account_cache_dir(c_dir: &std::path::Path, account: &StoredAccount) -> O
     None
 }
 
+/// Shared inner logic for resolving a file to a local path, used by both
+/// `open_file` and `get_thumbnail`.
+async fn open_file_inner(
+    app: &tauri::AppHandle,
+    filen_sessions: &filen::FilenSessions,
+    cache_db: &cache::CacheDb,
+    account: &StoredAccount,
+    item_id: &str,
+    force: bool,
+) -> Result<String, String> {
+    if account.provider == "local-fs" {
+        return Ok(item_id.to_string());
+    }
+
+    let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
+    let acct_dir = account_content_cache_dir(&c_dir, account)?;
+
+    let known_rel = {
+        let conn = cache_db.lock().map_err(|e| e.to_string())?;
+        cache::get_content_cache_path(&conn, &account.id, item_id)
+    };
+    if let Some(ref rel) = known_rel {
+        let existing = acct_dir.join(rel);
+        if !force && existing.exists() {
+            return Ok(existing.to_string_lossy().into_owned());
+        }
+    }
+
+    let root_parent = account_root_parent_id(account);
+    let path_parts = {
+        let conn = cache_db.lock().map_err(|e| e.to_string())?;
+        cache::item_path_from_root(&conn, &account.id, item_id, &root_parent)
+    };
+
+    let rel: std::path::PathBuf = path_parts.iter().map(|p| sanitize_path_component(p)).collect();
+    let cache_path = acct_dir.join(&rel);
+
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let dest = cache_path.to_string_lossy().into_owned();
+
+    match account.provider.as_str() {
+        "google-drive" => gdrive::download_to_path(app, &account.id, item_id, &dest).await?,
+        "filen" => {
+            let session = filen_sessions
+                .0.lock().map_err(|e| e.to_string())?
+                .get(&account.id).cloned()
+                .ok_or_else(|| format!("No active Filen session for '{}'", account.id))?;
+            filen::download_to_path(session, item_id, &dest, app).await?;
+        }
+        p => return Err(format!("Unsupported provider '{}'", p)),
+    }
+
+    let rel_str = rel.to_string_lossy();
+    {
+        let conn = cache_db.lock().map_err(|e| e.to_string())?;
+        let _ = cache::set_content_cache_path(&conn, &account.id, item_id, &rel_str);
+    }
+
+    Ok(dest)
+}
+
 /// Open a file for viewing: returns the local filesystem path to the file content.
-/// For cloud providers the file is downloaded into a persistent content cache that mirrors
-/// the drive's folder/file hierarchy using human-readable names.
-/// For local-fs the original path is returned directly (no caching needed).
+/// For cloud providers the file is downloaded into a persistent content cache.
+/// For local-fs the original path is returned directly.
 /// Pass `force = true` to force a fresh download even when the cache file already exists.
 #[tauri::command]
 async fn open_file(
@@ -622,63 +685,52 @@ async fn open_file(
         .get(&account_id)
         .ok_or_else(|| format!("Account '{}' not found", account_id))?
         .clone();
+    open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, force).await
+}
 
-    if account.provider == "local-fs" {
-        return Ok(item_id);
+fn thumbnail_cache_path(t_dir: &std::path::Path, account_id: &str, item_id: &str) -> Result<std::path::PathBuf, String> {
+    use sha2::Digest;
+    let hash = hex::encode(sha2::Sha256::digest(item_id.as_bytes()));
+    let safe_acct = &sanitize_path_component(account_id)[..sanitize_path_component(account_id).len().min(64)];
+    let dir = t_dir.join(safe_acct);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join(format!("{}.jpg", hash)))
+}
+
+fn create_thumbnail_file(src_path: &str, dest_path: &std::path::Path) -> Result<(), String> {
+    let img = image::open(src_path).map_err(|e| format!("Cannot read image: {}", e))?;
+    img.thumbnail(256, 256)
+        .save_with_format(dest_path, image::ImageFormat::Jpeg)
+        .map_err(|e| format!("Cannot save thumbnail: {}", e))
+}
+
+/// Return the local path of a 256×256 JPEG thumbnail for the given item.
+/// Creates and caches the thumbnail on first call; subsequent calls return the
+/// cached path immediately without re-downloading or re-encoding.
+#[tauri::command]
+async fn get_thumbnail(
+    app: tauri::AppHandle,
+    filen_sessions: tauri::State<'_, filen::FilenSessions>,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+) -> Result<String, String> {
+    let accounts = load_accounts(&app)?;
+    let account = accounts
+        .get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+
+    let t_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("t");
+    let thumb_path = thumbnail_cache_path(&t_dir, &account_id, &item_id)?;
+
+    if thumb_path.exists() {
+        return Ok(thumb_path.to_string_lossy().into_owned());
     }
 
-    let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
-    let acct_dir = account_content_cache_dir(&c_dir, &account)?;
-
-    // 1. Check the persistent content-cache index (survives metadata-cache TTL).
-    let known_rel = {
-        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-        cache::get_content_cache_path(&conn, &account_id, &item_id)
-    };
-    if let Some(ref rel) = known_rel {
-        let existing = acct_dir.join(rel);
-        if !force && existing.exists() {
-            return Ok(existing.to_string_lossy().into_owned());
-        }
-    }
-
-    // 2. Compute the human-readable relative path from the folder-metadata cache
-    //    (may not be populated after a restart, falls back to item_id as filename).
-    let root_parent = account_root_parent_id(&account);
-    let path_parts = {
-        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-        cache::item_path_from_root(&conn, &account_id, &item_id, &root_parent)
-    };
-
-    let rel: std::path::PathBuf = path_parts.iter().map(|p| sanitize_path_component(p)).collect();
-    let cache_path = acct_dir.join(&rel);
-
-    if let Some(parent) = cache_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-
-    let dest = cache_path.to_string_lossy().into_owned();
-
-    match account.provider.as_str() {
-        "google-drive" => gdrive::download_to_path(&app, &account_id, &item_id, &dest).await?,
-        "filen" => {
-            let session = filen_sessions
-                .0.lock().map_err(|e| e.to_string())?
-                .get(&account_id).cloned()
-                .ok_or_else(|| format!("No active Filen session for '{}'", account_id))?;
-            filen::download_to_path(session, &item_id, &dest, &app).await?;
-        }
-        p => return Err(format!("Unsupported provider '{}'", p)),
-    }
-
-    // Record the relative path so future lookups survive metadata-cache expiry.
-    let rel_str = rel.to_string_lossy();
-    {
-        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-        let _ = cache::set_content_cache_path(&conn, &account_id, &item_id, &rel_str);
-    }
-
-    Ok(dest)
+    let file_path = open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, false).await?;
+    create_thumbnail_file(&file_path, &thumb_path)?;
+    Ok(thumb_path.to_string_lossy().into_owned())
 }
 
 /// Save edited text-file content back to the provider and update the local cache.
@@ -1132,6 +1184,7 @@ pub fn run() {
             filen::filen_copy_file,
             filen::filen_overwrite_file,
             create_text_file,
+            get_thumbnail,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -74,8 +74,15 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // image overlay
+  // image overlay + zoom
   const [showImageHeader, setShowImageHeader] = useState(false);
+  const imgContainerRef = useRef<HTMLDivElement>(null);
+  const [imgNaturalW, setImgNaturalW] = useState(0);
+  const [imgNaturalH, setImgNaturalH] = useState(0);
+  const [imgZoom, setImgZoom] = useState(1);
+  const imgMinZoomRef = useRef(1);
+  const pinchStartDistRef = useRef(0);
+  const pinchStartZoomRef = useRef(1);
 
   // video controls
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -150,14 +157,73 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
 
-  const toggleFullscreen = (e: React.MouseEvent) => {
+  const toggleFullscreen = (e: React.MouseEvent, containerRef: React.RefObject<HTMLDivElement | null>) => {
     e.stopPropagation();
     if (!document.fullscreenElement) {
-      videoContainerRef.current?.requestFullscreen();
+      containerRef.current?.requestFullscreen();
     } else {
       document.exitFullscreen();
     }
   };
+
+  // ── Image: load, zoom, pinch ─────────────────────────────────────────────────
+
+  // Reset image state whenever a new file is loaded.
+  useEffect(() => {
+    setImgNaturalW(0);
+    setImgNaturalH(0);
+    setImgZoom(1);
+    imgMinZoomRef.current = 1;
+  }, [blobUrl]);
+
+  const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    const nw = img.naturalWidth;
+    const nh = img.naturalHeight;
+    setImgNaturalW(nw);
+    setImgNaturalH(nh);
+    const vw = imgContainerRef.current?.clientWidth ?? window.innerWidth;
+    const vh = imgContainerRef.current?.clientHeight ?? window.innerHeight;
+    // minZoom: fit-to-screen (or 1 if image is smaller than screen on both axes)
+    const fitScale = Math.min(vw / nw, vh / nh);
+    const minZoom = Math.min(fitScale, 1);
+    imgMinZoomRef.current = minZoom;
+    setImgZoom(minZoom);
+  }, []);
+
+  // Non-passive wheel handler for Ctrl+scroll zoom.
+  useEffect(() => {
+    if (mode !== 'image') return;
+    const el = imgContainerRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+      setImgZoom((prev) => Math.max(imgMinZoomRef.current, Math.min(1, prev * factor)));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [mode, blobUrl]); // re-attach after new image loads
+
+  // Non-passive touchmove for pinch zoom.
+  useEffect(() => {
+    if (mode !== 'image') return;
+    const el = imgContainerRef.current;
+    if (!el) return;
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length !== 2) return;
+      e.preventDefault();
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY,
+      );
+      const scale = dist / pinchStartDistRef.current;
+      setImgZoom(Math.max(imgMinZoomRef.current, Math.min(1, pinchStartZoomRef.current * scale)));
+    };
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    return () => el.removeEventListener('touchmove', onTouchMove);
+  }, [mode, blobUrl]);
 
   // ── Close cache menu on outside click ───────────────────────────────────────
 
@@ -357,28 +423,76 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
     </div>
   );
 
-  // ── Image viewer (fullscreen, tap to toggle header) ──────────────────────────
+  // ── Image viewer ─────────────────────────────────────────────────────────────
+
+  const toggleImgHeader = () => setShowImageHeader((h) => !h);
+  const canZoom = imgNaturalW > 0 && imgMinZoomRef.current < 1;
 
   if (mode === 'image') return (
-    <div className="fixed inset-0 z-50 bg-black flex items-center justify-center cursor-pointer overflow-hidden"
-      onClick={() => setShowImageHeader(h => !h)}>
+    <div
+      ref={imgContainerRef}
+      className="fixed inset-0 z-50 bg-black overflow-auto"
+      onClick={toggleImgHeader}
+      onTouchStart={(e) => {
+        if (e.touches.length === 2) {
+          pinchStartDistRef.current = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY,
+          );
+          pinchStartZoomRef.current = imgZoom;
+        }
+      }}
+    >
+      {/* Scrollable centering wrapper */}
+      <div className="min-h-full min-w-full flex items-center justify-center">
+        {blobUrl && (
+          <img
+            src={blobUrl}
+            alt={item.name}
+            onLoad={handleImageLoad}
+            onClick={toggleImgHeader}
+            style={imgNaturalW > 0
+              ? { width: imgNaturalW * imgZoom, height: imgNaturalH * imgZoom }
+              : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            className="select-none block"
+            draggable={false}
+          />
+        )}
+      </div>
+
+      {/* Overlay header */}
       {showImageHeader && (
-        <div className="absolute top-0 inset-x-0 flex items-center px-4 py-3 bg-gradient-to-b from-black/80 to-transparent text-white gap-2 z-10"
-          onClick={e => e.stopPropagation()}>
+        <div
+          className="absolute top-0 inset-x-0 flex items-center px-4 py-3 bg-gradient-to-b from-black/80 to-transparent text-white gap-2 z-10"
+          onClick={(e) => e.stopPropagation()}
+        >
           <span>🖼</span>
           <span className="font-medium truncate flex-1 min-w-0">{item.name}</span>
           <CacheControls />
-          <button onClick={onClose}
+          {canZoom && (
+            <span className="text-xs text-white/60 tabular-nums">
+              {Math.round(imgZoom * 100)}%
+            </span>
+          )}
+          <button
+            onClick={(e) => toggleFullscreen(e, imgContainerRef)}
+            title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
+            className="text-white/80 hover:text-white w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/20 transition-colors text-base">
+            {isFullscreen ? '⊡' : '⛶'}
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
             className="text-white/80 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/20 transition-colors">
             ✕
           </button>
         </div>
       )}
-      {blobUrl && (
-        <img src={blobUrl} alt={item.name}
-          className="max-w-full max-h-full object-contain select-none"
-          draggable={false}
-          onClick={e => e.stopPropagation()} />
+
+      {/* Zoom hint (Ctrl+scroll) */}
+      {canZoom && !showImageHeader && (
+        <div className="absolute bottom-4 inset-x-0 flex justify-center pointer-events-none">
+          <span className="text-white/40 text-xs">Ctrl + scroll to zoom · {Math.round(imgZoom * 100)}%</span>
+        </div>
       )}
     </div>
   );
@@ -461,7 +575,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
             />
             <span className="text-xs tabular-nums shrink-0 min-w-[2.5rem]">{formatTime(duration)}</span>
             <button
-              onClick={toggleFullscreen}
+              onClick={(e) => toggleFullscreen(e, videoContainerRef)}
               title={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
               className="text-white/80 hover:text-white w-7 h-7 flex items-center justify-center rounded hover:bg-white/20 transition-colors text-base leading-none">
               {isFullscreen ? '⊡' : '⛶'}
