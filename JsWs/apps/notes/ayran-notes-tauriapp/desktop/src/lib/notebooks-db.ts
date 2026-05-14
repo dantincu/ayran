@@ -113,6 +113,29 @@ export async function deleteNotebook(id: string): Promise<void> {
   }
 }
 
+/** Update all notebook entries that reference the same underlying file. */
+export async function updateNotebooksByFile(
+  accountId: string,
+  provider: string,
+  itemId: string,
+  updates: Partial<Omit<NotebookEntry, 'id'>>,
+): Promise<void> {
+  const db = await openDb();
+  try {
+    const tx = db.transaction(STORE, 'readonly');
+    const all = await idbOp<NotebookEntry[]>(tx.objectStore(STORE).getAll());
+    const matching = all.filter(
+      (n) => n.accountId === accountId && n.provider === provider && n.itemId === itemId,
+    );
+    for (const nb of matching) {
+      const tx2 = db.transaction(STORE, 'readwrite');
+      await idbOp(tx2.objectStore(STORE).put({ ...nb, ...updates }));
+    }
+  } finally {
+    db.close();
+  }
+}
+
 export async function reorderNotebooks(orderedIds: string[]): Promise<void> {
   const db = await openDb();
   try {

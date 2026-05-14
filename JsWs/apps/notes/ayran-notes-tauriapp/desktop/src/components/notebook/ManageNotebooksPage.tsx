@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen } from '@tauri-apps/api/event';
 import { emit } from '@tauri-apps/api/event';
-import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, updateNotebooksByFile, type NotebookEntry } from '../../lib/notebooks-db';
 import Modal from '../Modal';
 import Popover from '../Popover';
 
@@ -207,14 +207,16 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
   };
 
   const handleEditSave = async () => {
-    if (!editEntry) return;
+    if (!editEntry || !editTitle.trim()) return;
     setEditSaving(true);
     setEditError(null);
     try {
-      await updateNotebook(editEntry.id, {
+      // Update title on every instance that references the same file.
+      await updateNotebooksByFile(editEntry.accountId, editEntry.provider, editEntry.itemId, {
         title: editTitle,
-        description: editDesc || undefined,
       });
+      // Description is per-instance — update only this entry.
+      await updateNotebook(editEntry.id, { description: editDesc || undefined });
       setShowEdit(false);
       setEditEntry(null);
       await reload();
@@ -279,7 +281,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
               </button>
               <button
                 onClick={handleEditSave}
-                disabled={editSaving}
+                disabled={editSaving || !editTitle.trim()}
                 className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40"
               >
                 {editSaving ? 'Saving…' : 'Save'}

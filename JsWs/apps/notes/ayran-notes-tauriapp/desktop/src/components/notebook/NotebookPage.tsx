@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { WebviewWindow, getAllWebviewWindows, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
-import { getNotebook, updateNotebook, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
 import Modal from '../Modal';
 import Popover from '../Popover';
 
@@ -212,36 +212,38 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
   };
 
   const handleEditSave = async () => {
-    if (!entry) return;
+    if (!entry || !editTitle.trim()) return;
     setSaving(true);
     setSaveError(null);
     try {
-      await updateNotebook(entry.id, {
-        title: editTitle,
-        description: editDesc || undefined,
-      });
-      let updatedEntry = { ...entry, title: editTitle, description: editDesc || undefined };
+      const oldItemId = entry.itemId;
+      let newItemId = oldItemId;
 
       if (fileContent !== null) {
         try {
           const parsed = JSON.parse(fileContent) as Record<string, unknown>;
           parsed.Title = editTitle;
           const updatedJson = JSON.stringify(parsed, null, 2);
-          const newId = await invoke<string>('save_text_file', {
+          newItemId = await invoke<string>('save_text_file', {
             accountId: entry.accountId,
-            itemId: entry.itemId,
+            itemId: oldItemId,
             parentId: entry.parentId,
             content: updatedJson,
           });
           setFileContent(updatedJson);
-          if (newId !== entry.itemId) {
-            await updateNotebook(entry.id, { itemId: newId });
-            updatedEntry = { ...updatedEntry, itemId: newId };
-          }
         } catch { /* file update failure is non-fatal */ }
       }
 
-      setEntry(updatedEntry);
+      // Update title (and itemId if the file provider changed it) on all
+      // instances that reference the same underlying file.
+      await updateNotebooksByFile(entry.accountId, entry.provider, oldItemId, {
+        title: editTitle,
+        ...(newItemId !== oldItemId ? { itemId: newItemId } : {}),
+      });
+      // Description is per-instance.
+      await updateNotebook(entry.id, { description: editDesc || undefined });
+
+      setEntry({ ...entry, title: editTitle, description: editDesc || undefined, itemId: newItemId });
       setShowEdit(false);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -251,33 +253,34 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
   };
 
   const handlePromptSave = async () => {
-    if (!entry) return;
+    if (!entry || !promptTitle.trim()) return;
     setSaving(true);
     setSaveError(null);
     try {
-      await updateNotebook(entry.id, { title: promptTitle });
-      const updatedEntry = { ...entry, title: promptTitle };
+      const oldItemId = entry.itemId;
+      let newItemId = oldItemId;
 
       if (fileContent !== null) {
         try {
           const parsed = JSON.parse(fileContent) as Record<string, unknown>;
           parsed.Title = promptTitle;
           const updatedJson = JSON.stringify(parsed, null, 2);
-          const newId = await invoke<string>('save_text_file', {
+          newItemId = await invoke<string>('save_text_file', {
             accountId: entry.accountId,
-            itemId: entry.itemId,
+            itemId: oldItemId,
             parentId: entry.parentId,
             content: updatedJson,
           });
           setFileContent(updatedJson);
-          if (newId !== entry.itemId) {
-            await updateNotebook(entry.id, { itemId: newId });
-            updatedEntry.itemId = newId;
-          }
         } catch { /* file update failure is non-fatal */ }
       }
 
-      setEntry(updatedEntry);
+      await updateNotebooksByFile(entry.accountId, entry.provider, oldItemId, {
+        title: promptTitle,
+        ...(newItemId !== oldItemId ? { itemId: newItemId } : {}),
+      });
+
+      setEntry({ ...entry, title: promptTitle, itemId: newItemId });
       setShowTitlePrompt(false);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -354,7 +357,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
               <button onClick={() => { setShowEdit(false); setSaveError(null); }} className="px-4 py-2 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600">
                 Cancel
               </button>
-              <button onClick={handleEditSave} disabled={saving} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40">
+              <button onClick={handleEditSave} disabled={saving || !editTitle.trim()} className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40">
                 {saving ? 'Saving…' : 'Save'}
               </button>
             </div>
