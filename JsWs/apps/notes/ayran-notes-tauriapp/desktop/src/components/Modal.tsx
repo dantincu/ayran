@@ -41,7 +41,7 @@ export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' 
   const { stack, register, unregister, updateHasClose, closeAllCounter, triggerCloseAll } = useModalStack();
   const panelRef = useRef<HTMLDivElement>(null);
   const { dragPos, setDragPos, onHeaderMouseDown } = useDraggable(panelRef, maximized);
-  const closeAllSeenRef = useRef(0);
+  const closeAllSeenRef = useRef(closeAllCounter);
 
   useLayoutEffect(() => {
     register(id, !!onClose);
@@ -72,11 +72,11 @@ export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' 
 
   // See Modal.tsx in the session notes for the visibility:hidden approach rationale.
   const panelCls = `relative bg-white dark:bg-gray-800 shadow-xl flex flex-col rounded-xl ${
-    maximized ? 'fixed' : dragPos ? `${maxWidth} max-h-[90vh]` : `w-full ${maxWidth} mx-4 max-h-[90vh]`
+    maximized ? '' : `w-full ${maxWidth} mx-4 max-h-[90vh]`
   }`;
 
   const panelStyle: React.CSSProperties | undefined = maximized
-    ? { inset: '10px' }
+    ? { position: 'fixed', inset: '10px' }
     : dragPos
     ? { position: 'fixed', left: dragPos.x, top: dragPos.y, width: dragPos.w, margin: 0 }
     : undefined;

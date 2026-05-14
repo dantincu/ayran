@@ -74,15 +74,21 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // image overlay + zoom
+  // image overlay + zoom + pan
   const [showImageHeader, setShowImageHeader] = useState(false);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [imgNaturalW, setImgNaturalW] = useState(0);
   const [imgNaturalH, setImgNaturalH] = useState(0);
+  const imgNaturalWRef = useRef(0);
+  const imgNaturalHRef = useRef(0);
   const [imgZoom, setImgZoom] = useState(1);
   const imgMinZoomRef = useRef(1);
   const pinchStartDistRef = useRef(0);
   const pinchStartZoomRef = useRef(1);
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
+  const panOffsetRef = useRef({ x: 0, y: 0 });
+  const dragRef = useRef<{ startX: number; startY: number; panX: number; panY: number } | null>(null);
+  const wasDragRef = useRef(false);
 
   // video controls
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -170,26 +176,47 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
 
   // Reset image state whenever a new file is loaded.
   useEffect(() => {
-    setImgNaturalW(0);
-    setImgNaturalH(0);
-    setImgZoom(1);
+    setImgNaturalW(0); setImgNaturalH(0); setImgZoom(1);
     imgMinZoomRef.current = 1;
+    imgNaturalWRef.current = 0; imgNaturalHRef.current = 0;
+    setPanOffset({ x: 0, y: 0 }); panOffsetRef.current = { x: 0, y: 0 };
   }, [blobUrl]);
 
-  const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
-    const img = e.currentTarget;
-    const nw = img.naturalWidth;
-    const nh = img.naturalHeight;
-    setImgNaturalW(nw);
-    setImgNaturalH(nh);
+  // Shared logic for setting initial zoom — called from onLoad and from a ref
+  // callback so that browser-cached images (which skip onLoad) are handled too.
+  const computeImageZoom = useCallback((el: HTMLImageElement) => {
+    const nw = el.naturalWidth; const nh = el.naturalHeight;
+    if (!nw || !nh) return;
+    setImgNaturalW(nw); setImgNaturalH(nh);
+    imgNaturalWRef.current = nw; imgNaturalHRef.current = nh;
     const vw = imgContainerRef.current?.clientWidth ?? window.innerWidth;
     const vh = imgContainerRef.current?.clientHeight ?? window.innerHeight;
-    // minZoom: fit-to-screen (or 1 if image is smaller than screen on both axes)
-    const fitScale = Math.min(vw / nw, vh / nh);
-    const minZoom = Math.min(fitScale, 1);
+    const minZoom = Math.min(vw / nw, vh / nh, 1);
     imgMinZoomRef.current = minZoom;
     setImgZoom(minZoom);
+    setPanOffset({ x: 0, y: 0 }); panOffsetRef.current = { x: 0, y: 0 };
   }, []);
+
+  // Clamp pan whenever zoom changes (e.g. Ctrl+scroll zoom-out shrinks the pan range).
+  useEffect(() => {
+    if (mode !== 'image') return;
+    if (imgZoom <= imgMinZoomRef.current + 0.001) {
+      setPanOffset({ x: 0, y: 0 }); panOffsetRef.current = { x: 0, y: 0 };
+    } else {
+      setPanOffset((curr) => {
+        const el = imgContainerRef.current;
+        if (!el || imgNaturalWRef.current === 0) return curr;
+        const maxX = Math.max(0, (imgNaturalWRef.current * imgZoom - el.clientWidth) / 2);
+        const maxY = Math.max(0, (imgNaturalHRef.current * imgZoom - el.clientHeight) / 2);
+        const next = {
+          x: Math.max(-maxX, Math.min(maxX, curr.x)),
+          y: Math.max(-maxY, Math.min(maxY, curr.y)),
+        };
+        panOffsetRef.current = next;
+        return next;
+      });
+    }
+  }, [imgZoom, mode]);
 
   // Non-passive wheel handler for Ctrl+scroll zoom.
   useEffect(() => {
@@ -204,7 +231,41 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [mode, blobUrl]); // re-attach after new image loads
+  }, [mode, blobUrl]);
+
+  // Mouse-drag pan — mousedown/move/up are React synthetic events so state is always current.
+  const handleImgMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    dragRef.current = { startX: e.clientX, startY: e.clientY, panX: panOffset.x, panY: panOffset.y };
+    wasDragRef.current = false;
+  };
+  const handleImgMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragRef.current) return;
+    const dx = e.clientX - dragRef.current.startX;
+    const dy = e.clientY - dragRef.current.startY;
+    if (!wasDragRef.current && Math.hypot(dx, dy) > 5) wasDragRef.current = true;
+    if (!wasDragRef.current) return;
+    const el = imgContainerRef.current;
+    let nx = dragRef.current.panX + dx;
+    let ny = dragRef.current.panY + dy;
+    if (el && imgNaturalWRef.current > 0) {
+      const maxX = Math.max(0, (imgNaturalWRef.current * imgZoom - el.clientWidth) / 2);
+      const maxY = Math.max(0, (imgNaturalHRef.current * imgZoom - el.clientHeight) / 2);
+      nx = Math.max(-maxX, Math.min(maxX, nx));
+      ny = Math.max(-maxY, Math.min(maxY, ny));
+    }
+    const next = { x: nx, y: ny };
+    panOffsetRef.current = next;
+    setPanOffset(next);
+  };
+  const handleImgMouseUp = () => {
+    // Only toggle if the drag was started from the image area (not from the overlay header,
+    // which stops mousedown propagation so dragRef is never set from header clicks).
+    const hadDragStart = dragRef.current !== null;
+    const isDrag = wasDragRef.current;
+    dragRef.current = null; wasDragRef.current = false;
+    if (hadDragStart && !isDrag) toggleImgHeader();
+  };
 
   // Non-passive touchmove for pinch zoom.
   useEffect(() => {
@@ -303,7 +364,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         ↻
       </button>
       <button onClick={() => setCacheMenuOpen(o => !o)} title="Cache options"
-        className="px-1.5 py-1 text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+        className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
         ▾
       </button>
       {cacheMenuOpen && (
@@ -427,12 +488,16 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
 
   const toggleImgHeader = () => setShowImageHeader((h) => !h);
   const canZoom = imgNaturalW > 0 && imgMinZoomRef.current < 1;
+  const canPan = imgNaturalW > 0 && imgZoom > imgMinZoomRef.current + 0.001;
 
   if (mode === 'image') return (
     <div
       ref={imgContainerRef}
-      className="fixed inset-0 z-50 bg-black overflow-auto"
-      onClick={toggleImgHeader}
+      className={`fixed inset-0 z-50 bg-black overflow-hidden select-none ${canPan ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      onMouseDown={handleImgMouseDown}
+      onMouseMove={handleImgMouseMove}
+      onMouseUp={handleImgMouseUp}
+      onMouseLeave={() => { dragRef.current = null; wasDragRef.current = false; }}
       onTouchStart={(e) => {
         if (e.touches.length === 2) {
           pinchStartDistRef.current = Math.hypot(
@@ -443,27 +508,32 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         }
       }}
     >
-      {/* Scrollable centering wrapper */}
-      <div className="min-h-full min-w-full flex items-center justify-center">
+      {/* Pan + centering wrapper */}
+      <div
+        className="w-full h-full flex items-center justify-center"
+        style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px)` }}
+      >
         {blobUrl && (
           <img
+            ref={(el) => { if (el?.complete && el.naturalWidth > 0 && imgNaturalWRef.current === 0) computeImageZoom(el); }}
             src={blobUrl}
             alt={item.name}
-            onLoad={handleImageLoad}
-            onClick={toggleImgHeader}
+            onLoad={(e) => computeImageZoom(e.currentTarget)}
             style={imgNaturalW > 0
-              ? { width: imgNaturalW * imgZoom, height: imgNaturalH * imgZoom }
+              ? { width: imgNaturalW * imgZoom, height: imgNaturalH * imgZoom, maxWidth: 'none', maxHeight: 'none' }
               : { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
-            className="select-none block"
+            className="block"
             draggable={false}
           />
         )}
       </div>
 
-      {/* Overlay header */}
+      {/* Overlay header — shown on click (toggle), hidden by default */}
       {showImageHeader && (
         <div
           className="absolute top-0 inset-x-0 flex items-center px-4 py-3 bg-gradient-to-b from-black/80 to-transparent text-white gap-2 z-10"
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
           <span>🖼</span>
@@ -471,7 +541,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
           <CacheControls />
           {canZoom && (
             <span className="text-xs text-white/60 tabular-nums">
-              {Math.round(imgZoom * 100)}%
+              {Math.round(imgZoom * 100)}% · Ctrl+scroll to zoom
             </span>
           )}
           <button
@@ -485,13 +555,6 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
             className="text-white/80 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/20 transition-colors">
             ✕
           </button>
-        </div>
-      )}
-
-      {/* Zoom hint (Ctrl+scroll) */}
-      {canZoom && !showImageHeader && (
-        <div className="absolute bottom-4 inset-x-0 flex justify-center pointer-events-none">
-          <span className="text-white/40 text-xs">Ctrl + scroll to zoom · {Math.round(imgZoom * 100)}%</span>
         </div>
       )}
     </div>

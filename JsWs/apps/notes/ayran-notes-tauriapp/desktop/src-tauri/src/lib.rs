@@ -529,12 +529,20 @@ fn sanitize_path_component(s: &str) -> String {
         .collect()
 }
 
+// Serialize all cache-dir creation so concurrent open_file / get_thumbnail calls for
+// the same account never race to create duplicate pair-folders.
+static CACHE_DIR_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
 /// Finds the numeric content-cache directory for `account` under `c_dir`,
 /// creating it (and its descriptor sibling) if it does not exist yet.
 fn account_content_cache_dir(
     c_dir: &std::path::Path,
     account: &StoredAccount,
 ) -> Result<std::path::PathBuf, String> {
+    let _guard = CACHE_DIR_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .map_err(|e| e.to_string())?;
     let short_id = account.id
         .strip_prefix(&format!("{}-", account.provider))
         .unwrap_or(&account.id);
@@ -688,13 +696,43 @@ async fn open_file(
     open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, force).await
 }
 
-fn thumbnail_cache_path(t_dir: &std::path::Path, account_id: &str, item_id: &str) -> Result<std::path::PathBuf, String> {
-    use sha2::Digest;
-    let hash = hex::encode(sha2::Sha256::digest(item_id.as_bytes()));
-    let safe_acct = &sanitize_path_component(account_id)[..sanitize_path_component(account_id).len().min(64)];
-    let dir = t_dir.join(safe_acct);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join(format!("{}.jpg", hash)))
+/// Resolve the thumbnail cache path for an item, mirroring its relative path
+/// within the account's drive (same pair-folder scheme as the `c/` content cache).
+fn thumbnail_path_for_item(
+    t_dir: &std::path::Path,
+    account: &StoredAccount,
+    item_id: &str,
+    cache_db: &cache::CacheDb,
+) -> Result<std::path::PathBuf, String> {
+    let acct_dir = account_content_cache_dir(t_dir, account)?;
+
+    let rel: std::path::PathBuf = if account.provider == "local-fs" {
+        // item_id is an absolute path; strip the account root to get a relative path.
+        let root = account.path.as_deref().unwrap_or("");
+        let stripped = if item_id.len() > root.len() && item_id.starts_with(root) {
+            &item_id[root.len()..]
+        } else {
+            item_id
+        };
+        stripped
+            .trim_start_matches(['/', '\\'])
+            .split(['/', '\\'])
+            .map(sanitize_path_component)
+            .collect()
+    } else {
+        let root_parent = account_root_parent_id(account);
+        let parts = {
+            let conn = cache_db.lock().map_err(|e| e.to_string())?;
+            cache::item_path_from_root(&conn, &account.id, item_id, &root_parent)
+        };
+        parts.iter().map(|p| sanitize_path_component(p)).collect()
+    };
+
+    let full_path = acct_dir.join(&rel);
+    if let Some(parent) = full_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    Ok(full_path)
 }
 
 fn create_thumbnail_file(src_path: &str, dest_path: &std::path::Path) -> Result<(), String> {
@@ -722,7 +760,7 @@ async fn get_thumbnail(
         .clone();
 
     let t_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("t");
-    let thumb_path = thumbnail_cache_path(&t_dir, &account_id, &item_id)?;
+    let thumb_path = thumbnail_path_for_item(&t_dir, &account, &item_id, &cache_state.0)?;
 
     if thumb_path.exists() {
         return Ok(thumb_path.to_string_lossy().into_owned());
