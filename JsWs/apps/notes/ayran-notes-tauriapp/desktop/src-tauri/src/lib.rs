@@ -1462,6 +1462,112 @@ async fn delete_account_app_data(
     shelveset_discard(app, cache_state, account_id).await
 }
 
+// ── Per-item conflict metadata ────────────────────────────────────────────────
+
+/// Returns the `modified_ms` timestamp we have cached for an item, or `null` if unknown.
+#[tauri::command]
+fn get_item_cached_mtime(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+) -> Result<Option<i64>, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let ms: Option<i64> = conn.query_row(
+        "SELECT modified_ms FROM folder_items WHERE account_id=?1 AND item_id=?2",
+        rusqlite::params![account_id, item_id],
+        |r| r.get(0),
+    ).ok().flatten();
+    Ok(ms)
+}
+
+// ── Shelveset rescan ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RescanResult {
+    /// Display paths of content items whose s/ file was modified after the DB entry.
+    pub updated: Vec<String>,
+    /// Display paths of content items in the DB whose s/ file is missing from disk.
+    pub missing_from_disk: Vec<String>,
+    /// File names found in the s/ folder that have no matching DB entry.
+    pub extra_on_disk: Vec<String>,
+}
+
+/// Re-read the s/ folder for the account, detect external modifications and
+/// structural discrepancies, then update DB timestamps for externally-modified files.
+#[tauri::command]
+async fn shelveset_rescan(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+) -> Result<RescanResult, String> {
+    let accounts = load_accounts(&app)?;
+    let account = accounts.get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+
+    let s_dir = app_base_dir(&app)?.join("s");
+    let acct_dir = account_content_cache_dir(&s_dir, &account)?;
+
+    // Enumerate files currently on disk in s/ for this account.
+    let disk_files: std::collections::HashSet<String> = std::fs::read_dir(&acct_dir)
+        .map(|rd| rd.flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect())
+        .unwrap_or_default();
+
+    // Load all non-directory content items for this account from the DB.
+    let db_items: Vec<(String, String, i64)> = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        let mut st = conn.prepare(
+            "SELECT item_id, display_path, created_at FROM shelveset_contents \
+             WHERE account_id=?1 AND is_dir=0"
+        ).map_err(|e| e.to_string())?;
+        let rows: Vec<_> = st.query_map(rusqlite::params![account_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        rows
+    };
+
+    let db_sanitized: std::collections::HashSet<String> = db_items.iter()
+        .map(|(id, _, _)| sanitize_path_component(id))
+        .collect();
+
+    let missing_from_disk: Vec<String> = db_items.iter()
+        .filter(|(id, _, _)| !disk_files.contains(&sanitize_path_component(id)))
+        .map(|(_, path, _)| path.clone())
+        .collect();
+
+    let extra_on_disk: Vec<String> = disk_files
+        .difference(&db_sanitized)
+        .cloned()
+        .collect();
+
+    // Detect externally modified files (disk mtime > DB created_at) and update DB.
+    let mut updated = Vec::new();
+    {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        for (item_id, display_path, db_created_at) in &db_items {
+            let sanitized = sanitize_path_component(item_id);
+            let file_path = acct_dir.join(&sanitized);
+            if !file_path.exists() { continue; }
+            let disk_mtime = std::fs::metadata(&file_path)
+                .and_then(|m| m.modified())
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64)
+                .unwrap_or(0);
+            if disk_mtime > *db_created_at {
+                conn.execute(
+                    "UPDATE shelveset_contents SET created_at=?1 WHERE account_id=?2 AND item_id=?3",
+                    rusqlite::params![disk_mtime, account_id, item_id],
+                ).ok();
+                updated.push(display_path.clone());
+            }
+        }
+    }
+
+    Ok(RescanResult { updated, missing_from_disk, extra_on_disk })
+}
+
 // ── Local FS listing ──────────────────────────────────────────────────────────
 
 /// `rel_path` is a relative path (using '/' separator) within the account root.
@@ -1928,6 +2034,7 @@ pub fn run() {
             gdrive::gdrive_copy_file,
             gdrive::gdrive_move_file,
             gdrive::gdrive_edit_file,
+            gdrive::gdrive_get_file_mtime,
             // Path resolvers
             filen::filen_find_child_by_name,
             gdrive::gdrive_find_children_by_name,
@@ -1948,9 +2055,13 @@ pub fn run() {
             filen::filen_move_directory,
             filen::filen_copy_file,
             filen::filen_overwrite_file,
+            filen::filen_get_file_mtime,
             create_text_file,
             get_thumbnail,
+            // Conflict detection
+            get_item_cached_mtime,
             // Shelveset
+            shelveset_rescan,
             shelveset_activate,
             shelveset_record_change,
             shelveset_save_content,

@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
@@ -77,6 +78,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [lineEnding, setLineEnding] = useState<'lf' | 'crlf'>('lf');
+  const [showDiff, setShowDiff] = useState(false);
 
   // image overlay + zoom + pan
   const [showImageHeader, setShowImageHeader] = useState(true);
@@ -504,6 +506,29 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   // ── Text viewer / editor ─────────────────────────────────────────────────────
 
   if (mode === 'text') return (
+    <>
+    {showDiff && (
+      <Suspense fallback={null}>
+        <DiffViewerModal
+          filename={item.name}
+          leftLabel="Saved"
+          rightLabel="Unsaved edits"
+          leftContent={textContent}
+          rightContent={editedText}
+          onApply={(result) => {
+            setEditedText(result);
+            setIsDirty(result !== textContent);
+            setShowDiff(false);
+          }}
+          onDiscard={() => {
+            setEditedText(textContent);
+            setIsDirty(false);
+            setShowDiff(false);
+          }}
+          onClose={() => setShowDiff(false)}
+        />
+      </Suspense>
+    )}
     <div className="fixed inset-0 z-50 flex flex-col bg-white dark:bg-gray-900">
       <HeaderBar right={
         <>
@@ -517,6 +542,12 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
               className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
             >
               Open as Notebook
+            </button>
+          )}
+          {isDirty && (
+            <button onClick={() => setShowDiff(true)} title="Compare with saved version"
+              className="p-1.5 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4"><path d="M3 4h4M3 8h3M3 12h4"/><path d="M13 4H9M13 8h-3M13 12H9"/><path d="M7.5 2v12" strokeDasharray="2 1"/></svg>
             </button>
           )}
           <button
@@ -545,6 +576,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         spellCheck={false}
       />
     </div>
+    </>
   );
 
   // ── Image viewer ─────────────────────────────────────────────────────────────

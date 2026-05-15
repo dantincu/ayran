@@ -661,3 +661,24 @@ pub async fn gdrive_edit_file(
     }
     Ok(())
 }
+
+/// Query the server-side `modifiedTime` for a single file. Returns `None` if the
+/// file no longer exists or the response cannot be parsed.
+#[tauri::command]
+pub async fn gdrive_get_file_mtime(
+    app: tauri::AppHandle,
+    account_id: String,
+    file_id: String,
+) -> Result<Option<i64>, String> {
+    let token = get_valid_token(&app, &account_id).await?;
+    let res = client()
+        .get(format!("{}/files/{}?fields=modifiedTime", DRIVE_API, file_id))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() { return Ok(None); }
+    let json: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
+    let ms = json["modifiedTime"].as_str().and_then(parse_rfc3339_ms);
+    Ok(ms)
+}

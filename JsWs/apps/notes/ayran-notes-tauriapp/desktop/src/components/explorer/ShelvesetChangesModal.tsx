@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, ShelvesetChange, ShelvesetContentItem, ShelvesetAllChanges } from '../../types';
+const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
 import {
   trashFile, trashDirectory, renameFile, renameDirectory,
   moveFile, moveDirectory, overwriteFile,
@@ -193,6 +194,11 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
   const [error, setError] = useState<string | null>(null);
   const [committing, setCommitting] = useState(false);
   const [undoing, setUndoing] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanWarnings, setScanWarnings] = useState<string[]>([]);
+  const [conflicts, setConflicts] = useState<string[]>([]); // display paths with cloud conflicts
+  const [rowCtxMenu, setRowCtxMenu] = useState<{ x: number; y: number; item: UnifiedChange } | null>(null);
+  const [diffItem, setDiffItem] = useState<UnifiedChange | null>(null);
   const lastCheckedIdxRef = useRef<number | null>(null);
 
   const load = useCallback(async () => {
@@ -274,14 +280,82 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
     }
   };
 
+  // ── Rescan ────────────────────────────────────────────────────────────────
+
+  const handleRescan = async (): Promise<boolean> => {
+    setScanning(true); setScanWarnings([]); setError(null);
+    try {
+      const result = await invoke<{ updated: string[]; missingFromDisk: string[]; extraOnDisk: string[] }>(
+        'shelveset_rescan', { accountId: account.id }
+      );
+      const warnings: string[] = [];
+      if (result.updated.length)
+        warnings.push(`${result.updated.length} file(s) modified externally: ${result.updated.slice(0, 3).join(', ')}${result.updated.length > 3 ? '…' : ''}`);
+      if (result.missingFromDisk.length)
+        warnings.push(`${result.missingFromDisk.length} file(s) missing from disk: ${result.missingFromDisk.slice(0, 3).join(', ')}${result.missingFromDisk.length > 3 ? '…' : ''}`);
+      if (result.extraOnDisk.length)
+        warnings.push(`${result.extraOnDisk.length} untracked file(s) found on disk.`);
+      setScanWarnings(warnings);
+      if (result.updated.length > 0) await load();
+      return warnings.length === 0;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return false;
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  // ── Conflict check ────────────────────────────────────────────────────────
+
+  const checkConflicts = async (changes: ShelvesetAllChanges): Promise<string[]> => {
+    const provider = account.provider;
+    if (provider === 'local-fs') return [];
+    const modifiedExisting = changes.content.filter((c) => !c.isNew);
+    const conflicting: string[] = [];
+    for (const item of modifiedExisting) {
+      const cachedMs = await invoke<number | null>('get_item_cached_mtime', {
+        accountId: account.id, itemId: item.itemId,
+      }).catch(() => null);
+      if (cachedMs == null) continue;
+      const serverMs = await invoke<number | null>(
+        provider === 'filen' ? 'filen_get_file_mtime' : 'gdrive_get_file_mtime',
+        { accountId: account.id, [provider === 'filen' ? 'uuid' : 'fileId']: item.itemId }
+      ).catch(() => null);
+      if (serverMs != null && serverMs > cachedMs) {
+        conflicting.push(item.displayPath);
+      }
+    }
+    return conflicting;
+  };
+
   // ── Commit ────────────────────────────────────────────────────────────────
 
   const handleCommit = async () => {
     if (!allChanges) return;
     if (!confirm('Commit all pending changes to the cloud provider?')) return;
-    setCommitting(true); setError(null);
+    setCommitting(true); setError(null); setConflicts([]);
+
+    // 1. Auto-rescan.
+    const scanOk = await handleRescan();
+    if (!scanOk) {
+      setCommitting(false);
+      setError('Rescan found discrepancies. Please review the warnings above before committing.');
+      return;
+    }
+
+    // 2. Re-load after rescan and check for cloud conflicts.
+    const freshChanges = await invoke<ShelvesetAllChanges>('shelveset_get_all_changes', { accountId: account.id });
+    const conflictPaths = await checkConflicts(freshChanges);
+    if (conflictPaths.length > 0) {
+      setConflicts(conflictPaths);
+      setCommitting(false);
+      setError(`${conflictPaths.length} file(s) were modified on the server since you last fetched them. Resolve conflicts before committing.`);
+      return;
+    }
+
     try {
-      await commitShelveset(account, allChanges);
+      await commitShelveset(account, freshChanges);
       await invoke('shelveset_discard', { accountId: account.id });
       onCommitted();
     } catch (e) {
@@ -290,13 +364,80 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
     }
   };
 
+  // ── Diff viewer loader ────────────────────────────────────────────────────
+
+  const openDiff = (item: UnifiedChange) => {
+    setRowCtxMenu(null);
+    setDiffItem(item);
+  };
+
+  const makeDiffLoaders = (item: UnifiedChange) => {
+    if (!item.content) return null;
+    const contentItem = item.content;
+    const loadLeft = async (): Promise<string> => {
+      const path = await invoke<string>('open_file', {
+        accountId: account.id, itemId: contentItem.itemId, force: false,
+      });
+      return new TextDecoder('utf-8').decode(await readFile(path));
+    };
+    const loadRight = async (): Promise<string> => {
+      const path = await invoke<string | null>('shelveset_get_content_path', {
+        accountId: account.id, itemId: contentItem.itemId,
+      });
+      if (!path) return '';
+      return new TextDecoder('utf-8').decode(await readFile(path));
+    };
+    return { loadLeft, loadRight };
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   const totalPages = Math.max(1, Math.ceil(unified.length / PAGE_SIZE));
   const pageItems = unified.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const anyBusy = committing || undoing;
+  const anyBusy = committing || undoing || scanning;
+
+  const ctxBtn = 'w-full text-left px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors';
 
   return (
+    <>
+    {diffItem && (() => {
+      const loaders = makeDiffLoaders(diffItem);
+      if (!loaders) return null;
+      return (
+        <Suspense fallback={null}>
+          <DiffViewerModal
+            filename={diffItem.itemName}
+            leftLabel="Cloud (original)"
+            rightLabel="Shelved (modified)"
+            loadLeft={loaders.loadLeft}
+            loadRight={loaders.loadRight}
+            onClose={() => setDiffItem(null)}
+          />
+        </Suspense>
+      );
+    })()}
+
+    {rowCtxMenu && (
+      <div className="fixed inset-0 z-[55]" onClick={() => setRowCtxMenu(null)}>
+        <div
+          className="absolute bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl py-1 min-w-[180px]"
+          style={{ left: rowCtxMenu.x, top: rowCtxMenu.y }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {(rowCtxMenu.item.kind === 'modified') && (
+            <button onClick={() => openDiff(rowCtxMenu.item)} className={ctxBtn}>
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5 shrink-0"><path d="M3 4h4M3 8h3M3 12h4"/><path d="M13 4H9M13 8h-3M13 12H9"/><path d="M7.5 2v12" strokeDasharray="2 1"/></svg>
+              Compare with original
+            </button>
+          )}
+          <button onClick={() => { setRowCtxMenu(null); undoItems(new Set([rowCtxMenu.item.key])); }} className={ctxBtn}>
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5 shrink-0 text-amber-500"><path d="M3 8a5 5 0 105.5-4.97M3 8V4M3 8H7"/></svg>
+            Undo this change
+          </button>
+        </div>
+      </div>
+    )}
+
     <div className="fixed inset-0 z-50 bg-white dark:bg-gray-900 flex flex-col">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
@@ -311,36 +452,43 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
 
       {/* Action bar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-100 dark:border-gray-800 shrink-0 flex-wrap">
-        <button
-          onClick={handleCommit}
-          disabled={anyBusy || unified.length === 0}
-          className="px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
-        >
+        <button onClick={handleCommit} disabled={anyBusy || unified.length === 0}
+          className="px-3 py-1.5 text-sm font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors">
           {committing ? 'Committing…' : 'Commit all'}
         </button>
-        <button
-          onClick={() => undoItems(selectedKeys)}
-          disabled={anyBusy || selectedKeys.size === 0}
-          className="px-3 py-1.5 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-colors"
-        >
+        <button onClick={() => undoItems(selectedKeys)} disabled={anyBusy || selectedKeys.size === 0}
+          className="px-3 py-1.5 text-sm bg-amber-500 text-white rounded-lg hover:bg-amber-600 disabled:opacity-40 transition-colors">
           Undo selected ({selectedKeys.size})
         </button>
-        <button
-          onClick={() => undoItems(new Set(unified.map((u) => u.key)))}
-          disabled={anyBusy || unified.length === 0}
-          className="px-3 py-1.5 text-sm bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-200 dark:hover:bg-amber-800/40 disabled:opacity-40 transition-colors"
-        >
+        <button onClick={() => undoItems(new Set(unified.map((u) => u.key)))} disabled={anyBusy || unified.length === 0}
+          className="px-3 py-1.5 text-sm bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-200 dark:hover:bg-amber-800/40 disabled:opacity-40 transition-colors">
           Undo all
         </button>
+        <button onClick={() => handleRescan()} disabled={anyBusy}
+          className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40 transition-colors">
+          {scanning ? 'Scanning…' : 'Rescan'}
+        </button>
         <div className="flex-1" />
-        <button
-          onClick={handleDiscard}
-          disabled={anyBusy}
-          className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-200 dark:hover:bg-red-800/40 disabled:opacity-40 transition-colors"
-        >
+        <button onClick={handleDiscard} disabled={anyBusy}
+          className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-200 dark:hover:bg-red-800/40 disabled:opacity-40 transition-colors">
           Discard shelveset
         </button>
       </div>
+
+      {/* Scan warnings */}
+      {scanWarnings.length > 0 && (
+        <div className="mx-4 mt-2 shrink-0 p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded text-xs space-y-0.5">
+          {scanWarnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+        </div>
+      )}
+
+      {/* Conflict warnings */}
+      {conflicts.length > 0 && (
+        <div className="mx-4 mt-2 shrink-0 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded text-xs space-y-0.5">
+          <div className="font-semibold mb-1">⚡ Cloud conflicts — these files were modified on the server:</div>
+          {conflicts.map((p, i) => <div key={i} className="pl-2">• {p}</div>)}
+        </div>
+      )}
 
       {/* Error */}
       {error && (
@@ -364,15 +512,15 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
             {pageItems.map((item, idx) => {
               const absIdx = page * PAGE_SIZE + idx;
               const selected = selectedKeys.has(item.key);
+              const isConflict = conflicts.includes(item.displayPath);
               return (
                 <div
                   key={item.key}
                   onClick={(e) => handleCheck(idx, e.shiftKey)}
+                  onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}
                   className={`flex items-center gap-3 px-3 py-2 rounded-lg border cursor-pointer select-none transition-colors ${
-                    selected
-                      ? 'ring-2 ring-blue-400 dark:ring-blue-500 ' + kindColors(item.kind)
-                      : kindColors(item.kind)
-                  }`}
+                    isConflict ? 'ring-2 ring-red-400 dark:ring-red-500 ' : ''
+                  }${selected ? 'ring-2 ring-blue-400 dark:ring-blue-500 ' : ''}${kindColors(item.kind)}`}
                 >
                   <input
                     type="checkbox"
@@ -384,18 +532,21 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
                   <span className={`shrink-0 text-[11px] font-semibold px-1.5 py-0.5 rounded ${badgeColors(item.kind)}`}>
                     {kindLabel(item.kind)}
                   </span>
+                  {isConflict && <span title="Cloud conflict" className="text-red-500 shrink-0">⚡</span>}
                   <span className="flex-1 text-sm truncate" title={item.displayPath}>
                     {item.displayPath || item.itemName}
                   </span>
+                  {item.kind === 'modified' && (
+                    <button onClick={(e) => { e.stopPropagation(); openDiff(item); }} title="Compare with original"
+                      className="p-0.5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 shrink-0 transition-colors">
+                      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5"><path d="M2 3.5h4M2 7h3M2 10.5h4"/><path d="M12 3.5H8M12 7H9M12 10.5H8"/><path d="M6.5 1.5v11" strokeDasharray="2 1"/></svg>
+                    </button>
+                  )}
                   {item.structural?.operation === 'rename' && item.structural.newName && (
-                    <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0 truncate max-w-[160px]">
-                      → {item.structural.newName}
-                    </span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0 truncate max-w-[160px]">→ {item.structural.newName}</span>
                   )}
                   {item.structural?.operation === 'move' && item.structural.newParentId && (
-                    <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0 truncate max-w-[160px]">
-                      → {item.structural.newParentId}
-                    </span>
+                    <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0 truncate max-w-[160px]">→ {item.structural.newParentId}</span>
                   )}
                 </div>
               );
@@ -415,5 +566,6 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
         </div>
       )}
     </div>
+    </>
   );
 }

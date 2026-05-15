@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import Popover from '../common/Popover';
 import { invoke } from '@tauri-apps/api/core';
+const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
 import { save, open } from '@tauri-apps/plugin-dialog';
 import { deleteAccount } from '../../lib/account-store';
 import {
@@ -9,7 +10,9 @@ import {
   moveFile, moveDirectory, copyFile, overwriteFile,
   hasSession, logout, listDirectory,
 } from '../../lib/filen-client';
-import type { StoredAccount, CachedItem, FolderPage } from '../../types';
+import type { StoredAccount, CachedItem, FolderPage, ShelvesetAllChanges } from '../../types';
+import { warnAndConfirmConflict } from '../../lib/conflict-check';
+import { readFile } from '@tauri-apps/plugin-fs';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
 import PaginationBar from './PaginationBar';
 import NewNotebookModal from './NewNotebookModal';
@@ -139,6 +142,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   const [showChangePath, setShowChangePath] = useState(false);
   const [lastOpenedId, setLastOpenedId] = useState<string | null>(null);
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const [shelvedIds, setShelvedIds] = useState<Set<string>>(new Set());
+  const [diffItem, setDiffItem] = useState<CachedItem | null>(null);
   const [autoHide, setAutoHide] = useState(() => localStorage.getItem(`notes-autohide-${account.id}`) !== 'false');
   const scrollBlockedRef = useRef(0);
   const [showCreateTextFile, setShowCreateTextFile] = useState(false);
@@ -150,6 +155,14 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { onCompactChange?.(headerCollapsed); }, [headerCollapsed]);
   useEffect(() => { if (highlightItemId) setLastOpenedId(highlightItemId); }, [highlightItemId]);
+
+  // Track which item IDs have shelveset content changes so we can show the diff icon.
+  useEffect(() => {
+    if (!account.shelvesetActive) { setShelvedIds(new Set()); return; }
+    invoke<ShelvesetAllChanges>('shelveset_get_all_changes', { accountId: account.id })
+      .then((c) => setShelvedIds(new Set(c.content.filter((x) => !x.isNew).map((x) => x.itemId))))
+      .catch(() => {});
+  }, [account.id, account.shelvesetActive]);
 
   const handleListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (Date.now() < scrollBlockedRef.current) return;
@@ -300,6 +313,9 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   };
   const handleDelete = async (item: CachedItem) => {
     if (!confirm(`Move "${item.name}" to trash?`)) return;
+    if (!item.isDir && !account.shelvesetActive) {
+      if (!await warnAndConfirmConflict(account, item.itemId, item.name)) return;
+    }
     setDeletingId(item.itemId);
     try {
       if (account.shelvesetActive) {
@@ -333,6 +349,9 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     if (!newName?.trim() || newName.trim() === item.name) return;
     const validErr = validateRenameInExplorer(item, newName);
     if (validErr) { alert(validErr); return; }
+    if (!account.shelvesetActive) {
+      if (!await warnAndConfirmConflict(account, item.itemId, item.name)) return;
+    }
     setRenamingId(item.itemId);
     try {
       const trimmed = newName.trim();
@@ -640,6 +659,24 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
 
   return (
     <>
+      {diffItem && (
+        <Suspense fallback={null}>
+          <DiffViewerModal
+            filename={diffItem.name}
+            leftLabel="Cloud (original)" rightLabel="Shelved (modified)"
+            loadLeft={async () => {
+              const path = await invoke<string>('open_file', { accountId: account.id, itemId: diffItem.itemId, force: false });
+              return new TextDecoder('utf-8').decode(await readFile(path));
+            }}
+            loadRight={async () => {
+              const path = await invoke<string | null>('shelveset_get_content_path', { accountId: account.id, itemId: diffItem.itemId });
+              if (!path) return '';
+              return new TextDecoder('utf-8').decode(await readFile(path));
+            }}
+            onClose={() => setDiffItem(null)}
+          />
+        </Suspense>
+      )}
       {showNewNb && <NewNotebookModal onConfirm={handleCreateNotebook} onClose={() => setShowNewNb(false)} />}
       {showCreateTextFile && (
         <CreateTextFileModal
@@ -841,6 +878,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
                       <button onClick={() => setFolderPicker({ uuid: item.itemId, name: item.name, isDir: item.isDir, action: 'move' })} disabled={anyBusy} title={movingId === item.itemId ? 'Moving…' : 'Move'} className="p-1 rounded text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 disabled:opacity-50 transition-colors"><MoveArrowIcon/></button>
                       {!item.isDir && <button onClick={() => handleDownload(item)} disabled={anyBusy} title={downloadingId === item.itemId ? 'Downloading…' : 'Download'} className="p-1 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-50 transition-colors"><DownloadArrowIcon/></button>}
                       <button onClick={() => handleDelete(item)} disabled={anyBusy} title={deletingId === item.itemId ? 'Deleting…' : 'Delete'} className="p-1 rounded text-red-500 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50 transition-colors"><TrashIcon/></button>
+                      {!item.isDir && shelvedIds.has(item.itemId) && <button onClick={() => setDiffItem(item)} title="Compare with original" className="p-1 rounded text-amber-500 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30 transition-colors"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-3.5 h-3.5"><path d="M2 3.5h4M2 7h3M2 10.5h4"/><path d="M12 3.5H8M12 7H9M12 10.5H8"/><path d="M6.5 1.5v11" strokeDasharray="2 1"/></svg></button>}
                     </div>
                   </div>
                 );

@@ -1218,3 +1218,25 @@ fn mime_from_ext(ext: &str) -> &'static str {
         _ => "application/octet-stream",
     }
 }
+
+// ── Conflict-detection metadata query ────────────────────────────────────────
+
+/// Returns the server-side `lastModified` timestamp (ms) for a file, or `None`
+/// if the file is not found or the metadata cannot be decrypted.
+#[tauri::command]
+pub async fn filen_get_file_mtime(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    uuid: String,
+) -> Result<Option<i64>, String> {
+    let s = get_session(&state, &account_id)?;
+    let info: Result<FileInfoResponse, _> = api::post(
+        &s.client, "/v3/file",
+        &serde_json::json!({ "uuid": uuid }),
+        Some(&s.api_key),
+    ).await;
+    let info = match info { Ok(i) => i, Err(_) => return Ok(None) };
+    let plain = crypto::decrypt_metadata(&info.metadata, &s.master_keys)?;
+    let meta: Result<FileMetadata, _> = serde_json::from_str(&plain);
+    Ok(meta.ok().and_then(|m| m.last_modified).map(|ms| ms as i64))
+}
