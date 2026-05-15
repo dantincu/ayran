@@ -417,6 +417,22 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     const newId = await invoke<string>('gdrive_create_folder', { accountId: account.id, parentId, name });
     return { id: newId, name, isDir: true };
   };
+  const pickerResolvePath = async (pathStr: string): Promise<Array<{ id: string; name: string }> | null> => {
+    const parts = pathStr.split('/').map(s => s.trim()).filter(Boolean);
+    if (parts.length === 0) return [];
+    let parentId = 'root';
+    const result: Array<{ id: string; name: string }> = [];
+    for (const seg of parts) {
+      const found = await invoke<string[]>('gdrive_find_children_by_name', {
+        accountId: account.id, parentId, name: seg,
+      });
+      if (found.length === 0) return null;
+      if (found.length > 1) throw new Error(`"${seg}" is ambiguous — ${found.length} items share this name in the parent folder.`);
+      result.push({ id: found[0], name: seg });
+      parentId = found[0];
+    }
+    return result;
+  };
 
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
@@ -795,6 +811,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           onRename={pickerRenameForGDrive}
           onDelete={pickerDeleteForGDrive}
           onCreateFolder={pickerCreateFolderForGDrive}
+          onResolvePath={pickerResolvePath}
         />
       )}
       {bulkAction && (
@@ -810,6 +827,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           onRename={pickerRenameForGDrive}
           onDelete={pickerDeleteForGDrive}
           onCreateFolder={pickerCreateFolderForGDrive}
+          onResolvePath={pickerResolvePath}
         />
       )}
       {/* Duplicate-name error modal */}

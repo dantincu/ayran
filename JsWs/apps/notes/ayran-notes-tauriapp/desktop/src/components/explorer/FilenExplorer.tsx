@@ -400,6 +400,21 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     const newId = await invoke<string>('filen_create_directory', { accountId: account.id, parentId, name });
     return { id: newId, name, isDir: true };
   };
+  const pickerResolvePath = async (pathStr: string): Promise<Array<{ id: string; name: string }> | null> => {
+    const parts = pathStr.split('/').map(s => s.trim()).filter(Boolean);
+    if (parts.length === 0) return [];
+    let parentId = rootUuid;
+    const result: Array<{ id: string; name: string }> = [];
+    for (const seg of parts) {
+      const found = await invoke<string | null>('filen_find_child_by_name', {
+        accountId: account.id, parentUuid: parentId, childName: seg,
+      });
+      if (!found) return null;
+      result.push({ id: found, name: seg });
+      parentId = found;
+    }
+    return result;
+  };
 
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
     const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next;
@@ -788,6 +803,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           onRename={pickerRenameForFilen}
           onDelete={pickerDeleteForFilen}
           onCreateFolder={pickerCreateFolderForFilen}
+          onResolvePath={pickerResolvePath}
         />
       )}
       {bulkAction && (
@@ -803,6 +819,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           onRename={pickerRenameForFilen}
           onDelete={pickerDeleteForFilen}
           onCreateFolder={pickerCreateFolderForFilen}
+          onResolvePath={pickerResolvePath}
         />
       )}
 

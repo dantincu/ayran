@@ -20,6 +20,7 @@ import NotebookPage from './notebook/NotebookPage';
 type Page = 'files' | 'notebooks' | 'devtools' | 'notebook' | 'accounts';
 
 const PAGE_KEY = 'notes-current-page';
+const VIEWER_KEY = 'notes-viewer-v1';
 
 export default function AppShell() {
   const [accounts, setAccounts] = useState<StoredAccount[]>([]);
@@ -48,17 +49,33 @@ export default function AppShell() {
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
   const { theme, toggleTheme } = useTheme();
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
+  // Must be true before the persist effect is allowed to write/clear storage,
+  // so the initial null render doesn't wipe a saved viewer on startup.
+  const viewerRestoredRef = useRef(false);
 
   useEffect(() => {
     listAccounts().then((accs) => {
       setAccounts(accs);
       if (accs.length === 0) {
         setCurrentPage('accounts');
+        viewerRestoredRef.current = true;
         return;
       }
       const saved = localStorage.getItem('notes-selected-account');
       const id = saved && accs.some((a) => a.id === saved) ? saved : accs[0].id;
       setSelectedId(id);
+      // Restore persisted file viewer session.
+      try {
+        const raw = localStorage.getItem(VIEWER_KEY);
+        if (raw) {
+          const { accountId, item, displayPath } = JSON.parse(raw) as {
+            accountId: string; item: CachedItem; displayPath: string;
+          };
+          const account = accs.find((a) => a.id === accountId);
+          if (account) setViewingFile({ account, item, displayPath });
+        }
+      } catch { /* ignore corrupt storage */ }
+      viewerRestoredRef.current = true;
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -74,6 +91,21 @@ export default function AppShell() {
   useEffect(() => {
     if (currentPage !== 'accounts') localStorage.setItem(PAGE_KEY, currentPage);
   }, [currentPage]);
+
+  // Persist the active file viewer so it can be restored on next app launch.
+  useEffect(() => {
+    if (!viewerRestoredRef.current) return; // skip the initial null render
+    if (viewingFile) {
+      localStorage.setItem(VIEWER_KEY, JSON.stringify({
+        accountId: viewingFile.account.id,
+        item: viewingFile.item,
+        displayPath: viewingFile.displayPath,
+        // siblings intentionally excluded — stale after restart
+      }));
+    } else {
+      localStorage.removeItem(VIEWER_KEY);
+    }
+  }, [viewingFile]);
 
   // Close account switcher on outside click
   useEffect(() => {
