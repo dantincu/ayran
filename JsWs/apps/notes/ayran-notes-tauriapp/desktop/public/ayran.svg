@@ -6,16 +6,16 @@
       <stop offset="55%"  stop-color="#D97706"/>
       <stop offset="100%" stop-color="#92400E"/>
     </radialGradient>
-    <!-- Glass body gradient: creamy white yogurt drink -->
+    <!-- Glass body gradient: golden ayran -->
     <linearGradient id="drink" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%"   stop-color="#e8e0d5"/>
-      <stop offset="40%"  stop-color="#f5f0ea"/>
-      <stop offset="100%" stop-color="#d6cec4"/>
+      <stop offset="0%"   stop-color="#c8921a"/>
+      <stop offset="40%"  stop-color="#e8b030"/>
+      <stop offset="100%" stop-color="#b07a10"/>
     </linearGradient>
-    <!-- Foam gradient -->
+    <!-- Foam gradient: still frothy white on top, golden at base -->
     <linearGradient id="foam" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%"   stop-color="#ffffff"/>
-      <stop offset="100%" stop-color="#ede8e2"/>
+      <stop offset="0%"   stop-color="#fff8e8"/>
+      <stop offset="100%" stop-color="#d4a030"/>
     </linearGradient>
     <!-- Glass wall sheen -->
     <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -33,15 +33,15 @@
 
   <!-- ── Glass body (trapezoid: wider at top) ── -->
   <path d="M22 32 L25 88 Q25 92 30 92 L70 92 Q75 92 75 88 L78 32 Z"
-        fill="url(#drink)" stroke="#9aacb8" stroke-width="1.5"/>
+        fill="url(#drink)" stroke="#7a5a08" stroke-width="1.5"/>
 
   <!-- ── Foam head ── -->
-  <ellipse cx="50" cy="31" rx="28" ry="8" fill="url(#foam)" stroke="#c8bfb5" stroke-width="1"/>
+  <ellipse cx="50" cy="31" rx="28" ry="8" fill="url(#foam)" stroke="#a07018" stroke-width="1"/>
   <!-- Foam texture bumps -->
-  <ellipse cx="38" cy="29" rx="7"  ry="4.5" fill="#ffffff" opacity="0.8"/>
-  <ellipse cx="53" cy="28" rx="8"  ry="4"   fill="#ffffff" opacity="0.7"/>
-  <ellipse cx="64" cy="30" rx="5"  ry="3.5" fill="#ffffff" opacity="0.75"/>
-  <ellipse cx="44" cy="33" rx="5"  ry="3"   fill="#f0ece7" opacity="0.6"/>
+  <ellipse cx="38" cy="29" rx="7"  ry="4.5" fill="#fff8e8" opacity="0.85"/>
+  <ellipse cx="53" cy="28" rx="8"  ry="4"   fill="#ffffff"  opacity="0.75"/>
+  <ellipse cx="64" cy="30" rx="5"  ry="3.5" fill="#fff8e8"  opacity="0.80"/>
+  <ellipse cx="44" cy="33" rx="5"  ry="3"   fill="#e8c060"  opacity="0.6"/>
 
   <!-- ── Bubbles rising in the drink ── -->
   <circle cx="37" cy="70" r="2"   fill="#ffffff" opacity="0.55"/>
@@ -62,5 +62,5 @@
 
   <!-- ── Glass rim highlight ── -->
   <ellipse cx="50" cy="31" rx="28" ry="8"
-           fill="none" stroke="#ddeeff" stroke-width="1" opacity="0.6"/>
+           fill="none" stroke="#ffe090" stroke-width="1" opacity="0.7"/>
 </svg>
