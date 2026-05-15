@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import Popover from './Popover';
 import { getCurrentWebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
@@ -6,7 +6,7 @@ import type { StoredAccount, CachedItem } from '../types';
 import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store';
 import { connectGoogleDrive } from '../lib/google-auth';
 import { addNotebook } from '../lib/notebooks-db';
-import AccountManager from './AccountManager';
+import ManageAccountsPage from './ManageAccountsPage';
 import GoogleDriveExplorer from './GoogleDriveExplorer';
 import FilenExplorer from './FilenExplorer';
 import FileSystemExplorer from './FileSystemExplorer';
@@ -17,7 +17,7 @@ import DevToolsPage from './DevToolsPage';
 import ManageNotebooksPage from './notebook/ManageNotebooksPage';
 import NotebookPage from './notebook/NotebookPage';
 
-type Page = 'files' | 'notebooks' | 'devtools' | 'notebook';
+type Page = 'files' | 'notebooks' | 'devtools' | 'notebook' | 'accounts';
 
 const PAGE_KEY = 'notes-current-page';
 
@@ -27,7 +27,13 @@ export default function AppShell() {
   const [, setConnecting] = useState(false);
   const [showFilenLogin, setShowFilenLogin] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [viewingFile, setViewingFile] = useState<{ account: StoredAccount; item: CachedItem; displayPath: string } | null>(null);
+  const [viewingFile, setViewingFile] = useState<{
+    account: StoredAccount;
+    item: CachedItem;
+    displayPath: string;
+    siblings?: CachedItem[];
+    siblingIdx?: number;
+  } | null>(null);
   const [currentPage, setCurrentPage] = useState<Page>(() => {
     if (new URLSearchParams(window.location.search).get('notebook')) return 'notebook';
     return (localStorage.getItem(PAGE_KEY) as Page | null) ?? 'files';
@@ -37,11 +43,16 @@ export default function AppShell() {
     return urlParam ?? localStorage.getItem('notes-notebook-id');
   });
   const [menuOpen, setMenuOpen] = useState(false);
+  const [acctSwitcherOpen, setAcctSwitcherOpen] = useState(false);
+  const acctSwitcherRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     listAccounts().then((accs) => {
       setAccounts(accs);
-      if (accs.length === 0) return;
+      if (accs.length === 0) {
+        setCurrentPage('accounts');
+        return;
+      }
       const saved = localStorage.getItem('notes-selected-account');
       const id = saved && accs.some((a) => a.id === saved) ? saved : accs[0].id;
       setSelectedId(id);
@@ -58,12 +69,21 @@ export default function AppShell() {
   }, [notebookNavId]);
 
   useEffect(() => {
-    localStorage.setItem(PAGE_KEY, currentPage);
+    if (currentPage !== 'accounts') localStorage.setItem(PAGE_KEY, currentPage);
   }, [currentPage]);
 
-  // When main window closes, destroy all secondary notebook windows first.
-  // Guard: only register this handler in the actual main window, not in nb-* secondary windows
-  // (which also render AppShell and would otherwise close every window when they themselves close).
+  // Close account switcher on outside click
+  useEffect(() => {
+    if (!acctSwitcherOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (acctSwitcherRef.current && !acctSwitcherRef.current.contains(e.target as Node)) {
+        setAcctSwitcherOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [acctSwitcherOpen]);
+
   useEffect(() => {
     if (getCurrentWebviewWindow().label !== 'main') return;
     let unlisten: (() => void) | undefined;
@@ -73,25 +93,23 @@ export default function AppShell() {
         const windows = await getAllWebviewWindows();
         await Promise.all(windows.filter((w) => w.label !== 'main').map((w) => w.destroy().catch(() => {})));
       } catch { /* non-fatal */ }
-      try {
-        await getCurrentWebviewWindow().destroy();
-      } catch { /* non-fatal */ }
+      try { await getCurrentWebviewWindow().destroy(); } catch { /* non-fatal */ }
     }).then((fn) => { unlisten = fn; }).catch(() => {});
     return () => { if (unlisten) unlisten(); };
   }, []);
 
-
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
-
   const refresh = async () => { setAccounts(await listAccounts()); };
 
   const handleConnectGoogle = async () => {
     setConnecting(true); setConnectError(null);
     await connectGoogleDrive(
       async (account) => {
-        setAccounts((p) => [...p.filter((a) => a.id !== account.id), account]);
+        const updated = [...accounts.filter((a) => a.id !== account.id), account];
+        setAccounts(updated);
         setSelectedId(account.id);
         setConnecting(false);
+        if (currentPage === 'accounts') setCurrentPage('files');
       },
       (msg) => { setConnectError(msg); setConnecting(false); }
     );
@@ -99,8 +117,10 @@ export default function AppShell() {
 
   const handleFilenSuccess = (account: StoredAccount) => {
     setShowFilenLogin(false);
-    setAccounts((p) => [...p.filter((a) => a.id !== account.id), account]);
+    const updated = [...accounts.filter((a) => a.id !== account.id), account];
+    setAccounts(updated);
     setSelectedId(account.id);
+    if (currentPage === 'accounts') setCurrentPage('files');
   };
 
   const handleConnectFs = async () => {
@@ -114,12 +134,15 @@ export default function AppShell() {
     await upsertAccount(account);
     setAccounts((p) => [...p, account]);
     setSelectedId(account.id);
+    if (currentPage === 'accounts') setCurrentPage('files');
   };
 
   const handleDisconnect = async (id: string) => {
     await deleteAccount(id);
     await refresh();
-    if (selectedId === id) setSelectedId(accounts.find((a) => a.id !== id)?.id ?? null);
+    const remaining = accounts.filter((a) => a.id !== id);
+    if (selectedId === id) setSelectedId(remaining[0]?.id ?? null);
+    if (remaining.length === 0) setCurrentPage('accounts');
   };
 
   const handleExplorerDisconnect = async () => {
@@ -128,6 +151,7 @@ export default function AppShell() {
     const remaining = accounts.filter((a) => a.id !== selected.id);
     setAccounts(remaining);
     setSelectedId(remaining[0]?.id ?? null);
+    if (remaining.length === 0) setCurrentPage('accounts');
   };
 
   const navigateTo = (page: Page) => { setCurrentPage(page); setMenuOpen(false); };
@@ -148,6 +172,27 @@ export default function AppShell() {
     setCurrentPage('notebook');
   };
 
+  const handleOpenFile = (
+    account: StoredAccount,
+    item: CachedItem,
+    displayPath: string,
+    siblings?: CachedItem[],
+    siblingIdx?: number,
+  ) => {
+    setViewingFile({ account, item, displayPath, siblings, siblingIdx });
+  };
+
+  const handleFileNavigate = (item: CachedItem, siblingIdx: number) => {
+    if (!viewingFile) return;
+    setViewingFile({ ...viewingFile, item, siblingIdx });
+  };
+
+  const selectedLabel = selected
+    ? (selected.displayName ?? selected.email)
+    : null;
+
+  const isFilesPage = currentPage === 'files';
+
   return (
     <>
       {showFilenLogin && (
@@ -156,125 +201,167 @@ export default function AppShell() {
 
       {viewingFile && (
         <FileViewer
+          key={viewingFile.item.itemId}
           account={viewingFile.account}
           item={viewingFile.item}
           displayPath={viewingFile.displayPath}
+          siblings={viewingFile.siblings}
+          siblingIdx={viewingFile.siblingIdx}
           onClose={() => setViewingFile(null)}
           onOpenNotebook={handleOpenNotebook}
+          onNavigate={handleFileNavigate}
         />
       )}
 
-      <div className="container mx-auto p-6 max-w-7xl">
-        <header className="mb-8 flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Ayran Notes</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-1">Access and manage your cloud storage</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <ThemeToggle />
-            {/* Three-dots menu */}
-            <div className="relative">
+      <div className={isFilesPage ? 'h-screen flex flex-col overflow-hidden' : 'container mx-auto p-6 max-w-7xl'}>
+        {/* App header */}
+        <header className={`flex items-center gap-2 ${isFilesPage ? 'px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shrink-0' : 'mb-6'}`}>
+          <h1 className="text-lg font-bold text-gray-900 dark:text-white flex-1 truncate">Ayran Notes</h1>
+
+          {/* Account switcher (files page only) */}
+          {isFilesPage && accounts.length > 0 && (
+            <div ref={acctSwitcherRef} className="relative">
               <button
-                onClick={() => setMenuOpen((o) => !o)}
-                className="p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-                title="Options"
+                onClick={() => setAcctSwitcherOpen((o) => !o)}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors max-w-[200px]"
               >
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
-                  <circle cx="9" cy="3"  r="1.6"/>
-                  <circle cx="9" cy="9"  r="1.6"/>
-                  <circle cx="9" cy="15" r="1.6"/>
+                <span className="truncate">{selectedLabel ?? 'No account'}</span>
+                <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" className="shrink-0 opacity-60">
+                  <path d="M6 8L1 3h10z" />
                 </svg>
               </button>
-              {menuOpen && (
-                <Popover title="Navigation" onClose={() => setMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-[160px]">
-                  <div className="py-1">
-                    <button onClick={() => navigateTo('files')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'files' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                      Files
+              {acctSwitcherOpen && (
+                <div className="absolute left-0 top-full mt-1 z-50 min-w-[200px] max-w-[280px] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
+                  {accounts.map((a) => (
+                    <button key={a.id} onClick={() => { setSelectedId(a.id); setAcctSwitcherOpen(false); }}
+                      className={`w-full text-left px-3 py-2 text-sm truncate transition-colors ${a.id === selectedId ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-400 font-medium' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                      {a.displayName ?? a.email}
                     </button>
-                    <button onClick={() => navigateTo('notebooks')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'notebooks' || currentPage === 'notebook' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                      Notebooks
-                    </button>
-                    <button onClick={() => navigateTo('devtools')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                      DevTools
+                  ))}
+                  <div className="border-t border-gray-100 dark:border-gray-700 mt-1 pt-1">
+                    <button onClick={() => { setAcctSwitcherOpen(false); navigateTo('accounts'); }}
+                      className="w-full text-left px-3 py-2 text-sm text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                      Manage accounts…
                     </button>
                   </div>
-                </Popover>
+                </div>
               )}
             </div>
+          )}
+
+          <ThemeToggle />
+
+          {/* Three-dots menu */}
+          <div className="relative">
+            <button
+              onClick={() => setMenuOpen((o) => !o)}
+              className="p-1.5 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+              title="Options"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
+                <circle cx="9" cy="3"  r="1.6"/>
+                <circle cx="9" cy="9"  r="1.6"/>
+                <circle cx="9" cy="15" r="1.6"/>
+              </svg>
+            </button>
+            {menuOpen && (
+              <Popover title="Navigation" onClose={() => setMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-[160px]">
+                <div className="py-1">
+                  <button onClick={() => navigateTo('files')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'files' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    Files
+                  </button>
+                  <button onClick={() => navigateTo('notebooks')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'notebooks' || currentPage === 'notebook' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    Notebooks
+                  </button>
+                  <button onClick={() => navigateTo('accounts')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'accounts' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    Accounts
+                  </button>
+                  <button onClick={() => navigateTo('devtools')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    DevTools
+                  </button>
+                </div>
+              </Popover>
+            )}
           </div>
         </header>
 
-        {connectError && (
-          <div className="mb-5 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 rounded-lg text-sm">
-            Connection error: {connectError}
+        {/* Page content */}
+        {currentPage === 'accounts' && (
+          <div className="py-6 px-4 overflow-y-auto flex-1">
+            <ManageAccountsPage
+              accounts={accounts}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onDisconnect={handleDisconnect}
+              onConnectGoogle={handleConnectGoogle}
+              onConnectFilen={() => setShowFilenLogin(true)}
+              onConnectFs={handleConnectFs}
+              connectError={connectError}
+            />
           </div>
         )}
 
         {currentPage === 'notebooks' && (
-          <ManageNotebooksPage
-            onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
-          />
+          <div className="py-6 px-4 overflow-y-auto flex-1">
+            <ManageNotebooksPage
+              onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
+            />
+          </div>
         )}
 
         {currentPage === 'notebook' && notebookNavId && (
-          <NotebookPage
-            notebookId={notebookNavId}
-            onBack={() => setCurrentPage('notebooks')}
-            onDeleted={() => setCurrentPage('notebooks')}
-            onOpenedInNewWindow={() => setCurrentPage('notebooks')}
-          />
+          <div className="py-6 px-4 overflow-y-auto flex-1">
+            <NotebookPage
+              notebookId={notebookNavId}
+              onBack={() => setCurrentPage('notebooks')}
+              onDeleted={() => setCurrentPage('notebooks')}
+              onOpenedInNewWindow={() => setCurrentPage('notebooks')}
+            />
+          </div>
         )}
 
         {currentPage === 'notebook' && !notebookNavId && (
-          <ManageNotebooksPage
-            onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
-          />
+          <div className="py-6 px-4 overflow-y-auto flex-1">
+            <ManageNotebooksPage
+              onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
+            />
+          </div>
         )}
 
-        {currentPage === 'devtools' && <DevToolsPage />}
+        {currentPage === 'devtools' && (
+          <div className="py-6 px-4 overflow-y-auto flex-1">
+            <DevToolsPage />
+          </div>
+        )}
 
         {currentPage === 'files' && (
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-            <aside className="lg:col-span-1">
-              <AccountManager
-                accounts={accounts}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onDisconnect={handleDisconnect}
-                onConnectGoogle={handleConnectGoogle}
-                onConnectFilen={() => setShowFilenLogin(true)}
-                onConnectFs={handleConnectFs}
-              />
-            </aside>
-
-            <section className="lg:col-span-3">
-              {selected?.provider === 'google-drive' && (
-                <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })}
-                  onOpenNotebook={handleOpenNotebook} />
-              )}
-              {selected?.provider === 'filen' && (
-                <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onNeedsRelogin={() => setShowFilenLogin(true)}
-                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })}
-                  onOpenNotebook={handleOpenNotebook} />
-              )}
-              {selected?.provider === 'local-fs' && (
-                <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
-                  onOpenFile={(item, displayPath) => setViewingFile({ account: selected!, item, displayPath })}
-                  onOpenNotebook={handleOpenNotebook} />
-              )}
-              {!selected && (
-                <div className="flex flex-col items-center justify-center h-64 text-center text-gray-400 dark:text-gray-500 border-2 border-dashed border-gray-200 dark:border-gray-700 rounded-xl">
-                  <svg className="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-                      d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                  </svg>
-                  <p className="text-lg font-medium">No storage connected</p>
-                  <p className="text-sm mt-1">Connect a Google account, sign in to Filen, or open a local folder</p>
-                </div>
-              )}
-            </section>
+          <div className="flex-1 overflow-hidden">
+            {selected?.provider === 'google-drive' && (
+              <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
+                onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
+                onOpenNotebook={handleOpenNotebook} />
+            )}
+            {selected?.provider === 'filen' && (
+              <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
+                onNeedsRelogin={() => setShowFilenLogin(true)}
+                onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
+                onOpenNotebook={handleOpenNotebook} />
+            )}
+            {selected?.provider === 'local-fs' && (
+              <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
+                onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
+                onOpenNotebook={handleOpenNotebook} />
+            )}
+            {!selected && (
+              <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 dark:text-gray-500 p-8">
+                <svg className="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                </svg>
+                <p className="text-lg font-medium">No storage connected</p>
+                <p className="text-sm mt-1">Connect an account in <button onClick={() => navigateTo('accounts')} className="underline hover:text-gray-600 dark:hover:text-gray-300">Accounts</button></p>
+              </div>
+            )}
           </div>
         )}
       </div>

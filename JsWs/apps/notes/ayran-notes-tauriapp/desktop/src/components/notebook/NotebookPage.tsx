@@ -389,24 +389,24 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       {/* Header */}
       {showHeader && (
         <div
-          className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-6 py-3 shrink-0"
+          className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-2 shrink-0"
           onContextMenu={handleContextMenu}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <NotebookIcon />
             <div className="flex-1 min-w-0">
-              <p className="font-semibold text-gray-900 dark:text-white truncate">
+              <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">
                 {entry?.title || '(Untitled notebook)'}
               </p>
               {(entry?.description || entry?.displayPath) && (
-                <p className={`text-xs truncate mt-0.5 ${entry?.description ? 'text-gray-500 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500 italic'}`}>
+                <p className={`text-xs truncate ${entry?.description ? 'text-gray-500 dark:text-gray-400' : 'text-gray-400 dark:text-gray-500 italic'}`}>
                   {entry?.description ?? entry?.displayPath}
                 </p>
               )}
             </div>
             <button
               onClick={() => setShowHeader(false)}
-              className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+              className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-xs"
             >
               ✕
             </button>

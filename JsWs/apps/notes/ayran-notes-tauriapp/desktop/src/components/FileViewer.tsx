@@ -29,6 +29,9 @@ interface Props {
   onClose: () => void;
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string }) => void;
   displayPath?: string;
+  siblings?: CachedItem[];
+  siblingIdx?: number;
+  onNavigate?: (item: CachedItem, siblingIdx: number) => void;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -56,7 +59,7 @@ function fileIcon(mode: Mode): string {
   }
 }
 
-export default function FileViewer({ account, item, onClose, onOpenNotebook, displayPath }: Props) {
+export default function FileViewer({ account, item, onClose, onOpenNotebook, displayPath, siblings, siblingIdx, onNavigate }: Props) {
   const mode = detectMode(item);
 
   // Filen creates a new UUID on every overwrite; track the live item ID here.
@@ -384,6 +387,12 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
 
   // ── Shared header bar ────────────────────────────────────────────────────────
 
+  const hasSiblings = siblings && siblings.length > 1 && siblingIdx != null && siblingIdx >= 0;
+  const canPrev = hasSiblings && siblingIdx! > 0;
+  const canNext = hasSiblings && siblingIdx! < siblings!.length - 1;
+  const goToPrev = () => { if (canPrev) onNavigate?.(siblings![siblingIdx! - 1], siblingIdx! - 1); };
+  const goToNext = () => { if (canNext) onNavigate?.(siblings![siblingIdx! + 1], siblingIdx! + 1); };
+
   const HeaderBar = ({ right }: { right?: React.ReactNode }) => (
     <div className="flex items-center px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 gap-2 shrink-0">
       <button onClick={onClose}
@@ -391,6 +400,24 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         ← Back
       </button>
       <span className="text-gray-300 dark:text-gray-600 shrink-0">|</span>
+      {hasSiblings && (
+        <>
+          <button onClick={goToPrev} disabled={!canPrev} title="Previous"
+            className="p-1 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9,2 4,7 9,12" />
+            </svg>
+          </button>
+          <span className="text-xs text-gray-400 dark:text-gray-500 shrink-0 tabular-nums">{siblingIdx! + 1}/{siblings!.length}</span>
+          <button onClick={goToNext} disabled={!canNext} title="Next"
+            className="p-1 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed transition-colors shrink-0">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="5,2 10,7 5,12" />
+            </svg>
+          </button>
+          <span className="text-gray-300 dark:text-gray-600 shrink-0">|</span>
+        </>
+      )}
       <span className="shrink-0">{fileIcon(mode)}</span>
       <span className="font-medium text-gray-900 dark:text-white truncate min-w-0 flex-1">{item.name}</span>
       <div className="flex items-center gap-2 shrink-0">

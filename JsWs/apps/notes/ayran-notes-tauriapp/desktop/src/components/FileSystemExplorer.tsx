@@ -8,6 +8,9 @@ import { deleteAccount } from '../lib/account-store';
 import PaginationBar from './PaginationBar';
 import NewNotebookModal from './NewNotebookModal';
 import ThumbnailImage from './ThumbnailImage';
+import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
+import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
+import { UploadIcon, FolderPlusIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
 import config from '../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
@@ -15,7 +18,7 @@ const PAGE_SIZE = config.defaultListPageSize;
 interface Props {
   account: StoredAccount;
   onDisconnect: () => void;
-  onOpenFile: (item: CachedItem, displayPath: string) => void;
+  onOpenFile: (item: CachedItem, displayPath: string, siblings?: CachedItem[], siblingIdx?: number) => void;
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
 }
 
@@ -46,6 +49,23 @@ function formatSize(bytes: number | null): string {
 function isImageItem(item: CachedItem): boolean {
   const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
   return ['jpg','jpeg','png','gif','webp','bmp','avif'].includes(ext);
+}
+
+type MediaMode = 'image' | 'audio' | 'video' | 'other';
+function getItemMode(item: CachedItem): MediaMode {
+  if (item.isDir) return 'other';
+  const ext = item.name.split('.').pop()?.toLowerCase() ?? '';
+  if (['jpg','jpeg','png','gif','webp','svg','avif','bmp','ico'].includes(ext)) return 'image';
+  if (['mp3','wav','ogg','flac','m4a','aac','opus'].includes(ext)) return 'audio';
+  if (['mp4','mkv','avi','mov','webm','m4v'].includes(ext)) return 'video';
+  return 'other';
+}
+
+function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings: CachedItem[]; siblingIdx: number } {
+  const mode = getItemMode(item);
+  if (mode === 'other') return { siblings: [], siblingIdx: -1 };
+  const siblings = allItems.filter((i) => !i.isDir && getItemMode(i) === mode);
+  return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
 const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
@@ -97,8 +117,20 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
 
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const [rowCtxMenu, setRowCtxMenu] = useState<{ x: number; y: number; item: CachedItem } | null>(null);
+  const [crumbCtx, setCrumbCtx] = useState<{ x: number; y: number } | null>(null);
+  const [ancestorsConfig, setAncestorsConfig] = useState<{ entries: AncestorEntry[]; onNavigate: (i: number) => void } | null>(null);
+  const [showChangePath, setShowChangePath] = useState(false);
+  const [lastOpenedId, setLastOpenedId] = useState<string | null>(null);
+  const [headerCollapsed, setHeaderCollapsed] = useState(false);
+
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
     || !!copyingPath || !!movingPath;
+
+  const handleListScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!headerCollapsed && e.currentTarget.scrollTop > 40) setHeaderCollapsed(true);
+  };
 
   // ── Persist state to localStorage whenever anything changes ──────────────────
   useEffect(() => {
@@ -338,6 +370,40 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     void loadDir(currentPath, true, 0, search, sortBy, ascending);
   };
 
+  const handleNavigateUp = () => {
+    if (breadcrumbs.length <= 1) return;
+    navigateTo(breadcrumbs.length - 2);
+  };
+
+  const handleChangePath = async (pathStr: string) => {
+    const trimmed = pathStr.trim();
+    if (!trimmed) return;
+    try {
+      await invoke('list_folder', { accountId: account.id, parentId: trimmed, force: false });
+    } catch {
+      throw new Error(`Cannot access "${trimmed}". Check the path and try again.`);
+    }
+    const name = trimmed.split(/[/\\]/).pop() ?? trimmed;
+    const newCrumbs = trimmed === rootPath
+      ? [{ name: account.displayName ?? name, path: rootPath }]
+      : [{ name: account.displayName ?? rootPath.split(/[/\\]/).pop() ?? rootPath, path: rootPath }, { name, path: trimmed }];
+    navigate(trimmed, newCrumbs);
+  };
+
+  const openAncestorsForItem = (item: CachedItem) => {
+    setAncestorsConfig({
+      entries: [
+        ...breadcrumbs.map(b => ({ name: b.name, navigable: true })),
+        { name: item.name, navigable: item.isDir },
+      ],
+      onNavigate: (i) => {
+        setAncestorsConfig(null);
+        if (i < breadcrumbs.length) navigateTo(i);
+        else if (item.isDir) openDir(item);
+      },
+    });
+  };
+
   const sortBtn = (col: SortBy, label: string) => (
     <button
       onClick={() => handleSort(col)}
@@ -373,27 +439,44 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   return (
     <>
       {showNewNb && <NewNotebookModal onConfirm={handleCreateNotebook} onClose={() => setShowNewNb(false)} />}
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700">
-        <div className="p-4 border-b border-gray-100 dark:border-gray-700 space-y-3">
+      <div className="h-full flex flex-col bg-white dark:bg-gray-900 overflow-hidden">
+        {/* Full collapsible header */}
+        <div className={`shrink-0 border-b border-gray-200 dark:border-gray-700 overflow-hidden transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-[400px] opacity-100'}`}>
+        <div className="px-3 py-2 space-y-2">
         <div className="flex items-center gap-2">
           <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">Local file system</span>
-          <div className="ml-auto flex items-center gap-2">
-            {onOpenNotebook && (
-              <button onClick={() => setShowNewNb(true)} disabled={anyBusy} className="px-3 py-1 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors">+ Notebook</button>
-            )}
-            <button onClick={handleNewFolder} disabled={creatingFolder} className="px-3 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">{creatingFolder ? 'Creating…' : '+ New folder'}</button>
-            <button onClick={handlePickAndUpload} className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Upload file</button>
+          <div className="ml-auto flex items-center gap-1.5">
+            {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400 mr-1">✓ Cache cleared</span>}
+            <button onClick={handleNewFolder} disabled={creatingFolder} title={creatingFolder ? 'Creating…' : 'New folder'} className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
+              <FolderPlusIcon className="w-4 h-4"/>
+            </button>
+            <button onClick={handlePickAndUpload} title="Upload file" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors">
+              <UploadIcon className="w-4 h-4"/>
+            </button>
             <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
-            {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cache cleared</span>}
             <button onClick={() => setViewMode(m => m === 'list' ? 'thumbnails' : 'list')} title={viewMode === 'list' ? 'Thumbnail view' : 'List view'} className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">{viewMode === 'list' ? '⊞' : '≡'}</button>
             <div className="relative flex items-center">
               <button onClick={handleRefresh} disabled={loading} title="Refresh" className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600">↻</button>
-              <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="More options" className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
+              <button onClick={() => setMenuOpen((o) => !o)} disabled={loading} title="Cache options" className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">▾</button>
               {menuOpen && (
                 <Popover title="Options" onClose={() => setMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
                   <div className="py-1">
                     <button onClick={handleHardRefresh} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Hard refresh</button>
                     <button onClick={handleClearCache} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Clear cached listing</button>
+                  </div>
+                </Popover>
+              )}
+            </div>
+            <div className="relative">
+              <button onClick={() => setMoreMenuOpen(o => !o)} title="More options" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                <DotsHorizontalIcon className="w-4 h-4"/>
+              </button>
+              {moreMenuOpen && (
+                <Popover title="More" onClose={() => setMoreMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
+                  <div className="py-1">
+                    {onOpenNotebook && (
+                      <button onClick={() => { setMoreMenuOpen(false); setShowNewNb(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📓 Create Notebook</button>
+                    )}
                   </div>
                 </Popover>
               )}
@@ -408,14 +491,22 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           {search && <button type="button" onClick={handleClearSearch} className="px-3 py-1.5 bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 text-sm rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600">Clear</button>}
         </form>
         <div className="flex items-center justify-between">
-          <nav className="flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400">
-            {breadcrumbs.map((c, i) => (
-              <span key={c.path} className="flex items-center gap-1">
-                {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
-                <button onClick={() => navigateTo(i)} className={i === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-medium' : 'hover:text-blue-600 dark:hover:text-blue-400'}>{c.name}</button>
-              </span>
-            ))}
-          </nav>
+          <div className="flex items-center gap-1 min-w-0 flex-1">
+            <button onClick={handleNavigateUp} disabled={breadcrumbs.length <= 1} title="Parent folder" className="p-1 shrink-0 rounded text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors">
+              <ArrowUpIcon/>
+            </button>
+            <nav
+              className="flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400 min-w-0"
+              onContextMenu={(e) => { e.preventDefault(); setCrumbCtx({ x: e.clientX, y: e.clientY }); }}
+            >
+              {breadcrumbs.map((c, i) => (
+                <span key={c.path} className="flex items-center gap-1">
+                  {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
+                  <button onClick={() => navigateTo(i)} className={i === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-medium' : 'hover:text-blue-600 dark:hover:text-blue-400'}>{c.name}</button>
+                </span>
+              ))}
+            </nav>
+          </div>
           <div className="flex items-center gap-1">
             {entries.length > 0 && (
               <input type="checkbox" checked={allSelected}
@@ -426,15 +517,46 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
             {sortBtn('name', 'Name')}{sortBtn('size', 'Size')}{sortBtn('modified', 'Date')}
           </div>
         </div>
-      </div>
-      <div className="p-4 min-h-48">
+        </div>
+        </div>{/* end collapsible full header */}
+
+        {/* Mini header — shown only when full header is collapsed */}
+        {headerCollapsed && (
+          <div className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+            <button onClick={handleNavigateUp} disabled={breadcrumbs.length <= 1} title="Parent folder" className="p-1 shrink-0 rounded text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors">
+              <ArrowUpIcon/>
+            </button>
+            <nav
+              className="flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400 min-w-0 flex-1"
+              onContextMenu={(e) => { e.preventDefault(); setCrumbCtx({ x: e.clientX, y: e.clientY }); }}
+            >
+              {breadcrumbs.map((c, i) => (
+                <span key={c.path} className="flex items-center gap-1">
+                  {i > 0 && <span className="text-gray-300 dark:text-gray-600">/</span>}
+                  <button onClick={() => navigateTo(i)} className={i === breadcrumbs.length - 1 ? 'text-gray-800 dark:text-gray-200 font-medium text-xs' : 'hover:text-blue-600 dark:hover:text-blue-400 text-xs'}>{c.name}</button>
+                </span>
+              ))}
+            </nav>
+            <button
+              onClick={() => setHeaderCollapsed(false)}
+              title="Show toolbar"
+              className="shrink-0 px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+            >
+              ↑ Toolbar
+            </button>
+          </div>
+        )}
+
+        {/* Scrollable list */}
+        <div className="flex-1 overflow-y-auto" onScroll={handleListScroll}>
+        <div className="px-3 py-2">
         {selectedIds.size > 0 && (
           <div className="mb-3 flex items-center gap-3 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
             <span className="font-medium text-blue-700 dark:text-blue-300">{selectedIds.size} selected</span>
             <div className="flex gap-1 ml-auto">
-              {!selectedHasDir && <button onClick={handleBulkCopy} className="px-2 py-1 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded transition-colors">Copy</button>}
-              <button onClick={handleBulkMove} className="px-2 py-1 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 rounded transition-colors">Move</button>
-              <button onClick={handleBulkDelete} className="px-2 py-1 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors">Delete</button>
+              {!selectedHasDir && <button onClick={handleBulkCopy} title="Copy selected" className="p-1.5 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 transition-colors"><CopyFilesIcon/></button>}
+              <button onClick={handleBulkMove} title="Move selected" className="p-1.5 rounded text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-900/30 transition-colors"><MoveArrowIcon/></button>
+              <button onClick={handleBulkDelete} title="Delete selected" className="p-1.5 rounded text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"><TrashIcon/></button>
               <button onClick={() => setSelectedIds(new Set())} className="px-2 py-1 text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors">✕</button>
             </div>
           </div>
@@ -451,8 +573,9 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-3">
             {entries.map((item) => (
               <div key={item.itemId}
-                className={`flex flex-col items-center gap-1 p-2 rounded-lg cursor-pointer border ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700' : 'bg-white dark:bg-gray-800 border-transparent hover:bg-gray-100 dark:hover:bg-gray-700'}`}
-                onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; item.isDir ? openDir(item) : onOpenFile(item, item.itemId); }}>
+                className={`flex flex-col items-center gap-1 p-2 rounded-lg cursor-pointer border ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700' : !item.isDir && item.itemId === lastOpenedId ? 'ring-2 ring-blue-400 dark:ring-blue-500 bg-blue-50 dark:bg-blue-900/20 border-transparent' : 'bg-white dark:bg-gray-800 border-transparent hover:bg-gray-100 dark:hover:bg-gray-700'}`}
+                onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, item.itemId, s.siblings, s.siblingIdx); } }; }}
+                onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                 {!item.isDir && isImageItem(item)
                   ? <ThumbnailImage accountId={account.id} itemId={item.itemId} size={item.size} />
                   : <div className="w-20 h-20 flex items-center justify-center text-4xl select-none">{fileIcon(item)}</div>}
@@ -469,8 +592,9 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
                 || downloadingPath === item.itemId || deletingPath === item.itemId;
               return (
                 <div key={item.itemId}
-                  className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
-                  onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; item.isDir ? openDir(item) : onOpenFile(item, item.itemId); }}>
+                  className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, item.itemId, s.siblings, s.siblingIdx); } }; }}
+                  onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                   <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
                     onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey, e.shiftKey && selectedIds.has(item.itemId)); }}
                     onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleCheck(idx, true, selectedIds.has(item.itemId)); }}
@@ -478,7 +602,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
                     className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                   <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                   <div className="flex-1 min-w-0">
-                    <button onClick={() => item.isDir ? openDir(item) : onOpenFile(item, item.itemId)}
+                    <button onClick={() => { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, item.itemId, s.siblings, s.siblingIdx); } }}
                       className={`text-sm font-medium truncate block text-left w-full hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer ${item.isDir ? '' : 'text-gray-800 dark:text-gray-200'}`}>
                       {item.name}
                     </button>
@@ -487,13 +611,13 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
                       {item.modifiedMs != null && new Date(item.modifiedMs).toLocaleDateString()}
                     </p>
                   </div>
-                  <div className={`flex gap-2 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
-                    {!item.isDir && <button onClick={() => handleEdit(item)} disabled={anyBusy} className="text-xs text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-300 disabled:opacity-50">{editingPath === item.itemId ? 'Editing…' : 'Edit'}</button>}
-                    <button onClick={() => handleRename(item)} disabled={anyBusy} className="text-xs text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-50">{renamingPath === item.itemId ? 'Renaming…' : 'Rename'}</button>
-                    {!item.isDir && <button onClick={() => handleCopy(item)} disabled={anyBusy} className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 disabled:opacity-50">{copyingPath === item.itemId ? 'Copying…' : 'Copy'}</button>}
-                    <button onClick={() => handleMove(item)} disabled={anyBusy} className="text-xs text-purple-600 dark:text-purple-400 hover:text-purple-800 dark:hover:text-purple-300 disabled:opacity-50">{movingPath === item.itemId ? 'Moving…' : 'Move'}</button>
-                    {!item.isDir && <button onClick={() => handleDownload(item)} disabled={anyBusy} className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-300 disabled:opacity-50">{downloadingPath === item.itemId ? 'Downloading…' : 'Download'}</button>}
-                    <button onClick={() => handleDelete(item)} disabled={anyBusy} className="text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 disabled:opacity-50">{deletingPath === item.itemId ? 'Deleting…' : 'Delete'}</button>
+                  <div className={`flex gap-0.5 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
+                    {!item.isDir && <button onClick={() => handleEdit(item)} disabled={anyBusy} title={editingPath === item.itemId ? 'Editing…' : 'Edit'} className="p-1 rounded text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/30 disabled:opacity-50 transition-colors"><PencilIcon/></button>}
+                    <button onClick={() => handleRename(item)} disabled={anyBusy} title={renamingPath === item.itemId ? 'Renaming…' : 'Rename'} className="p-1 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"><TypeCursorIcon/></button>
+                    {!item.isDir && <button onClick={() => handleCopy(item)} disabled={anyBusy} title={copyingPath === item.itemId ? 'Copying…' : 'Copy'} className="p-1 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 disabled:opacity-50 transition-colors"><CopyFilesIcon/></button>}
+                    <button onClick={() => handleMove(item)} disabled={anyBusy} title={movingPath === item.itemId ? 'Moving…' : 'Move'} className="p-1 rounded text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 disabled:opacity-50 transition-colors"><MoveArrowIcon/></button>
+                    {!item.isDir && <button onClick={() => handleDownload(item)} disabled={anyBusy} title={downloadingPath === item.itemId ? 'Downloading…' : 'Download'} className="p-1 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-50 transition-colors"><DownloadArrowIcon/></button>}
+                    <button onClick={() => handleDelete(item)} disabled={anyBusy} title={deletingPath === item.itemId ? 'Deleting…' : 'Delete'} className="p-1 rounded text-red-500 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50 transition-colors"><TrashIcon/></button>
                   </div>
                 </div>
               );
@@ -501,8 +625,49 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           </div>
         )}
       </div>
-      <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
-    </div>
+        </div>{/* end scrollable list */}
+        <div className="shrink-0"><PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} /></div>
+      </div>
+
+      {rowCtxMenu && (() => {
+        const item = rowCtxMenu.item;
+        const ctxBtn = "w-full text-left px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors";
+        return (
+          <Popover title={item.name} onClose={() => setRowCtxMenu(null)} panelStyle={{ left: rowCtxMenu.x, top: rowCtxMenu.y }}>
+            <div className="py-1 min-w-[180px]">
+              {!item.isDir && <button onClick={() => { setRowCtxMenu(null); handleEdit(item); }} disabled={anyBusy} className={ctxBtn}><PencilIcon className="w-3.5 h-3.5 shrink-0 text-green-600 dark:text-green-400"/>Edit</button>}
+              <button onClick={() => { setRowCtxMenu(null); handleRename(item); }} disabled={anyBusy} className={ctxBtn}><TypeCursorIcon className="w-3.5 h-3.5 shrink-0 text-gray-500 dark:text-gray-400"/>Rename</button>
+              {!item.isDir && <button onClick={() => { setRowCtxMenu(null); handleCopy(item); }} disabled={anyBusy} className={ctxBtn}><CopyFilesIcon className="w-3.5 h-3.5 shrink-0 text-indigo-600 dark:text-indigo-400"/>Copy to…</button>}
+              <button onClick={() => { setRowCtxMenu(null); handleMove(item); }} disabled={anyBusy} className={ctxBtn}><MoveArrowIcon className="w-3.5 h-3.5 shrink-0 text-purple-600 dark:text-purple-400"/>Move to…</button>
+              {!item.isDir && <button onClick={() => { setRowCtxMenu(null); handleDownload(item); }} disabled={anyBusy} className={ctxBtn}><DownloadArrowIcon className="w-3.5 h-3.5 shrink-0 text-blue-600 dark:text-blue-400"/>Download</button>}
+              <button onClick={() => { setRowCtxMenu(null); handleDelete(item); }} disabled={anyBusy} className={ctxBtn}><TrashIcon className="w-3.5 h-3.5 shrink-0 text-red-500 dark:text-red-400"/>Delete</button>
+              <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
+              <button onClick={() => { setRowCtxMenu(null); openAncestorsForItem(item); }} className={ctxBtn}><AncestorsIcon className="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500"/>Show ancestors</button>
+            </div>
+          </Popover>
+        );
+      })()}
+
+      {crumbCtx && (
+        <Popover title="Location" onClose={() => setCrumbCtx(null)} panelStyle={{ left: crumbCtx.x, top: crumbCtx.y }}>
+          <div className="py-1 min-w-[160px]">
+            <button onClick={() => { setCrumbCtx(null); setAncestorsConfig({ entries: breadcrumbs.map(b => ({ name: b.name, navigable: true })), onNavigate: (i) => { setAncestorsConfig(null); navigateTo(i); } }); }} className="w-full text-left px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"><AncestorsIcon className="w-3.5 h-3.5 shrink-0"/>Show ancestors</button>
+            <button onClick={() => { setCrumbCtx(null); setShowChangePath(true); }} className="w-full text-left px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">📂 Change path</button>
+          </div>
+        </Popover>
+      )}
+
+      {ancestorsConfig && (
+        <BreadcrumbAncestorsModal entries={ancestorsConfig.entries} onNavigate={ancestorsConfig.onNavigate} onClose={() => setAncestorsConfig(null)} />
+      )}
+      {showChangePath && (
+        <BreadcrumbChangePathModal
+          defaultValue={currentPath}
+          placeholder={`e.g. C:\\Users\\Documents`}
+          onNavigate={handleChangePath}
+          onClose={() => setShowChangePath(false)}
+        />
+      )}
     </>
   );
 }

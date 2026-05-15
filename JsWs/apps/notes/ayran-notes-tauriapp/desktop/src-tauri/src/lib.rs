@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::sync::OnceLock;
 use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -40,12 +41,41 @@ pub struct StoredAccount {
     pub path: Option<String>,
 }
 
+// ── App environment (DEV / PROD) ──────────────────────────────────────────────
+
+static APP_ENV: OnceLock<String> = OnceLock::new();
+
+#[derive(Deserialize)]
+struct AppConfigEnv {
+    #[serde(default = "default_env")]
+    env: String,
+}
+fn default_env() -> String { "PROD".to_string() }
+
+fn read_config_env(app: &tauri::AppHandle) -> String {
+    let path = match app.path().resource_dir() {
+        Ok(d) => d.join("config.json"),
+        Err(_) => return "PROD".to_string(),
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else { return "PROD".to_string() };
+    let Ok(cfg) = serde_json::from_str::<AppConfigEnv>(&content) else { return "PROD".to_string() };
+    cfg.env
+}
+
+/// Returns the base data directory for all app files.
+/// When env != "PROD", data is isolated under {app_data}/env/{ENV}/.
+pub(crate) fn app_base_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let env = APP_ENV.get().map(|s| s.as_str()).unwrap_or("PROD");
+    if env == "PROD" {
+        Ok(base)
+    } else {
+        Ok(base.join("env").join(env))
+    }
+}
+
 pub(crate) fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("accounts.dat"))
+    Ok(app_base_dir(app)?.join("accounts.dat"))
 }
 
 pub(crate) fn load_accounts(app: &tauri::AppHandle) -> Result<HashMap<String, StoredAccount>, String> {
@@ -631,7 +661,7 @@ async fn open_file_inner(
         return Ok(item_id.to_string());
     }
 
-    let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
+    let c_dir = app_base_dir(app)?.join("c");
     let acct_dir = account_content_cache_dir(&c_dir, account)?;
 
     let known_rel = {
@@ -765,7 +795,7 @@ async fn get_thumbnail(
         .ok_or_else(|| format!("Account '{}' not found", account_id))?
         .clone();
 
-    let t_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("t");
+    let t_dir = app_base_dir(&app)?.join("t");
     let thumb_path = thumbnail_path_for_item(&t_dir, &account, &item_id, &cache_state.0)?;
 
     if thumb_path.exists() {
@@ -805,7 +835,7 @@ async fn save_text_file(
     }
 
     // Cloud: write to cache then upload.
-    let c_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("c");
+    let c_dir = app_base_dir(&app)?.join("c");
     let acct_dir = account_content_cache_dir(&c_dir, &account)?;
     // Use the persistent content-cache index first so path is stable across restarts.
     let rel_str: String = {
@@ -906,7 +936,7 @@ fn delete_cached_file(
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
     if let Some(rel) = cache::get_content_cache_path(&conn, &account_id, &item_id) {
         if let (Ok(c_dir), Ok(accounts)) = (
-            app.path().app_data_dir().map(|d| d.join("c")),
+            app_base_dir(&app).map(|d| d.join("c")),
             load_accounts(&app),
         ) {
             if let Some(account) = accounts.get(&account_id) {
@@ -935,7 +965,7 @@ fn uncache_item(
     if let Ok(accounts) = load_accounts(&app) {
         if let Some(account) = accounts.get(&account_id) {
             if account.provider != "local-fs" {
-                if let Ok(c_dir) = app.path().app_data_dir().map(|d| d.join("c")) {
+                if let Ok(c_dir) = app_base_dir(&app).map(|d| d.join("c")) {
                     if let Some(acct_dir) = find_account_cache_dir(&c_dir, account) {
                         let root = account_root_parent_id(account);
                         let parts = cache::item_path_from_root(&conn, &account_id, &item_id, &root);
@@ -1119,6 +1149,10 @@ pub fn run() {
             std::collections::HashMap::new(),
         )))
         .setup(|app| {
+            // Read env from bundled config.json (must run before any path is resolved).
+            let env = read_config_env(&app.handle());
+            APP_ENV.get_or_init(|| env);
+
             // Restore Filen sessions from disk.
             {
                 let state = app.state::<filen::FilenSessions>();
@@ -1126,10 +1160,7 @@ pub fn run() {
                 filen::load_persisted(&app.handle(), &mut sessions);
             }
             // Open (or create) the SQLite folder-cache database.
-            let data_dir = app
-                .path()
-                .app_data_dir()
-                .expect("app data dir unavailable");
+            let data_dir = app_base_dir(&app.handle()).expect("app data dir unavailable");
             std::fs::create_dir_all(&data_dir).ok();
             let db = cache::open(&data_dir).expect("failed to open folder cache DB");
             // Purge rows that are too old to be useful — catches orphans that

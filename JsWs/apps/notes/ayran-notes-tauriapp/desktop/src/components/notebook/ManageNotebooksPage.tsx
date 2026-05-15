@@ -249,8 +249,8 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
   };
 
   return (
-    <div className="space-y-4">
-      <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Notebooks</h2>
+    <div className="space-y-3">
+      <h2 className="text-base font-semibold text-gray-900 dark:text-white">Notebooks</h2>
 
       {/* Context menu */}
       {ctxMenu && (
@@ -337,7 +337,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
                 onClick={() => { void handleRowClick(nb); }}
                 onContextMenu={(e) => handleContextMenu(e, nb)}
                 className={[
-                  'flex items-start gap-3 px-4 py-3 rounded-lg cursor-pointer transition-colors',
+                  'flex items-center gap-2 px-3 py-1.5 rounded-lg cursor-pointer transition-colors',
                   'border',
                   isOpen
                     ? 'bg-emerald-50 dark:bg-emerald-900/10 border-l-4 border-emerald-500 border-t-gray-100 border-r-gray-100 border-b-gray-100 dark:border-t-gray-700 dark:border-r-gray-700 dark:border-b-gray-700'
@@ -347,7 +347,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
                   dragOverIdx === idx ? 'border-t-2 border-blue-500' : '',
                 ].join(' ')}
               >
-                <div className="mt-0.5">
+                <div className="shrink-0">
                   <NotebookIcon />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -361,7 +361,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
                   )}
                 </div>
                 {isOpen && (
-                  <div className="shrink-0 flex items-center gap-1.5 mt-0.5">
+                  <div className="shrink-0 flex items-center gap-1.5">
                     <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-900/30 px-1.5 py-0.5 rounded">
                       ↗ open
                     </span>

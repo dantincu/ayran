@@ -1,4 +1,5 @@
 {
+  "env": "DEV",
   "defaultListPageSize": 100,
   "notebookFileName": "[note-book].json",
   "thumbnailMaxConcurrent": 4,

@@ -49,8 +49,7 @@ impl From<&FilenSession> for StoredSession {
 }
 
 fn sessions_path(app: &tauri::AppHandle) -> std::path::PathBuf {
-    app.path()
-        .app_data_dir()
+    crate::app_base_dir(app)
         .expect("app data dir unavailable")
         .join("filen_sessions.dat")
 }
