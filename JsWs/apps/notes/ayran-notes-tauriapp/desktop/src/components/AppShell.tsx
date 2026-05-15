@@ -6,13 +6,13 @@ import type { StoredAccount, CachedItem } from '../types';
 import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store';
 import { connectGoogleDrive } from '../lib/google-auth';
 import { addNotebook } from '../lib/notebooks-db';
+import { useTheme } from '../hooks/useTheme';
 import ManageAccountsPage from './ManageAccountsPage';
 import GoogleDriveExplorer from './explorer/GoogleDriveExplorer';
 import FilenExplorer from './explorer/FilenExplorer';
 import FileSystemExplorer from './explorer/FileSystemExplorer';
 import FilenLoginModal from './FilenLoginModal';
 import FileViewer from './explorer/FileViewer';
-import ThemeToggle from './ThemeToggle';
 import DevToolsPage from './devTools/DevToolsPage';
 import ManageNotebooksPage from './notebook/ManageNotebooksPage';
 import NotebookPage from './notebook/NotebookPage';
@@ -45,6 +45,8 @@ export default function AppShell() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [acctSwitcherOpen, setAcctSwitcherOpen] = useState(false);
   const [explorerCompact, setExplorerCompact] = useState(false);
+  const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
+  const { theme, toggleTheme } = useTheme();
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -208,16 +210,16 @@ export default function AppShell() {
           displayPath={viewingFile.displayPath}
           siblings={viewingFile.siblings}
           siblingIdx={viewingFile.siblingIdx}
-          onClose={() => setViewingFile(null)}
+          onClose={() => { setHighlightItemId(viewingFile.item.itemId); setViewingFile(null); }}
           onOpenNotebook={handleOpenNotebook}
           onNavigate={handleFileNavigate}
         />
       )}
 
-      <div className={isFilesPage ? 'h-screen flex flex-col overflow-hidden' : 'container mx-auto p-6 max-w-7xl'}>
-        {/* App header — fades with the explorer toolbar when compact */}
-        <div className={isFilesPage ? `shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 ${explorerCompact ? 'max-h-0 opacity-0' : 'max-h-[80px] opacity-100'}` : ''}>
-        <header className={`flex items-center gap-2 ${isFilesPage ? 'px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900' : 'mb-6'}`}>
+      <div className="h-screen flex flex-col overflow-hidden">
+        {/* App header — same height on all pages; fades out when explorer is compact */}
+        <div className={`shrink-0 transition-[max-height,opacity] duration-200 ${isFilesPage && explorerCompact ? 'max-h-0 opacity-0 overflow-hidden' : 'max-h-[80px] opacity-100 overflow-visible'}`}>
+        <header className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shrink-0">
           <h1 className="text-lg font-bold text-gray-900 dark:text-white flex-1 truncate">Ayran Notes</h1>
 
           {/* Account switcher (files page only) */}
@@ -251,8 +253,6 @@ export default function AppShell() {
             </div>
           )}
 
-          <ThemeToggle />
-
           {/* Three-dots menu */}
           <div className="relative">
             <button
@@ -280,6 +280,14 @@ export default function AppShell() {
                   </button>
                   <button onClick={() => navigateTo('devtools')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
                     DevTools
+                  </button>
+                  <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
+                  <button onClick={() => { setMenuOpen(false); toggleTheme(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
+                    {theme === 'dark'
+                      ? <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                      : <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+                    }
+                    {theme === 'dark' ? 'Light mode' : 'Dark mode'}
                   </button>
                 </div>
               </Popover>
@@ -342,18 +350,21 @@ export default function AppShell() {
             {selected?.provider === 'google-drive' && (
               <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                 onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
-                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact} />
+                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact}
+                highlightItemId={highlightItemId ?? undefined} />
             )}
             {selected?.provider === 'filen' && (
               <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                 onNeedsRelogin={() => setShowFilenLogin(true)}
                 onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
-                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact} />
+                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact}
+                highlightItemId={highlightItemId ?? undefined} />
             )}
             {selected?.provider === 'local-fs' && (
               <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                 onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
-                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact} />
+                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact}
+                highlightItemId={highlightItemId ?? undefined} />
             )}
             {!selected && (
               <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 dark:text-gray-500 p-8">

@@ -27,6 +27,7 @@ interface Props {
   onOpenFile: (item: CachedItem, displayPath: string, siblings?: CachedItem[], siblingIdx?: number) => void;
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
   onCompactChange?: (compact: boolean) => void;
+  highlightItemId?: string;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -79,7 +80,7 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange }: Props) {
+export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId }: Props) {
   const navKey = `notes-gdrive-nav-${account.id}`;
 
   const savedNav = useMemo(() => {
@@ -157,6 +158,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
   useEffect(() => { localStorage.setItem(`notes-autohide-${account.id}`, String(autoHide)); }, [autoHide, account.id]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { onCompactChange?.(headerCollapsed); }, [headerCollapsed]);
+  useEffect(() => { if (highlightItemId) setLastOpenedId(highlightItemId); }, [highlightItemId]);
 
   const handleListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (Date.now() < scrollBlockedRef.current) return;

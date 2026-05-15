@@ -22,6 +22,7 @@ interface Props {
   onOpenFile: (item: CachedItem, displayPath: string, siblings?: CachedItem[], siblingIdx?: number) => void;
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
   onCompactChange?: (compact: boolean) => void;
+  highlightItemId?: string;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -79,7 +80,7 @@ function toAbs(rootPath: string, rel: string): string {
   return `${rootPath}${SEP}${rel.replace(/\//g, SEP)}`;
 }
 
-export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange }: Props) {
+export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId }: Props) {
   const rootPath = account.path ?? '';
   const navKey = `notes-fs-nav-${account.id}`;
 
@@ -144,6 +145,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   useEffect(() => { localStorage.setItem(`notes-autohide-${account.id}`, String(autoHide)); }, [autoHide, account.id]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { onCompactChange?.(headerCollapsed); }, [headerCollapsed]);
+  useEffect(() => { if (highlightItemId) setLastOpenedId(highlightItemId); }, [highlightItemId]);
 
   const handleListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (Date.now() < scrollBlockedRef.current) return;

@@ -78,7 +78,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // image overlay + zoom + pan
-  const [showImageHeader, setShowImageHeader] = useState(false);
+  const [showImageHeader, setShowImageHeader] = useState(true);
   const imgContainerRef = useRef<HTMLDivElement>(null);
   const [imgNaturalW, setImgNaturalW] = useState(0);
   const [imgNaturalH, setImgNaturalH] = useState(0);

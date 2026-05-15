@@ -4,6 +4,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { WebviewWindow, getAllWebviewWindows, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit } from '@tauri-apps/api/event';
 import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import { useTheme } from '../../hooks/useTheme';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 
@@ -29,6 +30,7 @@ function NotebookIcon() {
 
 export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedInNewWindow }: Props) {
   const isSecondaryWindow = !!new URLSearchParams(window.location.search).get('wlabel');
+  const { theme, toggleTheme } = useTheme();
 
   const [entry, setEntry] = useState<NotebookEntry | null>(null);
   const [loading, setLoading] = useState(true);
@@ -145,7 +147,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     setCtxMenu({ x: e.clientX, y: e.clientY });
   };
 
-  const handleCtxBack = () => { setCtxMenu(null); onBack(); };
   const handleCtxEdit = () => {
     setCtxMenu(null);
     setEditTitle(entry?.title ?? '');
@@ -310,15 +311,20 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       {ctxMenu && (
         <Popover title={entry?.title || '(Untitled)'} onClose={() => setCtxMenu(null)} panelStyle={{ left: ctxMenu.x, top: ctxMenu.y }}>
           <div className="py-1">
-            {!isSecondaryWindow && (
-              <button onClick={handleCtxBack} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Back</button>
-            )}
             <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Edit</button>
             <button onClick={handleCtxToggleFullscreen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
               {isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
             </button>
             <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">Remove</button>
             <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new window</button>
+            <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
+            <button onClick={() => { setCtxMenu(null); toggleTheme(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
+              {theme === 'dark'
+                ? <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
+                : <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"/></svg>
+              }
+              {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            </button>
           </div>
         </Popover>
       )}
@@ -393,6 +399,12 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
           onContextMenu={handleContextMenu}
         >
           <div className="flex items-center gap-2">
+            {!isSecondaryWindow && (
+              <button onClick={onBack} title="Back"
+                className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors shrink-0">
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M9 1L3 7l6 6"/></svg>
+              </button>
+            )}
             <NotebookIcon />
             <div className="flex-1 min-w-0">
               <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">
