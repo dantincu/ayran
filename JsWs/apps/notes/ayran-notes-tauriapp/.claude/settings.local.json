@@ -13,7 +13,19 @@
       "Read(//tmp/**)",
       "Bash(curl -s 'https://raw.githubusercontent.com/FilenCloudDienste/filen-sdk-ts/main/src/crypto/decrypt.ts')",
       "Bash(Get-ChildItem -Recurse \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\desktop\\\\src\\\\components\" -Name)",
-      "Bash(Sort-Object)"
+      "Bash(Sort-Object)",
+      "Bash(magick --version)",
+      "Bash(convert --version)",
+      "Bash(node -e \"require\\('sharp'\\)\")",
+      "Bash(python -c \"from PIL import Image; print\\('pillow ok'\\)\")",
+      "Bash(pip install *)",
+      "Bash(pip3 install *)",
+      "PowerShell(python -c \"from PIL import Image; print\\('ok'\\)\" 2>&1)",
+      "PowerShell(python -m pip install Pillow)",
+      "PowerShell(python -c \"from PIL import Image; print\\('ok'\\)\")",
+      "PowerShell(\\(Get-Command python\\).Source; python --version)",
+      "PowerShell(Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile $env:TEMP\\\\get-pip.py; python $env:TEMP\\\\get-pip.py; python -m pip install Pillow)",
+      "PowerShell(python \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\recolor_icon.py\")"
     ]
   }
 }
