@@ -2,7 +2,7 @@
 <html lang="en" suppressHydrationWarning>
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/ayran.svg" />
+    <link rel="icon" type="image/svg+xml" href="/ayran-gold.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Ayran Notes</title>
     <script>
@@ -23,13 +23,13 @@
     <script type="module" src="/src/main.tsx"></script>
     <style id="initial_style">
       .dark {
-        background-color: #180F04;
-        color: #F2E4C2;
+        background-color: #180f04;
+        color: #f2e4c2;
       }
 
       .light {
-        background-color: #F2E4C2;
-        color: #180F04;
+        background-color: #f2e4c2;
+        color: #180f04;
       }
 
       #app_loader {
@@ -50,17 +50,17 @@
       }
 
       .light #app_loader svg circle {
-        stroke: #D0B47A;
+        stroke: #d0b47a;
       }
       .light #app_loader svg path {
-        stroke: #B45309;
+        stroke: #b45309;
       }
 
       .dark #app_loader svg circle {
-        stroke: #45341A;
+        stroke: #45341a;
       }
       .dark #app_loader svg path {
-        stroke: #D97706;
+        stroke: #d97706;
       }
 
       #app_loader span {
@@ -72,12 +72,16 @@
         color: #655028;
       }
       .dark #app_loader span {
-        color: #AE8F57;
+        color: #ae8f57;
       }
 
       @keyframes spin {
-        from { transform: rotate(0deg); }
-        to   { transform: rotate(360deg); }
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
       }
     </style>
     <div id="app_loader">
@@ -85,7 +89,12 @@
         <!-- Track -->
         <circle cx="24" cy="24" r="20" stroke-width="4" fill="none" />
         <!-- Spinner arc -->
-        <path d="M24 4 A20 20 0 0 1 44 24" stroke-width="4" stroke-linecap="round" fill="none" />
+        <path
+          d="M24 4 A20 20 0 0 1 44 24"
+          stroke-width="4"
+          stroke-linecap="round"
+          fill="none"
+        />
       </svg>
       <span>Loading…</span>
     </div>
