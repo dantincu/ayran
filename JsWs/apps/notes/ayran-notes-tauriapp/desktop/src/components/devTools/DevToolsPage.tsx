@@ -1,20 +1,21 @@
 import { useState } from 'react';
 import LocalStoragePage from './LocalStoragePage';
 import IndexedDbPage from './IndexedDbPage';
+import SqliteExplorerPage from './SqliteExplorerPage';
 
-type DevTab = 'localstorage' | 'indexeddb';
+type DevTab = 'localstorage' | 'indexeddb' | 'sqlite';
 
 const TABS: { id: DevTab; label: string }[] = [
-  { id: 'localstorage', label: 'Explore LocalStorage' },
-  { id: 'indexeddb',   label: 'Explore IndexedDB' },
+  { id: 'localstorage', label: 'LocalStorage' },
+  { id: 'indexeddb',   label: 'IndexedDB' },
+  { id: 'sqlite',      label: 'SQLite Cache DB' },
 ];
 
 export default function DevToolsPage() {
-  const [tab, setTab] = useState<DevTab>('localstorage');
+  const [tab, setTab] = useState<DevTab>('sqlite');
 
   return (
     <div className="space-y-4">
-      {/* Tab bar */}
       <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700">
         {TABS.map((t) => (
           <button
@@ -33,6 +34,7 @@ export default function DevToolsPage() {
 
       {tab === 'localstorage' && <LocalStoragePage />}
       {tab === 'indexeddb'   && <IndexedDbPage />}
+      {tab === 'sqlite'      && <SqliteExplorerPage />}
     </div>
   );
 }

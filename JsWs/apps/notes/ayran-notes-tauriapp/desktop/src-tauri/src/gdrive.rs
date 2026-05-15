@@ -276,6 +276,45 @@ fn rand_hex(n: usize) -> String {
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
+/// Searches a folder for children whose name exactly matches `name`.
+/// Returns all matching file IDs (GDrive allows multiple siblings with the same name).
+/// Used for recursive path resolution — only IDs are returned to minimize data transfer.
+#[tauri::command]
+pub async fn gdrive_find_children_by_name(
+    app: tauri::AppHandle,
+    account_id: String,
+    parent_id: String,
+    name: String,
+) -> Result<Vec<String>, String> {
+    let token = get_valid_token(&app, &account_id).await?;
+    // Escape single-quotes in name for the GDrive query syntax
+    let safe_name = name.replace('\\', "\\\\").replace('\'', "\\'");
+    let q = format!(
+        "'{}' in parents and name='{}' and trashed=false",
+        parent_id, safe_name
+    );
+    let res = client()
+        .get(format!("{}/files", DRIVE_API))
+        .bearer_auth(&token)
+        .query(&[
+            ("q", q.as_str()),
+            ("fields", "files(id)"),
+            ("pageSize", "10"),
+        ])
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(api_err(res).await);
+    }
+    #[derive(Deserialize)]
+    struct Resp { files: Vec<IdOnly> }
+    #[derive(Deserialize)]
+    struct IdOnly { id: String }
+    let data: Resp = res.json().await.map_err(|e| e.to_string())?;
+    Ok(data.files.into_iter().map(|f| f.id).collect())
+}
+
 #[tauri::command]
 pub async fn gdrive_list_files(
     app: tauri::AppHandle,

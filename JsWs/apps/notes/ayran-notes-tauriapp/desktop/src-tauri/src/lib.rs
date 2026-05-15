@@ -379,9 +379,57 @@ fn account_root_parent_id(account: &StoredAccount) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        "local-fs" => account.path.clone().unwrap_or_default(),
+        // Local-FS now uses relative paths; root parent is "" (empty = top-level).
+        "local-fs" => String::new(),
         _ => String::new(),
     }
+}
+
+/// Resolve a validated relative local-fs path to an absolute PathBuf.
+///
+/// The relative path MUST use '/' as the only separator (backslash is rejected).
+/// Every segment is validated before the path is built:
+///   1. No whitespace characters other than the space character (U+0020).
+///   2. No empty or all-space segments (rules out leading/trailing/double '/').
+///   3. If a segment contains two or more '.' characters it must also contain at
+///      least one character that is neither '.' nor ' ' — this blocks "..", "...",
+///      ". ." and similar traversal entries while allowing "file..ext".
+/// An empty `rel` (root folder) is always accepted.
+fn local_fs_abs(account: &StoredAccount, rel: &str) -> Result<std::path::PathBuf, String> {
+    let root = account.path.as_deref().ok_or("LocalFS account has no root path")?;
+    if rel.is_empty() {
+        return Ok(std::path::PathBuf::from(root));
+    }
+    // Backslash must never appear in the relative path sent from the frontend.
+    if rel.contains('\\') {
+        return Err("Invalid path: '\\' is not allowed; use '/' as the path separator".into());
+    }
+    let segments: Vec<&str> = rel.split('/').collect();
+    for seg in &segments {
+        // Rule 1: no whitespace other than the plain space character.
+        if seg.chars().any(|c| c.is_whitespace() && c != ' ') {
+            return Err(format!("Invalid path segment {:?}: contains non-space whitespace", seg));
+        }
+        // Rule 2: segment must not be empty or consist only of spaces.
+        if seg.trim_matches(' ').is_empty() {
+            return Err(format!("Invalid path {:?}: empty or blank segment", rel));
+        }
+        // Rule 3: 2+ dots → must have at least one non-dot non-space character.
+        let dot_count = seg.chars().filter(|&c| c == '.').count();
+        if dot_count >= 2 && !seg.chars().any(|c| c != '.' && c != ' ') {
+            return Err(format!(
+                "Invalid path segment {:?}: parent-directory traversal is not allowed",
+                seg
+            ));
+        }
+    }
+    // Build the absolute path by pushing each validated segment individually so
+    // that no separator ambiguity can arise across platforms.
+    let mut path = std::path::PathBuf::from(root);
+    for seg in &segments {
+        path.push(seg);
+    }
+    Ok(path)
 }
 
 // ── Folder listing commands ───────────────────────────────────────────────────
@@ -658,7 +706,8 @@ async fn open_file_inner(
     force: bool,
 ) -> Result<String, String> {
     if account.provider == "local-fs" {
-        return Ok(item_id.to_string());
+        // item_id is a relative path; resolve to absolute for the caller.
+        return Ok(local_fs_abs(account, item_id)?.to_string_lossy().into_owned());
     }
 
     let c_dir = app_base_dir(app)?.join("c");
@@ -743,16 +792,10 @@ fn thumbnail_path_for_item(
     let acct_dir = account_content_cache_dir(t_dir, account)?;
 
     let rel: std::path::PathBuf = if account.provider == "local-fs" {
-        // item_id is an absolute path; strip the account root to get a relative path.
-        let root = account.path.as_deref().unwrap_or("");
-        let stripped = if item_id.len() > root.len() && item_id.starts_with(root) {
-            &item_id[root.len()..]
-        } else {
-            item_id
-        };
-        stripped
-            .trim_start_matches(['/', '\\'])
+        // item_id is already a relative path; just split and sanitize each segment.
+        item_id
             .split(['/', '\\'])
+            .filter(|s| !s.is_empty())
             .map(sanitize_path_component)
             .collect()
     } else {
@@ -828,10 +871,11 @@ async fn save_text_file(
         .ok_or_else(|| format!("Account '{}' not found", account_id))?
         .clone();
 
-    // LocalFS: write directly to the original file path.
+    // LocalFS: resolve relative item_id to absolute and write directly.
     if account.provider == "local-fs" {
-        tokio::fs::write(&item_id, &bytes).await.map_err(|e| e.to_string())?;
-        return Ok(item_id);
+        let abs_path = local_fs_abs(&account, &item_id)?;
+        tokio::fs::write(&abs_path, &bytes).await.map_err(|e| e.to_string())?;
+        return Ok(item_id); // return relative path unchanged
     }
 
     // Cloud: write to cache then upload.
@@ -907,9 +951,16 @@ async fn create_text_file(
 
     match account.provider.as_str() {
         "local-fs" => {
-            let path = std::path::Path::new(&parent_id).join(&filename);
-            tokio::fs::write(&path, &bytes).await.map_err(|e| e.to_string())?;
-            Ok(path.to_string_lossy().into_owned())
+            let abs_parent = local_fs_abs(&account, &parent_id)?;
+            let abs_path = abs_parent.join(&filename);
+            tokio::fs::write(&abs_path, &bytes).await.map_err(|e| e.to_string())?;
+            // Return relative path (parent/filename), using '/' as separator.
+            let rel = if parent_id.is_empty() {
+                filename
+            } else {
+                format!("{}/{}", parent_id, filename)
+            };
+            Ok(rel)
         }
         "filen" => {
             let session = filen_sessions
@@ -1032,14 +1083,17 @@ async fn query_folder_items(
 
 // ── Local FS listing ──────────────────────────────────────────────────────────
 
+/// `rel_path` is a relative path (using '/' separator) within the account root.
+/// The empty string means the account's root folder itself.
 async fn local_fs_list_to_cache(
     account: &StoredAccount,
-    path: &str,
+    rel_path: &str,
     db: cache::CacheDb,
 ) -> Result<u64, String> {
-    let mut read_dir = tokio::fs::read_dir(path)
+    let abs_path = local_fs_abs(account, rel_path)?;
+    let mut read_dir = tokio::fs::read_dir(&abs_path)
         .await
-        .map_err(|e| format!("read_dir '{}': {}", path, e))?;
+        .map_err(|e| format!("read_dir '{}': {}", abs_path.display(), e))?;
 
     let mut items: Vec<cache::CachedItem> = Vec::new();
 
@@ -1049,7 +1103,12 @@ async fn local_fs_list_to_cache(
         .map_err(|e| e.to_string())?
     {
         let name = entry.file_name().to_string_lossy().to_string();
-        let item_path = entry.path().to_string_lossy().to_string();
+        // Build the child's relative path using '/' as separator.
+        let item_rel_path = if rel_path.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", rel_path, name)
+        };
         let meta = entry.metadata().await.ok();
         let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let size = meta
@@ -1071,8 +1130,8 @@ async fn local_fs_list_to_cache(
             account_id: account.id.clone(),
             account_email: account.email.clone(),
             storage_type: cache::STORAGE_LOCAL_FS,
-            item_id: item_path,
-            parent_id: path.to_string(),
+            item_id: item_rel_path,
+            parent_id: rel_path.to_string(),
             name,
             is_dir,
             size,
@@ -1138,6 +1197,252 @@ fn resolve_folder_paths(
         .iter()
         .map(|p| Ok(cache::get_item_id_by_path(&conn, &account_id, p)))
         .collect()
+}
+
+// ── DevTools: SQLite explorer ─────────────────────────────────────────────────
+
+fn row_to_json_vec(
+    row: &rusqlite::Row<'_>,
+    col_count: usize,
+) -> rusqlite::Result<Vec<serde_json::Value>> {
+    (0..col_count)
+        .map(|i| {
+            Ok(match row.get_ref(i)? {
+                rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                rusqlite::types::ValueRef::Integer(n) => {
+                    serde_json::Value::Number(serde_json::Number::from(n))
+                }
+                rusqlite::types::ValueRef::Real(f) => serde_json::Number::from_f64(f)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null),
+                rusqlite::types::ValueRef::Text(s) => {
+                    serde_json::Value::String(String::from_utf8_lossy(s).into_owned())
+                }
+                rusqlite::types::ValueRef::Blob(b) => {
+                    serde_json::Value::String(format!("<BLOB {} bytes>", b.len()))
+                }
+            })
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SqliteTableSummary {
+    name: String,
+    row_count: i64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SqliteColumnInfo {
+    cid: i64,
+    name: String,
+    type_name: String,
+    not_null: bool,
+    primary_key: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SqliteQueryResult {
+    columns: Vec<String>,
+    rows: Vec<Vec<serde_json::Value>>,
+    total_rows: Option<i64>,
+    affected_rows: Option<i64>,
+    truncated: bool,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn sqlite_list_tables(
+    cache_state: tauri::State<'_, CacheState>,
+) -> Result<Vec<SqliteTableSummary>, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT name FROM sqlite_master \
+             WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .map_err(|e| e.to_string())?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    names
+        .into_iter()
+        .map(|name| {
+            let safe = name.replace('"', "\"\"");
+            let row_count: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{safe}\""), [], |r| r.get(0))
+                .unwrap_or(0);
+            Ok(SqliteTableSummary { name, row_count })
+        })
+        .collect()
+}
+
+#[tauri::command]
+fn sqlite_table_schema(
+    cache_state: tauri::State<'_, CacheState>,
+    table: String,
+) -> Result<Vec<SqliteColumnInfo>, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let safe = table.replace('"', "\"\"");
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info(\"{safe}\")"))
+        .map_err(|e| e.to_string())?;
+    let cols = stmt
+        .query_map([], |row| {
+            Ok(SqliteColumnInfo {
+                cid: row.get(0)?,
+                name: row.get(1)?,
+                type_name: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                not_null: row.get::<_, i32>(3)? != 0,
+                primary_key: row.get::<_, i32>(5)? != 0,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(cols)
+}
+
+#[tauri::command]
+fn sqlite_query_table(
+    cache_state: tauri::State<'_, CacheState>,
+    table: String,
+    page: i64,
+    page_size: i64,
+) -> Result<SqliteQueryResult, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let safe = table.replace('"', "\"\"");
+    let total: i64 = conn
+        .query_row(&format!("SELECT COUNT(*) FROM \"{safe}\""), [], |r| r.get(0))
+        .unwrap_or(0);
+    let offset = page * page_size;
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT * FROM \"{safe}\" LIMIT {page_size} OFFSET {offset}"
+        ))
+        .map_err(|e| e.to_string())?;
+    let col_count = stmt.column_count();
+    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let rows: Vec<Vec<serde_json::Value>> = stmt
+        .query_map([], |row| row_to_json_vec(row, col_count))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(SqliteQueryResult {
+        columns,
+        rows,
+        total_rows: Some(total),
+        affected_rows: None,
+        truncated: false,
+        error: None,
+    })
+}
+
+const QUERY_ROW_LIMIT: usize = 1_000;
+
+#[tauri::command]
+fn sqlite_run_query(
+    cache_state: tauri::State<'_, CacheState>,
+    sql: String,
+) -> Result<SqliteQueryResult, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let sql = sql.trim();
+    if sql.is_empty() {
+        return Ok(SqliteQueryResult {
+            columns: vec![],
+            rows: vec![],
+            total_rows: None,
+            affected_rows: None,
+            truncated: false,
+            error: Some("Empty query".into()),
+        });
+    }
+    // First prepare to detect column count; the Statement is dropped at end of block.
+    let col_count = match conn.prepare(sql) {
+        Err(e) => {
+            return Ok(SqliteQueryResult {
+                columns: vec![],
+                rows: vec![],
+                total_rows: None,
+                affected_rows: None,
+                truncated: false,
+                error: Some(e.to_string()),
+            })
+        }
+        Ok(stmt) => stmt.column_count(),
+    };
+    if col_count == 0 {
+        return match conn.execute(sql, []) {
+            Ok(n) => Ok(SqliteQueryResult {
+                columns: vec![],
+                rows: vec![],
+                total_rows: None,
+                affected_rows: Some(n as i64),
+                truncated: false,
+                error: None,
+            }),
+            Err(e) => Ok(SqliteQueryResult {
+                columns: vec![],
+                rows: vec![],
+                total_rows: None,
+                affected_rows: None,
+                truncated: false,
+                error: Some(e.to_string()),
+            }),
+        };
+    }
+    let mut stmt = match conn.prepare(sql) {
+        Err(e) => {
+            return Ok(SqliteQueryResult {
+                columns: vec![],
+                rows: vec![],
+                total_rows: None,
+                affected_rows: None,
+                truncated: false,
+                error: Some(e.to_string()),
+            })
+        }
+        Ok(s) => s,
+    };
+    let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let result = match stmt.query_map([], |row| row_to_json_vec(row, col_count)) {
+        Err(e) => Ok(SqliteQueryResult {
+            columns,
+            rows: vec![],
+            total_rows: None,
+            affected_rows: None,
+            truncated: false,
+            error: Some(e.to_string()),
+        }),
+        Ok(mapped) => {
+            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
+            let mut truncated = false;
+            for r in mapped {
+                if rows.len() >= QUERY_ROW_LIMIT {
+                    truncated = true;
+                    break;
+                }
+                if let Ok(v) = r {
+                    rows.push(v);
+                }
+            }
+            Ok(SqliteQueryResult {
+                columns,
+                rows,
+                total_rows: None,
+                affected_rows: None,
+                truncated,
+                error: None,
+            })
+        }
+    };
+    result
 }
 
 // ── App entry point ───────────────────────────────────────────────────────────
@@ -1242,6 +1547,9 @@ pub fn run() {
             gdrive::gdrive_copy_file,
             gdrive::gdrive_move_file,
             gdrive::gdrive_edit_file,
+            // Path resolvers
+            filen::filen_find_child_by_name,
+            gdrive::gdrive_find_children_by_name,
             // Filen
             filen::filen_login,
             filen::filen_restore_session,
@@ -1261,6 +1569,11 @@ pub fn run() {
             filen::filen_overwrite_file,
             create_text_file,
             get_thumbnail,
+            // DevTools: SQLite explorer
+            sqlite_list_tables,
+            sqlite_table_schema,
+            sqlite_query_table,
+            sqlite_run_query,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

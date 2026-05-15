@@ -7,6 +7,7 @@ import type { StoredAccount, CachedItem, FolderPage } from '../../types';
 import { deleteAccount } from '../../lib/account-store';
 import PaginationBar from './PaginationBar';
 import NewNotebookModal from './NewNotebookModal';
+import CreateTextFileModal from './CreateTextFileModal';
 import ThumbnailImage from './ThumbnailImage';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
@@ -70,6 +71,13 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
 
 const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
 
+/** Resolve a relative local-fs path to an absolute path using the account root. */
+function toAbs(rootPath: string, rel: string): string {
+  if (!rel) return rootPath;
+  // Replace forward slashes with platform separator when joining.
+  return `${rootPath}${SEP}${rel.replace(/\//g, SEP)}`;
+}
+
 export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook }: Props) {
   const rootPath = account.path ?? '';
   const navKey = `notes-fs-nav-${account.id}`;
@@ -89,9 +97,10 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     } catch { return null; }
   }, [navKey]);
 
-  const [currentPath, setCurrentPath] = useState(savedNav?.path ?? rootPath);
+  // currentPath and breadcrumb paths are RELATIVE to account root ('' = root folder).
+  const [currentPath, setCurrentPath] = useState(savedNav?.path ?? '');
   const [breadcrumbs, setBreadcrumbs] = useState<{ name: string; path: string }[]>(
-    savedNav?.breadcrumbs ?? [{ name: account.displayName ?? rootPath.split(/[\\/]/).pop() ?? rootPath, path: rootPath }],
+    savedNav?.breadcrumbs ?? [{ name: account.displayName ?? rootPath.split(/[\\/]/).pop() ?? rootPath, path: '' }],
   );
   const [entries, setEntries] = useState<CachedItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -124,6 +133,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   const [showChangePath, setShowChangePath] = useState(false);
   const [lastOpenedId, setLastOpenedId] = useState<string | null>(null);
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const [showCreateTextFile, setShowCreateTextFile] = useState(false);
 
   const anyBusy = !!downloadingPath || !!deletingPath || !!editingPath || !!renamingPath
     || !!copyingPath || !!movingPath;
@@ -221,7 +231,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   const handleDownload = async (item: CachedItem) => {
     setDownloadingPath(item.itemId);
     try {
-      const data = await readFile(item.itemId);
+      const data = await readFile(toAbs(rootPath, item.itemId));
       const blob = new Blob([data]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a'); a.href = url; a.download = item.name;
@@ -232,7 +242,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     if (!confirm(`Delete "${item.name}"?`)) return;
     setDeletingPath(item.itemId);
     try {
-      await remove(item.itemId, { recursive: true });
+      await remove(toAbs(rootPath, item.itemId), { recursive: true });
       setEntries((p) => p.filter((e) => e.itemId !== item.itemId));
       invoke('uncache_item', { accountId: account.id, itemId: item.itemId }).catch(() => {});
     } catch (e) { alert(e instanceof Error ? e.message : 'Delete failed'); }
@@ -242,18 +252,20 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     const srcPath = await dialogOpen({ multiple: false, directory: false });
     if (!srcPath || typeof srcPath !== 'string') return;
     setEditingPath(item.itemId);
-    try { const data = await readFile(srcPath); await writeFile(item.itemId, data); }
+    try { const data = await readFile(srcPath); await writeFile(toAbs(rootPath, item.itemId), data); }
     catch (err) { alert(err instanceof Error ? err.message : 'Edit failed'); }
     finally { setEditingPath(null); }
   };
   const handleRename = async (item: CachedItem) => {
     const newName = prompt('New name:', item.name);
     if (!newName?.trim() || newName.trim() === item.name) return;
-    const dir = item.itemId.substring(0, item.itemId.lastIndexOf(SEP));
-    const newPath = `${dir}${SEP}${newName.trim()}`;
+    // Compute new relative path (same parent dir, new name).
+    const lastSlash = Math.max(item.itemId.lastIndexOf('/'), item.itemId.lastIndexOf('\\'));
+    const relDir = lastSlash >= 0 ? item.itemId.substring(0, lastSlash) : '';
+    const newRelPath = relDir ? `${relDir}/${newName.trim()}` : newName.trim();
     setRenamingPath(item.itemId);
     try {
-      await fsRename(item.itemId, newPath);
+      await fsRename(toAbs(rootPath, item.itemId), toAbs(rootPath, newRelPath));
       void loadDir(currentPath, true, 0, search, sortBy, ascending);
     } catch (err) { alert(err instanceof Error ? err.message : 'Rename failed'); }
     finally { setRenamingPath(null); }
@@ -262,7 +274,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     const destDir = await dialogOpen({ multiple: false, directory: true });
     if (!destDir || typeof destDir !== 'string') return;
     setCopyingPath(item.itemId);
-    try { await fsCopyFile(item.itemId, `${destDir}${SEP}${item.name}`); }
+    try { await fsCopyFile(toAbs(rootPath, item.itemId), `${destDir}${SEP}${item.name}`); }
     catch (err) { alert(err instanceof Error ? err.message : 'Copy failed'); }
     finally { setCopyingPath(null); }
   };
@@ -271,7 +283,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     if (!destDir || typeof destDir !== 'string') return;
     setMovingPath(item.itemId);
     try {
-      await fsRename(item.itemId, `${destDir}${SEP}${item.name}`);
+      await fsRename(toAbs(rootPath, item.itemId), `${destDir}${SEP}${item.name}`);
       setEntries((p) => p.filter((e) => e.itemId !== item.itemId));
     } catch (err) { alert(err instanceof Error ? err.message : 'Move failed'); }
     finally { setMovingPath(null); }
@@ -280,7 +292,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     const file = e.target.files?.[0]; if (!file) return;
     try {
       const data = new Uint8Array(await file.arrayBuffer());
-      await writeFile(`${currentPath}${SEP}${file.name}`, data);
+      await writeFile(`${toAbs(rootPath, currentPath)}${SEP}${file.name}`, data);
       void loadDir(currentPath, true, 0, search, sortBy, ascending);
     } catch (err) { alert(err instanceof Error ? err.message : 'Upload failed'); }
     finally { if (fileInputRef.current) fileInputRef.current.value = ''; }
@@ -291,14 +303,14 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     try {
       const name = selected.split(/[\\/]/).pop() ?? 'file';
       const data = await readFile(selected);
-      await writeFile(`${currentPath}${SEP}${name}`, data);
+      await writeFile(`${toAbs(rootPath, currentPath)}${SEP}${name}`, data);
       void loadDir(currentPath, true, 0, search, sortBy, ascending);
     } catch (err) { alert(err instanceof Error ? err.message : 'Upload failed'); }
   };
   const handleNewFolder = async () => {
     const name = prompt('Folder name:'); if (!name?.trim()) return;
     setCreatingFolder(true);
-    try { await mkdir(`${currentPath}${SEP}${name.trim()}`); void loadDir(currentPath, true, 0, search, sortBy, ascending); }
+    try { await mkdir(`${toAbs(rootPath, currentPath)}${SEP}${name.trim()}`); void loadDir(currentPath, true, 0, search, sortBy, ascending); }
     catch (e) { alert(e instanceof Error ? e.message : 'Failed to create folder'); }
     finally { setCreatingFolder(false); }
   };
@@ -341,7 +353,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     const ids = [...selectedIds]; setSelectedIds(new Set());
     for (const id of ids) {
       try {
-        await remove(id, { recursive: true });
+        await remove(toAbs(rootPath, id), { recursive: true });
         invoke('uncache_item', { accountId: account.id, itemId: id }).catch(() => {});
       } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     }
@@ -354,7 +366,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     for (const id of ids) {
       const item = entries.find((e) => e.itemId === id);
       if (!item || item.isDir) continue;
-      try { await fsCopyFile(id, `${destDir}${SEP}${item.name}`); }
+      try { await fsCopyFile(toAbs(rootPath, id), `${destDir}${SEP}${item.name}`); }
       catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     }
   };
@@ -364,7 +376,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     const ids = [...selectedIds]; setSelectedIds(new Set());
     for (const id of ids) {
       const item = entries.find((e) => e.itemId === id); if (!item) continue;
-      try { await fsRename(id, `${destDir}${SEP}${item.name}`); }
+      try { await fsRename(toAbs(rootPath, id), `${destDir}${SEP}${item.name}`); }
       catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     }
     void loadDir(currentPath, true, 0, search, sortBy, ascending);
@@ -376,18 +388,33 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   };
 
   const handleChangePath = async (pathStr: string) => {
-    const trimmed = pathStr.trim();
-    if (!trimmed) return;
+    // Accept relative paths (e.g. "Documents/Projects"); Rust resolves to absolute.
+    const parts = pathStr.trim().split(/[/\\]/).map(s => s.trim()).filter(Boolean);
+    const relPath = parts.join('/');
     try {
-      await invoke('list_folder', { accountId: account.id, parentId: trimmed, force: false });
+      await invoke('list_folder', { accountId: account.id, parentId: relPath, force: false });
     } catch {
-      throw new Error(`Cannot access "${trimmed}". Check the path and try again.`);
+      throw new Error(`Cannot access "${pathStr || '/'}" inside your root folder. Check the path and try again.`);
     }
-    const name = trimmed.split(/[/\\]/).pop() ?? trimmed;
-    const newCrumbs = trimmed === rootPath
-      ? [{ name: account.displayName ?? name, path: rootPath }]
-      : [{ name: account.displayName ?? rootPath.split(/[/\\]/).pop() ?? rootPath, path: rootPath }, { name, path: trimmed }];
-    navigate(trimmed, newCrumbs);
+    const rootCrumb = { name: account.displayName ?? rootPath.split(/[/\\]/).pop() ?? rootPath, path: '' };
+    const newCrumbs = parts.length === 0
+      ? [rootCrumb]
+      : [rootCrumb, ...parts.map((name, i) => ({ name, path: parts.slice(0, i + 1).join('/') }))];
+    navigate(relPath, newCrumbs);
+  };
+
+  const handleCreateTextFile = async (fileName: string) => {
+    const newItemId = await invoke<string>('create_text_file', {
+      accountId: account.id, parentId: currentPath, filename: fileName, content: '',
+    });
+    const newItem: CachedItem = {
+      accountId: account.id, accountEmail: account.email, storageType: 0,
+      itemId: newItemId, parentId: currentPath, name: fileName, isDir: false,
+      mimeType: 'text/plain', size: 0, modifiedMs: Date.now(),
+    };
+    setShowCreateTextFile(false);
+    onOpenFile(newItem, toAbs(rootPath, newItemId));
+    void loadDir(currentPath, true, 0, search, sortBy, ascending);
   };
 
   const openAncestorsForItem = (item: CachedItem) => {
@@ -431,7 +458,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     setShowNewNb(false);
     onOpenNotebook?.({
       title, itemId, parentId: currentPath,
-      displayName: itemId,
+      displayName: toAbs(rootPath, itemId),
       description,
     });
   };
@@ -474,6 +501,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
               {moreMenuOpen && (
                 <Popover title="More" onClose={() => setMoreMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
                   <div className="py-1">
+                    <button onClick={() => { setMoreMenuOpen(false); setShowCreateTextFile(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📄 Create text file</button>
                     {onOpenNotebook && (
                       <button onClick={() => { setMoreMenuOpen(false); setShowNewNb(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📓 Create Notebook</button>
                     )}
@@ -574,7 +602,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
             {entries.map((item) => (
               <div key={item.itemId}
                 className={`flex flex-col items-center gap-1 p-2 rounded-lg cursor-pointer border ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20 border-blue-300 dark:border-blue-700' : !item.isDir && item.itemId === lastOpenedId ? 'ring-2 ring-blue-400 dark:ring-blue-500 bg-blue-50 dark:bg-blue-900/20 border-transparent' : 'bg-white dark:bg-gray-800 border-transparent hover:bg-gray-100 dark:hover:bg-gray-700'}`}
-                onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, item.itemId, s.siblings, s.siblingIdx); } }; }}
+                onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, toAbs(rootPath, item.itemId), s.siblings, s.siblingIdx); } }; }}
                 onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                 {!item.isDir && isImageItem(item)
                   ? <ThumbnailImage accountId={account.id} itemId={item.itemId} size={item.size} />
@@ -593,7 +621,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
               return (
                 <div key={item.itemId}
                   className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
-                  onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, item.itemId, s.siblings, s.siblingIdx); } }; }}
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, toAbs(rootPath, item.itemId), s.siblings, s.siblingIdx); } }; }}
                   onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                   <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
                     onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey, e.shiftKey && selectedIds.has(item.itemId)); }}
@@ -602,7 +630,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
                     className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                   <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                   <div className="flex-1 min-w-0">
-                    <button onClick={() => { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, item.itemId, s.siblings, s.siblingIdx); } }}
+                    <button onClick={() => { if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, entries); onOpenFile(item, toAbs(rootPath, item.itemId), s.siblings, s.siblingIdx); } }}
                       className={`text-sm font-medium truncate block text-left w-full hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer ${item.isDir ? '' : 'text-gray-800 dark:text-gray-200'}`}>
                       {item.name}
                     </button>
@@ -663,9 +691,16 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
       {showChangePath && (
         <BreadcrumbChangePathModal
           defaultValue={currentPath}
-          placeholder={`e.g. C:\\Users\\Documents`}
+          placeholder={`Relative path, e.g. Documents${SEP}Projects`}
           onNavigate={handleChangePath}
           onClose={() => setShowChangePath(false)}
+        />
+      )}
+      {showCreateTextFile && (
+        <CreateTextFileModal
+          existingNames={entries.map(e => e.name)}
+          onCreate={handleCreateTextFile}
+          onClose={() => setShowCreateTextFile(false)}
         />
       )}
     </>

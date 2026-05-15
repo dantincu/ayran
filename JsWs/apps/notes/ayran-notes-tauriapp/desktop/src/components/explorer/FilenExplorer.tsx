@@ -16,6 +16,7 @@ import NewNotebookModal from './NewNotebookModal';
 import ThumbnailImage from './ThumbnailImage';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
+import CreateTextFileModal from './CreateTextFileModal';
 import { UploadIcon, FolderPlusIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
 import config from '../../config.json';
 
@@ -126,7 +127,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   const longPressRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressTriggeredRef = useRef(false);
   const [folderPicker, setFolderPicker] = useState<{
-    uuid: string; isDir: boolean; action: 'copy' | 'move';
+    uuid: string; name: string; isDir: boolean; action: 'copy' | 'move';
   } | null>(null);
 
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -136,6 +137,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   const [showChangePath, setShowChangePath] = useState(false);
   const [lastOpenedId, setLastOpenedId] = useState<string | null>(null);
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const [showCreateTextFile, setShowCreateTextFile] = useState(false);
 
   const anyBusy = busy || !!downloadingId || !!deletingId || !!editingId
     || !!renamingId || !!copyingId || !!movingId;
@@ -310,6 +312,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   const handleRename = async (item: CachedItem) => {
     const newName = prompt('New name:', item.name);
     if (!newName?.trim() || newName.trim() === item.name) return;
+    const validErr = validateRenameInExplorer(item, newName);
+    if (validErr) { alert(validErr); return; }
     setRenamingId(item.itemId);
     try {
       if (item.isDir) await renameDirectory(account.id, item.itemId, newName.trim());
@@ -345,20 +349,46 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     onDisconnect();
   };
 
-  const listFoldersForPicker = async (uuid: string): Promise<FolderEntry[]> => {
+  const listItemsForPicker = async (uuid: string): Promise<FolderEntry[]> => {
     const all = await listDirectory(account.id, uuid);
-    return all.filter((i) => i.type === 'directory').map((i) => ({ id: i.uuid, name: i.name }));
+    return all.map((i) => ({ id: i.uuid, name: i.name, isDir: i.type === 'directory' }));
   };
-  const handleFolderPickerConfirm = async (destUuid: string) => {
+  const handleFolderPickerConfirm = async (destUuid: string, destNames: string[]) => {
     if (!folderPicker) return;
     const { uuid, isDir, action } = folderPicker;
+    const destName = destNames[0];
     try {
-      if (action === 'copy') { setCopyingId(uuid); await copyFile(account.id, uuid, destUuid); }
-      else if (isDir) { setMovingId(uuid); await moveDirectory(account.id, uuid, destUuid); }
-      else { setMovingId(uuid); await moveFile(account.id, uuid, destUuid); }
+      if (action === 'copy') {
+        setCopyingId(uuid);
+        const newId = await copyFile(account.id, uuid, destUuid);
+        if (destName && destName !== folderPicker.name) {
+          await (isDir ? renameDirectory : renameFile)(account.id, newId ?? uuid, destName);
+        }
+      } else if (isDir) {
+        setMovingId(uuid);
+        await moveDirectory(account.id, uuid, destUuid);
+        if (destName && destName !== folderPicker.name) await renameDirectory(account.id, uuid, destName);
+      } else {
+        setMovingId(uuid);
+        await moveFile(account.id, uuid, destUuid);
+        if (destName && destName !== folderPicker.name) await renameFile(account.id, uuid, destName);
+      }
       if (action === 'move') setItems((p) => p.filter((i) => i.itemId !== uuid));
       setFolderPicker(null);
     } finally { setCopyingId(null); setMovingId(null); }
+  };
+  const pickerRenameForFilen = async (item: FolderEntry, newName: string) => {
+    if (item.isDir) await renameDirectory(account.id, item.id, newName);
+    else await renameFile(account.id, item.id, newName);
+  };
+  const pickerDeleteForFilen = async (item: FolderEntry) => {
+    if (item.isDir) await trashDirectory(account.id, item.id);
+    else await trashFile(account.id, item.id);
+    invoke('uncache_item', { accountId: account.id, itemId: item.id }).catch(() => {});
+  };
+  const pickerCreateFolderForFilen = async (parentId: string, name: string): Promise<FolderEntry> => {
+    const newId = await invoke<string>('filen_create_directory', { accountId: account.id, parentId, name });
+    return { id: newId, name, isDir: true };
   };
 
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
@@ -401,15 +431,24 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     }
     void loadFolder(folderUUID, true, 0, search, sortBy, ascending);
   };
-  const handleBulkPickerConfirm = async (destUuid: string) => {
+  const handleBulkPickerConfirm = async (destUuid: string, destNames: string[]) => {
     const action = bulkAction;
     const ids = [...selectedIds]; setSelectedIds(new Set());
+    let nameIdx = 0;
     for (const id of ids) {
       const item = items.find((i) => i.itemId === id); if (!item) continue;
+      const destName = destNames[nameIdx++];
       try {
-        if (action === 'copy') await copyFile(account.id, id, destUuid);
-        else if (item.isDir) await moveDirectory(account.id, id, destUuid);
-        else await moveFile(account.id, id, destUuid);
+        if (action === 'copy') {
+          const newId = await copyFile(account.id, id, destUuid);
+          if (destName && destName !== item.name) await (item.isDir ? renameDirectory : renameFile)(account.id, newId ?? id, destName);
+        } else if (item.isDir) {
+          await moveDirectory(account.id, id, destUuid);
+          if (destName && destName !== item.name) await renameDirectory(account.id, id, destName);
+        } else {
+          await moveFile(account.id, id, destUuid);
+          if (destName && destName !== item.name) await renameFile(account.id, id, destName);
+        }
       } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     }
     setBulkAction(null);
@@ -427,13 +466,19 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
       navigate(rootUuid, [{ uuid: rootUuid, name: breadcrumbs[0]?.name ?? 'My Filen' }]);
       return;
     }
-    const allPaths = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
-    const resolved = await invoke<(string | null)[]>('resolve_folder_paths', { accountId: account.id, paths: allPaths });
-    const firstNull = resolved.indexOf(null);
-    if (firstNull !== -1) throw new Error(`Folder "${parts[firstNull]}" not found.`);
-    navigate(resolved[resolved.length - 1]!, [
+    const resolvedIds: string[] = [];
+    let parentId = rootUuid;
+    for (const seg of parts) {
+      const found = await invoke<string | null>('filen_find_child_by_name', {
+        accountId: account.id, parentUuid: parentId, childName: seg,
+      });
+      if (!found) throw new Error(`"${seg}" not found inside this folder.`);
+      resolvedIds.push(found);
+      parentId = found;
+    }
+    navigate(resolvedIds[resolvedIds.length - 1], [
       { uuid: rootUuid, name: breadcrumbs[0]?.name ?? 'My Filen' },
-      ...parts.map((name, i) => ({ uuid: resolved[i]!, name })),
+      ...parts.map((name, i) => ({ uuid: resolvedIds[i], name })),
     ]);
   };
 
@@ -449,6 +494,27 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
         else if (item.isDir) openDir(item);
       },
     });
+  };
+
+  const validateRenameInExplorer = (item: CachedItem, newName: string): string => {
+    const t = newName.trim();
+    if (!t) return 'Name cannot be empty.';
+    if (items.some(i => i.itemId !== item.itemId && i.name === t)) return `"${t}" already exists in this folder.`;
+    return '';
+  };
+
+  const handleCreateTextFile = async (fileName: string) => {
+    const newItemId = await invoke<string>('create_text_file', {
+      accountId: account.id, parentId: folderUUID, filename: fileName, content: '',
+    });
+    const newItem: CachedItem = {
+      accountId: account.id, accountEmail: account.email, storageType: 2,
+      itemId: newItemId, parentId: folderUUID, name: fileName, isDir: false,
+      mimeType: 'text/plain', size: 0, modifiedMs: Date.now(),
+    };
+    setShowCreateTextFile(false);
+    onOpenFile(newItem, [...breadcrumbs.map(b => b.name), fileName].join(' / '));
+    void loadFolder(folderUUID, true, 0, search, sortBy, ascending);
   };
 
   const sortBtn = (col: SortBy, label: string) => (
@@ -486,6 +552,13 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   return (
     <>
       {showNewNb && <NewNotebookModal onConfirm={handleCreateNotebook} onClose={() => setShowNewNb(false)} />}
+      {showCreateTextFile && (
+        <CreateTextFileModal
+          existingNames={items.map(i => i.name)}
+          onCreate={handleCreateTextFile}
+          onClose={() => setShowCreateTextFile(false)}
+        />
+      )}
       <div className="h-full flex flex-col bg-white dark:bg-gray-900 overflow-hidden">
         {/* Full collapsible header */}
         <div className={`shrink-0 border-b border-gray-200 dark:border-gray-700 overflow-hidden transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-[400px] opacity-100'}`}>
@@ -521,6 +594,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
                 {moreMenuOpen && (
                   <Popover title="More" onClose={() => setMoreMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
                     <div className="py-1">
+                      <button onClick={() => { setMoreMenuOpen(false); setShowCreateTextFile(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📄 Create text file</button>
                       {onOpenNotebook && (
                         <button onClick={() => { setMoreMenuOpen(false); setShowNewNb(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📓 Create Notebook</button>
                       )}
@@ -663,8 +737,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
                     <div className={`flex gap-0.5 transition-opacity shrink-0 ${activeOnThis ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>
                       {!item.isDir && <button onClick={() => handleEdit(item)} disabled={anyBusy} title={editingId === item.itemId ? 'Editing…' : 'Edit'} className="p-1 rounded text-green-600 dark:text-green-400 hover:bg-green-100 dark:hover:bg-green-900/30 disabled:opacity-50 transition-colors"><PencilIcon/></button>}
                       <button onClick={() => handleRename(item)} disabled={anyBusy} title={renamingId === item.itemId ? 'Renaming…' : 'Rename'} className="p-1 rounded text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50 transition-colors"><TypeCursorIcon/></button>
-                      {!item.isDir && <button onClick={() => setFolderPicker({ uuid: item.itemId, isDir: false, action: 'copy' })} disabled={anyBusy} title={copyingId === item.itemId ? 'Copying…' : 'Copy'} className="p-1 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 disabled:opacity-50 transition-colors"><CopyFilesIcon/></button>}
-                      <button onClick={() => setFolderPicker({ uuid: item.itemId, isDir: item.isDir, action: 'move' })} disabled={anyBusy} title={movingId === item.itemId ? 'Moving…' : 'Move'} className="p-1 rounded text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 disabled:opacity-50 transition-colors"><MoveArrowIcon/></button>
+                      {!item.isDir && <button onClick={() => setFolderPicker({ uuid: item.itemId, name: item.name, isDir: false, action: 'copy' })} disabled={anyBusy} title={copyingId === item.itemId ? 'Copying…' : 'Copy'} className="p-1 rounded text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/30 disabled:opacity-50 transition-colors"><CopyFilesIcon/></button>}
+                      <button onClick={() => setFolderPicker({ uuid: item.itemId, name: item.name, isDir: item.isDir, action: 'move' })} disabled={anyBusy} title={movingId === item.itemId ? 'Moving…' : 'Move'} className="p-1 rounded text-purple-600 dark:text-purple-400 hover:bg-purple-100 dark:hover:bg-purple-900/30 disabled:opacity-50 transition-colors"><MoveArrowIcon/></button>
                       {!item.isDir && <button onClick={() => handleDownload(item)} disabled={anyBusy} title={downloadingId === item.itemId ? 'Downloading…' : 'Download'} className="p-1 rounded text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-50 transition-colors"><DownloadArrowIcon/></button>}
                       <button onClick={() => handleDelete(item)} disabled={anyBusy} title={deletingId === item.itemId ? 'Deleting…' : 'Delete'} className="p-1 rounded text-red-500 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 disabled:opacity-50 transition-colors"><TrashIcon/></button>
                     </div>
@@ -684,9 +758,13 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           rootId={rootUuid} rootName="My Filen"
           initialFolderId={folderUUID}
           initialBreadcrumbs={breadcrumbs.map(b => ({ id: b.uuid, name: b.name }))}
-          onList={listFoldersForPicker}
+          onList={listItemsForPicker}
           onConfirm={handleFolderPickerConfirm}
           onClose={() => setFolderPicker(null)}
+          sourceItems={[{ id: folderPicker.uuid, name: folderPicker.name, isDir: folderPicker.isDir }]}
+          onRename={pickerRenameForFilen}
+          onDelete={pickerDeleteForFilen}
+          onCreateFolder={pickerCreateFolderForFilen}
         />
       )}
       {bulkAction && (
@@ -695,9 +773,13 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           rootId={rootUuid} rootName="My Filen"
           initialFolderId={folderUUID}
           initialBreadcrumbs={breadcrumbs.map(b => ({ id: b.uuid, name: b.name }))}
-          onList={listFoldersForPicker}
+          onList={listItemsForPicker}
           onConfirm={handleBulkPickerConfirm}
           onClose={() => setBulkAction(null)}
+          sourceItems={items.filter(i => selectedIds.has(i.itemId)).map(i => ({ id: i.itemId, name: i.name, isDir: i.isDir }))}
+          onRename={pickerRenameForFilen}
+          onDelete={pickerDeleteForFilen}
+          onCreateFolder={pickerCreateFolderForFilen}
         />
       )}
 
@@ -710,8 +792,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
             <div className="py-1 min-w-[180px]">
               {!item.isDir && <button onClick={() => { setRowCtxMenu(null); handleEdit(item); }} disabled={anyBusy} className={ctxBtn}><PencilIcon className="w-3.5 h-3.5 shrink-0 text-green-600 dark:text-green-400"/>Edit</button>}
               <button onClick={() => { setRowCtxMenu(null); handleRename(item); }} disabled={anyBusy} className={ctxBtn}><TypeCursorIcon className="w-3.5 h-3.5 shrink-0 text-gray-500 dark:text-gray-400"/>Rename</button>
-              {!item.isDir && <button onClick={() => { setRowCtxMenu(null); setFolderPicker({ uuid: item.itemId, isDir: false, action: 'copy' }); }} disabled={anyBusy} className={ctxBtn}><CopyFilesIcon className="w-3.5 h-3.5 shrink-0 text-indigo-600 dark:text-indigo-400"/>Copy to…</button>}
-              <button onClick={() => { setRowCtxMenu(null); setFolderPicker({ uuid: item.itemId, isDir: item.isDir, action: 'move' }); }} disabled={anyBusy} className={ctxBtn}><MoveArrowIcon className="w-3.5 h-3.5 shrink-0 text-purple-600 dark:text-purple-400"/>Move to…</button>
+              {!item.isDir && <button onClick={() => { setRowCtxMenu(null); setFolderPicker({ uuid: item.itemId, name: item.name, isDir: false, action: 'copy' }); }} disabled={anyBusy} className={ctxBtn}><CopyFilesIcon className="w-3.5 h-3.5 shrink-0 text-indigo-600 dark:text-indigo-400"/>Copy to…</button>}
+              <button onClick={() => { setRowCtxMenu(null); setFolderPicker({ uuid: item.itemId, name: item.name, isDir: item.isDir, action: 'move' }); }} disabled={anyBusy} className={ctxBtn}><MoveArrowIcon className="w-3.5 h-3.5 shrink-0 text-purple-600 dark:text-purple-400"/>Move to…</button>
               {!item.isDir && <button onClick={() => { setRowCtxMenu(null); handleDownload(item); }} disabled={anyBusy} className={ctxBtn}><DownloadArrowIcon className="w-3.5 h-3.5 shrink-0 text-blue-600 dark:text-blue-400"/>Download</button>}
               <button onClick={() => { setRowCtxMenu(null); handleDelete(item); }} disabled={anyBusy} className={ctxBtn}><TrashIcon className="w-3.5 h-3.5 shrink-0 text-red-500 dark:text-red-400"/>Delete</button>
               <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>

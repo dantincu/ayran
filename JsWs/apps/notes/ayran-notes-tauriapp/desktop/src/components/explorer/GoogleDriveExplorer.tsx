@@ -10,6 +10,8 @@ import NewNotebookModal from './NewNotebookModal';
 import ThumbnailImage from './ThumbnailImage';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
+import CreateTextFileModal from './CreateTextFileModal';
+import Modal from '../common/Modal';
 import { UploadIcon, FolderPlusIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
 import config from '../../config.json';
 
@@ -134,9 +136,20 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
   const [showChangePath, setShowChangePath] = useState(false);
   const [lastOpenedId, setLastOpenedId] = useState<string | null>(null);
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const [showCreateTextFile, setShowCreateTextFile] = useState(false);
+  const [duplicateNameError, setDuplicateNameError] = useState<CachedItem | null>(null);
 
   const anyBusy = !!uploadingId || !!downloadingId || !!deletingId || !!editingId
     || !!renamingId || !!copyingId || !!movingId;
+
+  // Detect duplicate sibling names (GDrive allows them, but we can't cache by name)
+  const duplicateNames = useMemo(() => {
+    const counts = new Map<string, number>();
+    files.forEach(f => counts.set(f.name, (counts.get(f.name) ?? 0) + 1));
+    const dups = new Set<string>();
+    counts.forEach((n, name) => { if (n > 1) dups.add(name); });
+    return dups;
+  }, [files]);
 
   const handleListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (!headerCollapsed && e.currentTarget.scrollTop > 40) setHeaderCollapsed(true);
@@ -304,9 +317,18 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setEditingId(null); }
   };
+  const validateRenameInExplorer = (item: CachedItem, newName: string): string => {
+    const t = newName.trim();
+    if (!t) return 'Name cannot be empty.';
+    if (files.some(f => f.itemId !== item.itemId && f.name === t))
+      return `"${t}" already exists in this folder. Google Drive allows duplicates but we cannot cache files with duplicate names.`;
+    return '';
+  };
   const handleRename = async (item: CachedItem) => {
     const newName = prompt('New name:', item.name);
     if (!newName?.trim() || newName.trim() === item.name) return;
+    const validErr = validateRenameInExplorer(item, newName);
+    if (validErr) { alert(validErr); return; }
     setRenamingId(item.itemId);
     try {
       await invoke('gdrive_rename', { accountId: account.id, fileId: item.itemId, newName: newName.trim() });
@@ -314,6 +336,19 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
       invoke('rename_cached_item', { accountId: account.id, itemId: item.itemId, newName: newName.trim() }).catch(() => {});
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setRenamingId(null); }
+  };
+  const handleCreateTextFile = async (fileName: string) => {
+    const newItemId = await invoke<string>('create_text_file', {
+      accountId: account.id, parentId: folderId, filename: fileName, content: '',
+    });
+    const newItem: CachedItem = {
+      accountId: account.id, accountEmail: account.email, storageType: 1,
+      itemId: newItemId, parentId: folderId, name: fileName, isDir: false,
+      mimeType: 'text/plain', size: 0, modifiedMs: Date.now(),
+    };
+    setShowCreateTextFile(false);
+    onOpenFile(newItem, [...breadcrumbs.map(b => b.name), fileName].join(' / '));
+    void loadFolder(folderId, true, 0, search, sortBy, ascending);
   };
   const handleUpload = async () => {
     const filePath = await dialogOpen({ multiple: false, directory: false });
@@ -340,25 +375,37 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     onDisconnect();
   };
 
-  const listDriveFolders = async (id: string): Promise<FolderEntry[]> => {
+  const listItemsForPicker = async (id: string): Promise<FolderEntry[]> => {
     const list = await invoke<DriveFile[]>('gdrive_list_files', { accountId: account.id, folderId: id, query: null });
-    return list.filter((f) => f.mimeType === FOLDER_MIME).map((f) => ({ id: f.id, name: f.name }));
+    return list.map((f) => ({ id: f.id, name: f.name, isDir: f.mimeType === FOLDER_MIME }));
   };
-  const handleFolderPickerConfirm = async (destId: string) => {
+  const handleFolderPickerConfirm = async (destId: string, destNames: string[]) => {
     if (!folderPicker) return;
     const { fileId, fileName, isDir, action } = folderPicker;
+    const destName = destNames[0] ?? fileName;
     try {
       if (action === 'copy') {
         setCopyingId(fileId);
-        await invoke('gdrive_copy_file', { accountId: account.id, fileId, destFolderId: destId, name: fileName });
+        await invoke('gdrive_copy_file', { accountId: account.id, fileId, destFolderId: destId, name: destName });
       } else {
         setMovingId(fileId);
         const fromFolderId = isDir ? breadcrumbs[breadcrumbs.length - 1].id : folderId;
         await invoke('gdrive_move_file', { accountId: account.id, fileId, fromFolderId, toFolderId: destId });
+        if (destName !== fileName) await invoke('gdrive_rename', { accountId: account.id, fileId, newName: destName });
         setFiles((p) => p.filter((f) => f.itemId !== fileId));
       }
       setFolderPicker(null);
     } finally { setCopyingId(null); setMovingId(null); }
+  };
+  const pickerRenameForGDrive = async (item: FolderEntry, newName: string) => {
+    await invoke('gdrive_rename', { accountId: account.id, fileId: item.id, newName });
+  };
+  const pickerDeleteForGDrive = async (item: FolderEntry) => {
+    await invoke('gdrive_delete_file', { accountId: account.id, fileId: item.id });
+  };
+  const pickerCreateFolderForGDrive = async (parentId: string, name: string): Promise<FolderEntry> => {
+    const newId = await invoke<string>('gdrive_create_folder', { accountId: account.id, parentId, name });
+    return { id: newId, name, isDir: true };
   };
 
   const toggleSelect = (id: string) => setSelectedIds((prev) => {
@@ -399,14 +446,20 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     }
     void loadFolder(folderId, true, 0, search, sortBy, ascending);
   };
-  const handleBulkPickerConfirm = async (destId: string) => {
+  const handleBulkPickerConfirm = async (destId: string, destNames: string[]) => {
     const action = bulkAction;
     const ids = [...selectedIds]; setSelectedIds(new Set());
+    let nameIdx = 0;
     for (const id of ids) {
       const item = files.find((f) => f.itemId === id); if (!item) continue;
+      const destName = destNames[nameIdx++] ?? item.name;
       try {
-        if (action === 'copy') await invoke('gdrive_copy_file', { accountId: account.id, fileId: id, destFolderId: destId, name: item.name });
-        else await invoke('gdrive_move_file', { accountId: account.id, fileId: id, fromFolderId: folderId, toFolderId: destId });
+        if (action === 'copy') {
+          await invoke('gdrive_copy_file', { accountId: account.id, fileId: id, destFolderId: destId, name: destName });
+        } else {
+          await invoke('gdrive_move_file', { accountId: account.id, fileId: id, fromFolderId: folderId, toFolderId: destId });
+          if (destName !== item.name) await invoke('gdrive_rename', { accountId: account.id, fileId: id, newName: destName });
+        }
       } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     }
     setBulkAction(null);
@@ -424,13 +477,20 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
       navigate('root', [{ id: 'root', name: breadcrumbs[0]?.name ?? 'My Drive' }]);
       return;
     }
-    const allPaths = parts.map((_, i) => parts.slice(0, i + 1).join('/'));
-    const resolved = await invoke<(string | null)[]>('resolve_folder_paths', { accountId: account.id, paths: allPaths });
-    const firstNull = resolved.indexOf(null);
-    if (firstNull !== -1) throw new Error(`Folder "${parts[firstNull]}" not found.`);
-    navigate(resolved[resolved.length - 1]!, [
+    const resolvedIds: string[] = [];
+    let parentId = 'root';
+    for (const seg of parts) {
+      const found = await invoke<string[]>('gdrive_find_children_by_name', {
+        accountId: account.id, parentId, name: seg,
+      });
+      if (found.length === 0) throw new Error(`"${seg}" not found in this folder.`);
+      if (found.length > 1) throw new Error(`"${seg}" is ambiguous — ${found.length} items share this name in the parent folder. Rename duplicates in Google Drive first.`);
+      resolvedIds.push(found[0]);
+      parentId = found[0];
+    }
+    navigate(resolvedIds[resolvedIds.length - 1], [
       { id: 'root', name: breadcrumbs[0]?.name ?? 'My Drive' },
-      ...parts.map((name, i) => ({ id: resolved[i]!, name })),
+      ...parts.map((name, i) => ({ id: resolvedIds[i], name })),
     ]);
   };
 
@@ -483,6 +543,13 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
   return (
     <>
       {showNewNb && <NewNotebookModal onConfirm={handleCreateNotebook} onClose={() => setShowNewNb(false)} />}
+      {showCreateTextFile && (
+        <CreateTextFileModal
+          existingNames={files.map(f => f.name)}
+          onCreate={handleCreateTextFile}
+          onClose={() => setShowCreateTextFile(false)}
+        />
+      )}
       <div className="h-full flex flex-col bg-white dark:bg-gray-900 overflow-hidden">
         {/* Full collapsible header */}
         <div className={`shrink-0 border-b border-gray-200 dark:border-gray-700 overflow-hidden transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-[400px] opacity-100'}`}>
@@ -518,6 +585,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                 {moreMenuOpen && (
                   <Popover title="More" onClose={() => setMoreMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
                     <div className="py-1">
+                      <button onClick={() => { setMoreMenuOpen(false); setShowCreateTextFile(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📄 Create text file</button>
                       {onOpenNotebook && (
                         <button onClick={() => { setMoreMenuOpen(false); setShowNewNb(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📓 Create Notebook</button>
                       )}
@@ -619,17 +687,30 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           {!loading && !error && files.length === 0 && <div className="flex items-center justify-center h-32 text-gray-400 dark:text-gray-500 text-sm">This folder is empty</div>}
           {!loading && files.length > 0 && viewMode === 'thumbnails' && (
             <div className="grid grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-3 p-1">
-              {files.map(item => (
+              {files.map(item => {
+                const isDup = duplicateNames.has(item.name);
+                const handleClick = () => {
+                  if (item.isDir) { openFolder(item); return; }
+                  if (isDup) { setDuplicateNameError(item); return; }
+                  setLastOpenedId(item.itemId);
+                  const s = openFileSiblings(item, files.filter(f => !duplicateNames.has(f.name)));
+                  onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx);
+                };
+                return (
                 <button key={item.itemId}
-                  onClick={() => { if (item.isDir) { openFolder(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
+                  onClick={handleClick}
                   onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}
                   className={`flex flex-col items-center gap-1.5 p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-center ${!item.isDir && item.itemId === lastOpenedId ? 'ring-2 ring-blue-400 dark:ring-blue-500 bg-blue-50 dark:bg-blue-900/20' : ''}`}>
-                  {!item.isDir && isImageItem(item)
+                  {!item.isDir && isImageItem(item) && !isDup
                     ? <ThumbnailImage accountId={account.id} itemId={item.itemId} size={item.size} />
                     : <div className="w-20 h-20 flex items-center justify-center text-4xl">{fileIcon(item)}</div>}
-                  <span className="text-xs text-gray-700 dark:text-gray-300 truncate w-full">{item.name}</span>
+                  <span className="text-xs text-gray-700 dark:text-gray-300 truncate w-full flex items-center justify-center gap-1">
+                    {isDup && <span title="Duplicate name — cannot cache content" className="text-amber-500 shrink-0">⚠</span>}
+                    {item.name}
+                  </span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
           {!loading && files.length > 0 && viewMode === 'list' && (
@@ -641,7 +722,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                 return (
                   <div key={item.itemId}
                     className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
-                    onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; if (item.isDir) { openFolder(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
+                    onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; const isDup = duplicateNames.has(item.name); if (item.isDir) { openFolder(item); } else if (isDup) { setDuplicateNameError(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files.filter(f => !duplicateNames.has(f.name))); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
                     onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                     <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
                       onClick={(e) => { e.stopPropagation(); if (!longPressTriggeredRef.current) handleCheck(idx, e.shiftKey, e.shiftKey && selectedIds.has(item.itemId)); }}
@@ -650,8 +731,9 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                       className="w-4 h-4 shrink-0 rounded accent-blue-600" />
                     <span className="text-lg select-none w-7 text-center">{fileIcon(item)}</span>
                     <div className="flex-1 min-w-0">
-                      <button onClick={() => { if (item.isDir) { openFolder(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
+                      <button onClick={() => { const isDup = duplicateNames.has(item.name); if (item.isDir) { openFolder(item); } else if (isDup) { setDuplicateNameError(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files.filter(f => !duplicateNames.has(f.name))); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
                         className={`text-sm font-medium truncate block text-left w-full hover:text-blue-600 dark:hover:text-blue-400 cursor-pointer ${item.isDir ? '' : 'text-gray-800 dark:text-gray-200'}`}>
+                        {duplicateNames.has(item.name) && <span title="Duplicate name — cannot cache content" className="text-amber-500 mr-1">⚠</span>}
                         {item.name}
                       </button>
                       <p className="text-xs text-gray-400 dark:text-gray-500">
@@ -683,9 +765,13 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           rootId="root" rootName="My Drive"
           initialFolderId={folderId}
           initialBreadcrumbs={breadcrumbs}
-          onList={listDriveFolders}
+          onList={listItemsForPicker}
           onConfirm={handleFolderPickerConfirm}
           onClose={() => setFolderPicker(null)}
+          sourceItems={folderPicker ? [{ id: folderPicker.fileId, name: folderPicker.fileName, isDir: folderPicker.isDir }] : []}
+          onRename={pickerRenameForGDrive}
+          onDelete={pickerDeleteForGDrive}
+          onCreateFolder={pickerCreateFolderForGDrive}
         />
       )}
       {bulkAction && (
@@ -694,9 +780,46 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           rootId="root" rootName="My Drive"
           initialFolderId={folderId}
           initialBreadcrumbs={breadcrumbs}
-          onList={listDriveFolders}
+          onList={listItemsForPicker}
           onConfirm={handleBulkPickerConfirm}
           onClose={() => setBulkAction(null)}
+          sourceItems={files.filter(f => selectedIds.has(f.itemId)).map(f => ({ id: f.itemId, name: f.name, isDir: f.isDir }))}
+          onRename={pickerRenameForGDrive}
+          onDelete={pickerDeleteForGDrive}
+          onCreateFolder={pickerCreateFolderForGDrive}
+        />
+      )}
+      {/* Duplicate-name error modal */}
+      {duplicateNameError && (
+        <Modal title="Cannot preview this file" onClose={() => setDuplicateNameError(null)} maxWidth="max-w-md">
+          <div className="p-5 space-y-4">
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Google Drive allows multiple items with the same name{' '}
+              <strong className="font-semibold">"{duplicateNameError.name}"</strong>{' '}
+              in the same folder. However, this device's file system does not allow
+              duplicate file names, so we cannot cache and display this file's content.
+            </p>
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              To view this file, please rename it so it has a unique name in its folder.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDuplicateNameError(null)}
+                className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Close
+              </button>
+              <button onClick={() => { const item = duplicateNameError; setDuplicateNameError(null); void handleRename(item); }}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
+                Rename file…
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {showCreateTextFile && (
+        <CreateTextFileModal
+          existingNames={files.map(f => f.name)}
+          onCreate={handleCreateTextFile}
+          onClose={() => setShowCreateTextFile(false)}
         />
       )}
 

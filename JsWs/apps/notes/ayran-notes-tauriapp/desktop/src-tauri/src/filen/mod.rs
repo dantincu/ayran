@@ -387,6 +387,47 @@ pub async fn filen_list_directory(
     Ok(items)
 }
 
+/// Searches a folder for a child with the given exact name.
+/// Returns that child's UUID, or `None` if not found.
+/// Used for recursive path resolution where we need only the ID, not the full metadata.
+#[tauri::command]
+pub async fn filen_find_child_by_name(
+    state: tauri::State<'_, FilenSessions>,
+    account_id: String,
+    parent_uuid: String,
+    child_name: String,
+) -> Result<Option<String>, String> {
+    let s = get_session(&state, &account_id)?;
+
+    let content: DirContentResponse = api::post(
+        &s.client,
+        "/v3/dir/content",
+        &serde_json::json!({ "uuid": parent_uuid }),
+        Some(&s.api_key),
+    )
+    .await?;
+
+    // Check folders first (faster, smaller payload)
+    for folder in &content.folders {
+        if let Ok(name) = decrypt_folder_name(&folder.name, &s.master_keys) {
+            if name == child_name {
+                return Ok(Some(folder.uuid.clone()));
+            }
+        }
+    }
+    // Then check files
+    for upload in &content.uploads {
+        if let Ok(meta) = crypto::decrypt_metadata(&upload.metadata, &s.master_keys)
+            .and_then(|plain| serde_json::from_str::<FileMetadata>(&plain).map_err(|e| e.to_string()))
+        {
+            if meta.name == child_name {
+                return Ok(Some(upload.uuid.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Fetches a folder's contents and writes every item into the SQLite cache row by row.
 /// Returns the total number of items inserted.
 pub async fn list_to_cache(
