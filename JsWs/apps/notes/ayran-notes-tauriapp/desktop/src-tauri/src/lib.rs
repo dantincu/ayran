@@ -21,6 +21,8 @@ const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
 
 // ── Shared account type (mirrors TypeScript's StoredAccount) ──────────────────
 
+fn is_false(b: &bool) -> bool { !b }
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredAccount {
@@ -39,6 +41,48 @@ pub struct StoredAccount {
     pub provider_data: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// When true, all write operations for this account are buffered locally.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shelveset_active: bool,
+}
+
+// ── Shelveset types ────────────────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ShelvesetChange {
+    pub id: i64,
+    pub account_id: String,
+    pub operation: String, // "delete" | "rename" | "move"
+    pub item_id: String,
+    pub item_name: String,
+    pub parent_id: String,
+    pub new_name: Option<String>,
+    pub new_parent_id: Option<String>,
+    pub is_dir: bool,
+    pub created_at: i64,
+    pub display_path: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ShelvesetContentItem {
+    pub id: i64,
+    pub account_id: String,
+    pub item_id: String,
+    pub item_name: String,
+    pub parent_id: String,
+    pub is_dir: bool,
+    pub is_new: bool,
+    pub created_at: i64,
+    pub display_path: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ShelvesetAllChanges {
+    pub structural: Vec<ShelvesetChange>,
+    pub content: Vec<ShelvesetContentItem>,
 }
 
 // ── App environment (DEV / PROD) ──────────────────────────────────────────────
@@ -459,6 +503,14 @@ async fn list_folder(
     };
 
     let db = std::sync::Arc::clone(&cache_state.0);
+
+    // When shelveset is active the local cache is the source of truth — never refresh from the network.
+    if account.shelveset_active {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        if cache::get_folder_cached_at(&conn, &account_id, &parent_id)?.is_some() {
+            return Ok(0);
+        }
+    }
 
     if !force {
         let conn = db.lock().map_err(|e| e.to_string())?;
@@ -1081,6 +1133,335 @@ async fn query_folder_items(
     .map_err(|e| e.to_string())?
 }
 
+// ── Shelveset commands ────────────────────────────────────────────────────────
+
+fn generate_local_id() -> String {
+    let mut bytes = [0u8; 12];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    format!("shv-{}", URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// Activate the shelveset for an account (freezes network refreshes, buffers writes).
+#[tauri::command]
+fn shelveset_activate(app: tauri::AppHandle, account_id: String) -> Result<(), String> {
+    let mut accounts = load_accounts(&app)?;
+    let account = accounts.get_mut(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?;
+    account.shelveset_active = true;
+    storage::write(&accounts_path(&app)?, &accounts)
+}
+
+/// Record a structural change (delete / rename / move) on an existing item.
+#[tauri::command]
+fn shelveset_record_change(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    operation: String,
+    item_id: String,
+    item_name: String,
+    parent_id: String,
+    new_name: Option<String>,
+    new_parent_id: Option<String>,
+    is_dir: bool,
+    display_path: String,
+) -> Result<i64, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO shelveset_changes
+         (account_id, operation, item_id, item_name, parent_id, new_name, new_parent_id, is_dir, created_at, display_path)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        rusqlite::params![account_id, operation, item_id, item_name, parent_id,
+            new_name, new_parent_id, is_dir as i32, now_ms() as i64, display_path],
+    ).map_err(|e| e.to_string())?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Save file content to the s/ folder and register in shelveset_contents.
+#[tauri::command]
+async fn shelveset_save_content(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    item_name: String,
+    parent_id: String,
+    is_dir: bool,
+    is_new: bool,
+    display_path: String,
+    content: Option<String>,
+) -> Result<(), String> {
+    if let Some(text) = content {
+        let accounts = load_accounts(&app)?;
+        let account = accounts.get(&account_id)
+            .ok_or_else(|| format!("Account '{}' not found", account_id))?
+            .clone();
+        let s_dir = app_base_dir(&app)?.join("s");
+        let acct_dir = account_content_cache_dir(&s_dir, &account)?;
+        let file_path = acct_dir.join(sanitize_path_component(&item_id));
+        tokio::fs::write(&file_path, text.as_bytes()).await.map_err(|e| e.to_string())?;
+    }
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO shelveset_contents
+         (account_id, item_id, item_name, parent_id, is_dir, is_new, created_at, display_path)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        rusqlite::params![account_id, item_id, item_name, parent_id,
+            is_dir as i32, is_new as i32, now_ms() as i64, display_path],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Create a brand-new item locally (no provider API call). Returns a local "shv-…" ID.
+#[tauri::command]
+async fn shelveset_create_item(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    parent_id: String,
+    item_name: String,
+    is_dir: bool,
+    display_path: String,
+    content: Option<String>,
+) -> Result<String, String> {
+    let local_id = generate_local_id();
+    // Write file body to s/
+    if let Some(text) = content {
+        let accounts = load_accounts(&app)?;
+        let account = accounts.get(&account_id)
+            .ok_or_else(|| format!("Account '{}' not found", account_id))?
+            .clone();
+        let s_dir = app_base_dir(&app)?.join("s");
+        let acct_dir = account_content_cache_dir(&s_dir, &account)?;
+        tokio::fs::write(acct_dir.join(sanitize_path_component(&local_id)), text.as_bytes())
+            .await.map_err(|e| e.to_string())?;
+    }
+    // Register in shelveset_contents
+    {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO shelveset_contents
+             (account_id, item_id, item_name, parent_id, is_dir, is_new, created_at, display_path)
+             VALUES (?1,?2,?3,?4,?5,1,?6,?7)",
+            rusqlite::params![account_id, local_id, item_name, parent_id,
+                is_dir as i32, now_ms() as i64, display_path],
+        ).map_err(|e| e.to_string())?;
+    }
+    // Inject a fake row into folder_items so the explorer shows the new item immediately.
+    let accounts = load_accounts(&app)?;
+    let account = accounts.get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+    let storage_type = match account.provider.as_str() {
+        "google-drive" => cache::STORAGE_GOOGLE_DRIVE,
+        "filen"        => cache::STORAGE_FILEN,
+        _              => cache::STORAGE_LOCAL_FS,
+    };
+    let new_item = cache::CachedItem {
+        account_id: account_id.clone(),
+        account_email: account.email.clone(),
+        storage_type,
+        item_id: local_id.clone(),
+        parent_id,
+        name: item_name,
+        is_dir,
+        size: if is_dir { None } else { Some(0) },
+        modified_ms: Some(now_ms() as i64),
+        mime_type: if is_dir { None } else { Some("text/plain".to_string()) },
+    };
+    {
+        let mut conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        let _ = cache::insert_batch(&mut *conn, &[new_item]);
+    }
+    Ok(local_id)
+}
+
+/// Return the path to the shelved copy of a file (in s/), or None if not shelved.
+#[tauri::command]
+fn shelveset_get_content_path(
+    app: tauri::AppHandle,
+    account_id: String,
+    item_id: String,
+) -> Result<Option<String>, String> {
+    let accounts = load_accounts(&app)?;
+    let account = match accounts.get(&account_id) {
+        Some(a) if a.shelveset_active => a.clone(),
+        _ => return Ok(None),
+    };
+    let s_dir = app_base_dir(&app)?.join("s");
+    let acct_dir = match find_account_cache_dir(&s_dir, &account) {
+        Some(d) => d,
+        None => return Ok(None),
+    };
+    let p = acct_dir.join(sanitize_path_component(&item_id));
+    Ok(if p.exists() { Some(p.to_string_lossy().into_owned()) } else { None })
+}
+
+/// Return all pending shelveset changes (structural + content) for an account.
+#[tauri::command]
+fn shelveset_get_all_changes(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+) -> Result<ShelvesetAllChanges, String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    let mut s = conn.prepare(
+        "SELECT id,account_id,operation,item_id,item_name,parent_id,new_name,new_parent_id,is_dir,created_at,display_path
+         FROM shelveset_changes WHERE account_id=?1 ORDER BY display_path ASC",
+    ).map_err(|e| e.to_string())?;
+    let structural: Vec<ShelvesetChange> = s.query_map(rusqlite::params![account_id], |r| Ok(ShelvesetChange {
+        id: r.get(0)?, account_id: r.get(1)?, operation: r.get(2)?,
+        item_id: r.get(3)?, item_name: r.get(4)?, parent_id: r.get(5)?,
+        new_name: r.get(6)?, new_parent_id: r.get(7)?,
+        is_dir: r.get::<_,i32>(8)? != 0, created_at: r.get(9)?, display_path: r.get(10)?,
+    })).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    let mut c = conn.prepare(
+        "SELECT id,account_id,item_id,item_name,parent_id,is_dir,is_new,created_at,display_path
+         FROM shelveset_contents WHERE account_id=?1 ORDER BY display_path ASC",
+    ).map_err(|e| e.to_string())?;
+    let content: Vec<ShelvesetContentItem> = c.query_map(rusqlite::params![account_id], |r| Ok(ShelvesetContentItem {
+        id: r.get(0)?, account_id: r.get(1)?, item_id: r.get(2)?,
+        item_name: r.get(3)?, parent_id: r.get(4)?,
+        is_dir: r.get::<_,i32>(5)? != 0, is_new: r.get::<_,i32>(6)? != 0,
+        created_at: r.get(7)?, display_path: r.get(8)?,
+    })).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+    Ok(ShelvesetAllChanges { structural, content })
+}
+
+/// Remove a single structural change (undo a pending delete/rename/move).
+#[tauri::command]
+fn shelveset_undo_structural(cache_state: tauri::State<'_, CacheState>, id: i64) -> Result<(), String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM shelveset_changes WHERE id=?1", rusqlite::params![id])
+        .map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Remove a content change and delete its s/ file (undo a pending file edit or creation).
+#[tauri::command]
+async fn shelveset_undo_content(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    id: i64,
+    account_id: String,
+    item_id: String,
+    is_new: bool,
+) -> Result<(), String> {
+    let accounts = load_accounts(&app)?;
+    if let Some(account) = accounts.get(&account_id) {
+        let s_dir = app_base_dir(&app)?.join("s");
+        if let Some(d) = find_account_cache_dir(&s_dir, account) {
+            let _ = std::fs::remove_file(d.join(sanitize_path_component(&item_id)));
+        }
+    }
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM shelveset_contents WHERE id=?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    // If the item was new, remove it from the folder_items cache too
+    if is_new {
+        let _ = conn.execute(
+            "DELETE FROM folder_items WHERE account_id=?1 AND item_id=?2",
+            rusqlite::params![account_id, item_id],
+        );
+    }
+    Ok(())
+}
+
+/// Discard the entire shelveset: clear all pending changes, delete s/ files, deactivate.
+#[tauri::command]
+async fn shelveset_discard(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+) -> Result<(), String> {
+    // Collect new item_ids before clearing so we can remove them from the folder cache
+    let new_ids: Vec<String> = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        let mut st = conn.prepare(
+            "SELECT item_id FROM shelveset_contents WHERE account_id=?1 AND is_new=1"
+        ).map_err(|e| e.to_string())?;
+        let ids: Vec<String> = st.query_map(rusqlite::params![account_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
+        ids
+    };
+    // Clear DB rows
+    {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM shelveset_changes WHERE account_id=?1", rusqlite::params![account_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM shelveset_contents WHERE account_id=?1", rusqlite::params![account_id]).map_err(|e| e.to_string())?;
+        // Remove new ghost items from folder cache
+        for id in &new_ids {
+            let _ = conn.execute("DELETE FROM folder_items WHERE account_id=?1 AND item_id=?2", rusqlite::params![account_id, id]);
+        }
+    }
+    // Remove s/ files for account
+    let accounts = load_accounts(&app)?;
+    if let Some(account) = accounts.get(&account_id) {
+        let s_dir = app_base_dir(&app)?.join("s");
+        if let Some(acct_dir) = find_account_cache_dir(&s_dir, account) {
+            if let Ok(rd) = std::fs::read_dir(&acct_dir) {
+                for entry in rd.flatten() {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    // Deactivate
+    let mut accounts = load_accounts(&app)?;
+    if let Some(a) = accounts.get_mut(&account_id) { a.shelveset_active = false; }
+    storage::write(&accounts_path(&app)?, &accounts)
+}
+
+/// Update the parent_id of a cached item (used after a shelved move).
+#[tauri::command]
+fn move_cached_item(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    new_parent_id: String,
+) -> Result<(), String> {
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE folder_items SET parent_id=?1 WHERE account_id=?2 AND item_id=?3",
+        rusqlite::params![new_parent_id, account_id, item_id],
+    ).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Delete all cached content (folder listings + content cache files) for an account.
+#[tauri::command]
+async fn delete_account_cache(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+) -> Result<(), String> {
+    {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM folder_items WHERE account_id=?1", rusqlite::params![account_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM content_cache WHERE account_id=?1", rusqlite::params![account_id]).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM path_index WHERE account_id=?1", rusqlite::params![account_id]).map_err(|e| e.to_string())?;
+    }
+    let accounts = load_accounts(&app)?;
+    if let Some(account) = accounts.get(&account_id) {
+        let c_dir = app_base_dir(&app)?.join("c");
+        if let Some(d) = find_account_cache_dir(&c_dir, account) {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        let t_dir = app_base_dir(&app)?.join("t");
+        if let Some(d) = find_account_cache_dir(&t_dir, account) {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+    Ok(())
+}
+
+/// Delete all app-specific data for an account (cache + shelveset), keeping it connected.
+#[tauri::command]
+async fn delete_account_app_data(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+) -> Result<(), String> {
+    delete_account_cache(app.clone(), cache_state.clone(), account_id.clone()).await?;
+    shelveset_discard(app, cache_state, account_id).await
+}
+
 // ── Local FS listing ──────────────────────────────────────────────────────────
 
 /// `rel_path` is a relative path (using '/' separator) within the account root.
@@ -1569,6 +1950,19 @@ pub fn run() {
             filen::filen_overwrite_file,
             create_text_file,
             get_thumbnail,
+            // Shelveset
+            shelveset_activate,
+            shelveset_record_change,
+            shelveset_save_content,
+            shelveset_create_item,
+            shelveset_get_content_path,
+            shelveset_get_all_changes,
+            shelveset_undo_structural,
+            shelveset_undo_content,
+            shelveset_discard,
+            move_cached_item,
+            delete_account_cache,
+            delete_account_app_data,
             // DevTools: SQLite explorer
             sqlite_list_tables,
             sqlite_table_schema,

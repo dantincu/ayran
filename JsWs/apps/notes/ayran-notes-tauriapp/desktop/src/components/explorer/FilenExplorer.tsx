@@ -302,8 +302,17 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     if (!confirm(`Move "${item.name}" to trash?`)) return;
     setDeletingId(item.itemId);
     try {
-      if (item.isDir) await trashDirectory(account.id, item.itemId);
-      else await trashFile(account.id, item.itemId);
+      if (account.shelvesetActive) {
+        const displayPath = [...breadcrumbs.map(b => b.name), item.name].join('/');
+        await invoke('shelveset_record_change', {
+          accountId: account.id, operation: 'delete',
+          itemId: item.itemId, itemName: item.name, parentId: item.parentId,
+          isDir: item.isDir, displayPath,
+        });
+      } else {
+        if (item.isDir) await trashDirectory(account.id, item.itemId);
+        else await trashFile(account.id, item.itemId);
+      }
       setItems((p) => p.filter((i) => i.itemId !== item.itemId));
       invoke('uncache_item', { accountId: account.id, itemId: item.itemId }).catch(() => {});
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
@@ -326,10 +335,20 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     if (validErr) { alert(validErr); return; }
     setRenamingId(item.itemId);
     try {
-      if (item.isDir) await renameDirectory(account.id, item.itemId, newName.trim());
-      else await renameFile(account.id, item.itemId, newName.trim());
-      setItems((p) => p.map((i) => i.itemId === item.itemId ? { ...i, name: newName.trim() } : i));
-      invoke('rename_cached_item', { accountId: account.id, itemId: item.itemId, newName: newName.trim() }).catch(() => {});
+      const trimmed = newName.trim();
+      if (account.shelvesetActive) {
+        const displayPath = [...breadcrumbs.map(b => b.name), item.name].join('/');
+        await invoke('shelveset_record_change', {
+          accountId: account.id, operation: 'rename',
+          itemId: item.itemId, itemName: item.name, parentId: item.parentId,
+          newName: trimmed, isDir: item.isDir, displayPath,
+        });
+      } else {
+        if (item.isDir) await renameDirectory(account.id, item.itemId, trimmed);
+        else await renameFile(account.id, item.itemId, trimmed);
+        invoke('rename_cached_item', { accountId: account.id, itemId: item.itemId, newName: trimmed }).catch(() => {});
+      }
+      setItems((p) => p.map((i) => i.itemId === item.itemId ? { ...i, name: trimmed } : i));
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setRenamingId(null); }
   };
@@ -376,14 +395,51 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
         }
       } else if (isDir) {
         setMovingId(uuid);
-        await moveDirectory(account.id, uuid, destUuid);
-        if (destName && destName !== folderPicker.name) await renameDirectory(account.id, uuid, destName);
+        if (account.shelvesetActive) {
+          const displayPath = [...breadcrumbs.map(b => b.name), folderPicker.name].join('/');
+          await invoke('shelveset_record_change', {
+            accountId: account.id, operation: 'move',
+            itemId: uuid, itemName: folderPicker.name, parentId: folderUUID,
+            newParentId: destUuid, isDir: true, displayPath,
+          });
+          if (destName && destName !== folderPicker.name) {
+            await invoke('shelveset_record_change', {
+              accountId: account.id, operation: 'rename',
+              itemId: uuid, itemName: folderPicker.name, parentId: destUuid,
+              newName: destName, isDir: true, displayPath,
+            });
+          }
+        } else {
+          await moveDirectory(account.id, uuid, destUuid);
+          if (destName && destName !== folderPicker.name) await renameDirectory(account.id, uuid, destName);
+        }
       } else {
         setMovingId(uuid);
-        await moveFile(account.id, uuid, destUuid);
-        if (destName && destName !== folderPicker.name) await renameFile(account.id, uuid, destName);
+        if (account.shelvesetActive) {
+          const displayPath = [...breadcrumbs.map(b => b.name), folderPicker.name].join('/');
+          await invoke('shelveset_record_change', {
+            accountId: account.id, operation: 'move',
+            itemId: uuid, itemName: folderPicker.name, parentId: folderUUID,
+            newParentId: destUuid, isDir: false, displayPath,
+          });
+          if (destName && destName !== folderPicker.name) {
+            await invoke('shelveset_record_change', {
+              accountId: account.id, operation: 'rename',
+              itemId: uuid, itemName: folderPicker.name, parentId: destUuid,
+              newName: destName, isDir: false, displayPath,
+            });
+          }
+        } else {
+          await moveFile(account.id, uuid, destUuid);
+          if (destName && destName !== folderPicker.name) await renameFile(account.id, uuid, destName);
+        }
       }
-      if (action === 'move') setItems((p) => p.filter((i) => i.itemId !== uuid));
+      if (action === 'move') {
+        if (account.shelvesetActive) {
+          invoke('move_cached_item', { accountId: account.id, itemId: uuid, newParentId: destUuid }).catch(() => {});
+        }
+        setItems((p) => p.filter((i) => i.itemId !== uuid));
+      }
       setFolderPicker(null);
     } finally { setCopyingId(null); setMovingId(null); }
   };
@@ -529,9 +585,17 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   };
 
   const handleCreateTextFile = async (fileName: string) => {
-    const newItemId = await invoke<string>('create_text_file', {
-      accountId: account.id, parentId: folderUUID, filename: fileName, content: '',
-    });
+    let newItemId: string;
+    if (account.shelvesetActive) {
+      const displayPath = [...breadcrumbs.map(b => b.name), fileName].join('/');
+      newItemId = await invoke<string>('shelveset_create_item', {
+        accountId: account.id, parentId: folderUUID, itemName: fileName, isDir: false, displayPath,
+      });
+    } else {
+      newItemId = await invoke<string>('create_text_file', {
+        accountId: account.id, parentId: folderUUID, filename: fileName, content: '',
+      });
+    }
     const newItem: CachedItem = {
       accountId: account.id, accountEmail: account.email, storageType: 2,
       itemId: newItemId, parentId: folderUUID, name: fileName, isDir: false,
@@ -858,8 +922,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
       )}
       {showChangePath && (
         <BreadcrumbChangePathModal
-          defaultValue={breadcrumbs.slice(1).map(b => b.name).join(' / ')}
-          placeholder="e.g. Documents / Projects"
+          defaultValue={breadcrumbs.slice(1).map(b => b.name).join('/')}
+          placeholder="e.g. Documents/Projects"
           onNavigate={handleChangePath}
           onClose={() => setShowChangePath(false)}
         />

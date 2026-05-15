@@ -12,6 +12,8 @@ interface Props {
   onConnectFilen: () => void;
   onConnectFs: () => void;
   connectError?: string | null;
+  onDeleteCache?: (id: string) => void;
+  onDeleteAppData?: (id: string) => void;
 }
 
 export default function ManageAccountsPage({
@@ -19,6 +21,7 @@ export default function ManageAccountsPage({
   onSelect, onDisconnect,
   onConnectGoogle, onConnectFilen, onConnectFs,
   connectError,
+  onDeleteCache, onDeleteAppData,
 }: Props) {
   const google = p.GoogleDrive.enabled     ? accounts.filter((a) => a.provider === 'google-drive') : [];
   const filen  = p.Filen.enabled           ? accounts.filter((a) => a.provider === 'filen')        : [];
@@ -40,17 +43,17 @@ export default function ManageAccountsPage({
 
       {google.length > 0 && (
         <Section label="Google Drive">
-          {google.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} />)}
+          {google.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} onDeleteCache={onDeleteCache} onDeleteAppData={onDeleteAppData} />)}
         </Section>
       )}
       {filen.length > 0 && (
         <Section label="Filen">
-          {filen.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} />)}
+          {filen.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} onDeleteCache={onDeleteCache} onDeleteAppData={onDeleteAppData} />)}
         </Section>
       )}
       {fs.length > 0 && (
         <Section label="Local file system">
-          {fs.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} />)}
+          {fs.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} onDeleteCache={onDeleteCache} onDeleteAppData={onDeleteAppData} />)}
         </Section>
       )}
 
@@ -102,31 +105,50 @@ function Section({ label, children }: { label: string; children: React.ReactNode
   );
 }
 
-function AccountRow({ account, selected, onSelect, onDisconnect }: {
+function AccountRow({ account, selected, onSelect, onDisconnect, onDeleteCache, onDeleteAppData }: {
   account: StoredAccount; selected: boolean;
   onSelect: (id: string) => void; onDisconnect: (id: string) => void;
+  onDeleteCache?: (id: string) => void; onDeleteAppData?: (id: string) => void;
 }) {
   const providerLabel = account.provider === 'google-drive' ? 'Google Drive'
     : account.provider === 'filen' ? 'Filen'
     : 'Local folder';
 
   return (
-    <div onClick={() => onSelect(account.id)}
-      className={`flex items-center justify-between px-3 py-2 rounded-lg cursor-pointer border transition-colors ${
-        selected
-          ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-200 dark:border-blue-700 ring-1 ring-blue-300 dark:ring-blue-600'
-          : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/50'}`}>
-      <div className="min-w-0 flex-1">
-        <p className={`text-sm truncate ${selected ? 'font-medium text-blue-700 dark:text-blue-400' : 'text-gray-800 dark:text-gray-200'}`}>
-          {account.displayName ?? account.email}
-        </p>
-        <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
-          {providerLabel}{account.email !== account.displayName ? ` · ${account.email}` : ''}
-        </p>
+    <div className={`rounded-lg border transition-colors ${
+      selected
+        ? 'bg-blue-50 dark:bg-blue-900/30 border-blue-200 dark:border-blue-700 ring-1 ring-blue-300 dark:ring-blue-600'
+        : 'bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700'}`}>
+      <div onClick={() => onSelect(account.id)}
+        className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors">
+        <div className="min-w-0 flex-1">
+          <p className={`text-sm truncate ${selected ? 'font-medium text-blue-700 dark:text-blue-400' : 'text-gray-800 dark:text-gray-200'}`}>
+            {account.displayName ?? account.email}
+          </p>
+          <p className="text-xs text-gray-400 dark:text-gray-500 truncate">
+            {providerLabel}{account.email !== account.displayName ? ` · ${account.email}` : ''}
+          </p>
+        </div>
+        <button onClick={(e) => { e.stopPropagation(); onDisconnect(account.id); }}
+          className="ml-3 text-xs text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 shrink-0 transition-colors px-1"
+          aria-label="Remove">✕</button>
       </div>
-      <button onClick={(e) => { e.stopPropagation(); onDisconnect(account.id); }}
-        className="ml-3 text-xs text-gray-300 dark:text-gray-600 hover:text-red-500 dark:hover:text-red-400 shrink-0 transition-colors px-1"
-        aria-label="Remove">✕</button>
+      {(onDeleteCache || onDeleteAppData) && (
+        <div className="flex gap-2 px-3 pb-2">
+          {onDeleteCache && (
+            <button onClick={(e) => { e.stopPropagation(); onDeleteCache(account.id); }}
+              className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors">
+              Delete cache
+            </button>
+          )}
+          {onDeleteAppData && (
+            <button onClick={(e) => { e.stopPropagation(); onDeleteAppData(account.id); }}
+              className="text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 transition-colors">
+              Delete app data
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -102,6 +102,37 @@ pub fn open(data_dir: &Path) -> Result<CacheDb, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // Shelveset tables — structural changes (delete/rename/move on existing items)
+    // and content changes (new or modified file bodies stored in the s/ folder).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS shelveset_changes (
+             id            INTEGER PRIMARY KEY AUTOINCREMENT,
+             account_id    TEXT    NOT NULL,
+             operation     TEXT    NOT NULL,
+             item_id       TEXT    NOT NULL,
+             item_name     TEXT    NOT NULL,
+             parent_id     TEXT    NOT NULL,
+             new_name      TEXT,
+             new_parent_id TEXT,
+             is_dir        INTEGER NOT NULL DEFAULT 0,
+             created_at    INTEGER NOT NULL,
+             display_path  TEXT    NOT NULL DEFAULT ''
+         );
+         CREATE TABLE IF NOT EXISTS shelveset_contents (
+             id            INTEGER PRIMARY KEY AUTOINCREMENT,
+             account_id    TEXT    NOT NULL,
+             item_id       TEXT    NOT NULL,
+             item_name     TEXT    NOT NULL,
+             parent_id     TEXT    NOT NULL,
+             is_dir        INTEGER NOT NULL DEFAULT 0,
+             is_new        INTEGER NOT NULL DEFAULT 0,
+             created_at    INTEGER NOT NULL,
+             display_path  TEXT    NOT NULL DEFAULT '',
+             UNIQUE(account_id, item_id)
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+
     Ok(Arc::new(Mutex::new(conn)))
 }
 

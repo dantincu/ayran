@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import Popover from './common/Popover';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount, CachedItem } from '../types';
@@ -8,6 +9,7 @@ import { connectGoogleDrive } from '../lib/google-auth';
 import { addNotebook } from '../lib/notebooks-db';
 import { useTheme } from '../hooks/useTheme';
 import ManageAccountsPage from './ManageAccountsPage';
+import ShelvesetChangesModal from './explorer/ShelvesetChangesModal';
 import GoogleDriveExplorer from './explorer/GoogleDriveExplorer';
 import FilenExplorer from './explorer/FilenExplorer';
 import FileSystemExplorer from './explorer/FileSystemExplorer';
@@ -47,6 +49,7 @@ export default function AppShell() {
   const [acctSwitcherOpen, setAcctSwitcherOpen] = useState(false);
   const [explorerCompact, setExplorerCompact] = useState(false);
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
+  const [shelvesetModalOpen, setShelvesetModalOpen] = useState(false);
   const { theme, toggleTheme } = useTheme();
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
   // Must be true before the persist effect is allowed to write/clear storage,
@@ -191,6 +194,29 @@ export default function AppShell() {
 
   const navigateTo = (page: Page) => { setCurrentPage(page); setMenuOpen(false); };
 
+  const handleActivateShelveset = async () => {
+    if (!selected) return;
+    setMenuOpen(false);
+    try {
+      await invoke('shelveset_activate', { accountId: selected.id });
+      setAccounts((prev) => prev.map((a) => a.id === selected.id ? { ...a, shelvesetActive: true } : a));
+    } catch (e) { alert(String(e)); }
+  };
+
+  const handleDeleteAccountCache = async (id: string) => {
+    if (!confirm('Delete all cached folder/file data for this account?')) return;
+    try { await invoke('delete_account_cache', { accountId: id }); }
+    catch (e) { alert(String(e)); }
+  };
+
+  const handleDeleteAccountAppData = async (id: string) => {
+    if (!confirm('Delete ALL app data for this account? This will remove the account connection as well.')) return;
+    try {
+      await invoke('delete_account_app_data', { accountId: id });
+      await handleDisconnect(id);
+    } catch (e) { alert(String(e)); }
+  };
+
   const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => {
     if (!selected) return;
     const entry = await addNotebook({
@@ -234,6 +260,25 @@ export default function AppShell() {
         <FilenLoginModal onSuccess={handleFilenSuccess} onClose={() => setShowFilenLogin(false)} />
       )}
 
+      {shelvesetModalOpen && selected && (
+        <ShelvesetChangesModal
+          account={selected}
+          onClose={() => setShelvesetModalOpen(false)}
+          onDiscarded={() => {
+            setShelvesetModalOpen(false);
+            setAccounts((prev) => prev.map((a) =>
+              a.id === selected.id ? { ...a, shelvesetActive: false } : a
+            ));
+          }}
+          onCommitted={() => {
+            setShelvesetModalOpen(false);
+            setAccounts((prev) => prev.map((a) =>
+              a.id === selected.id ? { ...a, shelvesetActive: false } : a
+            ));
+          }}
+        />
+      )}
+
       {viewingFile && (
         <FileViewer
           key={viewingFile.item.itemId}
@@ -259,8 +304,17 @@ export default function AppShell() {
             <div ref={acctSwitcherRef} className="relative">
               <button
                 onClick={() => setAcctSwitcherOpen((o) => !o)}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors max-w-[200px]"
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg transition-colors max-w-[200px] ${
+                  selected?.shelvesetActive
+                    ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 ring-1 ring-amber-400 dark:ring-amber-600 hover:bg-amber-200 dark:hover:bg-amber-800/50'
+                    : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600'
+                }`}
               >
+                {selected?.shelvesetActive && (
+                  <svg viewBox="0 0 14 14" fill="currentColor" className="w-3 h-3 shrink-0 text-amber-500 dark:text-amber-400">
+                    <circle cx="7" cy="7" r="3.5"/>
+                  </svg>
+                )}
                 <span className="truncate">{selectedLabel ?? 'No account'}</span>
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" className="shrink-0 opacity-60">
                   <path d="M6 8L1 3h10z" />
@@ -313,6 +367,22 @@ export default function AppShell() {
                   <button onClick={() => navigateTo('devtools')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
                     DevTools
                   </button>
+                  {isFilesPage && selected && selected.provider !== 'local-fs' && (
+                    <>
+                      <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
+                      {!selected.shelvesetActive ? (
+                        <button onClick={handleActivateShelveset} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
+                          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 shrink-0 text-amber-500"><rect x="2" y="4" width="12" height="9" rx="1.5"/><path d="M5 4V3a3 3 0 016 0v1"/></svg>
+                          Create shelveset
+                        </button>
+                      ) : (
+                        <button onClick={() => { setMenuOpen(false); setShelvesetModalOpen(true); }} className="w-full text-left px-4 py-2 text-sm text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/20 flex items-center gap-2">
+                          <svg viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4 shrink-0 text-amber-500"><circle cx="8" cy="8" r="3"/><path fillRule="evenodd" d="M8 1a7 7 0 100 14A7 7 0 008 1zM0 8a8 8 0 1116 0A8 8 0 010 8z"/></svg>
+                          View pending changes
+                        </button>
+                      )}
+                    </>
+                  )}
                   <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
                   <button onClick={() => { setMenuOpen(false); toggleTheme(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
                     {theme === 'dark'
@@ -340,6 +410,8 @@ export default function AppShell() {
               onConnectFilen={() => setShowFilenLogin(true)}
               onConnectFs={handleConnectFs}
               connectError={connectError}
+              onDeleteCache={handleDeleteAccountCache}
+              onDeleteAppData={handleDeleteAccountAppData}
             />
           </div>
         )}

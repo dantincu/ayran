@@ -76,6 +76,7 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [lineEnding, setLineEnding] = useState<'lf' | 'crlf'>('lf');
 
   // image overlay + zoom + pan
   const [showImageHeader, setShowImageHeader] = useState(true);
@@ -135,13 +136,26 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
     setLoading(true); setError(null); setProgress(null);
     setBlobUrl(null);
     try {
-      const path = await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
+      // If shelveset has a staged version of this text file, read it directly.
+      let path: string;
+      if (account.shelvesetActive && mode === 'text') {
+        const shelvedPath = await invoke<string | null>('shelveset_get_content_path', {
+          accountId: account.id, itemId: effectiveItemId,
+        });
+        path = shelvedPath ?? await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
+      } else {
+        path = await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
+      }
       if (!isMountedRef.current) return;
 
       if (mode === 'text') {
         const bytes = await readFile(path);
         if (!isMountedRef.current) return;
-        const text = new TextDecoder('utf-8').decode(bytes);
+        const raw = new TextDecoder('utf-8').decode(bytes);
+        // Detect line ending style before normalizing for the textarea.
+        const hasCRLF = raw.includes('\r\n');
+        setLineEnding(hasCRLF ? 'crlf' : 'lf');
+        const text = hasCRLF ? raw.replace(/\r\n/g, '\n') : raw;
         setTextContent(text); setEditedText(text); setIsDirty(false);
       } else if (mode !== 'unsupported') {
         setBlobUrl(convertFileSrc(path));
@@ -306,13 +320,28 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
     if (!isDirty || saving) return;
     setSaving(true); setSaveError(null);
     try {
-      const newId = await invoke<string>('save_text_file', {
-        accountId: account.id,
-        itemId: effectiveItemId,
-        parentId: item.parentId,
-        content: editedText,
-      });
-      if (newId !== effectiveItemId) setEffectiveItemId(newId);
+      // Apply chosen line ending style before writing.
+      const content = lineEnding === 'crlf' ? editedText.replace(/\n/g, '\r\n') : editedText;
+      if (account.shelvesetActive) {
+        await invoke('shelveset_save_content', {
+          accountId: account.id,
+          itemId: effectiveItemId,
+          itemName: item.name,
+          parentId: item.parentId,
+          isDir: false,
+          isNew: effectiveItemId.startsWith('shv-'),
+          displayPath: displayPath ?? item.name,
+          content,
+        });
+      } else {
+        const newId = await invoke<string>('save_text_file', {
+          accountId: account.id,
+          itemId: effectiveItemId,
+          parentId: item.parentId,
+          content,
+        });
+        if (newId !== effectiveItemId) setEffectiveItemId(newId);
+      }
       setTextContent(editedText); setIsDirty(false);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -490,6 +519,13 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
               Open as Notebook
             </button>
           )}
+          <button
+            onClick={() => setLineEnding((e) => e === 'lf' ? 'crlf' : 'lf')}
+            title={lineEnding === 'crlf' ? 'Windows line endings (CRLF) — click to switch to LF' : 'Unix line endings (LF) — click to switch to CRLF'}
+            className="px-2 py-1 rounded text-xs font-mono bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+          >
+            {lineEnding === 'crlf' ? 'CRLF' : 'LF'}
+          </button>
           <button onClick={handleSave} disabled={!isDirty || saving} title={saving ? 'Saving…' : 'Save'}
             className="p-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors">
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 11h10M7 3v6M4 6l3 3 3-3"/></svg>

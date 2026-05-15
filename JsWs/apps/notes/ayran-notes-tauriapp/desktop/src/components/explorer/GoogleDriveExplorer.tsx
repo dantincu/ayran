@@ -311,7 +311,16 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     if (!confirm(`Delete "${item.name}"?`)) return;
     setDeletingId(item.itemId);
     try {
-      await invoke('gdrive_delete_file', { accountId: account.id, fileId: item.itemId });
+      if (account.shelvesetActive) {
+        const displayPath = [...breadcrumbs.map(b => b.name), item.name].join('/');
+        await invoke('shelveset_record_change', {
+          accountId: account.id, operation: 'delete',
+          itemId: item.itemId, itemName: item.name, parentId: item.parentId,
+          isDir: item.isDir, displayPath,
+        });
+      } else {
+        await invoke('gdrive_delete_file', { accountId: account.id, fileId: item.itemId });
+      }
       setFiles((p) => p.filter((f) => f.itemId !== item.itemId));
       invoke('uncache_item', { accountId: account.id, itemId: item.itemId }).catch(() => {});
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
@@ -341,16 +350,34 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     if (validErr) { alert(validErr); return; }
     setRenamingId(item.itemId);
     try {
-      await invoke('gdrive_rename', { accountId: account.id, fileId: item.itemId, newName: newName.trim() });
-      setFiles((p) => p.map((f) => f.itemId === item.itemId ? { ...f, name: newName.trim() } : f));
-      invoke('rename_cached_item', { accountId: account.id, itemId: item.itemId, newName: newName.trim() }).catch(() => {});
+      const trimmed = newName.trim();
+      if (account.shelvesetActive) {
+        const displayPath = [...breadcrumbs.map(b => b.name), item.name].join('/');
+        await invoke('shelveset_record_change', {
+          accountId: account.id, operation: 'rename',
+          itemId: item.itemId, itemName: item.name, parentId: item.parentId,
+          newName: trimmed, isDir: item.isDir, displayPath,
+        });
+      } else {
+        await invoke('gdrive_rename', { accountId: account.id, fileId: item.itemId, newName: trimmed });
+        invoke('rename_cached_item', { accountId: account.id, itemId: item.itemId, newName: trimmed }).catch(() => {});
+      }
+      setFiles((p) => p.map((f) => f.itemId === item.itemId ? { ...f, name: trimmed } : f));
     } catch (e) { alert(e instanceof Error ? e.message : String(e)); }
     finally { setRenamingId(null); }
   };
   const handleCreateTextFile = async (fileName: string) => {
-    const newItemId = await invoke<string>('create_text_file', {
-      accountId: account.id, parentId: folderId, filename: fileName, content: '',
-    });
+    let newItemId: string;
+    if (account.shelvesetActive) {
+      const displayPath = [...breadcrumbs.map(b => b.name), fileName].join('/');
+      newItemId = await invoke<string>('shelveset_create_item', {
+        accountId: account.id, parentId: folderId, itemName: fileName, isDir: false, displayPath,
+      });
+    } else {
+      newItemId = await invoke<string>('create_text_file', {
+        accountId: account.id, parentId: folderId, filename: fileName, content: '',
+      });
+    }
     const newItem: CachedItem = {
       accountId: account.id, accountEmail: account.email, storageType: 1,
       itemId: newItemId, parentId: folderId, name: fileName, isDir: false,
@@ -400,8 +427,25 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
       } else {
         setMovingId(fileId);
         const fromFolderId = isDir ? breadcrumbs[breadcrumbs.length - 1].id : folderId;
-        await invoke('gdrive_move_file', { accountId: account.id, fileId, fromFolderId, toFolderId: destId });
-        if (destName !== fileName) await invoke('gdrive_rename', { accountId: account.id, fileId, newName: destName });
+        if (account.shelvesetActive) {
+          const displayPath = [...breadcrumbs.map(b => b.name), fileName].join('/');
+          await invoke('shelveset_record_change', {
+            accountId: account.id, operation: 'move',
+            itemId: fileId, itemName: fileName, parentId: fromFolderId,
+            newParentId: destId, isDir, displayPath,
+          });
+          if (destName !== fileName) {
+            await invoke('shelveset_record_change', {
+              accountId: account.id, operation: 'rename',
+              itemId: fileId, itemName: fileName, parentId: destId,
+              newName: destName, isDir, displayPath,
+            });
+          }
+          invoke('move_cached_item', { accountId: account.id, itemId: fileId, newParentId: destId }).catch(() => {});
+        } else {
+          await invoke('gdrive_move_file', { accountId: account.id, fileId, fromFolderId, toFolderId: destId });
+          if (destName !== fileName) await invoke('gdrive_rename', { accountId: account.id, fileId, newName: destName });
+        }
         setFiles((p) => p.filter((f) => f.itemId !== fileId));
       }
       setFolderPicker(null);
@@ -897,8 +941,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
       )}
       {showChangePath && (
         <BreadcrumbChangePathModal
-          defaultValue={breadcrumbs.slice(1).map(b => b.name).join(' / ')}
-          placeholder="e.g. Documents / Projects"
+          defaultValue={breadcrumbs.slice(1).map(b => b.name).join('/')}
+          placeholder="e.g. Documents/Projects"
           onNavigate={handleChangePath}
           onClose={() => setShowChangePath(false)}
         />
