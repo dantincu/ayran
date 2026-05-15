@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
-import { acquireThumbnailSlot } from '../lib/thumbnailQueue';
-import config from '../config.json';
+import { acquireThumbnailSlot } from '../../lib/thumbnailQueue';
+import config from '../../config.json';
 
 const MAX_FILE_BYTES = config.thumbnailMaxFileSizeMB * 1024 * 1024;
 

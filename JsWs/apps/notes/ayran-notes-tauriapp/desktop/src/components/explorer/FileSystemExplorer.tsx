@@ -1,17 +1,17 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import Popover from './Popover';
+import Popover from '../common/Popover';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile, writeFile, remove, mkdir, rename as fsRename, copyFile as fsCopyFile } from '@tauri-apps/plugin-fs';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
-import type { StoredAccount, CachedItem, FolderPage } from '../types';
-import { deleteAccount } from '../lib/account-store';
+import type { StoredAccount, CachedItem, FolderPage } from '../../types';
+import { deleteAccount } from '../../lib/account-store';
 import PaginationBar from './PaginationBar';
 import NewNotebookModal from './NewNotebookModal';
 import ThumbnailImage from './ThumbnailImage';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
 import { UploadIcon, FolderPlusIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
-import config from '../config.json';
+import config from '../../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
 

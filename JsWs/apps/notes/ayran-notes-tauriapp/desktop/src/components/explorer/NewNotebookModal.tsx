@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import Modal from './Modal';
+import Modal from '../common/Modal';
 
 interface Props {
   onConfirm: (title: string, description?: string) => Promise<void>;

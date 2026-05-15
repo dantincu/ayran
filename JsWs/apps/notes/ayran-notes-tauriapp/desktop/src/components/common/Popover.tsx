@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { useDraggable } from '../hooks/useDraggable';
+import { useDraggable } from '../../hooks/useDraggable';
 
 interface Props {
   title: string;

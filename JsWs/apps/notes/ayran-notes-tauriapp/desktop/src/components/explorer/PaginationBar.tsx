@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import Popover from './Popover';
-import Modal from './Modal';
-import config from '../config.json';
+import Popover from '../common/Popover';
+import Modal from '../common/Modal';
+import config from '../../config.json';
 
 interface Props {
   page: number;      // 0-indexed

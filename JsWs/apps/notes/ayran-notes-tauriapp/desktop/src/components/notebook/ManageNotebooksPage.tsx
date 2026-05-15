@@ -4,8 +4,8 @@ import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWind
 import { listen, emit } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, updateNotebooksByFile, type NotebookEntry } from '../../lib/notebooks-db';
-import Modal from '../Modal';
-import Popover from '../Popover';
+import Modal from '../common/Modal';
+import Popover from '../common/Popover';
 
 interface Props {
   onOpenNotebook: (notebookId: string) => void;

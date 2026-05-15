@@ -1,6 +1,6 @@
 import React from 'react';
 import AppShell from './components/AppShell';
-import { ModalStackProvider } from './components/ModalStack';
+import { ModalStackProvider } from './components/common/ModalStack';
 
 function App() {
   React.useEffect(() => {

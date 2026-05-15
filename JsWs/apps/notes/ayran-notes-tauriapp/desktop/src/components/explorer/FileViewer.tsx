@@ -2,8 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
-import type { StoredAccount, CachedItem } from '../types';
-import config from '../config.json';
+import type { StoredAccount, CachedItem } from '../../types';
+import config from '../../config.json';
 
 interface DownloadProgress { loaded: number; total: number | null; }
 

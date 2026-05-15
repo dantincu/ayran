@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import Popover from './Popover';
+import Popover from './common/Popover';
 import { getCurrentWebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount, CachedItem } from '../types';
@@ -7,13 +7,13 @@ import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store
 import { connectGoogleDrive } from '../lib/google-auth';
 import { addNotebook } from '../lib/notebooks-db';
 import ManageAccountsPage from './ManageAccountsPage';
-import GoogleDriveExplorer from './GoogleDriveExplorer';
-import FilenExplorer from './FilenExplorer';
-import FileSystemExplorer from './FileSystemExplorer';
+import GoogleDriveExplorer from './explorer/GoogleDriveExplorer';
+import FilenExplorer from './explorer/FilenExplorer';
+import FileSystemExplorer from './explorer/FileSystemExplorer';
 import FilenLoginModal from './FilenLoginModal';
-import FileViewer from './FileViewer';
+import FileViewer from './explorer/FileViewer';
 import ThemeToggle from './ThemeToggle';
-import DevToolsPage from './DevToolsPage';
+import DevToolsPage from './devTools/DevToolsPage';
 import ManageNotebooksPage from './notebook/ManageNotebooksPage';
 import NotebookPage from './notebook/NotebookPage';
 

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { loginFilen } from '../lib/filen-client';
 import type { StoredAccount } from '../types';
-import Modal from './Modal';
+import Modal from './common/Modal';
 
 interface Props {
   onSuccess: (account: StoredAccount) => void;

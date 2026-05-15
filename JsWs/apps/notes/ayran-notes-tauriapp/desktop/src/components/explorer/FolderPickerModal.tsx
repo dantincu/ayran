@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import Modal from './Modal';
+import Modal from '../common/Modal';
 import PaginationBar from './PaginationBar';
-import config from '../config.json';
+import config from '../../config.json';
 
 export interface FolderEntry {
   id: string;

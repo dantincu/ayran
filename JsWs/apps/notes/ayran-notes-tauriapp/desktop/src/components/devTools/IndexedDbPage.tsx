@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import Popover from './Popover';
-import PaginationBar from './PaginationBar';
-import config from '../config.json';
+import Popover from '../common/Popover';
+import PaginationBar from '../explorer/PaginationBar';
+import config from '../../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
 

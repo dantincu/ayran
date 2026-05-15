@@ -1,6 +1,6 @@
 import { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { useModalStack } from './ModalStack';
-import { useDraggable } from '../hooks/useDraggable';
+import { useDraggable } from '../../hooks/useDraggable';
 
 interface Props {
   title: string;
