@@ -44,6 +44,7 @@ export default function AppShell() {
   });
   const [menuOpen, setMenuOpen] = useState(false);
   const [acctSwitcherOpen, setAcctSwitcherOpen] = useState(false);
+  const [explorerCompact, setExplorerCompact] = useState(false);
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -214,8 +215,9 @@ export default function AppShell() {
       )}
 
       <div className={isFilesPage ? 'h-screen flex flex-col overflow-hidden' : 'container mx-auto p-6 max-w-7xl'}>
-        {/* App header */}
-        <header className={`flex items-center gap-2 ${isFilesPage ? 'px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shrink-0' : 'mb-6'}`}>
+        {/* App header — fades with the explorer toolbar when compact */}
+        <div className={isFilesPage ? `shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 ${explorerCompact ? 'max-h-0 opacity-0' : 'max-h-[80px] opacity-100'}` : ''}>
+        <header className={`flex items-center gap-2 ${isFilesPage ? 'px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900' : 'mb-6'}`}>
           <h1 className="text-lg font-bold text-gray-900 dark:text-white flex-1 truncate">Ayran Notes</h1>
 
           {/* Account switcher (files page only) */}
@@ -284,6 +286,7 @@ export default function AppShell() {
             )}
           </div>
         </header>
+        </div>{/* end animated header wrapper */}
 
         {/* Page content */}
         {currentPage === 'accounts' && (
@@ -339,18 +342,18 @@ export default function AppShell() {
             {selected?.provider === 'google-drive' && (
               <GoogleDriveExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                 onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
-                onOpenNotebook={handleOpenNotebook} />
+                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact} />
             )}
             {selected?.provider === 'filen' && (
               <FilenExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                 onNeedsRelogin={() => setShowFilenLogin(true)}
                 onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
-                onOpenNotebook={handleOpenNotebook} />
+                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact} />
             )}
             {selected?.provider === 'local-fs' && (
               <FileSystemExplorer key={selected.id} account={selected} onDisconnect={handleExplorerDisconnect}
                 onOpenFile={(item, displayPath, siblings, siblingIdx) => handleOpenFile(selected, item, displayPath, siblings, siblingIdx)}
-                onOpenNotebook={handleOpenNotebook} />
+                onOpenNotebook={handleOpenNotebook} onCompactChange={setExplorerCompact} />
             )}
             {!selected && (
               <div className="flex flex-col items-center justify-center h-full text-center text-gray-400 dark:text-gray-500 p-8">

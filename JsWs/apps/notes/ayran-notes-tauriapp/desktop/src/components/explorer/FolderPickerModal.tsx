@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 import PaginationBar from './PaginationBar';
+import { FolderPlusIcon } from './ExplorerIcons';
 import config from '../../config.json';
 
 export interface FolderEntry {
@@ -217,8 +218,9 @@ export default function FolderPickerModal({
           </nav>
           {onCreateFolder && (
             <button onClick={startCreateFolder} disabled={creatingFolder}
-              className="shrink-0 px-2 py-1 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
-              + New folder
+              title="New folder"
+              className="shrink-0 p-1.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
+              <FolderPlusIcon className="w-3.5 h-3.5" />
             </button>
           )}
         </div>
@@ -232,29 +234,46 @@ export default function FolderPickerModal({
 
         {/* ── Destination-names editor ── */}
         {destNamesMode ? (
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            <p className="text-xs text-gray-500 dark:text-gray-400">Set the name each item will have at the destination:</p>
-            {sourceItems.map((si, i) => (
-              <div key={si.id} className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-base select-none">{si.isDir ? '📁' : '📄'}</span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400 truncate flex-1">{si.name}</span>
-                  <span className="text-gray-300 dark:text-gray-600">→</span>
+          <div className="flex-1 overflow-y-auto flex flex-col">
+            {/* Back button header row */}
+            <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-700 shrink-0 flex items-center">
+              <button
+                onClick={() => setDestNamesMode(false)}
+                className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+              >
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
+                  <path d="M9 1L3 7l6 6"/>
+                </svg>
+                Back
+              </button>
+            </div>
+            <div className="p-4 space-y-4 overflow-y-auto">
+              <p className="text-xs text-gray-500 dark:text-gray-400">Set the name each item will have at the destination:</p>
+              {sourceItems.map((si, i) => (
+                <div key={si.id} className="space-y-1">
+                  {/* Original name row */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-base select-none shrink-0">{si.isDir ? '📁' : '📄'}</span>
+                    <span className="text-sm text-gray-600 dark:text-gray-400 truncate">{si.name}</span>
+                  </div>
+                  {/* Vertical arrow */}
+                  <div className="pl-1 text-gray-400 dark:text-gray-500 text-sm leading-none select-none">↓</div>
+                  {/* New name input */}
                   <input
                     value={destNames[i] ?? si.name}
                     onChange={(e) => updateDestName(i, e.target.value)}
-                    className={cls.input + ' max-w-[180px]'}
+                    className={cls.input}
                   />
+                  {destNamesErrors[i] && (
+                    <p className="text-xs text-red-500 dark:text-red-400">{destNamesErrors[i]}</p>
+                  )}
                 </div>
-                {destNamesErrors[i] && (
-                  <p className="text-xs text-red-500 dark:text-red-400 pl-6">{destNamesErrors[i]}</p>
-                )}
-              </div>
-            ))}
-            <button onClick={() => setDestNamesMode(false)} disabled={destNamesHaveError}
-              className="mt-2 px-4 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
-              Done
-            </button>
+              ))}
+              <button onClick={() => setDestNamesMode(false)} disabled={destNamesHaveError}
+                className="mt-2 px-4 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                Done
+              </button>
+            </div>
           </div>
         ) : (
           /* ── Normal folder browser ── */

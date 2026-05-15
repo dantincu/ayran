@@ -12,7 +12,7 @@ import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncest
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
 import CreateTextFileModal from './CreateTextFileModal';
 import Modal from '../common/Modal';
-import { UploadIcon, FolderPlusIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
+import { UploadIcon, FolderPlusIcon, NewFileIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
 import config from '../../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
@@ -26,6 +26,7 @@ interface Props {
   onDisconnect: () => void;
   onOpenFile: (item: CachedItem, displayPath: string, siblings?: CachedItem[], siblingIdx?: number) => void;
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
+  onCompactChange?: (compact: boolean) => void;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -78,7 +79,7 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook }: Props) {
+export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange }: Props) {
   const navKey = `notes-gdrive-nav-${account.id}`;
 
   const savedNav = useMemo(() => {
@@ -136,6 +137,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
   const [showChangePath, setShowChangePath] = useState(false);
   const [lastOpenedId, setLastOpenedId] = useState<string | null>(null);
   const [headerCollapsed, setHeaderCollapsed] = useState(false);
+  const [autoHide, setAutoHide] = useState(() => localStorage.getItem(`notes-autohide-${account.id}`) !== 'false');
+  const scrollBlockedRef = useRef(0);
   const [showCreateTextFile, setShowCreateTextFile] = useState(false);
   const [duplicateNameError, setDuplicateNameError] = useState<CachedItem | null>(null);
 
@@ -151,8 +154,13 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     return dups;
   }, [files]);
 
+  useEffect(() => { localStorage.setItem(`notes-autohide-${account.id}`, String(autoHide)); }, [autoHide, account.id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { onCompactChange?.(headerCollapsed); }, [headerCollapsed]);
+
   const handleListScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    if (!headerCollapsed && e.currentTarget.scrollTop > 40) setHeaderCollapsed(true);
+    if (Date.now() < scrollBlockedRef.current) return;
+    if (autoHide && !headerCollapsed && e.currentTarget.scrollTop > 40) setHeaderCollapsed(true);
   };
 
   // ── Persist state to localStorage whenever anything changes ──────────────────
@@ -552,7 +560,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
       )}
       <div className="h-full flex flex-col bg-white dark:bg-gray-900 overflow-hidden">
         {/* Full collapsible header */}
-        <div className={`shrink-0 border-b border-gray-200 dark:border-gray-700 overflow-hidden transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0 pointer-events-none' : 'max-h-[400px] opacity-100'}`}>
+        <div className={`shrink-0 border-b border-gray-200 dark:border-gray-700 transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0 pointer-events-none overflow-hidden' : 'max-h-[400px] opacity-100 overflow-visible'}`}>
         <div className="px-3 py-2 space-y-2">
           <div className="flex items-center gap-2">
             <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wide">Google Drive</span>
@@ -561,6 +569,9 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
               {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400 mr-1">✓ Cache cleared</span>}
               <button onClick={handleNewFolder} disabled={creatingFolder || anyBusy} title={creatingFolder ? 'Creating…' : 'New folder'} className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
                 <FolderPlusIcon className="w-4 h-4"/>
+              </button>
+              <button onClick={() => setShowCreateTextFile(true)} disabled={anyBusy} title="Create text file" className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors">
+                <NewFileIcon className="w-4 h-4"/>
               </button>
               <button onClick={handleUpload} disabled={anyBusy} title={uploadingId ? 'Uploading…' : 'Upload file'} className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 disabled:opacity-50 transition-colors">
                 <UploadIcon className="w-4 h-4"/>
@@ -585,14 +596,22 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                 {moreMenuOpen && (
                   <Popover title="More" onClose={() => setMoreMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
                     <div className="py-1">
-                      <button onClick={() => { setMoreMenuOpen(false); setShowCreateTextFile(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📄 Create text file</button>
                       {onOpenNotebook && (
                         <button onClick={() => { setMoreMenuOpen(false); setShowNewNb(true); }} disabled={anyBusy} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">📓 Create Notebook</button>
                       )}
+                      <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
+                      <button onClick={() => { setMoreMenuOpen(false); setAutoHide(a => !a); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <span className="w-3.5 text-center text-xs">{autoHide ? '✓' : ''}</span>
+                        Auto-hide toolbar on scroll
+                      </button>
                     </div>
                   </Popover>
                 )}
               </div>
+              <button onClick={() => setHeaderCollapsed(true)} title="Collapse toolbar"
+                className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 4l5 5 5-5"/></svg>
+              </button>
               <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                 Disconnect
               </button>
@@ -654,7 +673,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
               ))}
             </nav>
             <button
-              onClick={() => setHeaderCollapsed(false)}
+              onClick={() => { setHeaderCollapsed(false); scrollBlockedRef.current = Date.now() + 600; }}
               title="Show toolbar"
               className="shrink-0 px-2 py-0.5 text-xs rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
             >
@@ -756,7 +775,9 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           )}
         </div>
         </div>{/* end scrollable list */}
-        <div className="shrink-0"><PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} /></div>
+        <div className={`shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0' : 'max-h-[60px] opacity-100'}`}>
+          <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
+        </div>
       </div>
 
       {folderPicker && (

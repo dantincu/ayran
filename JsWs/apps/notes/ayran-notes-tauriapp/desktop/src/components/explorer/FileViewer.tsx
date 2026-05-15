@@ -395,9 +395,9 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
 
   const HeaderBar = ({ right }: { right?: React.ReactNode }) => (
     <div className="flex items-center px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 gap-2 shrink-0">
-      <button onClick={onClose}
-        className="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors shrink-0">
-        ← Back
+      <button onClick={onClose} title="Back"
+        className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors shrink-0">
+        <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M9 1L3 7l6 6"/></svg>
       </button>
       <span className="text-gray-300 dark:text-gray-600 shrink-0">|</span>
       {hasSiblings && (
@@ -490,9 +490,9 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
               Open as Notebook
             </button>
           )}
-          <button onClick={handleSave} disabled={!isDirty || saving}
-            className="px-3 py-1 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors">
-            {saving ? 'Saving…' : '💾 Save'}
+          <button onClick={handleSave} disabled={!isDirty || saving} title={saving ? 'Saving…' : 'Save'}
+            className="p-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors">
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 11h10M7 3v6M4 6l3 3 3-3"/></svg>
           </button>
         </>
       } />
@@ -563,6 +563,25 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
           onMouseUp={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
         >
+          <button onClick={(e) => { e.stopPropagation(); onClose(); }} title="Back"
+            className="p-1 rounded text-white/80 hover:text-white hover:bg-white/20 transition-colors shrink-0">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 1L3 7l6 6"/></svg>
+          </button>
+          <span className="text-white/40 shrink-0">|</span>
+          {hasSiblings && (
+            <>
+              <button onClick={(e) => { e.stopPropagation(); goToPrev(); }} disabled={!canPrev} title="Previous"
+                className="p-1 rounded text-white/80 hover:text-white hover:bg-white/20 disabled:opacity-30 transition-colors shrink-0">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9,2 4,7 9,12"/></svg>
+              </button>
+              <span className="text-xs text-white/60 tabular-nums shrink-0">{siblingIdx! + 1}/{siblings!.length}</span>
+              <button onClick={(e) => { e.stopPropagation(); goToNext(); }} disabled={!canNext} title="Next"
+                className="p-1 rounded text-white/80 hover:text-white hover:bg-white/20 disabled:opacity-30 transition-colors shrink-0">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="5,2 10,7 5,12"/></svg>
+              </button>
+              <span className="text-white/40 shrink-0">|</span>
+            </>
+          )}
           <span>🖼</span>
           <span className="font-medium truncate flex-1 min-w-0">{item.name}</span>
           <CacheControls />
@@ -629,15 +648,28 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         <div className="absolute inset-0 flex flex-col pointer-events-none">
           {/* top bar */}
           <div className="flex items-center px-4 py-3 bg-gradient-to-b from-black/70 to-transparent text-white gap-2 pointer-events-auto">
+            <button onClick={(e) => { e.stopPropagation(); onClose(); }} title="Back"
+              className="p-1 rounded text-white/80 hover:text-white hover:bg-white/20 transition-colors shrink-0">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 1L3 7l6 6"/></svg>
+            </button>
+            <span className="text-white/40 shrink-0">|</span>
+            {hasSiblings && (
+              <>
+                <button onClick={(e) => { e.stopPropagation(); goToPrev(); }} disabled={!canPrev} title="Previous"
+                  className="p-1 rounded text-white/80 hover:text-white hover:bg-white/20 disabled:opacity-30 transition-colors shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9,2 4,7 9,12"/></svg>
+                </button>
+                <span className="text-xs text-white/60 tabular-nums shrink-0">{siblingIdx! + 1}/{siblings!.length}</span>
+                <button onClick={(e) => { e.stopPropagation(); goToNext(); }} disabled={!canNext} title="Next"
+                  className="p-1 rounded text-white/80 hover:text-white hover:bg-white/20 disabled:opacity-30 transition-colors shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="5,2 10,7 5,12"/></svg>
+                </button>
+                <span className="text-white/40 shrink-0">|</span>
+              </>
+            )}
             <span>🎬</span>
             <span className="font-medium truncate flex-1 min-w-0">{item.name}</span>
             <CacheControls />
-            {!isPlaying && (
-              <button onClick={(e) => { e.stopPropagation(); onClose(); }}
-                className="text-white/80 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/20 transition-colors">
-                ✕
-              </button>
-            )}
           </div>
           {/* centre play/pause */}
           <div className="flex-1 flex items-center justify-center pointer-events-auto">
