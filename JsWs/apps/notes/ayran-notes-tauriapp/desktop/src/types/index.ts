@@ -46,19 +46,6 @@ export interface ShelvesetAllChanges {
   content: ShelvesetContentItem[];
 }
 
-export interface RescanResult {
-  updated: string[];
-  missingFromDisk: string[];
-  extraOnDisk: string[];
-}
-
-export interface ConflictItem {
-  itemId: string;
-  displayPath: string;
-  cachedMs: number;
-  serverMs: number;
-}
-
 /** Returned by query_folder_items — one page of items plus the total match count. */
 export interface FolderPage {
   items: CachedItem[];

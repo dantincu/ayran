@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import Popover from './common/Popover';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebviewWindow, getAllWebviewWindows } from '@tauri-apps/api/webviewWindow';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
 import type { StoredAccount, CachedItem } from '../types';
@@ -10,6 +11,8 @@ import { addNotebook } from '../lib/notebooks-db';
 import { useTheme } from '../hooks/useTheme';
 import ManageAccountsPage from './ManageAccountsPage';
 import ShelvesetChangesModal from './explorer/ShelvesetChangesModal';
+import MoveDataDirsModal from './MoveDataDirsModal';
+import InterruptedMoveModal from './InterruptedMoveModal';
 import GoogleDriveExplorer from './explorer/GoogleDriveExplorer';
 import FilenExplorer from './explorer/FilenExplorer';
 import FileSystemExplorer from './explorer/FileSystemExplorer';
@@ -18,6 +21,8 @@ import FileViewer from './explorer/FileViewer';
 import DevToolsPage from './devTools/DevToolsPage';
 import ManageNotebooksPage from './notebook/ManageNotebooksPage';
 import NotebookPage from './notebook/NotebookPage';
+
+const isMainWindow = getCurrentWebviewWindow().label === 'main';
 
 type Page = 'files' | 'notebooks' | 'devtools' | 'notebook' | 'accounts';
 
@@ -50,6 +55,8 @@ export default function AppShell() {
   const [explorerCompact, setExplorerCompact] = useState(false);
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
   const [shelvesetModalOpen, setShelvesetModalOpen] = useState(false);
+  const [moveInProgress, setMoveInProgress] = useState(false);
+  const [interruptedMove, setInterruptedMove] = useState<{ old: string; new: string } | null>(null);
   const { theme, toggleTheme } = useTheme();
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
   // Must be true before the persist effect is allowed to write/clear storage,
@@ -136,6 +143,26 @@ export default function AppShell() {
     return () => { if (unlisten) unlisten(); };
   }, []);
 
+  // Check data-dir move state on startup and subscribe to move events.
+  useEffect(() => {
+    invoke<boolean>('is_move_in_progress').then((inProgress) => {
+      if (inProgress) setMoveInProgress(true);
+    }).catch(() => {});
+
+    invoke<{ old: string; new: string } | null>('get_interrupted_move_info').then((info) => {
+      if (info) setInterruptedMove(info);
+    }).catch(() => {});
+
+    const unlisteners: (() => void)[] = [];
+    listen('data-dirs-move-started', () => setMoveInProgress(true))
+      .then((fn) => unlisteners.push(fn)).catch(() => {});
+    listen('data-dirs-move-done', () => setMoveInProgress(false))
+      .then((fn) => unlisteners.push(fn)).catch(() => {});
+    listen('data-dirs-move-cancelled', () => setMoveInProgress(false))
+      .then((fn) => unlisteners.push(fn)).catch(() => {});
+    return () => unlisteners.forEach((fn) => fn());
+  }, []);
+
   const selected = accounts.find((a) => a.id === selectedId) ?? null;
   const refresh = async () => { setAccounts(await listAccounts()); };
 
@@ -217,6 +244,15 @@ export default function AppShell() {
     } catch (e) { alert(String(e)); }
   };
 
+  const handleChangeDataFolder = async () => {
+    setMenuOpen(false);
+    const sel = await dialogOpen({ directory: true, multiple: false });
+    if (!sel || typeof sel !== 'string') return;
+    try {
+      await invoke('start_move_data_dirs', { newPath: sel });
+    } catch (e) { alert(String(e)); }
+  };
+
   const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => {
     if (!selected) return;
     const entry = await addNotebook({
@@ -258,6 +294,18 @@ export default function AppShell() {
     <>
       {showFilenLogin && (
         <FilenLoginModal onSuccess={handleFilenSuccess} onClose={() => setShowFilenLogin(false)} />
+      )}
+
+      {moveInProgress && (
+        <MoveDataDirsModal isMainWindow={isMainWindow} onDone={() => setMoveInProgress(false)} />
+      )}
+
+      {interruptedMove && (
+        <InterruptedMoveModal
+          oldPath={interruptedMove.old}
+          newPath={interruptedMove.new}
+          onDismiss={() => setInterruptedMove(null)}
+        />
       )}
 
       {shelvesetModalOpen && selected && (
@@ -381,6 +429,15 @@ export default function AppShell() {
                           View pending changes
                         </button>
                       )}
+                    </>
+                  )}
+                  {isMainWindow && (
+                    <>
+                      <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
+                      <button onClick={handleChangeDataFolder} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
+                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 shrink-0 text-blue-500"><path strokeLinecap="round" strokeLinejoin="round" d="M2 4.5a1.5 1.5 0 011.5-1.5H7l1.5 1.5H12.5A1.5 1.5 0 0114 6v5.5A1.5 1.5 0 0112.5 13h-9A1.5 1.5 0 012 11.5v-7z"/><path strokeLinecap="round" strokeLinejoin="round" d="M8 8v3.5M6.5 10l1.5 1.5L9.5 10"/></svg>
+                        Change data folder…
+                      </button>
                     </>
                   )}
                   <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>

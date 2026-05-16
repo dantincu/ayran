@@ -9,6 +9,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::HashMap;
 use tauri::{Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,6 +19,17 @@ const GOOGLE_CLIENT_ID: &str = env!("GOOGLE_CLIENT_ID");
 const GOOGLE_CLIENT_SECRET: &str = env!("GOOGLE_CLIENT_SECRET");
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const DRIVE_API: &str = "https://www.googleapis.com/drive/v3";
+
+// ── Custom data-dirs state ─────────────────────────────────────────────────────
+
+/// Holds the user-chosen base directory for c/, t/, s/ (overrides app_base_dir when set).
+pub struct CustomBasePath(pub std::sync::Mutex<Option<std::path::PathBuf>>);
+
+/// Non-None when the app was closed while a data-dir move was in progress.
+pub struct MoveInterruptedInfo(pub std::sync::Mutex<Option<(std::path::PathBuf, std::path::PathBuf)>>);
+
+static MOVE_CANCELLED: AtomicBool = AtomicBool::new(false);
+static MOVE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 // ── Shared account type (mirrors TypeScript's StoredAccount) ──────────────────
 
@@ -116,6 +128,65 @@ pub(crate) fn app_base_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf,
     } else {
         Ok(base.join("env").join(env))
     }
+}
+
+/// Returns the base directory for c/, t/, s/ — uses the user-chosen custom path if set.
+pub(crate) fn data_dirs_base(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    if let Some(state) = app.try_state::<CustomBasePath>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some(ref p) = *guard {
+                return Ok(p.clone());
+            }
+        }
+    }
+    app_base_dir(app)
+}
+
+/// Path of the sentinel file that persists the user-chosen base dir.
+fn custom_base_path_file(app: &tauri::AppHandle) -> std::path::PathBuf {
+    // Always in the real $appData root — unaffected by env or custom path.
+    app.path().app_data_dir()
+        .expect("app data dir unavailable")
+        .join("custom_base.txt")
+}
+
+fn read_custom_base_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let s = std::fs::read_to_string(custom_base_path_file(app)).ok()?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() { None } else { Some(std::path::PathBuf::from(trimmed)) }
+}
+
+fn write_custom_base_path(app: &tauri::AppHandle, path: Option<&std::path::Path>) {
+    let file = custom_base_path_file(app);
+    match path {
+        Some(p) => { let _ = std::fs::write(&file, p.to_string_lossy().as_bytes()); }
+        None    => { let _ = std::fs::remove_file(&file); }
+    }
+}
+
+/// Path of the sentinel file written before a move operation begins.
+fn move_in_progress_file(app: &tauri::AppHandle) -> std::path::PathBuf {
+    app.path().app_data_dir()
+        .expect("app data dir unavailable")
+        .join("move_in_progress.json")
+}
+
+fn write_move_sentinel(app: &tauri::AppHandle, old: &std::path::Path, new: &std::path::Path) {
+    let json = serde_json::json!({"old": old.to_string_lossy(), "new": new.to_string_lossy()});
+    let _ = std::fs::write(move_in_progress_file(app), json.to_string());
+}
+
+fn clear_move_sentinel(app: &tauri::AppHandle) {
+    let _ = std::fs::remove_file(move_in_progress_file(app));
+}
+
+fn read_move_sentinel(app: &tauri::AppHandle) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let s = std::fs::read_to_string(move_in_progress_file(app)).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&s).ok()?;
+    Some((
+        std::path::PathBuf::from(v["old"].as_str()?),
+        std::path::PathBuf::from(v["new"].as_str()?),
+    ))
 }
 
 pub(crate) fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -762,7 +833,7 @@ async fn open_file_inner(
         return Ok(local_fs_abs(account, item_id)?.to_string_lossy().into_owned());
     }
 
-    let c_dir = app_base_dir(app)?.join("c");
+    let c_dir = data_dirs_base(app)?.join("c");
     let acct_dir = account_content_cache_dir(&c_dir, account)?;
 
     let known_rel = {
@@ -890,7 +961,7 @@ async fn get_thumbnail(
         .ok_or_else(|| format!("Account '{}' not found", account_id))?
         .clone();
 
-    let t_dir = app_base_dir(&app)?.join("t");
+    let t_dir = data_dirs_base(&app)?.join("t");
     let thumb_path = thumbnail_path_for_item(&t_dir, &account, &item_id, &cache_state.0)?;
 
     if thumb_path.exists() {
@@ -931,7 +1002,7 @@ async fn save_text_file(
     }
 
     // Cloud: write to cache then upload.
-    let c_dir = app_base_dir(&app)?.join("c");
+    let c_dir = data_dirs_base(&app)?.join("c");
     let acct_dir = account_content_cache_dir(&c_dir, &account)?;
     // Use the persistent content-cache index first so path is stable across restarts.
     let rel_str: String = {
@@ -1039,7 +1110,7 @@ fn delete_cached_file(
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
     if let Some(rel) = cache::get_content_cache_path(&conn, &account_id, &item_id) {
         if let (Ok(c_dir), Ok(accounts)) = (
-            app_base_dir(&app).map(|d| d.join("c")),
+            data_dirs_base(&app).map(|d| d.join("c")),
             load_accounts(&app),
         ) {
             if let Some(account) = accounts.get(&account_id) {
@@ -1068,7 +1139,7 @@ fn uncache_item(
     if let Ok(accounts) = load_accounts(&app) {
         if let Some(account) = accounts.get(&account_id) {
             if account.provider != "local-fs" {
-                if let Ok(c_dir) = app_base_dir(&app).map(|d| d.join("c")) {
+                if let Ok(c_dir) = data_dirs_base(&app).map(|d| d.join("c")) {
                     if let Some(acct_dir) = find_account_cache_dir(&c_dir, account) {
                         let root = account_root_parent_id(account);
                         let parts = cache::item_path_from_root(&conn, &account_id, &item_id, &root);
@@ -1195,7 +1266,7 @@ async fn shelveset_save_content(
         let account = accounts.get(&account_id)
             .ok_or_else(|| format!("Account '{}' not found", account_id))?
             .clone();
-        let s_dir = app_base_dir(&app)?.join("s");
+        let s_dir = data_dirs_base(&app)?.join("s");
         let acct_dir = account_content_cache_dir(&s_dir, &account)?;
         let file_path = acct_dir.join(sanitize_path_component(&item_id));
         tokio::fs::write(&file_path, text.as_bytes()).await.map_err(|e| e.to_string())?;
@@ -1229,7 +1300,7 @@ async fn shelveset_save_file_path(
     let account = accounts.get(&account_id)
         .ok_or_else(|| format!("Account '{}' not found", account_id))?
         .clone();
-    let s_dir = app_base_dir(&app)?.join("s");
+    let s_dir = data_dirs_base(&app)?.join("s");
     let acct_dir = account_content_cache_dir(&s_dir, &account)?;
     let dest = acct_dir.join(sanitize_path_component(&item_id));
     tokio::fs::copy(&local_path, &dest).await.map_err(|e| e.to_string())?;
@@ -1263,7 +1334,7 @@ async fn shelveset_create_item(
         let account = accounts.get(&account_id)
             .ok_or_else(|| format!("Account '{}' not found", account_id))?
             .clone();
-        let s_dir = app_base_dir(&app)?.join("s");
+        let s_dir = data_dirs_base(&app)?.join("s");
         let acct_dir = account_content_cache_dir(&s_dir, &account)?;
         tokio::fs::write(acct_dir.join(sanitize_path_component(&local_id)), text.as_bytes())
             .await.map_err(|e| e.to_string())?;
@@ -1320,7 +1391,7 @@ fn shelveset_get_content_path(
         Some(a) if a.shelveset_active => a.clone(),
         _ => return Ok(None),
     };
-    let s_dir = app_base_dir(&app)?.join("s");
+    let s_dir = data_dirs_base(&app)?.join("s");
     let acct_dir = match find_account_cache_dir(&s_dir, &account) {
         Some(d) => d,
         None => return Ok(None),
@@ -1379,7 +1450,7 @@ async fn shelveset_undo_content(
 ) -> Result<(), String> {
     let accounts = load_accounts(&app)?;
     if let Some(account) = accounts.get(&account_id) {
-        let s_dir = app_base_dir(&app)?.join("s");
+        let s_dir = data_dirs_base(&app)?.join("s");
         if let Some(d) = find_account_cache_dir(&s_dir, account) {
             let _ = std::fs::remove_file(d.join(sanitize_path_component(&item_id)));
         }
@@ -1427,7 +1498,7 @@ async fn shelveset_discard(
     // Remove s/ files for account
     let accounts = load_accounts(&app)?;
     if let Some(account) = accounts.get(&account_id) {
-        let s_dir = app_base_dir(&app)?.join("s");
+        let s_dir = data_dirs_base(&app)?.join("s");
         if let Some(acct_dir) = find_account_cache_dir(&s_dir, account) {
             if let Ok(rd) = std::fs::read_dir(&acct_dir) {
                 for entry in rd.flatten() {
@@ -1472,11 +1543,11 @@ async fn delete_account_cache(
     }
     let accounts = load_accounts(&app)?;
     if let Some(account) = accounts.get(&account_id) {
-        let c_dir = app_base_dir(&app)?.join("c");
+        let c_dir = data_dirs_base(&app)?.join("c");
         if let Some(d) = find_account_cache_dir(&c_dir, account) {
             let _ = std::fs::remove_dir_all(&d);
         }
-        let t_dir = app_base_dir(&app)?.join("t");
+        let t_dir = data_dirs_base(&app)?.join("t");
         if let Some(d) = find_account_cache_dir(&t_dir, account) {
             let _ = std::fs::remove_dir_all(&d);
         }
@@ -1513,92 +1584,185 @@ fn get_item_cached_mtime(
     Ok(ms)
 }
 
-// ── Shelveset rescan ──────────────────────────────────────────────────────────
+// ── Data-dirs move commands ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RescanResult {
-    /// Display paths of content items whose s/ file was modified after the DB entry.
-    pub updated: Vec<String>,
-    /// Display paths of content items in the DB whose s/ file is missing from disk.
-    pub missing_from_disk: Vec<String>,
-    /// File names found in the s/ folder that have no matching DB entry.
-    pub extra_on_disk: Vec<String>,
+#[tauri::command]
+fn get_data_dirs_info(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let current = data_dirs_base(&app)?;
+    let default = app_base_dir(&app)?;
+    Ok(serde_json::json!({
+        "current": current.to_string_lossy(),
+        "isCustom": current != default,
+    }))
 }
 
-/// Re-read the s/ folder for the account, detect external modifications and
-/// structural discrepancies, then update DB timestamps for externally-modified files.
 #[tauri::command]
-async fn shelveset_rescan(
-    app: tauri::AppHandle,
-    cache_state: tauri::State<'_, CacheState>,
-    account_id: String,
-) -> Result<RescanResult, String> {
-    let accounts = load_accounts(&app)?;
-    let account = accounts.get(&account_id)
-        .ok_or_else(|| format!("Account '{}' not found", account_id))?
-        .clone();
+fn validate_new_data_dir(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let new_path = std::path::PathBuf::from(&path);
+    if !new_path.exists()  { return Err(format!("Path does not exist: {}", path)); }
+    if !new_path.is_dir()  { return Err(format!("Not a directory: {}", path)); }
 
-    let s_dir = app_base_dir(&app)?.join("s");
-    let acct_dir = account_content_cache_dir(&s_dir, &account)?;
+    // Must not be inside $appData.
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    if new_path.starts_with(&app_data) {
+        return Err("Cannot use a folder inside the app data directory.".into());
+    }
 
-    // Enumerate files currently on disk in s/ for this account.
-    let disk_files: std::collections::HashSet<String> = std::fs::read_dir(&acct_dir)
-        .map(|rd| rd.flatten()
-            .filter_map(|e| e.file_name().into_string().ok())
-            .collect())
-        .unwrap_or_default();
-
-    // Load all non-directory content items for this account from the DB.
-    let db_items: Vec<(String, String, i64)> = {
-        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-        let mut st = conn.prepare(
-            "SELECT item_id, display_path, created_at FROM shelveset_contents \
-             WHERE account_id=?1 AND is_dir=0"
-        ).map_err(|e| e.to_string())?;
-        let rows: Vec<_> = st.query_map(rusqlite::params![account_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
-        }).map_err(|e| e.to_string())?.filter_map(|r| r.ok()).collect();
-        rows
-    };
-
-    let db_sanitized: std::collections::HashSet<String> = db_items.iter()
-        .map(|(id, _, _)| sanitize_path_component(id))
-        .collect();
-
-    let missing_from_disk: Vec<String> = db_items.iter()
-        .filter(|(id, _, _)| !disk_files.contains(&sanitize_path_component(id)))
-        .map(|(_, path, _)| path.clone())
-        .collect();
-
-    let extra_on_disk: Vec<String> = disk_files
-        .difference(&db_sanitized)
-        .cloned()
-        .collect();
-
-    // Detect externally modified files (disk mtime > DB created_at) and update DB.
-    let mut updated = Vec::new();
+    // Must not be a known system directory (Windows).
+    #[cfg(target_os = "windows")]
     {
-        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
-        for (item_id, display_path, db_created_at) in &db_items {
-            let sanitized = sanitize_path_component(item_id);
-            let file_path = acct_dir.join(&sanitized);
-            if !file_path.exists() { continue; }
-            let disk_mtime = std::fs::metadata(&file_path)
-                .and_then(|m| m.modified())
-                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as i64)
-                .unwrap_or(0);
-            if disk_mtime > *db_created_at {
-                conn.execute(
-                    "UPDATE shelveset_contents SET created_at=?1 WHERE account_id=?2 AND item_id=?3",
-                    rusqlite::params![disk_mtime, account_id, item_id],
-                ).ok();
-                updated.push(display_path.clone());
+        let sys_roots = [
+            "C:\\Windows",
+            "C:\\Program Files",
+            "C:\\Program Files (x86)",
+            "C:\\ProgramData",
+        ];
+        for root in sys_roots {
+            let rp = std::path::PathBuf::from(root);
+            if new_path == rp || new_path.starts_with(&rp) {
+                return Err(format!("Cannot use a system folder: {}", root));
             }
         }
     }
 
-    Ok(RescanResult { updated, missing_from_disk, extra_on_disk })
+    // Must not already be the current data dir.
+    if new_path == data_dirs_base(&app)? {
+        return Err("This is already the current data folder.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn is_move_in_progress() -> bool {
+    MOVE_IN_PROGRESS.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn cancel_move_data_dirs() {
+    MOVE_CANCELLED.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn get_interrupted_move_info(app: tauri::AppHandle) -> Option<serde_json::Value> {
+    let state = app.try_state::<MoveInterruptedInfo>()?;
+    let guard = state.0.lock().ok()?;
+    let (ref old, ref new) = *guard.as_ref()?;
+    Some(serde_json::json!({"old": old.to_string_lossy(), "new": new.to_string_lossy()}))
+}
+
+#[tauri::command]
+fn cleanup_interrupted_move(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(state) = app.try_state::<MoveInterruptedInfo>() {
+        if let Ok(guard) = state.0.lock() {
+            if let Some((ref old, _)) = *guard {
+                for dir in ["c", "t", "s"] {
+                    let _ = std::fs::remove_dir_all(old.join(dir));
+                }
+            }
+        }
+    }
+    clear_move_sentinel(&app);
+    Ok(())
+}
+
+fn count_files_recursive(dir: &std::path::Path) -> u64 {
+    if !dir.exists() { return 0; }
+    let mut n = 0u64;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for entry in rd.flatten() {
+            if entry.path().is_dir() { n += count_files_recursive(&entry.path()); }
+            else { n += 1; }
+        }
+    }
+    n
+}
+
+fn copy_dir_sync(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    app: &tauri::AppHandle,
+    copied: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+    total: u64,
+) -> Result<(), String> {
+    std::fs::create_dir_all(dst).map_err(|e| e.to_string())?;
+    let rd = std::fs::read_dir(src).map_err(|e| e.to_string())?;
+    for entry in rd.flatten() {
+        if MOVE_CANCELLED.load(Ordering::SeqCst) { return Ok(()); }
+        let sp = entry.path();
+        let dp = dst.join(entry.file_name());
+        if sp.is_dir() {
+            copy_dir_sync(&sp, &dp, app, copied, total)?;
+        } else {
+            std::fs::copy(&sp, &dp).map_err(|e| e.to_string())?;
+            let n = copied.fetch_add(1, Ordering::Relaxed) + 1;
+            let _ = app.emit("data-dirs-move-progress",
+                serde_json::json!({ "copied": n, "total": total }));
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn start_move_data_dirs(app: tauri::AppHandle, new_path: String) -> Result<(), String> {
+    validate_new_data_dir(app.clone(), new_path.clone())?;
+
+    let old_base = data_dirs_base(&app)?;
+    let new_base = std::path::PathBuf::from(&new_path);
+
+    MOVE_CANCELLED.store(false, Ordering::SeqCst);
+    MOVE_IN_PROGRESS.store(true, Ordering::SeqCst);
+    write_move_sentinel(&app, &old_base, &new_base);
+    let _ = app.emit("data-dirs-move-started", ());
+
+    let total: u64 = ["c","t","s"].iter()
+        .map(|d| count_files_recursive(&old_base.join(d)))
+        .sum();
+
+    let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    // Copy all three dirs inside a single spawn_blocking call.
+    let result = {
+        let old = old_base.clone();
+        let new = new_base.clone();
+        let app2 = app.clone();
+        let ctr = std::sync::Arc::clone(&copied);
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            for dir in ["c","t","s"] {
+                let src = old.join(dir);
+                if !src.exists() { continue; }
+                copy_dir_sync(&src, &new.join(dir), &app2, &ctr, total)?;
+                if MOVE_CANCELLED.load(Ordering::SeqCst) { return Ok(()); }
+            }
+            Ok(())
+        }).await.map_err(|e| e.to_string())?
+    };
+
+    if MOVE_CANCELLED.load(Ordering::SeqCst) || result.is_err() {
+        for d in ["c","t","s"] { let _ = std::fs::remove_dir_all(new_base.join(d)); }
+        MOVE_IN_PROGRESS.store(false, Ordering::SeqCst);
+        clear_move_sentinel(&app);
+        let _ = app.emit("data-dirs-move-cancelled", ());
+        return result;
+    }
+
+    // Remove originals.
+    for dir in ["c","t","s"] {
+        let _ = std::fs::remove_dir_all(old_base.join(dir));
+    }
+
+    // Persist and update in-memory state.
+    write_custom_base_path(&app, Some(&new_base));
+    if let Some(state) = app.try_state::<CustomBasePath>() {
+        if let Ok(mut g) = state.0.lock() { *g = Some(new_base); }
+    }
+    if let Some(state) = app.try_state::<MoveInterruptedInfo>() {
+        if let Ok(mut g) = state.0.lock() { *g = None; }
+    }
+
+    MOVE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    clear_move_sentinel(&app);
+    let _ = app.emit("data-dirs-move-done", ());
+    Ok(())
 }
 
 // ── Local FS listing ──────────────────────────────────────────────────────────
@@ -1978,6 +2142,13 @@ pub fn run() {
             let env = read_config_env(&app.handle());
             APP_ENV.get_or_init(|| env);
 
+            // Load custom data-dirs base path and interrupted-move info FIRST so
+            // that data_dirs_base() works correctly throughout the rest of setup.
+            let custom_base = read_custom_base_path(&app.handle());
+            let interrupted_move = read_move_sentinel(&app.handle());
+            app.manage(CustomBasePath(std::sync::Mutex::new(custom_base)));
+            app.manage(MoveInterruptedInfo(std::sync::Mutex::new(interrupted_move)));
+
             // Restore Filen sessions from disk.
             {
                 let state = app.state::<filen::FilenSessions>();
@@ -1995,7 +2166,7 @@ pub fn run() {
                 let _ = cache::cleanup_path_index_orphans(&conn);
 
                 // Remove content-cache folder pairs whose account no longer exists.
-                let c_dir = data_dir.join("c");
+                let c_dir = data_dirs_base(&app.handle()).unwrap_or_else(|_| data_dir.clone()).join("c");
                 if c_dir.exists() {
                     if let Ok(accounts) = load_accounts(app.handle()) {
                         if let Ok(rd) = std::fs::read_dir(&c_dir) {
@@ -2091,10 +2262,17 @@ pub fn run() {
             filen::filen_get_file_mtime,
             create_text_file,
             get_thumbnail,
+            // Data-dirs move
+            get_data_dirs_info,
+            validate_new_data_dir,
+            is_move_in_progress,
+            cancel_move_data_dirs,
+            start_move_data_dirs,
+            get_interrupted_move_info,
+            cleanup_interrupted_move,
             // Conflict detection
             get_item_cached_mtime,
             // Shelveset
-            shelveset_rescan,
             shelveset_activate,
             shelveset_record_change,
             shelveset_save_content,

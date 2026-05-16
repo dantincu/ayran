@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { readFile } from '@tauri-apps/plugin-fs';
+import { readFile, exists } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, ShelvesetChange, ShelvesetContentItem, ShelvesetAllChanges } from '../../types';
 import { isTextFile } from '../../lib/file-type';
 const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
@@ -117,11 +117,11 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
 
   for (const c of all.content) {
     if (!c.isNew) {
-      // Existing file with modified content.
+      // Existing file with modified content — verify the s/ file is still on disk.
       const localPath = await invoke<string | null>('shelveset_get_content_path', {
         accountId: account.id, itemId: c.itemId,
       });
-      if (!localPath) continue;
+      if (!localPath || !await exists(localPath)) continue; // s/ file missing — skip
       if (provider === 'filen') {
         await overwriteFile(account.id, c.itemId, c.parentId, localPath);
       } else if (provider === 'google-drive') {
@@ -139,13 +139,14 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
       shvToReal.set(c.itemId, realId);
       invoke('invalidate_folder_cache', { accountId: account.id, folderId: parentId }).catch(() => {});
     } else {
-      // New file — upload content from s/ folder.
+      // New file — verify the s/ file exists before uploading.
       const parentId = resolveId(c.parentId);
       const localPath = await invoke<string | null>('shelveset_get_content_path', {
         accountId: account.id, itemId: c.itemId,
       });
+      if (!localPath || !await exists(localPath)) continue; // no content — skip
       if (provider === 'filen') {
-        await invoke('filen_upload_file', { accountId: account.id, parentId, localPath: localPath ?? '' });
+        await invoke('filen_upload_file', { accountId: account.id, parentId, localPath });
       } else if (provider === 'google-drive') {
         const content = localPath ? new TextDecoder('utf-8').decode(await readFile(localPath)) : '';
         await invoke('gdrive_upload_file', { accountId: account.id, parentId, name: c.itemName, content });
@@ -173,8 +174,6 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
   const [error, setError] = useState<string | null>(null);
   const [committing, setCommitting] = useState(false);
   const [undoing, setUndoing] = useState(false);
-  const [scanning, setScanning] = useState(false);
-  const [scanWarnings, setScanWarnings] = useState<string[]>([]);
   const [conflicts, setConflicts] = useState<string[]>([]); // display paths with cloud conflicts
   const [rowCtxMenu, setRowCtxMenu] = useState<{ x: number; y: number; item: UnifiedChange } | null>(null);
   const [diffItem, setDiffItem] = useState<UnifiedChange | null>(null);
@@ -259,32 +258,6 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
     }
   };
 
-  // ── Rescan ────────────────────────────────────────────────────────────────
-
-  const handleRescan = async (): Promise<boolean> => {
-    setScanning(true); setScanWarnings([]); setError(null);
-    try {
-      const result = await invoke<{ updated: string[]; missingFromDisk: string[]; extraOnDisk: string[] }>(
-        'shelveset_rescan', { accountId: account.id }
-      );
-      const warnings: string[] = [];
-      if (result.updated.length)
-        warnings.push(`${result.updated.length} file(s) modified externally: ${result.updated.slice(0, 3).join(', ')}${result.updated.length > 3 ? '…' : ''}`);
-      if (result.missingFromDisk.length)
-        warnings.push(`${result.missingFromDisk.length} file(s) missing from disk: ${result.missingFromDisk.slice(0, 3).join(', ')}${result.missingFromDisk.length > 3 ? '…' : ''}`);
-      if (result.extraOnDisk.length)
-        warnings.push(`${result.extraOnDisk.length} untracked file(s) found on disk.`);
-      setScanWarnings(warnings);
-      if (result.updated.length > 0) await load();
-      return warnings.length === 0;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      return false;
-    } finally {
-      setScanning(false);
-    }
-  };
-
   // ── Conflict check ────────────────────────────────────────────────────────
 
   const checkConflicts = async (changes: ShelvesetAllChanges): Promise<string[]> => {
@@ -315,15 +288,7 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
     if (!confirm('Commit all pending changes to the cloud provider?')) return;
     setCommitting(true); setError(null); setConflicts([]);
 
-    // 1. Auto-rescan.
-    const scanOk = await handleRescan();
-    if (!scanOk) {
-      setCommitting(false);
-      setError('Rescan found discrepancies. Please review the warnings above before committing.');
-      return;
-    }
-
-    // 2. Re-load after rescan and check for cloud conflicts.
+    // Re-load latest changes and check for cloud conflicts.
     const freshChanges = await invoke<ShelvesetAllChanges>('shelveset_get_all_changes', { accountId: account.id });
     const conflictPaths = await checkConflicts(freshChanges);
     if (conflictPaths.length > 0) {
@@ -374,7 +339,7 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
 
   const totalPages = Math.max(1, Math.ceil(unified.length / PAGE_SIZE));
   const pageItems = unified.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const anyBusy = committing || undoing || scanning;
+  const anyBusy = committing || undoing;
 
   const ctxBtn = 'w-full text-left px-4 py-2 text-sm flex items-center gap-2 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors';
 
@@ -453,23 +418,12 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
           className="px-3 py-1.5 text-sm bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 rounded-lg hover:bg-amber-200 dark:hover:bg-amber-800/40 disabled:opacity-40 transition-colors">
           Undo all
         </button>
-        <button onClick={() => handleRescan()} disabled={anyBusy}
-          className="px-3 py-1.5 text-sm bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-40 transition-colors">
-          {scanning ? 'Scanning…' : 'Rescan'}
-        </button>
         <div className="flex-1" />
         <button onClick={handleDiscard} disabled={anyBusy}
           className="px-3 py-1.5 text-sm bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg hover:bg-red-200 dark:hover:bg-red-800/40 disabled:opacity-40 transition-colors">
           Discard shelveset
         </button>
       </div>
-
-      {/* Scan warnings */}
-      {scanWarnings.length > 0 && (
-        <div className="mx-4 mt-2 shrink-0 p-2 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 rounded text-xs space-y-0.5">
-          {scanWarnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
-        </div>
-      )}
 
       {/* Conflict warnings */}
       {conflicts.length > 0 && (
