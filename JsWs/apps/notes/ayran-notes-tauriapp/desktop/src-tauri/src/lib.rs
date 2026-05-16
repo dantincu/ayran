@@ -1211,6 +1211,39 @@ async fn shelveset_save_content(
     Ok(())
 }
 
+/// Copy an arbitrary file from `local_path` into the s/ folder for this account,
+/// then register it in shelveset_contents. Used for binary / non-text files.
+#[tauri::command]
+async fn shelveset_save_file_path(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    item_name: String,
+    parent_id: String,
+    is_new: bool,
+    display_path: String,
+    local_path: String,
+) -> Result<(), String> {
+    let accounts = load_accounts(&app)?;
+    let account = accounts.get(&account_id)
+        .ok_or_else(|| format!("Account '{}' not found", account_id))?
+        .clone();
+    let s_dir = app_base_dir(&app)?.join("s");
+    let acct_dir = account_content_cache_dir(&s_dir, &account)?;
+    let dest = acct_dir.join(sanitize_path_component(&item_id));
+    tokio::fs::copy(&local_path, &dest).await.map_err(|e| e.to_string())?;
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO shelveset_contents
+         (account_id, item_id, item_name, parent_id, is_dir, is_new, created_at, display_path)
+         VALUES (?1,?2,?3,?4,0,?5,?6,?7)",
+        rusqlite::params![account_id, item_id, item_name, parent_id,
+            is_new as i32, now_ms() as i64, display_path],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Create a brand-new item locally (no provider API call). Returns a local "shv-…" ID.
 #[tauri::command]
 async fn shelveset_create_item(
@@ -2065,6 +2098,7 @@ pub fn run() {
             shelveset_activate,
             shelveset_record_change,
             shelveset_save_content,
+            shelveset_save_file_path,
             shelveset_create_item,
             shelveset_get_content_path,
             shelveset_get_all_changes,

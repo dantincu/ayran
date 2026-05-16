@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, ShelvesetChange, ShelvesetContentItem, ShelvesetAllChanges } from '../../types';
+import { isTextFile } from '../../lib/file-type';
 const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
 import {
   trashFile, trashDirectory, renameFile, renameDirectory,
@@ -124,8 +125,7 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
       if (provider === 'filen') {
         await overwriteFile(account.id, c.itemId, c.parentId, localPath);
       } else if (provider === 'google-drive') {
-        const content = new TextDecoder('utf-8').decode(await readFile(localPath));
-        await invoke('gdrive_edit_file', { accountId: account.id, fileId: c.itemId, content });
+        await invoke('gdrive_edit_file', { accountId: account.id, fileId: c.itemId, filePath: localPath });
       }
     } else if (c.isDir) {
       // New folder.
@@ -350,9 +350,10 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
     setDiffItem(item);
   };
 
-  const makeDiffLoaders = (item: UnifiedChange) => {
+  const makeDiffInfo = (item: UnifiedChange) => {
     if (!item.content) return null;
     const contentItem = item.content;
+    const binary = !isTextFile(contentItem.itemName);
     const loadLeft = async (): Promise<string> => {
       const path = await invoke<string>('open_file', {
         accountId: account.id, itemId: contentItem.itemId, force: false,
@@ -366,7 +367,7 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
       if (!path) return '';
       return new TextDecoder('utf-8').decode(await readFile(path));
     };
-    return { loadLeft, loadRight };
+    return { loadLeft, loadRight, binary, contentItem };
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -380,16 +381,25 @@ export default function ShelvesetChangesModal({ account, onClose, onDiscarded, o
   return (
     <>
     {diffItem && (() => {
-      const loaders = makeDiffLoaders(diffItem);
-      if (!loaders) return null;
+      const info = makeDiffInfo(diffItem);
+      if (!info) return null;
       return (
         <Suspense fallback={null}>
           <DiffViewerModal
             filename={diffItem.itemName}
             leftLabel="Cloud (original)"
             rightLabel="Shelved (modified)"
-            loadLeft={loaders.loadLeft}
-            loadRight={loaders.loadRight}
+            binaryMode={info.binary}
+            loadLeft={info.loadLeft}
+            loadRight={info.loadRight}
+            onDiscard={async () => {
+              await invoke('shelveset_undo_content', {
+                accountId: account.id, id: info.contentItem.id,
+                itemId: info.contentItem.itemId, isNew: info.contentItem.isNew,
+              }).catch(() => {});
+              setDiffItem(null);
+              await load();
+            }}
             onClose={() => setDiffItem(null)}
           />
         </Suspense>

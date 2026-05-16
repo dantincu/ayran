@@ -111,12 +111,14 @@ interface Props {
   onApply?: (result: string) => void;
   onDiscard?: () => void;
   onClose: () => void;
+  // When true: skip diff computation and show only "use original" / "use modified" buttons.
+  binaryMode?: boolean;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function DiffViewerModal({
-  filename, leftLabel = 'Original', rightLabel = 'Modified',
+  filename, leftLabel = 'Original', rightLabel = 'Modified', binaryMode = false,
   leftContent: leftProp, rightContent: rightProp,
   loadLeft, loadRight,
   onApply, onDiscard, onClose,
@@ -135,6 +137,39 @@ export default function DiffViewerModal({
   const topRef = useRef<HTMLDivElement>(null);
   const botRef = useRef<HTMLDivElement>(null);
   const syncingRef = useRef(false);
+
+  // ── Binary mode: skip loading and diff entirely ───────────────────────────
+
+  if (binaryMode) return (
+    <div className="fixed inset-0 z-[60] bg-white dark:bg-gray-900 flex flex-col">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-700 shrink-0">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-white truncate flex-1" title={filename}>
+          Compare{filename ? `: ${filename}` : ''}
+        </h2>
+        <button onClick={onClose} className="p-1.5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
+          <svg viewBox="0 0 16 16" fill="currentColor" className="w-4 h-4"><path d="M3.3 3.3a1 1 0 011.4 0L8 6.6l3.3-3.3a1 1 0 111.4 1.4L9.4 8l3.3 3.3a1 1 0 01-1.4 1.4L8 9.4l-3.3 3.3a1 1 0 01-1.4-1.4L6.6 8 3.3 4.7a1 1 0 010-1.4z"/></svg>
+        </button>
+      </div>
+      <div className="flex-1 flex flex-col items-center justify-center gap-6 text-center px-8">
+        <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 text-gray-300 dark:text-gray-600"><path d="M8 6h16l8 8v20a2 2 0 01-2 2H8a2 2 0 01-2-2V8a2 2 0 012-2z"/><path d="M24 6v8h8"/></svg>
+        <p className="text-sm text-gray-500 dark:text-gray-400 max-w-xs">
+          This is a binary file. Choose which version to keep.
+        </p>
+        <div className="flex gap-3">
+          {onDiscard && (
+            <button onClick={onDiscard}
+              className="px-4 py-2 text-sm bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg hover:bg-blue-200 dark:hover:bg-blue-800/40 transition-colors">
+              ← Use {leftLabel}
+            </button>
+          )}
+          <button onClick={onClose}
+            className="px-4 py-2 text-sm bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300 rounded-lg hover:bg-green-200 dark:hover:bg-green-800/40 transition-colors">
+            → Use {rightLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   // Load async content on mount if loaders were provided.
   useEffect(() => {

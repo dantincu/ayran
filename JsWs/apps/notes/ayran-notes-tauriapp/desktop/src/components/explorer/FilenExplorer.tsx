@@ -12,6 +12,7 @@ import {
 } from '../../lib/filen-client';
 import type { StoredAccount, CachedItem, FolderPage, ShelvesetAllChanges } from '../../types';
 import { warnAndConfirmConflict } from '../../lib/conflict-check';
+import { isTextFile } from '../../lib/file-type';
 import { readFile } from '@tauri-apps/plugin-fs';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
 import PaginationBar from './PaginationBar';
@@ -339,8 +340,17 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     if (!filePath || typeof filePath !== 'string') return;
     setEditingId(item.itemId);
     try {
-      await overwriteFile(account.id, item.itemId, folderUUID, filePath);
-      void loadFolder(folderUUID, true, 0, search, sortBy, ascending);
+      if (account.shelvesetActive) {
+        const displayPath = [...breadcrumbs.map(b => b.name), item.name].join('/');
+        await invoke('shelveset_save_file_path', {
+          accountId: account.id, itemId: item.itemId, itemName: item.name,
+          parentId: item.parentId, isNew: false, displayPath, localPath: filePath,
+        });
+        setShelvedIds((prev) => new Set([...prev, item.itemId]));
+      } else {
+        await overwriteFile(account.id, item.itemId, folderUUID, filePath);
+        void loadFolder(folderUUID, true, 0, search, sortBy, ascending);
+      }
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setEditingId(null); }
   };
@@ -664,6 +674,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           <DiffViewerModal
             filename={diffItem.name}
             leftLabel="Cloud (original)" rightLabel="Shelved (modified)"
+            binaryMode={!isTextFile(diffItem.name, diffItem.mimeType)}
             loadLeft={async () => {
               const path = await invoke<string>('open_file', { accountId: account.id, itemId: diffItem.itemId, force: false });
               return new TextDecoder('utf-8').decode(await readFile(path));
@@ -672,6 +683,11 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
               const path = await invoke<string | null>('shelveset_get_content_path', { accountId: account.id, itemId: diffItem.itemId });
               if (!path) return '';
               return new TextDecoder('utf-8').decode(await readFile(path));
+            }}
+            onDiscard={async () => {
+              await invoke('shelveset_undo_content', { accountId: account.id, id: 0, itemId: diffItem.itemId, isNew: false }).catch(() => {});
+              setShelvedIds((prev) => { const n = new Set(prev); n.delete(diffItem.itemId); return n; });
+              setDiffItem(null);
             }}
             onClose={() => setDiffItem(null)}
           />
