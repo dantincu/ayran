@@ -75,104 +75,83 @@ function buildUnified(changes: ShelvesetAllChanges): UnifiedChange[] {
 async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges): Promise<void> {
   const provider = account.provider;
 
-  // 1. Deletes — deepest paths first
-  const deletes = all.structural
-    .filter((s) => s.operation === 'delete')
-    .sort((a, b) => b.displayPath.split('/').length - a.displayPath.split('/').length);
-  for (const d of deletes) {
-    if (provider === 'filen') {
-      if (d.isDir) await trashDirectory(account.id, d.itemId);
-      else await trashFile(account.id, d.itemId);
-    } else if (provider === 'google-drive') {
-      await invoke('gdrive_delete_file', { accountId: account.id, fileId: d.itemId });
-    }
-    invoke('uncache_item', { accountId: account.id, itemId: d.itemId }).catch(() => {});
-  }
+  // Process structural changes one by one in recorded order.
+  for (const s of all.structural) {
+    if (s.operation === 'delete') {
+      if (provider === 'filen') {
+        if (s.isDir) await trashDirectory(account.id, s.itemId);
+        else await trashFile(account.id, s.itemId);
+      } else if (provider === 'google-drive') {
+        await invoke('gdrive_delete_file', { accountId: account.id, fileId: s.itemId });
+      }
+      invoke('uncache_item', { accountId: account.id, itemId: s.itemId }).catch(() => {});
 
-  // 2. Renames
-  const renames = all.structural.filter((s) => s.operation === 'rename');
-  for (const r of renames) {
-    const newName = r.newName!;
-    if (provider === 'filen') {
-      if (r.isDir) await renameDirectory(account.id, r.itemId, newName);
-      else await renameFile(account.id, r.itemId, newName);
-      invoke('rename_cached_item', { accountId: account.id, itemId: r.itemId, newName }).catch(() => {});
-    } else if (provider === 'google-drive') {
-      await invoke('gdrive_rename', { accountId: account.id, fileId: r.itemId, newName, isDir: r.isDir });
-      invoke('rename_cached_item', { accountId: account.id, itemId: r.itemId, newName }).catch(() => {});
-    }
-  }
+    } else if (s.operation === 'rename') {
+      const newName = s.newName!;
+      if (provider === 'filen') {
+        if (s.isDir) await renameDirectory(account.id, s.itemId, newName);
+        else await renameFile(account.id, s.itemId, newName);
+      } else if (provider === 'google-drive') {
+        await invoke('gdrive_rename', { accountId: account.id, fileId: s.itemId, newName, isDir: s.isDir });
+      }
+      invoke('rename_cached_item', { accountId: account.id, itemId: s.itemId, newName }).catch(() => {});
 
-  // 3. Moves
-  const moves = all.structural.filter((s) => s.operation === 'move');
-  for (const m of moves) {
-    const newParentId = m.newParentId!;
-    if (provider === 'filen') {
-      if (m.isDir) await moveDirectory(account.id, m.itemId, newParentId);
-      else await moveFile(account.id, m.itemId, newParentId);
-      invoke('move_cached_item', { accountId: account.id, itemId: m.itemId, newParentId }).catch(() => {});
-    } else if (provider === 'google-drive') {
-      await invoke('gdrive_move_file', { accountId: account.id, fileId: m.itemId, fromFolderId: m.parentId, toFolderId: newParentId });
-      invoke('move_cached_item', { accountId: account.id, itemId: m.itemId, newParentId }).catch(() => {});
+    } else if (s.operation === 'move') {
+      const newParentId = s.newParentId!;
+      if (provider === 'filen') {
+        if (s.isDir) await moveDirectory(account.id, s.itemId, newParentId);
+        else await moveFile(account.id, s.itemId, newParentId);
+      } else if (provider === 'google-drive') {
+        await invoke('gdrive_move_file', { accountId: account.id, fileId: s.itemId, fromFolderId: s.parentId, toFolderId: newParentId });
+      }
+      invoke('move_cached_item', { accountId: account.id, itemId: s.itemId, newParentId }).catch(() => {});
     }
   }
 
-  // 4. Content modifications for existing files
-  const modifications = all.content.filter((c) => !c.isNew && !c.isDir);
-  for (const mod of modifications) {
-    const localPath = await invoke<string | null>('shelveset_get_content_path', {
-      accountId: account.id, itemId: mod.itemId,
-    });
-    if (!localPath) continue;
-    const bytes = await readFile(localPath);
-    const content = new TextDecoder('utf-8').decode(bytes);
-    if (provider === 'filen') {
-      await overwriteFile(account.id, mod.itemId, mod.parentId, localPath);
-    } else if (provider === 'google-drive') {
-      await invoke('gdrive_edit_file', { accountId: account.id, fileId: mod.itemId, content });
-    }
-  }
-
-  // 5. New folders — shallowest first; map shv- IDs to real IDs
+  // Process content changes one by one in recorded order.
+  // shv- IDs are mapped to real IDs as new folders are created, so that
+  // subsequent items referencing them as a parent resolve correctly.
   const shvToReal = new Map<string, string>();
   const resolveId = (id: string) => shvToReal.get(id) ?? id;
 
-  const newFolders = all.content
-    .filter((c) => c.isNew && c.isDir)
-    .sort((a, b) => a.displayPath.split('/').length - b.displayPath.split('/').length);
-  for (const nf of newFolders) {
-    const parentId = resolveId(nf.parentId);
-    let realId: string;
-    if (provider === 'filen') {
-      realId = await invoke<string>('filen_create_directory', { accountId: account.id, parentId, name: nf.itemName });
-    } else if (provider === 'google-drive') {
-      realId = await invoke<string>('gdrive_create_folder', { accountId: account.id, parentId, name: nf.itemName });
-    } else {
-      continue;
-    }
-    shvToReal.set(nf.itemId, realId);
-    invoke('invalidate_folder_cache', { accountId: account.id, folderId: parentId }).catch(() => {});
-  }
-
-  // 6. New files — upload content from s/ folder
-  const newFiles = all.content.filter((c) => c.isNew && !c.isDir);
-  for (const nf of newFiles) {
-    const parentId = resolveId(nf.parentId);
-    const localPath = await invoke<string | null>('shelveset_get_content_path', {
-      accountId: account.id, itemId: nf.itemId,
-    });
-    if (provider === 'filen') {
-      if (localPath) {
-        await invoke('filen_upload_file', { accountId: account.id, parentId, localPath });
-      } else {
-        // Empty file via create_text_file path
-        await invoke('filen_upload_file', { accountId: account.id, parentId, localPath: '' }).catch(() => {});
+  for (const c of all.content) {
+    if (!c.isNew) {
+      // Existing file with modified content.
+      const localPath = await invoke<string | null>('shelveset_get_content_path', {
+        accountId: account.id, itemId: c.itemId,
+      });
+      if (!localPath) continue;
+      if (provider === 'filen') {
+        await overwriteFile(account.id, c.itemId, c.parentId, localPath);
+      } else if (provider === 'google-drive') {
+        const content = new TextDecoder('utf-8').decode(await readFile(localPath));
+        await invoke('gdrive_edit_file', { accountId: account.id, fileId: c.itemId, content });
       }
-    } else if (provider === 'google-drive') {
-      const content = localPath ? new TextDecoder('utf-8').decode(await readFile(localPath)) : '';
-      await invoke('gdrive_upload_file', { accountId: account.id, parentId, name: nf.itemName, content });
+    } else if (c.isDir) {
+      // New folder.
+      const parentId = resolveId(c.parentId);
+      let realId: string;
+      if (provider === 'filen') {
+        realId = await invoke<string>('filen_create_directory', { accountId: account.id, parentId, name: c.itemName });
+      } else if (provider === 'google-drive') {
+        realId = await invoke<string>('gdrive_create_folder', { accountId: account.id, parentId, name: c.itemName });
+      } else { continue; }
+      shvToReal.set(c.itemId, realId);
+      invoke('invalidate_folder_cache', { accountId: account.id, folderId: parentId }).catch(() => {});
+    } else {
+      // New file — upload content from s/ folder.
+      const parentId = resolveId(c.parentId);
+      const localPath = await invoke<string | null>('shelveset_get_content_path', {
+        accountId: account.id, itemId: c.itemId,
+      });
+      if (provider === 'filen') {
+        await invoke('filen_upload_file', { accountId: account.id, parentId, localPath: localPath ?? '' });
+      } else if (provider === 'google-drive') {
+        const content = localPath ? new TextDecoder('utf-8').decode(await readFile(localPath)) : '';
+        await invoke('gdrive_upload_file', { accountId: account.id, parentId, name: c.itemName, content });
+      }
+      invoke('invalidate_folder_cache', { accountId: account.id, folderId: parentId }).catch(() => {});
     }
-    invoke('invalidate_folder_cache', { accountId: account.id, folderId: parentId }).catch(() => {});
   }
 }
 
