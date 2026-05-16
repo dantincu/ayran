@@ -6,16 +6,16 @@
       <stop offset="55%"  stop-color="#3A1E08"/>
       <stop offset="100%" stop-color="#1A0C04"/>
     </radialGradient>
-    <!-- Glass body: warm amber (deeper orange than gold, less red than redorange) -->
+    <!-- Glass body: midway between amber and reddish-orange -->
     <linearGradient id="drink" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%"   stop-color="#B86000"/>
-      <stop offset="40%"  stop-color="#FF9A00"/>
-      <stop offset="100%" stop-color="#A05200"/>
+      <stop offset="0%"   stop-color="#B04404"/>
+      <stop offset="40%"  stop-color="#F37110"/>
+      <stop offset="100%" stop-color="#993904"/>
     </linearGradient>
-    <!-- Foam: warm cream fading to amber at base -->
+    <!-- Foam: warm cream fading to the same midpoint at base -->
     <linearGradient id="foam" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%"   stop-color="#FFF6E8"/>
-      <stop offset="100%" stop-color="#C87000"/>
+      <stop offset="0%"   stop-color="#FFF4EC"/>
+      <stop offset="100%" stop-color="#C4540C"/>
     </linearGradient>
     <!-- Glass wall sheen -->
     <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -27,29 +27,30 @@
 
   <!-- ── Rounded dark background ── -->
   <rect x="2" y="2" width="96" height="96" rx="20" ry="20" fill="url(#bg)"/>
-  <!-- Subtle amber inner highlight -->
+  <!-- Subtle inner highlight -->
   <rect x="2" y="2" width="96" height="96" rx="20" ry="20"
-        fill="none" stroke="#FFB830" stroke-width="1.5" opacity="0.45"/>
+        fill="none" stroke="#FFA450" stroke-width="1.5" opacity="0.45"/>
 
+  <g transform="translate(0,-6.5)">
   <!-- ── Glass body ── -->
   <path d="M22 32 L25 88 Q25 92 30 92 L70 92 Q75 92 75 88 L78 32 Z"
-        fill="url(#drink)" stroke="#7A3E00" stroke-width="1.5"/>
+        fill="url(#drink)" stroke="#753004" stroke-width="1.5"/>
 
   <!-- ── Foam head ── -->
-  <ellipse cx="50" cy="31" rx="28" ry="8" fill="url(#foam)" stroke="#9A5800" stroke-width="1"/>
+  <ellipse cx="50" cy="31" rx="28" ry="8" fill="url(#foam)" stroke="#953408" stroke-width="1"/>
   <!-- Foam texture bumps -->
-  <ellipse cx="38" cy="29" rx="7"  ry="4.5" fill="#FFF6E8" opacity="0.85"/>
+  <ellipse cx="38" cy="29" rx="7"  ry="4.5" fill="#FFF4EC" opacity="0.85"/>
   <ellipse cx="53" cy="28" rx="8"  ry="4"   fill="#ffffff"  opacity="0.75"/>
-  <ellipse cx="64" cy="30" rx="5"  ry="3.5" fill="#FFF6E8"  opacity="0.80"/>
-  <ellipse cx="44" cy="33" rx="5"  ry="3"   fill="#F0A020"  opacity="0.6"/>
+  <ellipse cx="64" cy="30" rx="5"  ry="3.5" fill="#FFF4EC"  opacity="0.80"/>
+  <ellipse cx="44" cy="33" rx="5"  ry="3"   fill="#E06828"  opacity="0.6"/>
 
   <!-- ── Bubbles rising in the drink ── -->
-  <circle cx="37" cy="70" r="2"   fill="#FFCC70" opacity="0.55"/>
-  <circle cx="52" cy="60" r="1.5" fill="#FFCC70" opacity="0.50"/>
-  <circle cx="44" cy="50" r="1"   fill="#FFCC70" opacity="0.45"/>
-  <circle cx="62" cy="75" r="1.5" fill="#FFCC70" opacity="0.50"/>
-  <circle cx="57" cy="52" r="1"   fill="#FFCC70" opacity="0.40"/>
-  <circle cx="34" cy="55" r="1"   fill="#FFCC70" opacity="0.40"/>
+  <circle cx="37" cy="70" r="2"   fill="#FFBE85" opacity="0.55"/>
+  <circle cx="52" cy="60" r="1.5" fill="#FFBE85" opacity="0.50"/>
+  <circle cx="44" cy="50" r="1"   fill="#FFBE85" opacity="0.45"/>
+  <circle cx="62" cy="75" r="1.5" fill="#FFBE85" opacity="0.50"/>
+  <circle cx="57" cy="52" r="1"   fill="#FFBE85" opacity="0.40"/>
+  <circle cx="34" cy="55" r="1"   fill="#FFBE85" opacity="0.40"/>
 
   <!-- ── Glass wall sheen (overlay) ── -->
   <path d="M22 32 L25 88 Q25 92 30 92 L70 92 Q75 92 75 88 L78 32 Z"
@@ -62,5 +63,6 @@
 
   <!-- ── Glass rim highlight ── -->
   <ellipse cx="50" cy="31" rx="28" ry="8"
-           fill="none" stroke="#FFB830" stroke-width="1" opacity="0.7"/>
+           fill="none" stroke="#FFA450" stroke-width="1" opacity="0.7"/>
+  </g>
 </svg>
