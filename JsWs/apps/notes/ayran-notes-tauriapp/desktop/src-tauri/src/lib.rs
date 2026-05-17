@@ -3,8 +3,9 @@ pub mod filen;
 pub mod gdrive;
 pub mod storage;
 
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use tauri_plugin_fs::FsExt;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -144,36 +145,51 @@ pub(crate) fn data_dirs_base(app: &tauri::AppHandle) -> Result<std::path::PathBu
 
 /// Path of the sentinel file that persists the user-chosen base dir.
 fn custom_base_path_file(app: &tauri::AppHandle) -> std::path::PathBuf {
-    // Always in the real $appData root — unaffected by env or custom path.
-    app.path().app_data_dir()
-        .expect("app data dir unavailable")
-        .join("custom_base.txt")
+    // Must live in app_base_dir so it uses the same encryption key (.key file)
+    // as accounts.dat. Using app_data_dir() here would initialise the OnceLock
+    // with a different key on first read, corrupting all subsequent decryptions.
+    app_base_dir(app)
+        .unwrap_or_else(|_| app.path().app_data_dir().expect("app data dir unavailable"))
+        .join("custom_base.dat")
 }
 
 fn read_custom_base_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    let s = std::fs::read_to_string(custom_base_path_file(app)).ok()?;
+    // Try the current encrypted location first.
+    if let Ok(Some(s)) = storage::read::<String>(&custom_base_path_file(app)) {
+        let trimmed = s.trim();
+        if !trimmed.is_empty() { return Some(std::path::PathBuf::from(trimmed)); }
+    }
+    // Migrate from the old plaintext custom_base.txt (written by versions before encryption).
+    let legacy = app.path().app_data_dir().ok()?.join("custom_base.txt");
+    let s = std::fs::read_to_string(&legacy).ok()?;
     let trimmed = s.trim();
-    if trimmed.is_empty() { None } else { Some(std::path::PathBuf::from(trimmed)) }
+    if trimmed.is_empty() { return None; }
+    let path = std::path::PathBuf::from(trimmed);
+    // Persist in the new encrypted format and remove the legacy file.
+    write_custom_base_path(app, Some(&path));
+    let _ = std::fs::remove_file(&legacy);
+    Some(path)
 }
 
 fn write_custom_base_path(app: &tauri::AppHandle, path: Option<&std::path::Path>) {
     let file = custom_base_path_file(app);
     match path {
-        Some(p) => { let _ = std::fs::write(&file, p.to_string_lossy().as_bytes()); }
+        Some(p) => { let _ = storage::write(&file, &p.to_string_lossy().as_ref()); }
         None    => { let _ = std::fs::remove_file(&file); }
     }
 }
 
 /// Path of the sentinel file written before a move operation begins.
 fn move_in_progress_file(app: &tauri::AppHandle) -> std::path::PathBuf {
-    app.path().app_data_dir()
-        .expect("app data dir unavailable")
-        .join("move_in_progress.json")
+    // Same reasoning as custom_base_path_file: must share the encryption key with accounts.dat.
+    app_base_dir(app)
+        .unwrap_or_else(|_| app.path().app_data_dir().expect("app data dir unavailable"))
+        .join("move_in_progress.dat")
 }
 
 fn write_move_sentinel(app: &tauri::AppHandle, old: &std::path::Path, new: &std::path::Path) {
-    let json = serde_json::json!({"old": old.to_string_lossy(), "new": new.to_string_lossy()});
-    let _ = std::fs::write(move_in_progress_file(app), json.to_string());
+    let pair = (old.to_string_lossy().into_owned(), new.to_string_lossy().into_owned());
+    let _ = storage::write(&move_in_progress_file(app), &pair);
 }
 
 fn clear_move_sentinel(app: &tauri::AppHandle) {
@@ -181,12 +197,8 @@ fn clear_move_sentinel(app: &tauri::AppHandle) {
 }
 
 fn read_move_sentinel(app: &tauri::AppHandle) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
-    let s = std::fs::read_to_string(move_in_progress_file(app)).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&s).ok()?;
-    Some((
-        std::path::PathBuf::from(v["old"].as_str()?),
-        std::path::PathBuf::from(v["new"].as_str()?),
-    ))
+    let (old_s, new_s): (String, String) = storage::read(&move_in_progress_file(app)).ok().flatten()?;
+    Some((std::path::PathBuf::from(old_s), std::path::PathBuf::from(new_s)))
 }
 
 pub(crate) fn accounts_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -730,6 +742,24 @@ fn sanitize_path_component(s: &str) -> String {
         .collect()
 }
 
+/// Build the path for a shelved content file inside `acct_dir` by mirroring
+/// the `display_path` directory structure (e.g. "docs/report.md" →
+/// `acct_dir/docs/report.md`). Each component is individually sanitized.
+fn shelved_content_path(acct_dir: &std::path::Path, display_path: &str) -> std::path::PathBuf {
+    let mut path = acct_dir.to_path_buf();
+    for component in display_path.split(['/', '\\']) {
+        let trimmed = component.trim();
+        if !trimmed.is_empty() {
+            path.push(sanitize_path_component(trimmed));
+        }
+    }
+    if path == acct_dir {
+        // display_path was empty — fall back to a placeholder name
+        path.push("_unnamed");
+    }
+    path
+}
+
 // Serialize all cache-dir creation so concurrent open_file / get_thumbnail calls for
 // the same account never race to create duplicate pair-folders.
 static CACHE_DIR_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
@@ -1268,7 +1298,10 @@ async fn shelveset_save_content(
             .clone();
         let s_dir = data_dirs_base(&app)?.join("s");
         let acct_dir = account_content_cache_dir(&s_dir, &account)?;
-        let file_path = acct_dir.join(sanitize_path_component(&item_id));
+        let file_path = shelved_content_path(&acct_dir, &display_path);
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        }
         tokio::fs::write(&file_path, text.as_bytes()).await.map_err(|e| e.to_string())?;
     }
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
@@ -1302,7 +1335,10 @@ async fn shelveset_save_file_path(
         .clone();
     let s_dir = data_dirs_base(&app)?.join("s");
     let acct_dir = account_content_cache_dir(&s_dir, &account)?;
-    let dest = acct_dir.join(sanitize_path_component(&item_id));
+    let dest = shelved_content_path(&acct_dir, &display_path);
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+    }
     tokio::fs::copy(&local_path, &dest).await.map_err(|e| e.to_string())?;
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
     conn.execute(
@@ -1336,8 +1372,11 @@ async fn shelveset_create_item(
             .clone();
         let s_dir = data_dirs_base(&app)?.join("s");
         let acct_dir = account_content_cache_dir(&s_dir, &account)?;
-        tokio::fs::write(acct_dir.join(sanitize_path_component(&local_id)), text.as_bytes())
-            .await.map_err(|e| e.to_string())?;
+        let file_path = shelved_content_path(&acct_dir, &display_path);
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| e.to_string())?;
+        }
+        tokio::fs::write(&file_path, text.as_bytes()).await.map_err(|e| e.to_string())?;
     }
     // Register in shelveset_contents
     {
@@ -1383,6 +1422,7 @@ async fn shelveset_create_item(
 #[tauri::command]
 fn shelveset_get_content_path(
     app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
     account_id: String,
     item_id: String,
 ) -> Result<Option<String>, String> {
@@ -1396,7 +1436,18 @@ fn shelveset_get_content_path(
         Some(d) => d,
         None => return Ok(None),
     };
-    let p = acct_dir.join(sanitize_path_component(&item_id));
+    let display_path: String = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        match conn.query_row(
+            "SELECT display_path FROM shelveset_contents WHERE account_id=?1 AND item_id=?2",
+            rusqlite::params![account_id, item_id],
+            |r| r.get::<_, String>(0),
+        ).optional().map_err(|e| e.to_string())? {
+            Some(dp) => dp,
+            None => return Ok(None),
+        }
+    };
+    let p = shelved_content_path(&acct_dir, &display_path);
     Ok(if p.exists() { Some(p.to_string_lossy().into_owned()) } else { None })
 }
 
@@ -1448,11 +1499,20 @@ async fn shelveset_undo_content(
     item_id: String,
     is_new: bool,
 ) -> Result<(), String> {
+    // Read display_path before deleting the DB row so we can locate the file.
+    let display_path: Option<String> = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT display_path FROM shelveset_contents WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?
+    };
     let accounts = load_accounts(&app)?;
-    if let Some(account) = accounts.get(&account_id) {
+    if let (Some(account), Some(dp)) = (accounts.get(&account_id), display_path) {
         let s_dir = data_dirs_base(&app)?.join("s");
         if let Some(d) = find_account_cache_dir(&s_dir, account) {
-            let _ = std::fs::remove_file(d.join(sanitize_path_component(&item_id)));
+            let _ = tokio::fs::remove_file(shelved_content_path(&d, &dp)).await;
         }
     }
     let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
@@ -1500,11 +1560,7 @@ async fn shelveset_discard(
     if let Some(account) = accounts.get(&account_id) {
         let s_dir = data_dirs_base(&app)?.join("s");
         if let Some(acct_dir) = find_account_cache_dir(&s_dir, account) {
-            if let Ok(rd) = std::fs::read_dir(&acct_dir) {
-                for entry in rd.flatten() {
-                    let _ = std::fs::remove_file(entry.path());
-                }
-            }
+            let _ = std::fs::remove_dir_all(&acct_dir);
         }
     }
     // Deactivate
@@ -1592,6 +1648,7 @@ fn get_data_dirs_info(app: tauri::AppHandle) -> Result<serde_json::Value, String
     let default = app_base_dir(&app)?;
     Ok(serde_json::json!({
         "current": current.to_string_lossy(),
+        "default": default.to_string_lossy(),
         "isCustom": current != default,
     }))
 }
@@ -1750,8 +1807,9 @@ async fn start_move_data_dirs(app: tauri::AppHandle, new_path: String) -> Result
         let _ = std::fs::remove_dir_all(old_base.join(dir));
     }
 
-    // Persist and update in-memory state.
+    // Persist and update in-memory state; grant fs scope for the new location.
     write_custom_base_path(&app, Some(&new_base));
+    let _ = app.fs_scope().allow_directory(&new_base, true);
     if let Some(state) = app.try_state::<CustomBasePath>() {
         if let Ok(mut g) = state.0.lock() { *g = Some(new_base); }
     }
@@ -2145,6 +2203,9 @@ pub fn run() {
             // Load custom data-dirs base path and interrupted-move info FIRST so
             // that data_dirs_base() works correctly throughout the rest of setup.
             let custom_base = read_custom_base_path(&app.handle());
+            if let Some(ref base) = custom_base {
+                let _ = app.handle().fs_scope().allow_directory(base, true);
+            }
             let interrupted_move = read_move_sentinel(&app.handle());
             app.manage(CustomBasePath(std::sync::Mutex::new(custom_base)));
             app.manage(MoveInterruptedInfo(std::sync::Mutex::new(interrupted_move)));

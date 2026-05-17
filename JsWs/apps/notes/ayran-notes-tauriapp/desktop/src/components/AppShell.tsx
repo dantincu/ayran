@@ -21,11 +21,12 @@ import FileViewer from './explorer/FileViewer';
 import DevToolsPage from './devTools/DevToolsPage';
 import ManageNotebooksPage from './notebook/ManageNotebooksPage';
 import NotebookPage from './notebook/NotebookPage';
+import SettingsPage from './SettingsPage';
 
 const isMainWindow = getCurrentWebviewWindow().label === 'main';
 const isNotebookWindow = !!new URLSearchParams(window.location.search).get('wlabel');
 
-type Page = 'files' | 'notebooks' | 'devtools' | 'notebook' | 'accounts';
+type Page = 'files' | 'notebooks' | 'devtools' | 'notebook' | 'accounts' | 'settings';
 
 const PAGE_KEY = 'notes-current-page';
 const VIEWER_KEY = 'notes-viewer-v1';
@@ -245,15 +246,6 @@ export default function AppShell() {
     } catch (e) { alert(String(e)); }
   };
 
-  const handleChangeDataFolder = async () => {
-    setMenuOpen(false);
-    const sel = await dialogOpen({ directory: true, multiple: false });
-    if (!sel || typeof sel !== 'string') return;
-    try {
-      await invoke('start_move_data_dirs', { newPath: sel });
-    } catch (e) { alert(String(e)); }
-  };
-
   const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => {
     if (!selected) return;
     const entry = await addNotebook({
@@ -413,6 +405,9 @@ export default function AppShell() {
                   <button onClick={() => navigateTo('accounts')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'accounts' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
                     Accounts
                   </button>
+                  <button onClick={() => navigateTo('settings')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'settings' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                    Settings
+                  </button>
                   <button onClick={() => navigateTo('devtools')} className={`w-full text-left px-4 py-2 text-sm transition-colors ${currentPage === 'devtools' ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20' : 'text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
                     DevTools
                   </button>
@@ -430,15 +425,6 @@ export default function AppShell() {
                           View pending changes
                         </button>
                       )}
-                    </>
-                  )}
-                  {isMainWindow && (
-                    <>
-                      <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
-                      <button onClick={handleChangeDataFolder} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
-                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-4 h-4 shrink-0 text-blue-500"><path strokeLinecap="round" strokeLinejoin="round" d="M2 4.5a1.5 1.5 0 011.5-1.5H7l1.5 1.5H12.5A1.5 1.5 0 0114 6v5.5A1.5 1.5 0 0112.5 13h-9A1.5 1.5 0 012 11.5v-7z"/><path strokeLinecap="round" strokeLinejoin="round" d="M8 8v3.5M6.5 10l1.5 1.5L9.5 10"/></svg>
-                        Change data folder…
-                      </button>
                     </>
                   )}
                   <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
@@ -484,6 +470,12 @@ export default function AppShell() {
             : <div className="py-6 px-4 overflow-y-auto flex-1">
                 <ManageNotebooksPage />
               </div>
+        )}
+
+        {currentPage === 'settings' && (
+          <div className="py-6 px-4 overflow-y-auto flex-1">
+            <SettingsPage />
+          </div>
         )}
 
         {currentPage === 'devtools' && (

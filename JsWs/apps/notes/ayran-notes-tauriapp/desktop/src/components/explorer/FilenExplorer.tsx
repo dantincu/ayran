@@ -903,7 +903,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           )}
         </div>
         </div>{/* end scrollable list */}
-        <div className={`shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 ${headerCollapsed ? 'max-h-0 opacity-0' : 'max-h-[60px] opacity-100'}`}>
+        <div className="shrink-0">
           <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
         </div>
       </div>
