@@ -1823,6 +1823,70 @@ async fn start_move_data_dirs(app: tauri::AppHandle, new_path: String) -> Result
     Ok(())
 }
 
+/// Move c/, t/, s/ back to the default app_base_dir and clear the custom path.
+/// Bypasses the validation that rejects the app_data_dir location.
+#[tauri::command]
+async fn reset_data_dirs_to_default(app: tauri::AppHandle) -> Result<(), String> {
+    let old_base = data_dirs_base(&app)?;
+    let new_base = app_base_dir(&app)?;
+
+    if old_base == new_base {
+        return Ok(()); // already at default, nothing to do
+    }
+
+    MOVE_CANCELLED.store(false, Ordering::SeqCst);
+    MOVE_IN_PROGRESS.store(true, Ordering::SeqCst);
+    write_move_sentinel(&app, &old_base, &new_base);
+    let _ = app.emit("data-dirs-move-started", ());
+
+    let total: u64 = ["c","t","s"].iter()
+        .map(|d| count_files_recursive(&old_base.join(d)))
+        .sum();
+    let copied = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+    let result = {
+        let old = old_base.clone();
+        let new = new_base.clone();
+        let app2 = app.clone();
+        let ctr = std::sync::Arc::clone(&copied);
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            for dir in ["c","t","s"] {
+                let src = old.join(dir);
+                if !src.exists() { continue; }
+                copy_dir_sync(&src, &new.join(dir), &app2, &ctr, total)?;
+                if MOVE_CANCELLED.load(Ordering::SeqCst) { return Ok(()); }
+            }
+            Ok(())
+        }).await.map_err(|e| e.to_string())?
+    };
+
+    if MOVE_CANCELLED.load(Ordering::SeqCst) || result.is_err() {
+        for d in ["c","t","s"] { let _ = std::fs::remove_dir_all(new_base.join(d)); }
+        MOVE_IN_PROGRESS.store(false, Ordering::SeqCst);
+        clear_move_sentinel(&app);
+        let _ = app.emit("data-dirs-move-cancelled", ());
+        return result;
+    }
+
+    for dir in ["c","t","s"] {
+        let _ = std::fs::remove_dir_all(old_base.join(dir));
+    }
+
+    // Clear the custom path (back to default = no override).
+    write_custom_base_path(&app, None);
+    if let Some(state) = app.try_state::<CustomBasePath>() {
+        if let Ok(mut g) = state.0.lock() { *g = None; }
+    }
+    if let Some(state) = app.try_state::<MoveInterruptedInfo>() {
+        if let Ok(mut g) = state.0.lock() { *g = None; }
+    }
+
+    MOVE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    clear_move_sentinel(&app);
+    let _ = app.emit("data-dirs-move-done", ());
+    Ok(())
+}
+
 // ── Local FS listing ──────────────────────────────────────────────────────────
 
 /// `rel_path` is a relative path (using '/' separator) within the account root.
@@ -2329,6 +2393,7 @@ pub fn run() {
             is_move_in_progress,
             cancel_move_data_dirs,
             start_move_data_dirs,
+            reset_data_dirs_to_default,
             get_interrupted_move_info,
             cleanup_interrupted_move,
             // Conflict detection

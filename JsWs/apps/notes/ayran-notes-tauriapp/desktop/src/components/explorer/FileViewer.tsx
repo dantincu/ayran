@@ -140,17 +140,37 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
     setLoading(true); setError(null); setProgress(null);
     setBlobUrl(null);
     try {
-      // If shelveset has a staged version of this text file, read it directly.
-      let path: string;
-      if (account.shelvesetActive && mode === 'text') {
+      // Resolve the local path to read from.
+      // Priority when shelveset is active:
+      //   1. s/ folder (shelved content)
+      //   2. c/ cache / API call — but only for items that have a real cloud ID
+      //   3. No real ID (shv-... new items) with nothing in s/ → empty content
+      let path: string | null = null;
+
+      if (account.shelvesetActive) {
         const shelvedPath = await invoke<string | null>('shelveset_get_content_path', {
           accountId: account.id, itemId: effectiveItemId,
         });
-        path = shelvedPath ?? await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
+        if (shelvedPath) {
+          path = shelvedPath;
+        } else if (!effectiveItemId.startsWith('shv-')) {
+          // Real cloud item not yet shelved — use normal cache/API path.
+          path = await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
+        }
+        // else: new shelveset item with no content yet → path stays null → show empty below
       } else {
         path = await invoke<string>('open_file', { accountId: account.id, itemId: effectiveItemId, force });
       }
+
       if (!isMountedRef.current) return;
+
+      if (path === null) {
+        // New shelved item with no content — show a blank text editor.
+        if (mode === 'text') {
+          setTextContent(''); setEditedText(''); setIsDirty(false); setLineEnding('lf');
+        }
+        return;
+      }
 
       if (mode === 'text') {
         const bytes = await readFile(path);

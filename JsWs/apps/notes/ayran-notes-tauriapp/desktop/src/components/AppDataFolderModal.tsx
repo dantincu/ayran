@@ -45,9 +45,14 @@ export default function AppDataFolderModal({ onClose }: Props) {
   };
 
   const handleReset = async () => {
-    if (!info) return;
     if (!confirm('Move data back to the default location?')) return;
-    await startMove(info.default);
+    setError(null);
+    try {
+      await invoke('reset_data_dirs_to_default');
+      onClose();
+    } catch (e) {
+      setError(String(e));
+    }
   };
 
   return (
