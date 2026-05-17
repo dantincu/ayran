@@ -1451,6 +1451,38 @@ fn shelveset_get_content_path(
     Ok(if p.exists() { Some(p.to_string_lossy().into_owned()) } else { None })
 }
 
+/// Remove a content change after it has been successfully committed to the cloud.
+/// Deletes the s/ file but does NOT touch the folder-items cache (the item now
+/// exists for real and will be re-fetched on next folder load).
+#[tauri::command]
+async fn shelveset_committed_content(
+    app: tauri::AppHandle,
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    id: i64,
+) -> Result<(), String> {
+    let display_path: Option<String> = {
+        let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT display_path FROM shelveset_contents WHERE id=?1",
+            rusqlite::params![id],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?
+    };
+    let accounts = load_accounts(&app)?;
+    if let (Some(account), Some(dp)) = (accounts.get(&account_id), display_path) {
+        let s_dir = data_dirs_base(&app)?.join("s");
+        if let Some(d) = find_account_cache_dir(&s_dir, account) {
+            let _ = tokio::fs::remove_file(shelved_content_path(&d, &dp)).await;
+        }
+    }
+    let conn = cache_state.0.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM shelveset_contents WHERE id=?1 AND item_id=?2",
+        rusqlite::params![id, item_id]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Return all pending shelveset changes (structural + content) for an account.
 #[tauri::command]
 fn shelveset_get_all_changes(
@@ -2408,6 +2440,7 @@ pub fn run() {
             shelveset_get_all_changes,
             shelveset_undo_structural,
             shelveset_undo_content,
+            shelveset_committed_content,
             shelveset_discard,
             move_cached_item,
             delete_account_cache,

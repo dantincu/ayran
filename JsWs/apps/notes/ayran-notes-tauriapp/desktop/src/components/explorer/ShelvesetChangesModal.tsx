@@ -76,6 +76,14 @@ function buildUnified(changes: ShelvesetAllChanges): UnifiedChange[] {
 async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges): Promise<void> {
   const provider = account.provider;
 
+  // Helper: remove a structural change row after it has been committed.
+  const markStructural = (id: number) =>
+    invoke('shelveset_undo_structural', { id }).catch(() => {});
+
+  // Helper: remove a content change row + its s/ file after it has been committed.
+  const markContent = (id: number, itemId: string) =>
+    invoke('shelveset_committed_content', { accountId: account.id, id, itemId }).catch(() => {});
+
   // Process structural changes one by one in recorded order.
   for (const s of all.structural) {
     if (s.operation === 'delete') {
@@ -107,6 +115,8 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
       }
       invoke('move_cached_item', { accountId: account.id, itemId: s.itemId, newParentId }).catch(() => {});
     }
+    // Remove this change from the pending list now that it succeeded.
+    markStructural(s.id);
   }
 
   // Process content changes one by one in recorded order.
@@ -121,7 +131,10 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
       const localPath = await invoke<string | null>('shelveset_get_content_path', {
         accountId: account.id, itemId: c.itemId,
       });
-      if (!localPath || !await exists(localPath)) continue; // s/ file missing — skip
+      if (!localPath || !await exists(localPath)) {
+        markContent(c.id, c.itemId); // missing — drop the entry
+        continue;
+      }
       if (provider === 'filen') {
         await overwriteFile(account.id, c.itemId, c.parentId, localPath);
       } else if (provider === 'google-drive') {
@@ -132,7 +145,7 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
       const parentId = resolveId(c.parentId);
       let realId: string;
       if (provider === 'filen') {
-        realId = await invoke<string>('filen_create_directory', { accountId: account.id, parentId, name: c.itemName });
+        realId = await invoke<string>('filen_create_directory', { accountId: account.id, parentUuid: parentId, name: c.itemName });
       } else if (provider === 'google-drive') {
         realId = await invoke<string>('gdrive_create_folder', { accountId: account.id, parentId, name: c.itemName });
       } else { continue; }
@@ -144,15 +157,19 @@ async function commitShelveset(account: StoredAccount, all: ShelvesetAllChanges)
       const localPath = await invoke<string | null>('shelveset_get_content_path', {
         accountId: account.id, itemId: c.itemId,
       });
-      if (!localPath || !await exists(localPath)) continue; // no content — skip
+      if (!localPath || !await exists(localPath)) {
+        markContent(c.id, c.itemId); // missing — drop the entry
+        continue;
+      }
       if (provider === 'filen') {
-        await invoke('filen_upload_file', { accountId: account.id, parentId, localPath });
+        await invoke('filen_upload_file', { accountId: account.id, parentUuid: parentId, localPath });
       } else if (provider === 'google-drive') {
-        const content = localPath ? new TextDecoder('utf-8').decode(await readFile(localPath)) : '';
-        await invoke('gdrive_upload_file', { accountId: account.id, parentId, name: c.itemName, content });
+        await invoke('gdrive_upload_file', { accountId: account.id, folderId: parentId, filePath: localPath });
       }
       invoke('invalidate_folder_cache', { accountId: account.id, folderId: parentId }).catch(() => {});
     }
+    // Remove this content change now that it succeeded (or was skipped as missing).
+    markContent(c.id, c.itemId);
   }
 }
 

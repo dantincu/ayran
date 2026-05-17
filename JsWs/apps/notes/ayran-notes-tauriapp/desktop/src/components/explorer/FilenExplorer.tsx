@@ -618,7 +618,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     if (account.shelvesetActive) {
       const displayPath = [...breadcrumbs.map(b => b.name), fileName].join('/');
       newItemId = await invoke<string>('shelveset_create_item', {
-        accountId: account.id, parentId: folderUUID, itemName: fileName, isDir: false, displayPath,
+        accountId: account.id, parentId: folderUUID, itemName: fileName, isDir: false, displayPath, content: '',
       });
     } else {
       newItemId = await invoke<string>('create_text_file', {
