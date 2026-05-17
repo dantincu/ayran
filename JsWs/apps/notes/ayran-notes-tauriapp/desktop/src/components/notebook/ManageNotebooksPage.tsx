@@ -7,10 +7,6 @@ import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, upda
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 
-interface Props {
-  onOpenNotebook: (notebookId: string) => void;
-}
-
 function NotebookIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 20 20" fill="none" className="shrink-0 text-emerald-600 dark:text-emerald-400">
@@ -24,12 +20,13 @@ function NotebookIcon() {
   );
 }
 
-export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
+export default function ManageNotebooksPage() {
   const [notebooks, setNotebooks] = useState<NotebookEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; entry: NotebookEntry } | null>(null);
+  const [nbStates, setNbStates] = useState<Record<string, { fullscreen: boolean; headerVisible: boolean }>>({});
   const [showEdit, setShowEdit] = useState(false);
   const [editEntry, setEditEntry] = useState<NotebookEntry | null>(null);
   const [editTitle, setEditTitle] = useState('');
@@ -49,7 +46,7 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
 
   useEffect(() => { void reload(); }, [reload]);
 
-  // Listen for window open/close events from other windows
+  // Listen for window open/close/state events from notebook windows.
   useEffect(() => {
     const unlisteners: (() => void)[] = [];
 
@@ -57,17 +54,22 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
       setNotebooks((prev) =>
         prev.map((n) => n.id === event.payload.notebookId ? { ...n, windowLabel: undefined } : n)
       );
-    })
-      .then((fn) => unlisteners.push(fn))
-      .catch(() => { /* non-fatal */ });
+      setNbStates((prev) => { const next = { ...prev }; delete next[event.payload.notebookId]; return next; });
+    }).then((fn) => unlisteners.push(fn)).catch(() => {});
 
     listen<{ notebookId: string; windowLabel: string }>('notebook-window-opened', (event) => {
       setNotebooks((prev) =>
         prev.map((n) => n.id === event.payload.notebookId ? { ...n, windowLabel: event.payload.windowLabel } : n)
       );
-    })
-      .then((fn) => unlisteners.push(fn))
-      .catch(() => { /* non-fatal */ });
+      setNbStates((prev) => ({ ...prev, [event.payload.notebookId]: { fullscreen: false, headerVisible: true } }));
+    }).then((fn) => unlisteners.push(fn)).catch(() => {});
+
+    listen<{ notebookId: string; fullscreen: boolean; headerVisible: boolean }>('notebook-state', (event) => {
+      setNbStates((prev) => ({ ...prev, [event.payload.notebookId]: { fullscreen: event.payload.fullscreen, headerVisible: event.payload.headerVisible } }));
+    }).then((fn) => unlisteners.push(fn)).catch(() => {});
+
+    // Request current state from any already-open notebook windows.
+    void emit('notebook-request-state', {});
 
     return () => { unlisteners.forEach((fn) => fn()); };
   }, []);
@@ -99,35 +101,47 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
     setCtxMenu({ x: e.clientX, y: e.clientY, entry });
   };
 
-  const handleRowClick = async (nb: NotebookEntry) => {
-    if (!nb.windowLabel) {
-      onOpenNotebook(nb.id);
-      return;
+  const openInNewWindow = async (nb: NotebookEntry) => {
+    // If already open in a known window, just focus it.
+    if (nb.windowLabel) {
+      let found = false;
+      try {
+        const windows = await getAllWebviewWindows();
+        const win = windows.find((w) => w.label === nb.windowLabel);
+        if (win) {
+          found = true;
+          try { await win.setFocus(); } catch { /* non-fatal */ }
+        }
+      } catch { /* non-fatal */ }
+      if (found) return;
+      // Stale label — clear it.
+      try {
+        await updateNotebook(nb.id, { windowLabel: undefined });
+        setNotebooks((prev) => prev.map((n) => n.id === nb.id ? { ...n, windowLabel: undefined } : n));
+      } catch { /* non-fatal */ }
     }
-    // Highlighted row: try to focus existing window
-    let found = false;
+
+    const label = 'nb-' + Date.now();
+    try { await updateNotebook(nb.id, { windowLabel: label }); } catch { /* non-fatal */ }
     try {
-      const windows = await getAllWebviewWindows();
-      const win = windows.find((w) => w.label === nb.windowLabel);
-      if (win) {
-        found = true;
-        try { await win.setFocus(); } catch { /* non-fatal */ }
-      }
+      void new WebviewWindow(label, {
+        url: '/?notebook=' + nb.id + '&wlabel=' + label,
+        title: nb.title || 'Notebook',
+        width: 1280,
+        height: 800,
+      });
     } catch { /* non-fatal */ }
-    if (found) return;
-    // Stale label — clear and open normally
-    try {
-      await updateNotebook(nb.id, { windowLabel: undefined });
-      setNotebooks((prev) => prev.map((n) => n.id === nb.id ? { ...n, windowLabel: undefined } : n));
-    } catch { /* non-fatal */ }
-    onOpenNotebook(nb.id);
+    try { await emit('notebook-window-opened', { notebookId: nb.id, windowLabel: label }); } catch { /* non-fatal */ }
+    setNotebooks((prev) => prev.map((n) => n.id === nb.id ? { ...n, windowLabel: label } : n));
   };
 
-  const handleCtxOpen = () => {
+  const handleRowClick = async (nb: NotebookEntry) => { await openInNewWindow(nb); };
+
+  const handleCtxOpen = async () => {
     if (!ctxMenu) return;
-    const id = ctxMenu.entry.id;
+    const entry = ctxMenu.entry;
     setCtxMenu(null);
-    onOpenNotebook(id);
+    await openInNewWindow(entry);
   };
   const handleCtxEdit = () => {
     if (!ctxMenu) return;
@@ -162,51 +176,18 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
     setCtxMenu(null);
     await closeWindowForEntry(entry);
   };
-  const handleCtxNewWindow = async () => {
+  const handleCtxToggleFullscreen = async () => {
     if (!ctxMenu) return;
-    const entry = ctxMenu.entry;
+    const id = ctxMenu.entry.id;
     setCtxMenu(null);
-
-    // If already open and window found, just focus it
-    if (entry.windowLabel) {
-      let found = false;
-      try {
-        const windows = await getAllWebviewWindows();
-        const win = windows.find((w) => w.label === entry.windowLabel);
-        if (win) {
-          found = true;
-          try { await win.setFocus(); } catch { /* non-fatal */ }
-        }
-      } catch { /* non-fatal */ }
-      if (found) return;
-      // Stale label — clear it
-      try {
-        await updateNotebook(entry.id, { windowLabel: undefined });
-        setNotebooks((prev) => prev.map((n) => n.id === entry.id ? { ...n, windowLabel: undefined } : n));
-      } catch { /* non-fatal */ }
-    }
-
-    const label = 'nb-' + Date.now();
-    try {
-      await updateNotebook(entry.id, { windowLabel: label });
-    } catch { /* non-fatal */ }
-
-    try {
-      void new WebviewWindow(label, {
-        url: '/?notebook=' + entry.id + '&wlabel=' + label,
-        title: entry.title || 'Notebook',
-        width: 1280,
-        height: 800,
-      });
-    } catch { /* non-fatal */ }
-
-    try {
-      await emit('notebook-window-opened', { notebookId: entry.id, windowLabel: label });
-    } catch { /* non-fatal */ }
-
-    setNotebooks((prev) => prev.map((n) => n.id === entry.id ? { ...n, windowLabel: label } : n));
+    await emit('notebook-cmd', { notebookId: id, cmd: 'toggle-fullscreen' });
   };
-
+  const handleCtxToggleHeader = async () => {
+    if (!ctxMenu) return;
+    const id = ctxMenu.entry.id;
+    setCtxMenu(null);
+    await emit('notebook-cmd', { notebookId: id, cmd: 'toggle-header' });
+  };
   const handleEditSave = async () => {
     if (!editEntry || !editTitle.trim()) return;
     setEditSaving(true);
@@ -256,13 +237,23 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
       {ctxMenu && (
         <Popover title={ctxMenu.entry.title || '(Untitled)'} onClose={() => setCtxMenu(null)} panelStyle={{ left: ctxMenu.x, top: ctxMenu.y }}>
           <div className="py-1">
-            <button onClick={handleCtxOpen} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open</button>
+            <button onClick={() => { void handleCtxOpen(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open</button>
             <button onClick={handleCtxEdit} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Edit</button>
-            {ctxMenu.entry.windowLabel && (
-              <button onClick={() => { void handleCtxCloseWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Close</button>
-            )}
-            <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">Remove</button>
-            <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new window</button>
+            {ctxMenu.entry.windowLabel && (() => {
+              const st = nbStates[ctxMenu.entry.id];
+              return (
+                <>
+                  <button onClick={() => { void handleCtxToggleFullscreen(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    {st?.fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                  </button>
+                  <button onClick={() => { void handleCtxToggleHeader(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    {st?.headerVisible === false ? 'Show header' : 'Hide header'}
+                  </button>
+                  <button onClick={() => { void handleCtxCloseWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Close</button>
+                </>
+              );
+            })()}
+            <button onClick={() => { void handleCtxDelete(); }} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">Remove</button>
           </div>
         </Popover>
       )}
@@ -367,10 +358,10 @@ export default function ManageNotebooksPage({ onOpenNotebook }: Props) {
                     </span>
                     <button
                       onClick={(e) => { e.stopPropagation(); void closeWindowForEntry(nb); }}
-                      className="text-xs text-gray-400 hover:text-red-500 dark:hover:text-red-400 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                      className="text-gray-400 hover:text-red-500 dark:hover:text-red-400 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
                       title="Close window"
                     >
-                      ✕
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M1 1l10 10M11 1L1 11"/></svg>
                     </button>
                   </div>
                 )}

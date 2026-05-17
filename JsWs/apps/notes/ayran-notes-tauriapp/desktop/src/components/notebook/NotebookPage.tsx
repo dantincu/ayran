@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile } from '@tauri-apps/plugin-fs';
-import { WebviewWindow, getAllWebviewWindows, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { emit } from '@tauri-apps/api/event';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { emit, listen } from '@tauri-apps/api/event';
 import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
 import { useTheme } from '../../hooks/useTheme';
 import Modal from '../common/Modal';
@@ -12,7 +12,6 @@ interface Props {
   notebookId: string;
   onBack: () => void;
   onDeleted: () => void;
-  onOpenedInNewWindow: () => void;
 }
 
 function NotebookIcon() {
@@ -28,7 +27,7 @@ function NotebookIcon() {
   );
 }
 
-export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedInNewWindow }: Props) {
+export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   const isSecondaryWindow = !!new URLSearchParams(window.location.search).get('wlabel');
   const { theme, toggleTheme } = useTheme();
 
@@ -141,6 +140,38 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
     return () => { if (unlisten) unlisten(); };
   }, []);
 
+  // Broadcast state changes to ManageNotebooksPage whenever fullscreen or header visibility changes.
+  useEffect(() => {
+    if (!entry) return;
+    void emit('notebook-state', { notebookId, fullscreen: isFullscreen, headerVisible: showHeader });
+  }, [notebookId, isFullscreen, showHeader, entry]);
+
+  // Respond to state requests and remote toggle commands from ManageNotebooksPage.
+  useEffect(() => {
+    const unlisteners: (() => void)[] = [];
+
+    listen('notebook-request-state', () => {
+      if (!entry) return;
+      void emit('notebook-state', { notebookId, fullscreen: isFullscreen, headerVisible: showHeader });
+    }).then((fn) => unlisteners.push(fn)).catch(() => {});
+
+    listen<{ notebookId: string; cmd: string }>('notebook-cmd', async (e) => {
+      if (e.payload.notebookId !== notebookId) return;
+      if (e.payload.cmd === 'toggle-fullscreen') {
+        try {
+          const win = getCurrentWebviewWindow();
+          const current = await win.isFullscreen();
+          await win.setFullscreen(!current);
+          setIsFullscreen(!current);
+        } catch { /* non-fatal */ }
+      } else if (e.payload.cmd === 'toggle-header') {
+        setShowHeader((h) => !h);
+      }
+    }).then((fn) => unlisteners.push(fn)).catch(() => {});
+
+    return () => unlisteners.forEach((fn) => fn());
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notebookId, entry, isFullscreen, showHeader]);
 
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -167,51 +198,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
       setIsFullscreen(!current);
     } catch { /* non-fatal */ }
   };
-  const handleCtxNewWindow = async () => {
-    setCtxMenu(null);
-    if (!entry) return;
-
-    // Check if already open in a window
-    if (entry.windowLabel) {
-      let found = false;
-      try {
-        const windows = await getAllWebviewWindows();
-        const existing = windows.find((w) => w.label === entry.windowLabel);
-        if (existing) {
-          found = true;
-          try { await existing.setFocus(); } catch { /* non-fatal */ }
-        }
-      } catch { /* non-fatal */ }
-      if (found) return;
-      // Stale label — clear it
-      try {
-        await updateNotebook(entry.id, { windowLabel: undefined });
-        setEntry((prev) => prev ? { ...prev, windowLabel: undefined } : prev);
-      } catch { /* non-fatal */ }
-    }
-
-    const label = 'nb-' + Date.now();
-    try {
-      await updateNotebook(entry.id, { windowLabel: label });
-      setEntry((prev) => prev ? { ...prev, windowLabel: label } : prev);
-    } catch { /* non-fatal */ }
-
-    try {
-      void new WebviewWindow(label, {
-        url: '/?notebook=' + notebookId + '&wlabel=' + label,
-        title: entry.title || 'Notebook',
-        width: 1280,
-        height: 800,
-      });
-    } catch { /* non-fatal */ }
-
-    try {
-      await emit('notebook-window-opened', { notebookId, windowLabel: label });
-    } catch { /* non-fatal */ }
-
-    onOpenedInNewWindow();
-  };
-
   const handleEditSave = async () => {
     if (!entry || !editTitle.trim()) return;
     setSaving(true);
@@ -316,7 +302,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
               {isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
             </button>
             <button onClick={handleCtxDelete} className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">Remove</button>
-            <button onClick={() => { void handleCtxNewWindow(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new window</button>
             <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
             <button onClick={() => { setCtxMenu(null); toggleTheme(); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2">
               {theme === 'dark'
@@ -418,9 +403,10 @@ export default function NotebookPage({ notebookId, onBack, onDeleted, onOpenedIn
             </div>
             <button
               onClick={() => setShowHeader(false)}
-              className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors text-xs"
+              title="Hide header"
+              className="shrink-0 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 w-6 h-6 flex items-center justify-center rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             >
-              ✕
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M2 10L7 4l5 6"/></svg>
             </button>
           </div>
         </div>

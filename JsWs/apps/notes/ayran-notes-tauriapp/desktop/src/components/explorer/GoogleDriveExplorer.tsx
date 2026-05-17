@@ -16,7 +16,7 @@ import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncest
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
 import CreateTextFileModal from './CreateTextFileModal';
 import Modal from '../common/Modal';
-import { UploadIcon, FolderPlusIcon, NewFileIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, AncestorsIcon } from './ExplorerIcons';
+import { UploadIcon, FolderPlusIcon, NewFileIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, ArrowDownIcon, AncestorsIcon } from './ExplorerIcons';
 import config from '../../config.json';
 
 const PAGE_SIZE = config.defaultListPageSize;
@@ -724,7 +724,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
               </div>
               <button onClick={() => setHeaderCollapsed(true)} title="Collapse toolbar"
                 className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
-                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 4l5 5 5-5"/></svg>
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 10l5-5 5 5"/></svg>
               </button>
               <button onClick={handleDisconnect} className="px-3 py-1 text-xs text-gray-400 dark:text-gray-500 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors">
                 Disconnect
@@ -791,7 +791,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
               title="Show toolbar"
               className="shrink-0 p-1 rounded text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
             >
-              <ArrowUpIcon/>
+              <ArrowDownIcon/>
             </button>
           </div>
         )}

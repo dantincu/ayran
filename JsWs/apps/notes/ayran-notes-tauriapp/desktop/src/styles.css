@@ -45,6 +45,17 @@ html.dark {
   background: var(--sb-track);
 }
 
+/* ── Animations ─────────────────────────────────────────────────────────── */
+
+@keyframes fadeout {
+  0%   { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.animate-fadeout {
+  animation: fadeout 2s ease-in-out forwards;
+}
+
 /* ── Desert theme: replace the entire gray scale and white ── */
 @theme {
   /* white → warm parchment (card / modal surfaces in light mode) */

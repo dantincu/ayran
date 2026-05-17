@@ -77,6 +77,8 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
   const [isDirty, setIsDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const savedFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [lineEnding, setLineEnding] = useState<'lf' | 'crlf'>('lf');
   const [showDiff, setShowDiff] = useState(false);
 
@@ -345,6 +347,9 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         if (newId !== effectiveItemId) setEffectiveItemId(newId);
       }
       setTextContent(editedText); setIsDirty(false);
+      if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
+      setSavedFlash(true);
+      savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -402,15 +407,20 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
         ▾
       </button>
       {cacheMenuOpen && (
-        <div className="absolute right-0 top-full mt-1 z-10 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1">
-          <button onClick={handleHardRefresh}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Hard refresh
-          </button>
-          <button onClick={handleClearCache}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Clear file cache
-          </button>
+        <div className="absolute right-0 top-full mt-1 z-10 min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg">
+          <div className="px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">
+            Cache options
+          </div>
+          <div className="py-1">
+            <button onClick={handleHardRefresh}
+              className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+              Hard refresh
+            </button>
+            <button onClick={handleClearCache}
+              className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+              Clear file cache
+            </button>
+          </div>
         </div>
       )}
     </div>
@@ -557,6 +567,12 @@ export default function FileViewer({ account, item, onClose, onOpenNotebook, dis
           >
             {lineEnding === 'crlf' ? 'CRLF' : 'LF'}
           </button>
+          {savedFlash && (
+            <span className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 animate-fadeout">
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 shrink-0"><path d="M2 7l3.5 3.5L12 3"/></svg>
+              Saved
+            </span>
+          )}
           <button onClick={handleSave} disabled={!isDirty || saving} title={saving ? 'Saving…' : 'Save'}
             className="p-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 transition-colors">
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 11h10M7 3v6M4 6l3 3 3-3"/></svg>

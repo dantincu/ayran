@@ -23,6 +23,7 @@ import ManageNotebooksPage from './notebook/ManageNotebooksPage';
 import NotebookPage from './notebook/NotebookPage';
 
 const isMainWindow = getCurrentWebviewWindow().label === 'main';
+const isNotebookWindow = !!new URLSearchParams(window.location.search).get('wlabel');
 
 type Page = 'files' | 'notebooks' | 'devtools' | 'notebook' | 'accounts';
 
@@ -473,31 +474,16 @@ export default function AppShell() {
           </div>
         )}
 
-        {currentPage === 'notebooks' && (
-          <div className="py-6 px-4 overflow-y-auto flex-1">
-            <ManageNotebooksPage
-              onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
-            />
-          </div>
-        )}
-
-        {currentPage === 'notebook' && notebookNavId && (
-          <div className="py-6 px-4 overflow-y-auto flex-1">
-            <NotebookPage
-              notebookId={notebookNavId}
-              onBack={() => setCurrentPage('notebooks')}
-              onDeleted={() => setCurrentPage('notebooks')}
-              onOpenedInNewWindow={() => setCurrentPage('notebooks')}
-            />
-          </div>
-        )}
-
-        {currentPage === 'notebook' && !notebookNavId && (
-          <div className="py-6 px-4 overflow-y-auto flex-1">
-            <ManageNotebooksPage
-              onOpenNotebook={(id) => { setNotebookNavId(id); setCurrentPage('notebook'); }}
-            />
-          </div>
+        {(currentPage === 'notebooks' || currentPage === 'notebook') && (
+          isNotebookWindow && notebookNavId
+            ? <NotebookPage
+                notebookId={notebookNavId}
+                onBack={() => setCurrentPage('notebooks')}
+                onDeleted={() => setCurrentPage('notebooks')}
+              />
+            : <div className="py-6 px-4 overflow-y-auto flex-1">
+                <ManageNotebooksPage />
+              </div>
         )}
 
         {currentPage === 'devtools' && (
