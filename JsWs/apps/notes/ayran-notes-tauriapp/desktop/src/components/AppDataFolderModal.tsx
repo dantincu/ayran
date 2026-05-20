@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open as dialogOpen } from '@tauri-apps/plugin-dialog';
+import Modal from './common/Modal';
 
 interface DataDirsInfo { current: string; default: string; isCustom: boolean; }
 
@@ -32,7 +33,7 @@ export default function AppDataFolderModal({ onClose }: Props) {
     setError(null);
     try {
       await invoke('start_move_data_dirs', { newPath });
-      onClose(); // MoveDataDirsModal takes over from here
+      onClose();
     } catch (e) {
       setError(String(e));
     }
@@ -56,17 +57,8 @@ export default function AppDataFolderModal({ onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center">
-      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl p-6 w-full max-w-lg mx-4 flex flex-col gap-4">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-white">App Data Folder</h2>
-          <button onClick={onClose}
-            className="p-1.5 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">
-            <svg viewBox="0 0 14 14" fill="currentColor" className="w-3.5 h-3.5"><path d="M2.3 2.3a1 1 0 011.4 0L7 5.6l3.3-3.3a1 1 0 111.4 1.4L8.4 7l3.3 3.3a1 1 0 01-1.4 1.4L7 8.4l-3.3 3.3a1 1 0 01-1.4-1.4L5.6 7 2.3 3.7a1 1 0 010-1.4z"/></svg>
-          </button>
-        </div>
-
+    <Modal title="App Data Folder" onClose={onClose} maxWidth="max-w-lg">
+      <div className="p-5 flex flex-col gap-4">
         <p className="text-sm text-gray-500 dark:text-gray-400">
           The location where this app keeps its data and cache.
         </p>
@@ -77,7 +69,7 @@ export default function AppDataFolderModal({ onClose }: Props) {
 
         {!loading && info && (
           <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2">
+            <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2">
               {info.isCustom && (
                 <span className="shrink-0 text-xs font-medium text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-900/30 px-1.5 py-0.5 rounded">Custom</span>
               )}
@@ -85,14 +77,14 @@ export default function AppDataFolderModal({ onClose }: Props) {
                 {info.current}
               </span>
               <button onClick={handleCopy} title="Copy path"
-                className="shrink-0 p-1 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                className="shrink-0 p-1 rounded text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
                 {copied
                   ? <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5 text-emerald-500"><path d="M2 7l3 3 7-6"/></svg>
                   : <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><rect x="4.5" y="4.5" width="8" height="8" rx="1"/><path d="M9.5 4.5V3a1 1 0 00-1-1H3a1 1 0 00-1 1v6.5a1 1 0 001 1H4.5"/></svg>
                 }
               </button>
               <button onClick={handleEdit} title="Change data folder"
-                className="shrink-0 p-1 rounded text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                className="shrink-0 p-1 rounded text-gray-400 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
                 <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M9.5 2.5l2 2L4 12H2V10L9.5 2.5z"/></svg>
               </button>
             </div>
@@ -111,6 +103,6 @@ export default function AppDataFolderModal({ onClose }: Props) {
           </div>
         )}
       </div>
-    </div>
+    </Modal>
   );
 }
