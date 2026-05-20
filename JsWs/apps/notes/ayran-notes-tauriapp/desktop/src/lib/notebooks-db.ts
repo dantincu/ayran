@@ -18,6 +18,7 @@ export interface NotebookEntry {
   tabsHeaderVisible?: boolean;
   tabHistory?: string[];
   tabHistoryIndex?: number;
+  splitPairs?: Array<{ id: string; primaryId: string; secondaryId: string; mode: 'vertical' | 'horizontal' }>;
 }
 
 const DB_NAME = 'ayran-notes';

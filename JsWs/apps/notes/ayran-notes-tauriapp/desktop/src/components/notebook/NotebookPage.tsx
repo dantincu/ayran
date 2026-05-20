@@ -219,25 +219,25 @@ interface SplitTabHeaderProps {
 }
 
 function SplitTabHeader({ tab, isPrimary, onClose, onOpenTabsList, onOpenSplitOptions }: SplitTabHeaderProps) {
-  const btn = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
+  const btn = 'shrink-0 w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
   const closeBtn = (
     <button onClick={onClose} title="Close tab" className={btn}>
       <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="w-3 h-3"><path d="M1 1l10 10M11 1L1 11"/></svg>
     </button>
   );
   return (
-    <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-2 shrink-0 flex items-center gap-1.5 min-h-0">
-      <span className="shrink-0 text-gray-500 dark:text-gray-400 py-1.5">{tabIcon(tab.type, 'w-3.5 h-3.5')}</span>
-      <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-200 truncate select-none py-1.5">{tab.name}</span>
+    <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-2 py-1.5 shrink-0 flex items-center gap-1.5">
+      <span className="shrink-0 text-gray-500 dark:text-gray-400">{tabIcon(tab.type, 'w-3.5 h-3.5')}</span>
+      <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-200 truncate select-none">{tab.name}</span>
       {isPrimary ? (
-        <div className="flex flex-col items-center shrink-0">
-          {closeBtn}
+        <div className="flex items-center gap-0.5 shrink-0">
           <button onClick={onOpenTabsList} title="Open tabs" className={btn}>
-            <TabsListIcon className="w-3 h-3"/>
+            <TabsListIcon className="w-3.5 h-3.5"/>
           </button>
+          {closeBtn}
         </div>
       ) : (
-        <div className="flex items-center gap-0.5 shrink-0 py-1">
+        <div className="flex items-center gap-0.5 shrink-0">
           <button onClick={onOpenSplitOptions} title="Tab options" className={btn}>
             <MoreDotsIcon className="w-3.5 h-3.5"/>
           </button>
@@ -529,6 +529,11 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
             setTabHistory(restoredHistory);
             setHistoryIndex(restoredIdx);
             setHistoryPreviewIndex(restoredIdx);
+            // Restore split pairs, dropping any that reference tabs no longer in the list.
+            if (nb.splitPairs && nb.splitPairs.length > 0 && !cancelled) {
+              const validIds = new Set(restored.map((t) => t.id));
+              setSplitPairs(nb.splitPairs.filter((p) => validIds.has(p.primaryId) && validIds.has(p.secondaryId)));
+            }
           }
         }
         if (nb.tabsHeaderVisible !== undefined && !cancelled) {
@@ -568,8 +573,8 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
   useEffect(() => {
     if (!tabsReadyRef.current) return;
-    void updateNotebook(notebookId, { tabs, activeTabId, tabsHeaderVisible: showTabsHeader, tabHistory, tabHistoryIndex: historyIndex });
-  }, [notebookId, tabs, activeTabId, showTabsHeader, tabHistory, historyIndex]);
+    void updateNotebook(notebookId, { tabs, activeTabId, tabsHeaderVisible: showTabsHeader, tabHistory, tabHistoryIndex: historyIndex, splitPairs });
+  }, [notebookId, tabs, activeTabId, showTabsHeader, tabHistory, historyIndex, splitPairs]);
 
   // ── Remove split pairs whose tabs no longer exist ────────────────────────────
 
