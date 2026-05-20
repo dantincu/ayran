@@ -13,6 +13,9 @@ export interface NotebookEntry {
   order: number;        // for drag reordering
   openedAt: number;     // Date.now() on creation
   windowLabel?: string; // Tauri WebviewWindow label when open in a separate window
+  tabs?: Array<{ id: string; type: string; name: string }>;
+  activeTabId?: string;
+  tabsHeaderVisible?: boolean;
 }
 
 const DB_NAME = 'ayran-notes';
