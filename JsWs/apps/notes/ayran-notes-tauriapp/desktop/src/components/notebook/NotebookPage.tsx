@@ -96,6 +96,52 @@ function tabIcon(type: TabType, className?: string) {
   }
 }
 
+// ── Sort strip (Ayran reorder strategy) ───────────────────────────────────────
+
+interface StripProps {
+  hasSelected: boolean;
+  active: boolean;
+  stripPos: number;
+  maxPos: number;
+  onUp: () => void;
+  onDown: () => void;
+  onConfirm: () => void;
+}
+
+function SortStrip({ hasSelected, active, stripPos, maxPos, onUp, onDown, onConfirm }: StripProps) {
+  const label = !hasSelected
+    ? 'Select tabs to reorder'
+    : !active
+      ? 'Tap anywhere to move selected tabs'
+      : 'Move selected tabs here';
+
+  const btnBase = 'p-1 rounded transition-colors disabled:opacity-30';
+  const btnGhost = `${btnBase} text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/30`;
+  const btnConfirm = `${btnBase} text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30`;
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1 my-0.5 mx-2 rounded-lg border border-dashed border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20">
+      <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="w-3.5 h-3.5 shrink-0 text-amber-500">
+        <path d="M7 2v10M4 8l3 3 3-3M4 6l3-3 3 3" opacity="0.6"/>
+      </svg>
+      <span className="flex-1 text-xs font-medium text-amber-700 dark:text-amber-300">{label}</span>
+      {active && (
+        <>
+          <button onClick={onUp} disabled={stripPos === 0} className={btnGhost} title="Move strip up">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M2 8l4-4 4 4"/></svg>
+          </button>
+          <button onClick={onDown} disabled={stripPos === maxPos} className={btnGhost} title="Move strip down">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M2 4l4 4 4-4"/></svg>
+          </button>
+          <button onClick={onConfirm} className={btnConfirm} title="Confirm move">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3"><path d="M1.5 6l3 3 6-6"/></svg>
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Home tab ──────────────────────────────────────────────────────────────────
 
 interface HomeTabProps {
@@ -183,6 +229,13 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   // Prevents saving tabs before the initial load has had a chance to restore them.
   const tabsReadyRef = useRef(false);
 
+  // ── Tab sort state ───────────────────────────────────────────────────────────
+  const [selectedTabIds, setSelectedTabIds] = useState<Set<string>>(new Set());
+  const [tabSortMode, setTabSortMode] = useState(false);
+  const [tabWorkingOrder, setTabWorkingOrder] = useState<NbTab[]>([]);
+  const [tabStripPos, setTabStripPos] = useState(0);
+  const [tabStripActive, setTabStripActive] = useState(false);
+
   // ── Tab management ───────────────────────────────────────────────────────────
 
   const openTab = (type: TabType, name: string) => {
@@ -217,6 +270,90 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       }
       return next;
     });
+  };
+
+  // ── Tab sort handlers ────────────────────────────────────────────────────────
+
+  const toggleTabSelected = (id: string) => setSelectedTabIds((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const enterTabSortMode = () => {
+    setTabWorkingOrder([...tabs]);
+    setTabStripPos(0);
+    setTabStripActive(false);
+    setTabSortMode(true);
+  };
+
+  const cancelTabSortMode = () => {
+    setTabSortMode(false);
+    setTabWorkingOrder([]);
+    setTabStripPos(0);
+    setTabStripActive(false);
+  };
+
+  const handleTabRowBodyClick = (idx: number) => {
+    const tab = tabWorkingOrder[idx];
+    if (selectedTabIds.has(tab.id)) return;
+    setTabStripPos(idx + 1);
+    setTabStripActive(true);
+  };
+
+  const handleTabConfirmMove = () => {
+    const selected = tabWorkingOrder.filter((t) => selectedTabIds.has(t.id));
+    const nonSelected = tabWorkingOrder.filter((t) => !selectedTabIds.has(t.id));
+
+    let insertAfterNonSelected = -1;
+    for (let i = tabStripPos - 1; i >= 0; i--) {
+      if (!selectedTabIds.has(tabWorkingOrder[i].id)) {
+        insertAfterNonSelected = nonSelected.findIndex((t) => t.id === tabWorkingOrder[i].id);
+        break;
+      }
+    }
+
+    setTabWorkingOrder([
+      ...nonSelected.slice(0, insertAfterNonSelected + 1),
+      ...selected,
+      ...nonSelected.slice(insertAfterNonSelected + 1),
+    ]);
+    setTabStripPos(0);
+    setTabStripActive(false);
+  };
+
+  const removeSelectedTabs = () => {
+    setTabs((prev) => {
+      const next = prev.filter((t) => !selectedTabIds.has(t.id));
+      if (next.length === 0) {
+        const newHome: NbTab = { id: crypto.randomUUID(), type: 'home', name: 'Home' };
+        setActiveTabId(newHome.id);
+        return [newHome];
+      }
+      if (selectedTabIds.has(activeTabId)) {
+        const firstRemoved = prev.findIndex((t) => selectedTabIds.has(t.id));
+        const fallback = next[Math.min(firstRemoved, next.length - 1)];
+        setActiveTabId(fallback.id);
+      }
+      return next;
+    });
+    setSelectedTabIds(new Set());
+    if (tabs.filter((t) => !selectedTabIds.has(t.id)).length === 0) closeTabsList();
+  };
+
+  const handleTabSubmitOrder = () => {
+    setTabs([...tabWorkingOrder]);
+    setTabSortMode(false);
+    setTabWorkingOrder([]);
+    setTabStripPos(0);
+    setTabStripActive(false);
+    setSelectedTabIds(new Set());
+  };
+
+  const closeTabsList = () => {
+    setShowTabsList(false);
+    cancelTabSortMode();
+    setSelectedTabIds(new Set());
   };
 
   // ── Load notebook entry ───────────────────────────────────────────────────────
@@ -397,34 +534,105 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
       {/* ── Modals ──────────────────────────────────────────────────────────── */}
 
-      {showTabsList && (
-        <Modal title="Open tabs" onClose={() => setShowTabsList(false)} maxWidth="max-w-xs">
-          <div className="py-1">
-            {tabs.map((tab) => (
-              <div key={tab.id} className={`flex items-center gap-2 px-3 py-2 transition-colors ${tab.id === activeTabId ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
-                <span className={`shrink-0 ${tab.id === activeTabId ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
-                  {tabIcon(tab.type, 'w-3.5 h-3.5')}
-                </span>
-                <button
-                  className={`flex-1 text-left text-sm truncate ${tab.id === activeTabId ? 'text-emerald-700 dark:text-emerald-300 font-medium' : 'text-gray-700 dark:text-gray-200'}`}
-                  onClick={() => { setActiveTabId(tab.id); setShowTabsList(false); }}
-                >
-                  {tab.name}
-                </button>
-                {tabs.length > 1 && (
-                  <button
-                    onClick={() => { closeTab(tab.id); if (tabs.length === 1) setShowTabsList(false); }}
-                    className="shrink-0 text-gray-400 hover:text-red-500 dark:hover:text-red-400 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
-                    title="Close tab"
-                  >
-                    <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="w-2.5 h-2.5"><path d="M1 1l8 8M9 1L1 9"/></svg>
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        </Modal>
-      )}
+      {showTabsList && (() => {
+        const displayTabs = tabSortMode ? tabWorkingOrder : tabs;
+        const someTabSelected = selectedTabIds.size > 0;
+        const allTabsSelected = displayTabs.length > 0 && selectedTabIds.size === displayTabs.length;
+        const tbBtn = 'px-2 py-0.5 text-xs rounded-lg transition-colors';
+        const tbBtnGray = `${tbBtn} bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600`;
+        const tbBtnAmber = `${tbBtn} bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800/40`;
+        const tbBtnEmerald = `${tbBtn} bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-200 dark:hover:bg-emerald-800/40`;
+        return (
+          <Modal title="Open tabs" onClose={closeTabsList} maxWidth="max-w-xs">
+            {/* Toolbar */}
+            <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 flex-wrap">
+              {!allTabsSelected
+                ? <button onClick={() => setSelectedTabIds(new Set(displayTabs.map((t) => t.id)))} className={tbBtnGray}>Select all</button>
+                : <button onClick={() => setSelectedTabIds(new Set())} className={tbBtnGray}>Deselect all</button>
+              }
+              {someTabSelected && !allTabsSelected && (
+                <button onClick={() => setSelectedTabIds(new Set())} className={tbBtnGray}>Deselect all</button>
+              )}
+              <div className="flex-1"/>
+              {someTabSelected && !tabSortMode && (
+                <button onClick={removeSelectedTabs} className={`${tbBtn} bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800/40`}>Remove</button>
+              )}
+              {!tabSortMode
+                ? <button onClick={enterTabSortMode} className={tbBtnAmber}>Reorder</button>
+                : <>
+                    <button onClick={handleTabSubmitOrder} className={tbBtnEmerald}>Apply order</button>
+                    <button onClick={cancelTabSortMode} className={tbBtnGray}>Cancel</button>
+                  </>
+              }
+            </div>
+
+            {/* Tab list */}
+            <div className="py-1">
+              {/* Strip above first row */}
+              {tabSortMode && tabStripPos === 0 && (
+                <SortStrip hasSelected={someTabSelected} active={tabStripActive} stripPos={tabStripPos} maxPos={tabWorkingOrder.length}
+                  onUp={() => setTabStripPos((p) => Math.max(0, p - 1))}
+                  onDown={() => setTabStripPos((p) => Math.min(tabWorkingOrder.length, p + 1))}
+                  onConfirm={handleTabConfirmMove} />
+              )}
+              {displayTabs.map((tab, idx) => {
+                const isActive = tab.id === activeTabId;
+                const isSelected = selectedTabIds.has(tab.id);
+                return (
+                  <div key={tab.id}>
+                    <div
+                      onClick={() => {
+                        if (tabSortMode) { handleTabRowBodyClick(idx); return; }
+                        setActiveTabId(tab.id);
+                        closeTabsList();
+                      }}
+                      className={[
+                        'flex items-center gap-2 px-3 py-2 transition-colors cursor-pointer',
+                        isSelected
+                          ? 'bg-blue-50 dark:bg-blue-900/20'
+                          : isActive
+                            ? 'bg-emerald-50 dark:bg-emerald-900/20'
+                            : 'hover:bg-gray-50 dark:hover:bg-gray-700',
+                      ].join(' ')}
+                    >
+                      {/* Checkbox */}
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleTabSelected(tab.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0 accent-blue-500 w-3.5 h-3.5"
+                      />
+                      <span className={`shrink-0 ${isSelected ? 'text-blue-500 dark:text-blue-400' : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
+                        {tabIcon(tab.type, 'w-3.5 h-3.5')}
+                      </span>
+                      <span className={`flex-1 text-sm truncate ${isSelected ? 'text-blue-700 dark:text-blue-300' : isActive ? 'text-emerald-700 dark:text-emerald-300 font-medium' : 'text-gray-700 dark:text-gray-200'}`}>
+                        {tab.name}
+                      </span>
+                      {!tabSortMode && tabs.length > 1 && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); closeTab(tab.id); if (tabs.length === 1) closeTabsList(); }}
+                          className="shrink-0 text-gray-400 hover:text-red-500 dark:hover:text-red-400 w-5 h-5 flex items-center justify-center rounded hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors"
+                          title="Close tab"
+                        >
+                          <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="w-2.5 h-2.5"><path d="M1 1l8 8M9 1L1 9"/></svg>
+                        </button>
+                      )}
+                    </div>
+                    {/* Strip below this row */}
+                    {tabSortMode && tabStripPos === idx + 1 && (
+                      <SortStrip hasSelected={someTabSelected} active={tabStripActive} stripPos={tabStripPos} maxPos={tabWorkingOrder.length}
+                        onUp={() => setTabStripPos((p) => Math.max(0, p - 1))}
+                        onDown={() => setTabStripPos((p) => Math.min(tabWorkingOrder.length, p + 1))}
+                        onConfirm={handleTabConfirmMove} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </Modal>
+        );
+      })()}
 
       {ctxMenu && (
         <Popover title={entry?.title || '(Untitled)'} onClose={() => setCtxMenu(null)} panelStyle={{ left: ctxMenu.x, top: ctxMenu.y }}>
