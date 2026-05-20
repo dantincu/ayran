@@ -447,9 +447,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           if (!cancelled) {
             setTabs(restored);
             setActiveTabId(restoredActiveId);
-            setTabHistory([restoredActiveId]);
-            setHistoryIndex(0);
-            setHistoryPreviewIndex(0);
+            // Restore history, validating the index is in bounds.
+            const restoredHistory = nb.tabHistory && nb.tabHistory.length > 0 ? nb.tabHistory : [restoredActiveId];
+            const restoredIdx = nb.tabHistoryIndex !== undefined && nb.tabHistoryIndex >= 0 && nb.tabHistoryIndex < restoredHistory.length
+              ? nb.tabHistoryIndex
+              : restoredHistory.length - 1;
+            setTabHistory(restoredHistory);
+            setHistoryIndex(restoredIdx);
+            setHistoryPreviewIndex(restoredIdx);
           }
         }
         if (nb.tabsHeaderVisible !== undefined && !cancelled) {
@@ -489,8 +494,8 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
   useEffect(() => {
     if (!tabsReadyRef.current) return;
-    void updateNotebook(notebookId, { tabs, activeTabId, tabsHeaderVisible: showTabsHeader });
-  }, [notebookId, tabs, activeTabId, showTabsHeader]);
+    void updateNotebook(notebookId, { tabs, activeTabId, tabsHeaderVisible: showTabsHeader, tabHistory, tabHistoryIndex: historyIndex });
+  }, [notebookId, tabs, activeTabId, showTabsHeader, tabHistory, historyIndex]);
 
   // ── Window lifecycle ──────────────────────────────────────────────────────────
 
@@ -625,21 +630,28 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               {/* Back / Forward history buttons */}
               {(() => {
                 const iconBtn = 'w-6 h-6 flex items-center justify-center rounded transition-colors text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 disabled:pointer-events-none';
-                const canGoBack = historyPreviewIndex > 0;
-                const canGoForward = historyPreviewIndex < historyIndex;
+                // Skip over history entries whose tabs have been closed.
+                let backTarget = -1;
+                for (let i = historyPreviewIndex - 1; i >= 0; i--) {
+                  if (tabs.some((t) => t.id === tabHistory[i])) { backTarget = i; break; }
+                }
+                let forwardTarget = -1;
+                for (let i = historyPreviewIndex + 1; i <= historyIndex; i++) {
+                  if (tabs.some((t) => t.id === tabHistory[i])) { forwardTarget = i; break; }
+                }
                 return (
                   <>
                     <button
-                      onClick={() => setHistoryPreviewIndex((p) => Math.max(0, p - 1))}
-                      disabled={!canGoBack}
+                      onClick={() => { if (backTarget >= 0) setHistoryPreviewIndex(backTarget); }}
+                      disabled={backTarget < 0}
                       title="Back"
                       className={iconBtn}
                     >
                       <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M7 2L3 6l4 4"/></svg>
                     </button>
                     <button
-                      onClick={() => setHistoryPreviewIndex((p) => Math.min(historyIndex, p + 1))}
-                      disabled={!canGoForward}
+                      onClick={() => { if (forwardTarget >= 0) setHistoryPreviewIndex(forwardTarget); }}
+                      disabled={forwardTarget < 0}
                       title="Forward"
                       className={iconBtn}
                     >

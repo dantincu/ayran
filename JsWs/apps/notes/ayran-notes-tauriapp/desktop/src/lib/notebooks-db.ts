@@ -16,6 +16,8 @@ export interface NotebookEntry {
   tabs?: Array<{ id: string; type: string; name: string }>;
   activeTabId?: string;
   tabsHeaderVisible?: boolean;
+  tabHistory?: string[];
+  tabHistoryIndex?: number;
 }
 
 const DB_NAME = 'ayran-notes';
