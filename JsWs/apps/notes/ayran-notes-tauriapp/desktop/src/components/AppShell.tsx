@@ -340,8 +340,8 @@ export default function AppShell() {
         <header className="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shrink-0">
           <h1 className="text-lg font-bold text-gray-900 dark:text-white flex-1 truncate">Ayran Notes</h1>
 
-          {/* Account switcher (files page only) */}
-          {isFilesPage && accounts.length > 0 && (
+          {/* Account switcher (files and notebooks pages) */}
+          {(isFilesPage || currentPage === 'notebooks' || currentPage === 'notebook') && accounts.length > 0 && (
             <div ref={acctSwitcherRef} className="relative">
               <button
                 onClick={() => setAcctSwitcherOpen((o) => !o)}
@@ -468,7 +468,13 @@ export default function AppShell() {
                 onDeleted={() => setCurrentPage('notebooks')}
               />
             : <div className="py-6 px-4 overflow-y-auto flex-1">
-                <ManageNotebooksPage />
+                <ManageNotebooksPage
+                  onViewPendingChanges={
+                    accounts.find((a) => a.id === selectedId)?.shelvesetActive
+                      ? () => setShelvesetModalOpen(true)
+                      : undefined
+                  }
+                />
               </div>
         )}
 
