@@ -827,6 +827,26 @@ fn account_content_cache_dir(
     Ok(content_dir)
 }
 
+/// Remove both the numeric content dir and its `@@`-descriptor sibling for
+/// `account` under `base_dir`. Safe to call when neither exists.
+fn remove_account_cache_pair(base_dir: &std::path::Path, account: &StoredAccount) {
+    let short_id = account.id
+        .strip_prefix(&format!("{}-", account.provider))
+        .or_else(|| account.id.find('-').map(|i| &account.id[i + 1..]))
+        .unwrap_or(&account.id);
+    let descriptor_suffix = format!("@@{}@@{}@@{}", account.provider, account.email, short_id);
+    let Ok(rd) = std::fs::read_dir(base_dir) else { return; };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(&descriptor_suffix) { continue; }
+        let digits: String = name.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() || !name[digits.len()..].starts_with("@@") { continue; }
+        let _ = std::fs::remove_dir_all(entry.path());           // descriptor dir
+        let _ = std::fs::remove_dir_all(base_dir.join(&digits)); // numeric content dir
+        return;
+    }
+}
+
 /// Finds the numeric content-cache directory for an account *without* creating
 /// one — used by cleanup paths where we don't want a side-effect creation.
 fn find_account_cache_dir(c_dir: &std::path::Path, account: &StoredAccount) -> Option<std::path::PathBuf> {
@@ -1587,13 +1607,11 @@ async fn shelveset_discard(
             let _ = conn.execute("DELETE FROM folder_items WHERE account_id=?1 AND item_id=?2", rusqlite::params![account_id, id]);
         }
     }
-    // Remove s/ files for account
+    // Remove s/ content dirs (both numeric and descriptor) for account.
     let accounts = load_accounts(&app)?;
     if let Some(account) = accounts.get(&account_id) {
         let s_dir = data_dirs_base(&app)?.join("s");
-        if let Some(acct_dir) = find_account_cache_dir(&s_dir, account) {
-            let _ = std::fs::remove_dir_all(&acct_dir);
-        }
+        remove_account_cache_pair(&s_dir, account);
     }
     // Deactivate
     let mut accounts = load_accounts(&app)?;
@@ -1632,13 +1650,9 @@ async fn delete_account_cache(
     let accounts = load_accounts(&app)?;
     if let Some(account) = accounts.get(&account_id) {
         let c_dir = data_dirs_base(&app)?.join("c");
-        if let Some(d) = find_account_cache_dir(&c_dir, account) {
-            let _ = std::fs::remove_dir_all(&d);
-        }
+        remove_account_cache_pair(&c_dir, account);
         let t_dir = data_dirs_base(&app)?.join("t");
-        if let Some(d) = find_account_cache_dir(&t_dir, account) {
-            let _ = std::fs::remove_dir_all(&d);
-        }
+        remove_account_cache_pair(&t_dir, account);
     }
     Ok(())
 }
