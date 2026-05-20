@@ -12,6 +12,14 @@ import Popover from '../common/Popover';
 // ── Tab types ─────────────────────────────────────────────────────────────────
 
 type TabType = 'home' | 'notes-explorer' | 'all-files-explorer' | 'settings';
+type SplitMode = 'vertical' | 'horizontal';
+
+interface SplitPair {
+  id: string;
+  primaryId: string;   // left / top tab
+  secondaryId: string; // right / bottom tab
+  mode: SplitMode;
+}
 
 interface NbTab {
   id: string;
@@ -84,6 +92,14 @@ function PlusIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className={className}>
       <path d="M8 3v10M3 8h10"/>
+    </svg>
+  );
+}
+
+function MoreDotsIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 16 16" fill="currentColor" className={className}>
+      <circle cx="3" cy="8" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/>
     </svg>
   );
 }
@@ -192,6 +208,46 @@ function PlaceholderTab({ label }: { label: string }) {
   );
 }
 
+// ── Split tab mini-header ──────────────────────────────────────────────────────
+
+interface SplitTabHeaderProps {
+  tab: NbTab;
+  isPrimary: boolean;
+  onClose: () => void;
+  onOpenTabsList?: () => void;
+  onOpenSplitOptions?: (e: React.MouseEvent) => void;
+}
+
+function SplitTabHeader({ tab, isPrimary, onClose, onOpenTabsList, onOpenSplitOptions }: SplitTabHeaderProps) {
+  const btn = 'shrink-0 w-5 h-5 flex items-center justify-center rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
+  const closeBtn = (
+    <button onClick={onClose} title="Close tab" className={btn}>
+      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="w-3 h-3"><path d="M1 1l10 10M11 1L1 11"/></svg>
+    </button>
+  );
+  return (
+    <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-2 shrink-0 flex items-center gap-1.5 min-h-0">
+      <span className="shrink-0 text-gray-500 dark:text-gray-400 py-1.5">{tabIcon(tab.type, 'w-3.5 h-3.5')}</span>
+      <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-200 truncate select-none py-1.5">{tab.name}</span>
+      {isPrimary ? (
+        <div className="flex flex-col items-center shrink-0">
+          {closeBtn}
+          <button onClick={onOpenTabsList} title="Open tabs" className={btn}>
+            <TabsListIcon className="w-3 h-3"/>
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-0.5 shrink-0 py-1">
+          <button onClick={onOpenSplitOptions} title="Tab options" className={btn}>
+            <MoreDotsIcon className="w-3.5 h-3.5"/>
+          </button>
+          {closeBtn}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Props ─────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -236,6 +292,12 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   // Preview index: moves with back/forward buttons inside the modal without committing navigation.
   const [historyPreviewIndex, setHistoryPreviewIndex] = useState(0);
 
+  // ── Split view ────────────────────────────────────────────────────────────────
+  const [splitPairs, setSplitPairs] = useState<SplitPair[]>([]);
+  const [splitOptionsMenu, setSplitOptionsMenu] = useState<{ x: number; y: number } | null>(null);
+  // Derived: the split pair (if any) that contains the currently active tab.
+  const activeSplitPair = splitPairs.find((p) => p.primaryId === activeTabId || p.secondaryId === activeTabId) ?? null;
+
   // ── Home tab context menu ─────────────────────────────────────────────────────
   const [homeCtxMenu, setHomeCtxMenu] = useState<{ x: number; y: number; type: TabType; name: string } | null>(null);
 
@@ -257,6 +319,59 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     setHistoryIndex(newIndex);
     setHistoryPreviewIndex(newIndex);
     setActiveTabId(tabId);
+  };
+
+  // Close a tab by ID, remove any split pairs containing it, and navigate if needed.
+  const closeTabById = (tabId: string) => {
+    setSplitPairs((pairs) => pairs.filter((p) => p.primaryId !== tabId && p.secondaryId !== tabId));
+    const tabsAfterClose = tabs.filter((t) => t.id !== tabId);
+    if (tabsAfterClose.length === 0) {
+      const newHome: NbTab = { id: crypto.randomUUID(), type: 'home', name: 'Home' };
+      setTabs([newHome]);
+      navigateToTab(newHome.id);
+      return;
+    }
+    setTabs(tabsAfterClose);
+    if (tabId === activeTabId) {
+      let nextId: string | null = null;
+      for (let i = historyIndex - 1; i >= 0; i--) {
+        const hid = tabHistory[i];
+        if (hid !== tabId && tabsAfterClose.some((t) => t.id === hid)) { nextId = hid; break; }
+      }
+      if (!nextId) {
+        const idx = tabs.findIndex((t) => t.id === tabId);
+        nextId = (tabsAfterClose[idx - 1] ?? tabsAfterClose[Math.min(idx, tabsAfterClose.length - 1)]).id;
+      }
+      navigateToTab(nextId);
+    }
+  };
+
+  // Toggle or create a split pair for the active tab.
+  const enableSplit = (mode: SplitMode) => {
+    if (activeSplitPair) {
+      if (activeSplitPair.mode === mode) {
+        setSplitPairs((pairs) => pairs.filter((p) => p.id !== activeSplitPair.id));
+      } else {
+        setSplitPairs((pairs) => pairs.map((p) => p.id === activeSplitPair.id ? { ...p, mode } : p));
+      }
+      return;
+    }
+    // Create a new pair — prefer most-recently-visited tab not already in any pair.
+    const occupied = new Set(splitPairs.flatMap((p) => [p.primaryId, p.secondaryId]));
+    let secondaryId: string | null = null;
+    for (let i = historyIndex - 1; i >= 0; i--) {
+      const hid = tabHistory[i];
+      if (hid !== activeTabId && !occupied.has(hid) && tabs.some((t) => t.id === hid)) { secondaryId = hid; break; }
+    }
+    if (!secondaryId) secondaryId = tabs.find((t) => t.id !== activeTabId && !occupied.has(t.id))?.id ?? null;
+    if (!secondaryId) return;
+    setSplitPairs((pairs) => [...pairs, { id: crypto.randomUUID(), primaryId: activeTabId, secondaryId, mode }]);
+  };
+
+  const swapSplitTabs = (pairId: string) => {
+    setSplitPairs((pairs) => pairs.map((p) =>
+      p.id === pairId ? { ...p, primaryId: p.secondaryId, secondaryId: p.primaryId } : p
+    ));
   };
 
   const openTab = (type: TabType, name: string) => {
@@ -299,50 +414,8 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     setTabs((prev) => prev.map((t) => t.id === activeTabId ? { ...t, type: 'home' as TabType, name: 'Home' } : t));
   };
 
-  // Closes the current tab, navigating to the most recent still-open tab from
-  // history, or the adjacent tab in the list if no history entry is available.
-  const closeCurrentTab = () => {
-    const tabsAfterClose = tabs.filter((t) => t.id !== activeTabId);
-    if (tabsAfterClose.length === 0) {
-      const newHome: NbTab = { id: crypto.randomUUID(), type: 'home', name: 'Home' };
-      setTabs([newHome]);
-      navigateToTab(newHome.id);
-      return;
-    }
-    // Walk back through history to find the most recent still-open tab.
-    let nextId: string | null = null;
-    for (let i = historyIndex - 1; i >= 0; i--) {
-      const hid = tabHistory[i];
-      if (hid !== activeTabId && tabsAfterClose.some((t) => t.id === hid)) {
-        nextId = hid;
-        break;
-      }
-    }
-    if (!nextId) {
-      // Fallback: prefer the tab before in the list, else the one after.
-      const idx = tabs.findIndex((t) => t.id === activeTabId);
-      nextId = (tabsAfterClose[idx - 1] ?? tabsAfterClose[Math.min(idx, tabsAfterClose.length - 1)]).id;
-    }
-    setTabs(tabsAfterClose);
-    navigateToTab(nextId);
-  };
-
-  const closeTab = (id: string) => {
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id);
-      if (next.length === 0) {
-        const newHome: NbTab = { id: crypto.randomUUID(), type: 'home', name: 'Home' };
-        setActiveTabId(newHome.id);
-        return [newHome];
-      }
-      if (id === activeTabId) {
-        const idx = prev.findIndex((t) => t.id === id);
-        const fallback = next[Math.min(idx, next.length - 1)];
-        setActiveTabId(fallback.id);
-      }
-      return next;
-    });
-  };
+  const closeCurrentTab = () => closeTabById(activeTabId);
+  const closeTab = (id: string) => closeTabById(id);
 
   // ── Tab sort handlers ────────────────────────────────────────────────────────
 
@@ -395,6 +468,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   };
 
   const removeSelectedTabs = () => {
+    setSplitPairs((pairs) => pairs.filter((p) => !selectedTabIds.has(p.primaryId) && !selectedTabIds.has(p.secondaryId)));
     setTabs((prev) => {
       const next = prev.filter((t) => !selectedTabIds.has(t.id));
       if (next.length === 0) {
@@ -496,6 +570,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     if (!tabsReadyRef.current) return;
     void updateNotebook(notebookId, { tabs, activeTabId, tabsHeaderVisible: showTabsHeader, tabHistory, tabHistoryIndex: historyIndex });
   }, [notebookId, tabs, activeTabId, showTabsHeader, tabHistory, historyIndex]);
+
+  // ── Remove split pairs whose tabs no longer exist ────────────────────────────
+
+  useEffect(() => {
+    setSplitPairs((pairs) => pairs.filter(
+      (p) => tabs.some((t) => t.id === p.primaryId) && tabs.some((t) => t.id === p.secondaryId)
+    ));
+  }, [tabs]);
 
   // ── Window lifecycle ──────────────────────────────────────────────────────────
 
@@ -716,6 +798,8 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 const isActive = tab.id === activeTabId;
                 const isSelected = selectedTabIds.has(tab.id);
                 const isPreviewed = tab.id === previewedId;
+                const isSplitPrimary = !tabSortMode && splitPairs.some((p) => p.primaryId === tab.id);
+                const isSplitSecondary = !tabSortMode && splitPairs.some((p) => p.secondaryId === tab.id);
                 return (
                   <div key={tab.id}>
                     <div
@@ -758,6 +842,20 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                       <span className={`flex-1 text-sm truncate ${isSelected ? 'text-blue-700 dark:text-blue-300' : isPreviewed ? 'text-violet-700 dark:text-violet-300 font-medium' : isActive ? 'text-emerald-700 dark:text-emerald-300 font-medium' : 'text-gray-700 dark:text-gray-200'}`}>
                         {tab.name}
                       </span>
+                      {isSplitPrimary && (
+                        <span title="Left / top in a split view" className="shrink-0 text-amber-500 dark:text-amber-400">
+                          <svg viewBox="0 0 10 8" className="w-3 h-2.5" fill="currentColor" aria-hidden>
+                            <rect x="0" y="0" width="4.5" height="8"/><rect x="5.5" y="0" width="4.5" height="8" fillOpacity="0.25"/>
+                          </svg>
+                        </span>
+                      )}
+                      {isSplitSecondary && (
+                        <span title="Right / bottom in a split view" className="shrink-0 text-sky-500 dark:text-sky-400">
+                          <svg viewBox="0 0 10 8" className="w-3 h-2.5" fill="currentColor" aria-hidden>
+                            <rect x="0" y="0" width="4.5" height="8" fillOpacity="0.25"/><rect x="5.5" y="0" width="4.5" height="8"/>
+                          </svg>
+                        </span>
+                      )}
                       {!tabSortMode && tabs.length > 1 && (
                         <button
                           onClick={(e) => { e.stopPropagation(); closeTab(tab.id); if (tabs.length === 1) closeTabsList(); }}
@@ -783,6 +881,38 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           </Modal>
         );
       })()}
+
+      {splitOptionsMenu && (
+        <Popover title="Tab options" onClose={() => setSplitOptionsMenu(null)} panelStyle={{ left: splitOptionsMenu.x, top: splitOptionsMenu.y }}>
+          {(() => {
+            const check = <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-3 h-3 shrink-0"><path d="M1.5 6l3 3 6-6"/></svg>;
+            const row = 'w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700 flex items-center gap-2';
+            const close = () => setSplitOptionsMenu(null);
+            return (
+              <div className="py-1">
+                {tabs.length > 1 && (
+                  <>
+                    <button onClick={() => { enableSplit('vertical'); close(); }} className={row}>
+                      {activeSplitPair?.mode === 'vertical' ? check : <span className="w-3"/>}
+                      <span>Split Tabs Vertically</span>
+                    </button>
+                    <button onClick={() => { enableSplit('horizontal'); close(); }} className={row}>
+                      {activeSplitPair?.mode === 'horizontal' ? check : <span className="w-3"/>}
+                      <span>Split Tabs Horizontally</span>
+                    </button>
+                    {activeSplitPair && (
+                      <button onClick={() => { swapSplitTabs(activeSplitPair.id); close(); }} className={row}>
+                        <span className="w-3"/>
+                        <span>Swap split tabs</span>
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })()}
+        </Popover>
+      )}
 
       {homeCtxMenu && (
         <Popover title={homeCtxMenu.name} onClose={() => setHomeCtxMenu(null)} panelStyle={{ left: homeCtxMenu.x, top: homeCtxMenu.y }}>
@@ -880,27 +1010,28 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
         </div>
       )}
 
-      {/* ── Tabs header ───────────────────────────────────────────────────────── */}
+      {/* ── Tabs header (single — hidden when split is active) ────────────────── */}
 
-      {showTabsHeader && (
+      {showTabsHeader && !activeSplitPair && (
         <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-1.5 shrink-0 flex items-center gap-2">
-          {/* Current tab icon */}
           <span className="shrink-0 text-gray-500 dark:text-gray-400">
             {tabIcon(activeTab.type, 'w-3.5 h-3.5')}
           </span>
-          {/* Current tab name — fills remaining space */}
           <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-200 truncate select-none">
             {activeTab.name}
           </span>
-          {/* Open tabs list */}
           <button onClick={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList((o) => !o); }} title="Open tabs" className={hdrBtn}>
             <TabsListIcon className="w-3.5 h-3.5"/>
           </button>
-          {/* Collapse tabs header */}
           <button onClick={() => setShowTabsHeader(false)} title="Hide tabs header" className={hdrBtn}>
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M2 10L7 4l5 6"/></svg>
           </button>
-          {/* Close current tab — only when more than one tab is open */}
+          {/* Three-dots — only when 2+ tabs open */}
+          {tabs.length > 1 && (
+            <button onClick={(e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY })} title="Tab options" className={hdrBtn}>
+              <MoreDotsIcon className="w-3.5 h-3.5"/>
+            </button>
+          )}
           {tabs.length > 1 && (
             <button onClick={closeCurrentTab} title="Close tab" className={hdrBtn}>
               <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="w-3.5 h-3.5"><path d="M2 2l10 10M12 2L2 12"/></svg>
@@ -909,22 +1040,64 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
         </div>
       )}
 
-      {/* ── Tab content ───────────────────────────────────────────────────────── */}
+      {/* ── Tab content (split-aware) ─────────────────────────────────────────── */}
 
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {activeTab.type === 'home' && (
-          <NotebookHomeTab
-            onOpenExplorer={() => openTab('notes-explorer', 'Notes Explorer')}
-            onOpenAllFiles={() => openTab('all-files-explorer', 'All Files Explorer')}
-            onNewTab={openNewHomeTabWithModal}
-            onOpenSettings={() => openTab('settings', 'Notebook Settings')}
-            onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
-          />
-        )}
-        {activeTab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
-        {activeTab.type === 'all-files-explorer' && <PlaceholderTab label="All Files Explorer" />}
-        {activeTab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
-      </div>
+      {(() => {
+        const renderTabContent = (tab: NbTab) => (
+          <>
+            {tab.type === 'home' && (
+              <NotebookHomeTab
+                onOpenExplorer={() => openTab('notes-explorer', 'Notes Explorer')}
+                onOpenAllFiles={() => openTab('all-files-explorer', 'All Files Explorer')}
+                onNewTab={openNewHomeTabWithModal}
+                onOpenSettings={() => openTab('settings', 'Notebook Settings')}
+                onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
+              />
+            )}
+            {tab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
+            {tab.type === 'all-files-explorer' && <PlaceholderTab label="All Files Explorer" />}
+            {tab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
+          </>
+        );
+
+        const primaryTab = activeSplitPair ? (tabs.find((t) => t.id === activeSplitPair.primaryId) ?? activeTab) : activeTab;
+        const secondaryTab = activeSplitPair ? (tabs.find((t) => t.id === activeSplitPair.secondaryId) ?? null) : null;
+
+        if (activeSplitPair && secondaryTab) {
+          const isVertical = activeSplitPair.mode === 'vertical';
+          const dividerCls = isVertical ? 'border-r border-gray-200 dark:border-gray-700' : 'border-b border-gray-200 dark:border-gray-700';
+          const openTabsList = () => { setHistoryPreviewIndex(historyIndex); setShowTabsList(true); };
+          return (
+            <div className={`flex-1 min-h-0 flex ${isVertical ? 'flex-row' : 'flex-col'} overflow-hidden`}>
+              {/* Primary panel (left / top) */}
+              <div className={`flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden ${dividerCls}`}>
+                {showTabsHeader && (
+                  <SplitTabHeader tab={primaryTab} isPrimary onClose={() => closeTabById(activeSplitPair.primaryId)} onOpenTabsList={openTabsList}/>
+                )}
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {renderTabContent(primaryTab)}
+                </div>
+              </div>
+              {/* Secondary panel (right / bottom) */}
+              <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
+                {showTabsHeader && (
+                  <SplitTabHeader tab={secondaryTab} isPrimary={false} onClose={() => closeTabById(activeSplitPair.secondaryId)}
+                    onOpenSplitOptions={(e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY })}/>
+                )}
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                  {renderTabContent(secondaryTab)}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
+        return (
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {renderTabContent(activeTab)}
+          </div>
+        );
+      })()}
     </div>
   );
 }
