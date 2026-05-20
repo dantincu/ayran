@@ -5,6 +5,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
 import { MAX_TAB_HISTORY } from '../../lib/config';
+import AllFilesExplorerTab from './AllFilesExplorerTab';
 import { useTheme } from '../../hooks/useTheme';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
@@ -1060,7 +1061,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               />
             )}
             {tab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
-            {tab.type === 'all-files-explorer' && <PlaceholderTab label="All Files Explorer" />}
+            {tab.type === 'all-files-explorer' && entry && <AllFilesExplorerTab accountId={entry.accountId} />}
             {tab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
           </>
         );
