@@ -4,6 +4,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import { MAX_TAB_HISTORY } from '../../lib/config';
 import { useTheme } from '../../hooks/useTheme';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
@@ -149,9 +150,10 @@ interface HomeTabProps {
   onOpenAllFiles: () => void;
   onNewTab: () => void;
   onOpenSettings: () => void;
+  onContextMenu: (type: TabType, name: string, e: React.MouseEvent) => void;
 }
 
-function NotebookHomeTab({ onOpenExplorer, onOpenAllFiles, onNewTab, onOpenSettings }: HomeTabProps) {
+function NotebookHomeTab({ onOpenExplorer, onOpenAllFiles, onNewTab, onOpenSettings, onContextMenu }: HomeTabProps) {
   const btn = 'flex flex-col items-center gap-2 p-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 hover:border-emerald-400 dark:hover:border-emerald-500 transition-colors cursor-pointer group';
   const iconWrap = 'w-10 h-10 flex items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-700 group-hover:bg-emerald-100 dark:group-hover:bg-emerald-900/40 transition-colors text-gray-500 dark:text-gray-400 group-hover:text-emerald-600 dark:group-hover:text-emerald-400';
   const label = 'text-xs font-medium text-gray-600 dark:text-gray-400 group-hover:text-emerald-700 dark:group-hover:text-emerald-300 text-center';
@@ -159,19 +161,19 @@ function NotebookHomeTab({ onOpenExplorer, onOpenAllFiles, onNewTab, onOpenSetti
   return (
     <div className="flex items-center justify-center flex-1 p-8">
       <div className="flex gap-4 flex-wrap justify-center">
-        <button onClick={onOpenExplorer} className={btn}>
+        <button onClick={onOpenExplorer} onContextMenu={(e) => onContextMenu('notes-explorer', 'Notes Explorer', e)} className={btn}>
           <div className={iconWrap}><ExplorerIcon className="w-5 h-5"/></div>
           <span className={label}>Notes Explorer</span>
         </button>
-        <button onClick={onOpenAllFiles} className={btn}>
+        <button onClick={onOpenAllFiles} onContextMenu={(e) => onContextMenu('all-files-explorer', 'All Files Explorer', e)} className={btn}>
           <div className={iconWrap}><AllFilesIcon className="w-5 h-5"/></div>
           <span className={label}>All Files Explorer</span>
         </button>
-        <button onClick={onNewTab} className={btn}>
+        <button onClick={onNewTab} onContextMenu={(e) => onContextMenu('home', 'Home', e)} className={btn}>
           <div className={iconWrap}><PlusIcon className="w-5 h-5"/></div>
           <span className={label}>New Tab</span>
         </button>
-        <button onClick={onOpenSettings} className={btn}>
+        <button onClick={onOpenSettings} onContextMenu={(e) => onContextMenu('settings', 'Notebook Settings', e)} className={btn}>
           <div className={iconWrap}><SettingsIcon className="w-5 h-5"/></div>
           <span className={label}>Notebook Settings</span>
         </button>
@@ -228,6 +230,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0];
   // Prevents saving tabs before the initial load has had a chance to restore them.
   const tabsReadyRef = useRef(false);
+  // Full tab navigation history for back/forward support.
+  const [tabHistory, setTabHistory] = useState<string[]>([initialTabIdRef.current]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  // Preview index: moves with back/forward buttons inside the modal without committing navigation.
+  const [historyPreviewIndex, setHistoryPreviewIndex] = useState(0);
+
+  // ── Home tab context menu ─────────────────────────────────────────────────────
+  const [homeCtxMenu, setHomeCtxMenu] = useState<{ x: number; y: number; type: TabType; name: string } | null>(null);
 
   // ── Tab sort state ───────────────────────────────────────────────────────────
   const [selectedTabIds, setSelectedTabIds] = useState<Set<string>>(new Set());
@@ -238,21 +248,83 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
   // ── Tab management ───────────────────────────────────────────────────────────
 
+  const navigateToTab = (tabId: string) => {
+    const truncated = tabHistory.slice(0, historyIndex + 1);
+    const next = [...truncated, tabId];
+    const trimmed = next.length > MAX_TAB_HISTORY ? next.slice(next.length - MAX_TAB_HISTORY) : next;
+    const newIndex = trimmed.length - 1;
+    setTabHistory(trimmed);
+    setHistoryIndex(newIndex);
+    setHistoryPreviewIndex(newIndex);
+    setActiveTabId(tabId);
+  };
+
   const openTab = (type: TabType, name: string) => {
     // Reuse existing tab of same type (except 'home' which can have multiples)
     if (type !== 'home') {
       const existing = tabs.find((t) => t.type === type);
-      if (existing) { setActiveTabId(existing.id); return; }
+      if (existing) { navigateToTab(existing.id); return; }
     }
     const id = crypto.randomUUID();
     setTabs((prev) => [...prev, { id, type, name }]);
-    setActiveTabId(id);
+    navigateToTab(id);
   };
 
   const openNewHomeTab = () => {
     const id = crypto.randomUUID();
     setTabs((prev) => [...prev, { id, type: 'home', name: 'Home' }]);
-    setActiveTabId(id);
+    navigateToTab(id);
+  };
+
+  // Opens a new home tab, navigates to it, and shows the tabs modal.
+  const openNewHomeTabWithModal = () => {
+    const id = crypto.randomUUID();
+    setTabs((prev) => [...prev, { id, type: 'home', name: 'Home' }]);
+    navigateToTab(id);
+    setShowTabsList(true);
+  };
+
+  // Creates a new tab of any type; optionally navigates (+ opens modal) or stays.
+  const openInNewTab = (type: TabType, name: string, stayHere: boolean) => {
+    const id = crypto.randomUUID();
+    setTabs((prev) => [...prev, { id, type, name }]);
+    if (!stayHere) {
+      navigateToTab(id);
+      setShowTabsList(true);
+    }
+  };
+
+  // Mutates the active tab's type to home without changing history.
+  const navigateCurrentTabToHome = () => {
+    setTabs((prev) => prev.map((t) => t.id === activeTabId ? { ...t, type: 'home' as TabType, name: 'Home' } : t));
+  };
+
+  // Closes the current tab, navigating to the most recent still-open tab from
+  // history, or the adjacent tab in the list if no history entry is available.
+  const closeCurrentTab = () => {
+    const tabsAfterClose = tabs.filter((t) => t.id !== activeTabId);
+    if (tabsAfterClose.length === 0) {
+      const newHome: NbTab = { id: crypto.randomUUID(), type: 'home', name: 'Home' };
+      setTabs([newHome]);
+      navigateToTab(newHome.id);
+      return;
+    }
+    // Walk back through history to find the most recent still-open tab.
+    let nextId: string | null = null;
+    for (let i = historyIndex - 1; i >= 0; i--) {
+      const hid = tabHistory[i];
+      if (hid !== activeTabId && tabsAfterClose.some((t) => t.id === hid)) {
+        nextId = hid;
+        break;
+      }
+    }
+    if (!nextId) {
+      // Fallback: prefer the tab before in the list, else the one after.
+      const idx = tabs.findIndex((t) => t.id === activeTabId);
+      nextId = (tabsAfterClose[idx - 1] ?? tabsAfterClose[Math.min(idx, tabsAfterClose.length - 1)]).id;
+    }
+    setTabs(tabsAfterClose);
+    navigateToTab(nextId);
   };
 
   const closeTab = (id: string) => {
@@ -371,9 +443,13 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
         // Restore persisted tabs and tabs-header state for this notebook instance.
         if (nb.tabs && nb.tabs.length > 0) {
           const restored = nb.tabs.map((t) => ({ id: t.id, type: t.type as TabType, name: t.name }));
+          const restoredActiveId = nb.activeTabId && restored.some((t) => t.id === nb.activeTabId) ? nb.activeTabId : restored[0].id;
           if (!cancelled) {
             setTabs(restored);
-            setActiveTabId(nb.activeTabId && restored.some((t) => t.id === nb.activeTabId) ? nb.activeTabId : restored[0].id);
+            setActiveTabId(restoredActiveId);
+            setTabHistory([restoredActiveId]);
+            setHistoryIndex(0);
+            setHistoryPreviewIndex(0);
           }
         }
         if (nb.tabsHeaderVisible !== undefined && !cancelled) {
@@ -546,6 +622,32 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           <Modal title="Open tabs" onClose={closeTabsList} maxWidth="max-w-xs">
             {/* Toolbar */}
             <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 flex-wrap">
+              {/* Back / Forward history buttons */}
+              {(() => {
+                const iconBtn = 'w-6 h-6 flex items-center justify-center rounded transition-colors text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-30 disabled:pointer-events-none';
+                const canGoBack = historyPreviewIndex > 0;
+                const canGoForward = historyPreviewIndex < historyIndex;
+                return (
+                  <>
+                    <button
+                      onClick={() => setHistoryPreviewIndex((p) => Math.max(0, p - 1))}
+                      disabled={!canGoBack}
+                      title="Back"
+                      className={iconBtn}
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M7 2L3 6l4 4"/></svg>
+                    </button>
+                    <button
+                      onClick={() => setHistoryPreviewIndex((p) => Math.min(historyIndex, p + 1))}
+                      disabled={!canGoForward}
+                      title="Forward"
+                      className={iconBtn}
+                    >
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M5 2l4 4-4 4"/></svg>
+                    </button>
+                  </>
+                );
+              })()}
               {!allTabsSelected
                 ? <button onClick={() => setSelectedTabIds(new Set(displayTabs.map((t) => t.id)))} className={tbBtnGray}>Select all</button>
                 : <button onClick={() => setSelectedTabIds(new Set())} className={tbBtnGray}>Deselect all</button>
@@ -557,13 +659,32 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               {someTabSelected && !tabSortMode && (
                 <button onClick={removeSelectedTabs} className={`${tbBtn} bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-800/40`}>Remove</button>
               )}
-              {!tabSortMode
-                ? <button onClick={enterTabSortMode} className={tbBtnAmber}>Reorder</button>
-                : <>
-                    <button onClick={handleTabSubmitOrder} className={tbBtnEmerald}>Apply order</button>
-                    <button onClick={cancelTabSortMode} className={tbBtnGray}>Cancel</button>
-                  </>
-              }
+              {!tabSortMode ? (
+                <>
+                  <button onClick={enterTabSortMode} className={tbBtnAmber}>Reorder</button>
+                  {/* Home button: navigates the current tab to home */}
+                  <button
+                    onClick={navigateCurrentTabToHome}
+                    title="Go to home"
+                    className="w-6 h-6 flex items-center justify-center rounded transition-colors text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-gray-200"
+                  >
+                    <HomeIcon className="w-3.5 h-3.5"/>
+                  </button>
+                  {/* Plus button: open a new home tab and make it current */}
+                  <button
+                    onClick={() => { openNewHomeTab(); }}
+                    title="New tab"
+                    className="w-6 h-6 flex items-center justify-center rounded transition-colors text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-gray-200"
+                  >
+                    <PlusIcon className="w-3.5 h-3.5"/>
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={handleTabSubmitOrder} className={tbBtnEmerald}>Apply order</button>
+                  <button onClick={cancelTabSortMode} className={tbBtnGray}>Cancel</button>
+                </>
+              )}
             </div>
 
             {/* Tab list */}
@@ -575,24 +696,40 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                   onDown={() => setTabStripPos((p) => Math.min(tabWorkingOrder.length, p + 1))}
                   onConfirm={handleTabConfirmMove} />
               )}
-              {displayTabs.map((tab, idx) => {
+              {(() => {
+                const previewedId = historyPreviewIndex !== historyIndex
+                  ? (tabs.some((t) => t.id === tabHistory[historyPreviewIndex]) ? tabHistory[historyPreviewIndex] : null)
+                  : null;
+                return displayTabs.map((tab, idx) => {
                 const isActive = tab.id === activeTabId;
                 const isSelected = selectedTabIds.has(tab.id);
+                const isPreviewed = tab.id === previewedId;
                 return (
                   <div key={tab.id}>
                     <div
                       onClick={() => {
                         if (tabSortMode) { handleTabRowBodyClick(idx); return; }
-                        setActiveTabId(tab.id);
-                        closeTabsList();
+                        if (tab.id === activeTabId && !isPreviewed) { closeTabsList(); return; }
+                        if (isPreviewed) {
+                          // Commit the previewed history position
+                          setHistoryIndex(historyPreviewIndex);
+                          setActiveTabId(tab.id);
+                          closeTabsList();
+                        } else {
+                          // Normal navigation: add to history (truncates forward entries)
+                          navigateToTab(tab.id);
+                          closeTabsList();
+                        }
                       }}
                       className={[
                         'flex items-center gap-2 px-3 py-2 transition-colors cursor-pointer',
                         isSelected
                           ? 'bg-blue-50 dark:bg-blue-900/20'
-                          : isActive
-                            ? 'bg-emerald-50 dark:bg-emerald-900/20'
-                            : 'hover:bg-gray-50 dark:hover:bg-gray-700',
+                          : isPreviewed
+                            ? 'bg-violet-50 dark:bg-violet-900/20 ring-1 ring-inset ring-violet-300 dark:ring-violet-700'
+                            : isActive
+                              ? 'bg-emerald-50 dark:bg-emerald-900/20'
+                              : 'hover:bg-gray-50 dark:hover:bg-gray-700',
                       ].join(' ')}
                     >
                       {/* Checkbox */}
@@ -603,10 +740,10 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                         onClick={(e) => e.stopPropagation()}
                         className="shrink-0 accent-blue-500 w-3.5 h-3.5"
                       />
-                      <span className={`shrink-0 ${isSelected ? 'text-blue-500 dark:text-blue-400' : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
+                      <span className={`shrink-0 ${isSelected ? 'text-blue-500 dark:text-blue-400' : isPreviewed ? 'text-violet-600 dark:text-violet-400' : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
                         {tabIcon(tab.type, 'w-3.5 h-3.5')}
                       </span>
-                      <span className={`flex-1 text-sm truncate ${isSelected ? 'text-blue-700 dark:text-blue-300' : isActive ? 'text-emerald-700 dark:text-emerald-300 font-medium' : 'text-gray-700 dark:text-gray-200'}`}>
+                      <span className={`flex-1 text-sm truncate ${isSelected ? 'text-blue-700 dark:text-blue-300' : isPreviewed ? 'text-violet-700 dark:text-violet-300 font-medium' : isActive ? 'text-emerald-700 dark:text-emerald-300 font-medium' : 'text-gray-700 dark:text-gray-200'}`}>
                         {tab.name}
                       </span>
                       {!tabSortMode && tabs.length > 1 && (
@@ -628,11 +765,22 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                     )}
                   </div>
                 );
-              })}
+              });
+              })()}
             </div>
           </Modal>
         );
       })()}
+
+      {homeCtxMenu && (
+        <Popover title={homeCtxMenu.name} onClose={() => setHomeCtxMenu(null)} panelStyle={{ left: homeCtxMenu.x, top: homeCtxMenu.y }}>
+          <div className="py-1">
+            <button onClick={() => { openTab(homeCtxMenu.type, homeCtxMenu.name); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in current tab</button>
+            <button onClick={() => { openInNewTab(homeCtxMenu.type, homeCtxMenu.name, false); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new tab</button>
+            <button onClick={() => { openInNewTab(homeCtxMenu.type, homeCtxMenu.name, true); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new tab and stay here</button>
+          </div>
+        </Popover>
+      )}
 
       {ctxMenu && (
         <Popover title={entry?.title || '(Untitled)'} onClose={() => setCtxMenu(null)} panelStyle={{ left: ctxMenu.x, top: ctxMenu.y }}>
@@ -733,13 +881,19 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
             {activeTab.name}
           </span>
           {/* Open tabs list */}
-          <button onClick={() => setShowTabsList((o) => !o)} title="Open tabs" className={hdrBtn}>
+          <button onClick={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList((o) => !o); }} title="Open tabs" className={hdrBtn}>
             <TabsListIcon className="w-3.5 h-3.5"/>
           </button>
           {/* Collapse tabs header */}
           <button onClick={() => setShowTabsHeader(false)} title="Hide tabs header" className={hdrBtn}>
             <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M2 10L7 4l5 6"/></svg>
           </button>
+          {/* Close current tab — only when more than one tab is open */}
+          {tabs.length > 1 && (
+            <button onClick={closeCurrentTab} title="Close tab" className={hdrBtn}>
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="w-3.5 h-3.5"><path d="M2 2l10 10M12 2L2 12"/></svg>
+            </button>
+          )}
         </div>
       )}
 
@@ -750,8 +904,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           <NotebookHomeTab
             onOpenExplorer={() => openTab('notes-explorer', 'Notes Explorer')}
             onOpenAllFiles={() => openTab('all-files-explorer', 'All Files Explorer')}
-            onNewTab={openNewHomeTab}
+            onNewTab={openNewHomeTabWithModal}
             onOpenSettings={() => openTab('settings', 'Notebook Settings')}
+            onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
           />
         )}
         {activeTab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
