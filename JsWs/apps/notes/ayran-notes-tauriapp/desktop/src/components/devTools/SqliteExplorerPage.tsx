@@ -69,7 +69,7 @@ function QueryResultPanel({ result }: { result: QueryResult }) {
       </pre>
     );
   }
-  if (result.affectedRows !== undefined) {
+  if (result.affectedRows != null) {
     return <p className="text-sm text-green-600 dark:text-green-400 py-2">✓ {result.affectedRows} row(s) affected.</p>;
   }
   if (result.rows.length === 0) {
