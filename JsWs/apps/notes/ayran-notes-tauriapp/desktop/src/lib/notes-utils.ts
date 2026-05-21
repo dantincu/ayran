@@ -55,6 +55,21 @@ export function nextDigits(existingDigits: string[]): string {
   return String(max + 1);
 }
 
+/** Returns true when `n` falls within any configured note interval. */
+export function isValidNoteNumber(n: number): boolean {
+  return nc.noteIntervals.some(({ lo, hi }) => n >= lo && n <= hi);
+}
+
+/**
+ * Computes the next available index within [lo, hi] by decrementing from the
+ * current minimum.  Returns null when the interval is full.
+ */
+export function nextDigitsInInterval(existingDigits: string[], lo: number, hi: number): string | null {
+  const nums = existingDigits.map((d) => parseInt(d, 10)).filter((n) => n >= lo && n <= hi);
+  const next = nums.length === 0 ? hi : Math.min(...nums) - 1;
+  return next >= lo ? String(next) : null;
+}
+
 // ── File content helpers ─────────────────────────────────────────────────────
 
 /** Initial markdown content for a new note. */

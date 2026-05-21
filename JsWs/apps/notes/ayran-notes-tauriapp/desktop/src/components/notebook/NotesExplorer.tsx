@@ -7,9 +7,10 @@ import nc from '../../notesConfig.json';
 import config from '../../config.json';
 import {
   computeShortFolderName, computeFullFolderName, computeFullNamePart,
-  computeMarkdownFileName, extractDigits, nextDigits,
+  computeMarkdownFileName, extractDigits,
   initialMarkdownContent, noteJsonContent, addNoteToChildrenJson,
   toAbsPath, joinRelPath,
+  isValidNoteNumber, nextDigitsInInterval,
 } from '../../lib/notes-utils';
 import FileViewer from '../explorer/FileViewer';
 import PaginationBar from '../explorer/PaginationBar';
@@ -78,6 +79,22 @@ function QuickActionsIcon() {
   );
 }
 
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
+      <path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z"/>
+    </svg>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
+      <path d="M9 2L4 7l5 5"/>
+    </svg>
+  );
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function NotesExplorer({ accountId, notebookParentId, onDisplayNameChange, onQuickActions }: Props) {
@@ -96,10 +113,19 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
 
   const [viewingFile, setViewingFile] = useState<ViewingFile | null>(null);
 
+  // ── Create-note form state ────────────────────────────────────────────────
   const [showCreate, setShowCreate] = useState(false);
   const [createTitle, setCreateTitle] = useState('');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  // Index selection: either an interval index (0-3) or custom
+  const [createIntervalIdx, setCreateIntervalIdx] = useState(0);
+  const [showIntervalPicker, setShowIntervalPicker] = useState(false);
+  const [useCustomIndex, setUseCustomIndex] = useState(false);
+  const [customIndexStr, setCustomIndexStr] = useState('');
+  const [customIndexError, setCustomIndexError] = useState<string | null>(null);
+
+  const intervalPickerRef = useRef<HTMLDivElement>(null);
 
   const isMountedRef = useRef(true);
   useEffect(() => {
@@ -107,7 +133,55 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
     return () => { isMountedRef.current = false; };
   }, []);
 
+  // Close interval picker on outside click.
+  useEffect(() => {
+    if (!showIntervalPicker) return;
+    const handler = (e: MouseEvent) => {
+      if (intervalPickerRef.current && !intervalPickerRef.current.contains(e.target as Node)) {
+        setShowIntervalPicker(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showIntervalPicker]);
+
   const currentFolderId = breadcrumbs[breadcrumbs.length - 1]?.folderId ?? notebookParentId;
+
+  // ── Index helpers ─────────────────────────────────────────────────────────
+
+  const nextIndexForInterval = (idx: number): string | null => {
+    const { lo, hi } = nc.noteIntervals[idx];
+    return nextDigitsInInterval(noteEntries.map((e) => e.digits), lo, hi);
+  };
+
+  const effectiveCreateDigits = (): string | null => {
+    if (useCustomIndex) {
+      const n = parseInt(customIndexStr, 10);
+      if (isNaN(n) || !isValidNoteNumber(n)) return null;
+      if (noteEntries.some((e) => parseInt(e.digits, 10) === n)) return null;
+      return String(n);
+    }
+    return nextIndexForInterval(createIntervalIdx);
+  };
+
+  const openCreateForm = () => {
+    // Default to first non-full interval.
+    let defaultIdx = 0;
+    for (let i = 0; i < nc.noteIntervals.length; i++) {
+      const { lo, hi } = nc.noteIntervals[i];
+      if (nextDigitsInInterval(noteEntries.map((e) => e.digits), lo, hi) !== null) {
+        defaultIdx = i; break;
+      }
+    }
+    setCreateIntervalIdx(defaultIdx);
+    setShowIntervalPicker(false);
+    setUseCustomIndex(false);
+    setCustomIndexStr('');
+    setCustomIndexError(null);
+    setCreateTitle('');
+    setCreateError(null);
+    setShowCreate(true);
+  };
 
   // ── Load account ──────────────────────────────────────────────────────────
 
@@ -155,7 +229,6 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       const jsonItem = searchResult.items.find((i) => !i.isDir && i.name === nc.noteChildrenJsonFileName);
 
       if (!jsonItem) {
-        // No notes yet — show empty state.
         if (isMountedRef.current) setNoteEntries([]);
         return;
       }
@@ -170,6 +243,7 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       const data = JSON.parse(new TextDecoder().decode(bytes)) as NoteChildrenJson;
 
       // 4. Build shortFolderMap by paginating through all folder items.
+      //    Only track folders whose digit numbers fall within a valid interval.
       const newShortFolderMap = new Map<string, string>();
       let pg = 0;
       while (true) {
@@ -182,7 +256,9 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         for (const item of r.items) {
           if (item.isDir) {
             const d = extractDigits(item.name);
-            if (d !== null) newShortFolderMap.set(d, item.itemId);
+            if (d !== null && isValidNoteNumber(parseInt(d, 10))) {
+              newShortFolderMap.set(d, item.itemId);
+            }
           }
         }
         if (r.items.length < PAGE_SIZE) break;
@@ -190,8 +266,9 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       }
       if (!isMountedRef.current) return;
 
-      // 5. Build sorted NoteEntry list.
+      // 5. Build sorted NoteEntry list — filter to valid intervals only.
       const entries: NoteEntry[] = Object.entries(data.ChildNotes ?? {})
+        .filter(([digits]) => isValidNoteNumber(parseInt(digits, 10)))
         .map(([digits, meta]) => ({
           digits,
           shortFolderName: computeShortFolderName(digits),
@@ -242,10 +319,31 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
   const createNote = async () => {
     const title = createTitle.trim();
     if (!title || !account) return;
+
+    // Validate index.
+    if (useCustomIndex) {
+      const n = parseInt(customIndexStr, 10);
+      if (isNaN(n) || !isValidNoteNumber(n)) {
+        setCustomIndexError('Index must fall within a valid interval (110–199, 200–299, 300–399, 400–999).');
+        return;
+      }
+      if (noteEntries.some((e) => parseInt(e.digits, 10) === n)) {
+        setCustomIndexError('This index is already in use.');
+        return;
+      }
+    }
+
+    const digits = effectiveCreateDigits();
+    if (!digits) {
+      setCreateError('No available index. Choose a different interval or enter a custom index.');
+      return;
+    }
+
     setCreating(true);
     setCreateError(null);
+    setCustomIndexError(null);
     try {
-      // Read existing [note-children].json for the digits set.
+      // Read existing [note-children].json for up-to-date data.
       let existingContent: string | null = null;
       if (noteChildrenJsonId) {
         try {
@@ -257,8 +355,6 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         } catch { /* empty on first note */ }
       }
 
-      const existingData: NoteChildrenJson = existingContent ? JSON.parse(existingContent) : { ChildNotes: {} };
-      const digits = nextDigits(Object.keys(existingData.ChildNotes ?? {}));
       const shortFolderName = computeShortFolderName(digits);
       const fullNamePart = computeFullNamePart(title);
       const fullFolderName = computeFullFolderName(digits, title);
@@ -324,7 +420,6 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
     if (!account) return;
     let folderId = note.shortFolderId;
     if (!folderId) {
-      // Force-refresh parent to find the folder.
       await invoke('list_folder', { accountId: account.id, parentId: currentFolderId, force: true });
       const r = await invoke<FolderPage>('query_folder_items', {
         accountId: account.id, parentId: currentFolderId,
@@ -362,7 +457,6 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       folderId = found.itemId;
     }
 
-    // List the short folder to find the markdown.
     await invoke('list_folder', { accountId: account.id, parentId: folderId, force: false });
     const r = await invoke<FolderPage>('query_folder_items', {
       accountId: account.id, parentId: folderId,
@@ -397,8 +491,9 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
     );
   }
 
-  // ── Pagination ────────────────────────────────────────────────────────────
+  // ── Derived create state ──────────────────────────────────────────────────
 
+  const digits = effectiveCreateDigits();
   const pageStart = page * PAGE_SIZE;
   const visibleNotes = noteEntries.slice(pageStart, pageStart + PAGE_SIZE);
 
@@ -443,7 +538,7 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
 
         {/* New Note */}
         <button
-          onClick={() => { setShowCreate(true); setCreateTitle(''); setCreateError(null); }}
+          onClick={openCreateForm}
           title="New note"
           className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shrink-0"
         >
@@ -462,29 +557,113 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       {/* ── Create note dialog ───────────────────────────────────────────── */}
 
       {showCreate && (
-        <div className="shrink-0 border-b border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2 space-y-2">
+        <div className="shrink-0 border-b border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-900/20 px-3 py-2.5 space-y-2">
           {createError && <p className="text-xs text-red-500 dark:text-red-400">{createError}</p>}
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={createTitle}
-              onChange={(e) => setCreateTitle(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') void createNote(); if (e.key === 'Escape') setShowCreate(false); }}
-              placeholder="Note title…"
-              // eslint-disable-next-line jsx-a11y/no-autofocus
-              autoFocus
-              className="flex-1 px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
-            />
+
+          {/* Title input */}
+          <input
+            type="text"
+            value={createTitle}
+            onChange={(e) => setCreateTitle(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !useCustomIndex) void createNote(); if (e.key === 'Escape') setShowCreate(false); }}
+            placeholder="Note title…"
+            // eslint-disable-next-line jsx-a11y/no-autofocus
+            autoFocus
+            className="w-full px-3 py-1.5 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+          />
+
+          {/* Index row */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0">Index:</span>
+
+            {!useCustomIndex ? (
+              /* Interval picker trigger */
+              <div className="relative shrink-0" ref={intervalPickerRef}>
+                <button
+                  onClick={() => setShowIntervalPicker((p) => !p)}
+                  title="Choose interval"
+                  className={[
+                    'px-2.5 py-0.5 rounded-md text-xs font-mono font-semibold border transition-colors',
+                    digits !== null
+                      ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 hover:bg-emerald-200 dark:hover:bg-emerald-800/50'
+                      : 'bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 border-red-300 dark:border-red-700',
+                  ].join(' ')}
+                >
+                  {digits ?? '—'}
+                </button>
+
+                {showIntervalPicker && (
+                  <div className="absolute top-full left-0 mt-1 z-10 w-64 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg py-1 overflow-hidden">
+                    {nc.noteIntervals.map((interval, i) => {
+                      const next = nextDigitsInInterval(noteEntries.map((e) => e.digits), interval.lo, interval.hi);
+                      const isSelected = i === createIntervalIdx;
+                      return (
+                        <button
+                          key={i}
+                          disabled={next === null}
+                          onClick={() => { setCreateIntervalIdx(i); setShowIntervalPicker(false); }}
+                          className={[
+                            'w-full flex items-center justify-between px-3 py-2 text-sm transition-colors',
+                            next === null
+                              ? 'opacity-40 cursor-default'
+                              : isSelected
+                                ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300'
+                                : 'hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200',
+                          ].join(' ')}
+                        >
+                          <span className="capitalize">{interval.label}</span>
+                          <span className="font-mono text-xs shrink-0 ml-3 tabular-nums">
+                            {next !== null ? next : '(full)'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Custom index input */
+              <div className="flex items-center gap-1.5 shrink-0">
+                <input
+                  type="number"
+                  value={customIndexStr}
+                  onChange={(e) => { setCustomIndexStr(e.target.value); setCustomIndexError(null); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') void createNote(); if (e.key === 'Escape') setShowCreate(false); }}
+                  placeholder="e.g. 450"
+                  className="w-24 px-2 py-0.5 text-sm font-mono border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                />
+                {customIndexError && (
+                  <span className="text-xs text-red-500 dark:text-red-400">{customIndexError}</span>
+                )}
+              </div>
+            )}
+
+            {/* Toggle custom / interval */}
+            <button
+              onClick={() => {
+                setUseCustomIndex((c) => !c);
+                setCustomIndexStr('');
+                setCustomIndexError(null);
+                setShowIntervalPicker(false);
+              }}
+              title={useCustomIndex ? 'Use interval picker' : 'Enter custom index'}
+              className={hdrBtn}
+            >
+              {useCustomIndex ? <BackIcon /> : <EditIcon />}
+            </button>
+
+            <div className="flex-1" />
+
             <button
               onClick={() => void createNote()}
-              disabled={creating || !createTitle.trim()}
-              className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+              disabled={creating || !createTitle.trim() || digits === null}
+              className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors shrink-0"
             >
               {creating ? 'Creating…' : 'Create'}
             </button>
             <button
               onClick={() => setShowCreate(false)}
-              className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+              className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors shrink-0"
             >
               Cancel
             </button>
@@ -513,7 +692,7 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
               {breadcrumbs.length === 1 ? 'No notes yet.' : 'No child notes.'}
             </p>
             <button
-              onClick={() => { setShowCreate(true); setCreateTitle(''); setCreateError(null); }}
+              onClick={openCreateForm}
               className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors"
             >
               Create first note

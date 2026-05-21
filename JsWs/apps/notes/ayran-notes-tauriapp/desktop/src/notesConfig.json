@@ -9,5 +9,11 @@
   "noteHtmlSuffix": "[note].md.html",
   "notePdfSuffix": "[note].md.pdf",
   "noteJsonFileName": "[note].json",
-  "noteChildrenJsonFileName": "[note-children].json"
+  "noteChildrenJsonFileName": "[note-children].json",
+  "noteIntervals": [
+    { "lo": 110, "hi": 199, "label": "primary note sections" },
+    { "lo": 200, "hi": 299, "label": "secondary note sections" },
+    { "lo": 300, "hi": 399, "label": "ternary note sections" },
+    { "lo": 400, "hi": 999, "label": "plain notes" }
+  ]
 }
