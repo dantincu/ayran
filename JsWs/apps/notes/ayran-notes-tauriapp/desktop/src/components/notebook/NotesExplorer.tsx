@@ -69,13 +69,6 @@ function PlusIcon() {
   );
 }
 
-function RefreshIcon() {
-  return (
-    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
-      <path d="M2 7a5 5 0 1 0 .9-2.9M2 4v3h3"/>
-    </svg>
-  );
-}
 
 function QuickActionsIcon() {
   return (
@@ -262,6 +255,11 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       setNoteChildrenJsonId(jsonItem.itemId);
 
       // 3. Download and parse [note-children].json.
+      // On hard refresh, evict the local content cache entry first so open_file
+      // unconditionally re-downloads from the provider.
+      if (force) {
+        await invoke('delete_cached_file', { accountId: account.id, itemId: jsonItem.itemId }).catch(() => {});
+      }
       const localPath = await invoke<string>('open_file', {
         accountId: account.id, itemId: jsonItem.itemId, force,
         itemName: nc.noteChildrenJsonFileName,
@@ -587,46 +585,41 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         </nav>
 
         {/* Refresh split-button */}
-        {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cleared</span>}
+        {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400 mr-1">✓ Cache cleared</span>}
         <div className="relative flex items-center shrink-0">
           <button
             onClick={() => void loadNotes(currentFolderId, false)}
             disabled={loading}
             title="Refresh"
-            className="w-6 h-6 flex items-center justify-center rounded-l text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-40 border-r border-gray-200 dark:border-gray-600"
-          >
-            <RefreshIcon />
-          </button>
+            className="px-2 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-l-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors border-r border-gray-200 dark:border-gray-600"
+          >↻</button>
           <button
             onClick={() => setRefreshMenuOpen((o) => !o)}
             disabled={loading}
             title="Refresh options"
-            className="h-6 px-0.5 flex items-center justify-center rounded-r text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-40"
-          >
-            <svg viewBox="0 0 8 8" fill="currentColor" className="w-2.5 h-2.5"><path d="M0 2l4 4 4-4z"/></svg>
-          </button>
+            className="px-1.5 py-1 text-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-r-lg hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 transition-colors"
+          >▾</button>
           {refreshMenuOpen && (
-            <Popover title="Refresh options" onClose={() => setRefreshMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
+            <Popover title="Options" onClose={() => setRefreshMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
               <div className="py-1">
                 <button
                   onClick={() => { setRefreshMenuOpen(false); void loadNotes(currentFolderId, true); }}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
-                >
-                  Hard refresh
-                </button>
+                >Hard refresh</button>
                 <button
                   onClick={async () => {
                     setRefreshMenuOpen(false);
                     try {
                       await invoke('invalidate_folder_cache', { accountId: account.id, parentId: currentFolderId });
+                      if (noteChildrenJsonId) {
+                        await invoke('delete_cached_file', { accountId: account.id, itemId: noteChildrenJsonId });
+                      }
                       setCacheCleared(true);
                       setTimeout(() => setCacheCleared(false), 2000);
                     } catch { /* non-fatal */ }
                   }}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
-                >
-                  Clear cached listing
-                </button>
+                >Clear cached listing</button>
               </div>
             </Popover>
           )}
