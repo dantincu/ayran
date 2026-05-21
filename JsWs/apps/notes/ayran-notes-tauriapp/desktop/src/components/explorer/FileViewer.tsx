@@ -5,6 +5,14 @@ import { listen } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { StoredAccount, CachedItem } from '../../types';
 import config from '../../config.json';
+import CodeEditor from './CodeEditor';
+import type { ReactCodeMirrorRef } from '@uiw/react-codemirror';
+import {
+  cursorCharLeft, cursorCharRight, cursorLineUp, cursorLineDown,
+  cursorLineStart, cursorLineEnd,
+  undo as cmUndo, redo as cmRedo,
+} from '@codemirror/commands';
+import { useTheme } from '../../hooks/useTheme';
 
 interface DownloadProgress { loaded: number; total: number | null; }
 
@@ -112,6 +120,8 @@ export default function FileViewer({
   inNotebook = false,
 }: Props) {
   const mode = detectMode(item);
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
 
   const [effectiveItemId, setEffectiveItemId] = useState(item.itemId);
   const [loading, setLoading] = useState(true);
@@ -133,7 +143,7 @@ export default function FileViewer({
   // notebook toolbar popovers
   const [showOptions, setShowOptions] = useState(false);
   const optionsRef = useRef<HTMLDivElement>(null);
-  const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const cmRef = useRef<ReactCodeMirrorRef>(null);
 
   // image overlay + zoom + pan
   const [showImageHeader, setShowImageHeader] = useState(true);
@@ -435,51 +445,24 @@ export default function FileViewer({
 
   useEffect(() => () => { if (videoTimerRef.current) clearTimeout(videoTimerRef.current); }, []);
 
-  // ── Cursor navigation for textarea (notebook text mode) ──────────────────────
+  // ── Cursor navigation via CodeMirror commands ────────────────────────────────
 
   const moveCursor = (dir: 'left' | 'right' | 'up' | 'down' | 'home' | 'end') => {
-    const ta = textAreaRef.current;
-    if (!ta) return;
-    const { selectionStart: pos, value: text } = ta;
-    let np = pos;
-    if (dir === 'left') {
-      np = Math.max(0, pos - 1);
-    } else if (dir === 'right') {
-      np = Math.min(text.length, pos + 1);
-    } else if (dir === 'home') {
-      np = text.slice(0, pos).lastIndexOf('\n') + 1;
-    } else if (dir === 'end') {
-      const after = text.slice(pos);
-      const nl = after.indexOf('\n');
-      np = nl === -1 ? text.length : pos + nl;
-    } else if (dir === 'up') {
-      const before = text.slice(0, pos);
-      const lastNl = before.lastIndexOf('\n');
-      if (lastNl === -1) { np = 0; }
-      else {
-        const col = pos - lastNl - 1;
-        const prevLineEnd = lastNl;
-        const prevLineStart = text.slice(0, prevLineEnd).lastIndexOf('\n') + 1;
-        np = Math.min(prevLineStart + col, prevLineEnd);
-      }
-    } else if (dir === 'down') {
-      const after = text.slice(pos);
-      const nextNl = after.indexOf('\n');
-      if (nextNl === -1) { np = text.length; }
-      else {
-        const col = pos - (text.slice(0, pos).lastIndexOf('\n') + 1);
-        const nextLineStart = pos + nextNl + 1;
-        const nextAfter = text.slice(nextLineStart);
-        const nextEnd = nextAfter.indexOf('\n');
-        np = nextLineStart + Math.min(col, nextEnd === -1 ? nextAfter.length : nextEnd);
-      }
+    const view = cmRef.current?.view;
+    if (!view) return;
+    view.focus();
+    switch (dir) {
+      case 'left':  cursorCharLeft(view);  break;
+      case 'right': cursorCharRight(view); break;
+      case 'up':    cursorLineUp(view);    break;
+      case 'down':  cursorLineDown(view);  break;
+      case 'home':  cursorLineStart(view); break;
+      case 'end':   cursorLineEnd(view);   break;
     }
-    ta.setSelectionRange(np, np);
-    ta.focus();
   };
 
-  const execUndo = () => { textAreaRef.current?.focus(); document.execCommand('undo'); };
-  const execRedo = () => { textAreaRef.current?.focus(); document.execCommand('redo'); };
+  const execUndo = () => { const v = cmRef.current?.view; if (v) { cmUndo(v); v.focus(); } };
+  const execRedo = () => { const v = cmRef.current?.view; if (v) { cmRedo(v); v.focus(); } };
 
   // ── Shared sibling navigation ────────────────────────────────────────────────
 
@@ -781,13 +764,15 @@ export default function FileViewer({
               <button onClick={() => setSaveError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 ml-2">✕</button>
             </div>
           )}
-          <textarea
-            ref={textAreaRef}
-            value={editedText}
-            onChange={(e) => { setEditedText(e.target.value); setIsDirty(e.target.value !== textContent); }}
-            className="flex-1 p-4 font-mono text-sm resize-none bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 focus:outline-none min-h-0"
-            spellCheck={false}
-          />
+          <div className="flex-1 min-h-0 overflow-hidden">
+            <CodeEditor
+              ref={cmRef}
+              value={editedText}
+              onChange={(val) => { setEditedText(val); setIsDirty(val !== textContent); }}
+              filename={item.name}
+              isDark={isDark}
+            />
+          </div>
         </div>
       </>
     );
