@@ -256,9 +256,7 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         for (const item of r.items) {
           if (item.isDir) {
             const d = extractDigits(item.name);
-            if (d !== null && isValidNoteNumber(parseInt(d, 10))) {
-              newShortFolderMap.set(d, item.itemId);
-            }
+            if (d !== null) newShortFolderMap.set(d, item.itemId);
           }
         }
         if (r.items.length < PAGE_SIZE) break;
@@ -266,9 +264,8 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       }
       if (!isMountedRef.current) return;
 
-      // 5. Build sorted NoteEntry list — filter to valid intervals only.
+      // 5. Build sorted NoteEntry list — show all notes regardless of interval.
       const entries: NoteEntry[] = Object.entries(data.ChildNotes ?? {})
-        .filter(([digits]) => isValidNoteNumber(parseInt(digits, 10)))
         .map(([digits, meta]) => ({
           digits,
           shortFolderName: computeShortFolderName(digits),
