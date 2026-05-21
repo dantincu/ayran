@@ -18,6 +18,11 @@ interface Props {
   onFolderPathChange?: (folderName: string, displayPath: string) => void;
   /** Path from the previous all-files-explorer tab in history, for the path-editor suggestion. */
   prevExplorerPath?: string;
+  /** Called when the user opens or closes a file in the viewer (null = closed). */
+  onViewingFileChange?: (fileName: string | null) => void;
+  /** Quick-action callbacks forwarded to FileViewer. */
+  onNewTab?: () => void;
+  onOpenTabs?: () => void;
 }
 
 interface ViewingFile {
@@ -27,7 +32,7 @@ interface ViewingFile {
   siblingIdx?: number;
 }
 
-export default function AllFilesExplorerTab({ accountId, onMinimizedChange, restoreTrigger, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
+export default function AllFilesExplorerTab({ accountId, onMinimizedChange, restoreTrigger, instanceKey, onFolderPathChange, prevExplorerPath, onViewingFileChange, onNewTab, onOpenTabs }: Props) {
   const [account, setAccount] = useState<StoredAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,6 +44,13 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
   const [isMinimized, setIsMinimized] = useState(false);
   const onMinimizedChangeRef = useRef(onMinimizedChange);
   onMinimizedChangeRef.current = onMinimizedChange;
+  const onViewingFileChangeRef = useRef(onViewingFileChange);
+  onViewingFileChangeRef.current = onViewingFileChange;
+
+  // Notify parent when the file viewer opens or closes.
+  useEffect(() => {
+    onViewingFileChangeRef.current?.(viewingFile?.item.name ?? null);
+  }, [viewingFile]);
 
   // ── Load account ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -88,7 +100,7 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
 
-      {/* ── File viewer overlay ───────────────────────────────────────────────── */}
+      {/* ── File viewer (notebook-integrated, replaces explorer when open) ──────── */}
 
       {viewingFile && (
         <FileViewer
@@ -101,12 +113,15 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
           onNavigate={(item, siblingIdx) =>
             setViewingFile((prev) => prev ? { ...prev, item, siblingIdx } : null)
           }
+          inNotebook
+          onNewTab={onNewTab}
+          onOpenTabs={onOpenTabs}
         />
       )}
 
-      {/* ── Explorer ──────────────────────────────────────────────────────────── */}
+      {/* ── Explorer (hidden while a file is open) ───────────────────────────── */}
 
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className={`flex-1 min-h-0 overflow-hidden ${viewingFile ? 'hidden' : ''}`}>
         {account.provider === 'google-drive' && (
           <GoogleDriveExplorer
             key={account.id}

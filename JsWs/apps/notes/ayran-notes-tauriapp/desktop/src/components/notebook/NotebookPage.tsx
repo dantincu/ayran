@@ -169,9 +169,18 @@ interface HomeTabProps {
   onNewTab: () => void;
   onOpenSettings: () => void;
   onContextMenu: (type: TabType, name: string, e: React.MouseEvent) => void;
+  onQuickActions: () => void;
 }
 
-function NotebookHomeTab({ onOpenExplorer, onOpenAllFiles, onNewTab, onOpenSettings, onContextMenu }: HomeTabProps) {
+function QuickActionsIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M8 1L4 8h5l-3 5"/>
+    </svg>
+  );
+}
+
+function NotebookHomeTab({ onOpenExplorer, onOpenAllFiles, onNewTab, onOpenSettings, onContextMenu, onQuickActions }: HomeTabProps) {
   const btn = 'flex flex-col items-center gap-2 p-5 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 hover:border-emerald-400 dark:hover:border-emerald-500 transition-colors cursor-pointer group';
   const iconWrap = 'w-10 h-10 flex items-center justify-center rounded-lg bg-gray-100 dark:bg-gray-700 group-hover:bg-emerald-100 dark:group-hover:bg-emerald-900/40 transition-colors text-gray-500 dark:text-gray-400 group-hover:text-emerald-600 dark:group-hover:text-emerald-400';
   const label = 'text-xs font-medium text-gray-600 dark:text-gray-400 group-hover:text-emerald-700 dark:group-hover:text-emerald-300 text-center';
@@ -194,6 +203,10 @@ function NotebookHomeTab({ onOpenExplorer, onOpenAllFiles, onNewTab, onOpenSetti
         <button onClick={onOpenSettings} onContextMenu={(e) => onContextMenu('settings', 'Notebook Settings', e)} className={btn}>
           <div className={iconWrap}><SettingsIcon className="w-5 h-5"/></div>
           <span className={label}>Notebook Settings</span>
+        </button>
+        <button onClick={onQuickActions} className={btn}>
+          <div className={iconWrap}><QuickActionsIcon /></div>
+          <span className={label}>Quick Actions</span>
         </button>
       </div>
     </div>
@@ -303,8 +316,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   // ── Minimized explorer stacks ─────────────────────────────────────────────────
   const [minimizedExplorerTabs, setMinimizedExplorerTabs] = useState<Set<string>>(new Set());
   const [explorerRestoreTriggers, setExplorerRestoreTriggers] = useState<Map<string, number>>(new Map());
-  // tabId → displayPath of the current folder in that explorer tab
+  // tabId → displayPath / folderName of the current folder in that explorer tab
   const [explorerFolderPaths, setExplorerFolderPaths] = useState<Map<string, string>>(new Map());
+  const [explorerFolderNames, setExplorerFolderNames] = useState<Map<string, string>>(new Map());
 
   const handleExplorerMinimizedChange = (tabId: string, isMinimized: boolean) => {
     setMinimizedExplorerTabs((prev) => {
@@ -326,8 +340,19 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   };
 
   const handleExplorerFolderPathChange = (tabId: string, folderName: string, displayPath: string) => {
+    const name = folderName || 'All Files';
     setExplorerFolderPaths((prev) => new Map(prev).set(tabId, displayPath));
-    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, name: folderName || 'All Files' } : t));
+    setExplorerFolderNames((prev) => new Map(prev).set(tabId, name));
+    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, name } : t));
+  };
+
+  const handleExplorerViewingFileChange = (tabId: string, fileName: string | null) => {
+    if (fileName !== null) {
+      setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, name: fileName } : t));
+    } else {
+      const folderName = explorerFolderNames.get(tabId) ?? 'All Files';
+      setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, name: folderName } : t));
+    }
   };
 
   const getPrevExplorerPath = (tabId: string): string | undefined => {
@@ -1068,6 +1093,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               </svg>
             </button>
           )}
+          {/* Quick actions */}
+          <button
+            onClick={() => { openNewHomeTabWithModal(); }}
+            title="Quick actions — new tab"
+            className={hdrBtn}
+          >
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M8 1L4 8h5l-3 5"/></svg>
+          </button>
           <button onClick={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList((o) => !o); }} title="Open tabs" className={hdrBtn}>
             <TabsListIcon className="w-3.5 h-3.5"/>
           </button>
@@ -1100,6 +1133,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 onNewTab={openNewHomeTabWithModal}
                 onOpenSettings={() => navigateCurrentTabTo('settings', 'Notebook Settings')}
                 onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
+                onQuickActions={openNewHomeTabWithModal}
               />
             )}
             {tab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
@@ -1111,6 +1145,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 instanceKey={tab.id}
                 onFolderPathChange={(name, path) => handleExplorerFolderPathChange(tab.id, name, path)}
                 prevExplorerPath={getPrevExplorerPath(tab.id)}
+                onViewingFileChange={(fileName) => handleExplorerViewingFileChange(tab.id, fileName)}
+                onNewTab={openNewHomeTab}
+                onOpenTabs={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList(true); }}
               />
             )}
             {tab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
@@ -1166,6 +1203,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                     instanceKey={tab.id}
                     onFolderPathChange={(name, path) => handleExplorerFolderPathChange(tab.id, name, path)}
                     prevExplorerPath={getPrevExplorerPath(tab.id)}
+                    onViewingFileChange={(fileName) => handleExplorerViewingFileChange(tab.id, fileName)}
+                    onNewTab={openNewHomeTab}
+                    onOpenTabs={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList(true); }}
                   />
                 )}
               </div>
