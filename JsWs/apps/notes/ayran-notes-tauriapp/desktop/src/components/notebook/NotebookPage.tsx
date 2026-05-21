@@ -7,6 +7,7 @@ import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, typ
 import config from '../../config.json';
 import { MAX_TAB_HISTORY } from '../../lib/config';
 import AllFilesExplorerTab from './AllFilesExplorerTab';
+import NotesExplorer from './NotesExplorer';
 import { useTheme } from '../../hooks/useTheme';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
@@ -1128,7 +1129,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 onQuickActions={() => {}}
               />
             )}
-            {tab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
+            {tab.type === 'notes-explorer' && entry && (
+              <NotesExplorer
+                accountId={entry.accountId}
+                notebookParentId={entry.parentId}
+                onDisplayNameChange={(name) => setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, name } : t))}
+                onQuickActions={() => {}}
+              />
+            )}
             {tab.type === 'all-files-explorer' && entry && (
               <AllFilesExplorerTab
                 accountId={entry.accountId}

@@ -1,0 +1,105 @@
+import nc from '../notesConfig.json';
+
+// ── Name computation ─────────────────────────────────────────────────────────
+
+/** Remove characters that are invalid in folder names on common filesystems.
+ *  Forward slash is replaced by '%' as specified; all other invalid chars are removed. */
+export function sanitizeForFolderName(title: string): string {
+  return title
+    .replace(/\//g, '%')                    // / → %
+    .replace(/[\\<>:"|?*\x00-\x1f]/g, '')  // other invalid chars removed
+    .trim()
+    .slice(0, nc.maxFullNamePartLength);
+}
+
+/** The part of the full folder name that comes after the join string. */
+export function computeFullNamePart(title: string): string {
+  return sanitizeForFolderName(title);
+}
+
+export function computeShortFolderName(digits: string): string {
+  return nc.shortNamePrefix + digits;
+}
+
+export function computeFullFolderName(digits: string, title: string): string {
+  return `${computeShortFolderName(digits)}${nc.fullNameJoinString}${computeFullNamePart(title)}`;
+}
+
+export function computeMarkdownFileName(fullNamePart: string): string {
+  return `${nc.noteMarkdownPrefix}${fullNamePart}${nc.noteMarkdownSuffix}`;
+}
+
+// ── Note detection ───────────────────────────────────────────────────────────
+
+/** Returns true when the folder name is a valid note short name (prefix + digits only). */
+export function isNoteShortFolder(name: string): boolean {
+  const withoutPrefix = nc.shortNamePrefix
+    ? name.startsWith(nc.shortNamePrefix) ? name.slice(nc.shortNamePrefix.length) : null
+    : name;
+  if (withoutPrefix === null) return false;
+  return /^\d+$/.test(withoutPrefix);
+}
+
+/** Extracts the digits part from a short folder name. Returns null when not a match. */
+export function extractDigits(name: string): string | null {
+  if (!isNoteShortFolder(name)) return null;
+  return nc.shortNamePrefix ? name.slice(nc.shortNamePrefix.length) : name;
+}
+
+// ── Short name generation ────────────────────────────────────────────────────
+
+/** Computes the next sequential short name (numeric, 1-based) given existing digit strings. */
+export function nextDigits(existingDigits: string[]): string {
+  if (existingDigits.length === 0) return '1';
+  const max = Math.max(...existingDigits.map((d) => parseInt(d, 10) || 0));
+  return String(max + 1);
+}
+
+// ── File content helpers ─────────────────────────────────────────────────────
+
+/** Initial markdown content for a new note. */
+export function initialMarkdownContent(title: string): string {
+  const escaped = title.replace(/[\\`*_[\]]/g, '\\$&');
+  return `# ${escaped}\n`;
+}
+
+/** `[note].json` content for a newly created note. */
+export function noteJsonContent(title: string): string {
+  return JSON.stringify({ Title: title, CreatedAt: new Date().toISOString() }, null, 2);
+}
+
+/** Merges a new note entry into an existing `[note-children].json` string (or creates fresh). */
+export function addNoteToChildrenJson(
+  existing: string | null,
+  digits: string,
+  title: string,
+  updatedAt?: string,
+): string {
+  let data: { ChildNotes: Record<string, { Title: string; CreatedAt: string; UpdatedAt?: string }> };
+  try {
+    data = existing ? (JSON.parse(existing) as typeof data) : { ChildNotes: {} };
+  } catch {
+    data = { ChildNotes: {} };
+  }
+  data.ChildNotes ??= {};
+  const entry: { Title: string; CreatedAt: string; UpdatedAt?: string } = {
+    Title: title,
+    CreatedAt: new Date().toISOString(),
+  };
+  if (updatedAt) entry.UpdatedAt = updatedAt;
+  data.ChildNotes[digits] = entry;
+  return JSON.stringify(data, null, 2);
+}
+
+// ── Local-fs path helpers ────────────────────────────────────────────────────
+
+const SEP = navigator.platform.startsWith('Win') ? '\\' : '/';
+
+export function toAbsPath(accountRoot: string, relPath: string): string {
+  if (!relPath) return accountRoot;
+  return `${accountRoot}${SEP}${relPath.replace(/\//g, SEP)}`;
+}
+
+export function joinRelPath(...parts: string[]): string {
+  return parts.filter(Boolean).join('/');
+}

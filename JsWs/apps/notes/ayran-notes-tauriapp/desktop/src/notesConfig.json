@@ -1,0 +1,13 @@
+{
+  "shortNamePrefix": "",
+  "fullNameJoinString": "-",
+  "maxFullNamePartLength": 100,
+  "keepFileName": ".keep",
+  "keepFileContent": "-",
+  "noteMarkdownPrefix": "0-",
+  "noteMarkdownSuffix": "[note].md",
+  "noteHtmlSuffix": "[note].md.html",
+  "notePdfSuffix": "[note].md.pdf",
+  "noteJsonFileName": "[note].json",
+  "noteChildrenJsonFileName": "[note-children].json"
+}
