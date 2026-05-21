@@ -27,6 +27,9 @@ interface Props {
   stackMinimized?: boolean;
   canMinimize?: boolean;
   onMinimize?: () => void;
+  instanceKey?: string;
+  onFolderPathChange?: (folderName: string, displayPath: string) => void;
+  prevExplorerPath?: string;
 }
 
 type FolderPickerState = { itemId: string; name: string; isDir: boolean; action: 'copy' | 'move' };
@@ -87,9 +90,9 @@ function toAbs(rootPath: string, rel: string): string {
   return `${rootPath}${SEP}${rel.replace(/\//g, SEP)}`;
 }
 
-export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize }: Props) {
+export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
   const rootPath = account.path ?? '';
-  const navKey = `notes-fs-nav-${account.id}`;
+  const navKey = `notes-fs-nav-${account.id}${instanceKey ? `-${instanceKey}` : ''}`;
 
   const savedNav = useMemo(() => {
     try {
@@ -165,6 +168,14 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   useEffect(() => {
     localStorage.setItem(navKey, JSON.stringify({ path: currentPath, breadcrumbs, page, search, sortBy, ascending, viewMode }));
   }, [currentPath, breadcrumbs, page, search, sortBy, ascending, viewMode, navKey]);
+
+  // ── Notify parent of current folder ─────────────────────────────────────────
+  const onFolderPathChangeRef = useRef(onFolderPathChange);
+  onFolderPathChangeRef.current = onFolderPathChange;
+  useEffect(() => {
+    onFolderPathChangeRef.current?.(breadcrumbs[breadcrumbs.length - 1].name, currentPath);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPath, breadcrumbs]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
   const queryCache = useCallback(async (
@@ -725,6 +736,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           onCreateFolder={pickerCreateFolder}
           onResolvePath={pickerResolvePath}
           isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+          prevExplorerPath={prevExplorerPath}
         />
       )}
       {bulkPickerAction && (
@@ -740,6 +752,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           onCreateFolder={pickerCreateFolder}
           onResolvePath={pickerResolvePath}
           isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+          prevExplorerPath={prevExplorerPath}
         />
       )}
 
@@ -777,7 +790,7 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
       {showChangePath && (
         <BreadcrumbChangePathModal
           defaultValue={currentPath}
-          placeholder={`Relative path, e.g. Documents${SEP}Projects`}
+          placeholder={`e.g. /Documents/Projects`}
           onNavigate={handleChangePath}
           onClose={() => setShowChangePath(false)}
         />

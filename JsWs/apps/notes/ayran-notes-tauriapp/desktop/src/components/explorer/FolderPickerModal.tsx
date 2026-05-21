@@ -43,6 +43,8 @@ interface Props {
   /** Whether to show the minimize button. */
   minimizable?: boolean;
   onMinimize?: () => void;
+  /** When provided, shows a "Pick from previous tab" suggestion in the path editor. */
+  prevExplorerPath?: string;
 }
 
 export default function FolderPickerModal({
@@ -51,6 +53,7 @@ export default function FolderPickerModal({
   sourceItems = [],
   onRename, onDelete, onCreateFolder, onResolvePath,
   isMinimized = false, minimizable = false, onMinimize,
+  prevExplorerPath,
 }: Props) {
   // Keep state alive but render nothing while minimized.
   if (isMinimized) return <></>;
@@ -309,9 +312,10 @@ export default function FolderPickerModal({
       {showChangePath && (
         <BreadcrumbChangePathModal
           defaultValue={breadcrumbs.slice(1).map(b => b.name).join('/')}
-          placeholder="e.g. Documents/Projects"
+          placeholder="e.g. /Documents/Projects"
           onNavigate={handlePickerChangePath}
           onClose={() => setShowChangePath(false)}
+          previousTabSuggestion={prevExplorerPath}
         />
       )}
 

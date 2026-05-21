@@ -12,6 +12,12 @@ interface Props {
   onMinimizedChange?: (isMinimized: boolean) => void;
   /** Increment to trigger restoring the minimized stack. */
   restoreTrigger?: number;
+  /** Unique key for this tab instance — scopes localStorage navigation state. */
+  instanceKey?: string;
+  /** Called whenever the current folder changes (for tab title updates). */
+  onFolderPathChange?: (folderName: string, displayPath: string) => void;
+  /** Path from the previous all-files-explorer tab in history, for the path-editor suggestion. */
+  prevExplorerPath?: string;
 }
 
 interface ViewingFile {
@@ -21,7 +27,7 @@ interface ViewingFile {
   siblingIdx?: number;
 }
 
-export default function AllFilesExplorerTab({ accountId, onMinimizedChange, restoreTrigger }: Props) {
+export default function AllFilesExplorerTab({ accountId, onMinimizedChange, restoreTrigger, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
   const [account, setAccount] = useState<StoredAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -110,6 +116,9 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             stackMinimized={isMinimized}
             canMinimize={canMinimize}
             onMinimize={handleMinimize}
+            instanceKey={instanceKey}
+            onFolderPathChange={onFolderPathChange}
+            prevExplorerPath={prevExplorerPath}
           />
         )}
         {account.provider === 'filen' && (
@@ -122,6 +131,9 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             stackMinimized={isMinimized}
             canMinimize={canMinimize}
             onMinimize={handleMinimize}
+            instanceKey={instanceKey}
+            onFolderPathChange={onFolderPathChange}
+            prevExplorerPath={prevExplorerPath}
           />
         )}
         {account.provider === 'local-fs' && (
@@ -133,6 +145,9 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             stackMinimized={isMinimized}
             canMinimize={canMinimize}
             onMinimize={handleMinimize}
+            instanceKey={instanceKey}
+            onFolderPathChange={onFolderPathChange}
+            prevExplorerPath={prevExplorerPath}
           />
         )}
       </div>

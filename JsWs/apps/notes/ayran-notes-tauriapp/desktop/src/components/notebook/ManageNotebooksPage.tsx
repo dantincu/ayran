@@ -4,6 +4,7 @@ import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWind
 import { listen, emit } from '@tauri-apps/api/event';
 import { readFile } from '@tauri-apps/plugin-fs';
 import { getAllNotebooks, deleteNotebook, reorderNotebooks, updateNotebook, updateNotebooksByFile, type NotebookEntry } from '../../lib/notebooks-db';
+import config from '../../config.json';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 
@@ -273,12 +274,12 @@ export default function ManageNotebooksPage({ onViewPendingChanges }: Props) {
     setEditSaving(true); setEditError(null);
     try {
       const oldItemId = editEntry.itemId;
-      const path = await invoke<string>('open_file', { accountId: editEntry.accountId, itemId: oldItemId, force: false });
+      const path = await invoke<string>('open_file', { accountId: editEntry.accountId, itemId: oldItemId, force: false, itemName: config.notebookFileName });
       const bytes = await readFile(path);
       const parsed = JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
       parsed.Title = editTitle;
       const updatedJson = JSON.stringify(parsed, null, 2);
-      const newItemId = await invoke<string>('save_text_file', { accountId: editEntry.accountId, itemId: oldItemId, parentId: editEntry.parentId, content: updatedJson });
+      const newItemId = await invoke<string>('save_text_file', { accountId: editEntry.accountId, itemId: oldItemId, parentId: editEntry.parentId, content: updatedJson, itemName: config.notebookFileName });
       await updateNotebooksByFile(editEntry.accountId, editEntry.provider, oldItemId, { title: editTitle, ...(newItemId !== oldItemId ? { itemId: newItemId } : {}) });
       await updateNotebook(editEntry.id, { description: editDesc || undefined });
       setShowEdit(false); setEditEntry(null);

@@ -6,20 +6,29 @@ interface Props {
   placeholder?: string;
   onNavigate: (path: string) => Promise<void>;
   onClose: () => void;
+  /** When provided, shows a one-click "Pick from previous tab" suggestion. */
+  previousTabSuggestion?: string;
 }
 
-export default function BreadcrumbChangePathModal({ defaultValue, placeholder, onNavigate, onClose }: Props) {
-  const [value, setValue] = useState(defaultValue);
+/** Prefix a bare path with '/' for display; strip it before handing back to callers. */
+function toDisplay(path: string): string {
+  return '/' + path;
+}
+
+export default function BreadcrumbChangePathModal({ defaultValue, placeholder, onNavigate, onClose, previousTabSuggestion }: Props) {
+  const [value, setValue] = useState(() => toDisplay(defaultValue));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async () => {
     const trimmed = value.trim();
+    // '/' alone means root; anything else must be non-empty after stripping the leading slash.
     if (!trimmed) return;
     setLoading(true);
     setError(null);
     try {
-      await onNavigate(trimmed);
+      // Strip leading slash(es) before passing to the caller; empty string = root.
+      await onNavigate(trimmed.replace(/^\/+/, ''));
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -44,6 +53,18 @@ export default function BreadcrumbChangePathModal({ defaultValue, placeholder, o
           autoFocus
           className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-300 dark:focus:ring-blue-700"
         />
+        {previousTabSuggestion !== undefined && (
+          <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+            <span className="shrink-0">Pick from previous tab:</span>
+            <button
+              type="button"
+              onClick={() => setValue(toDisplay(previousTabSuggestion))}
+              className="text-blue-600 dark:text-blue-400 hover:underline truncate text-left"
+            >
+              {toDisplay(previousTabSuggestion)}
+            </button>
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           <button
             onClick={onClose}

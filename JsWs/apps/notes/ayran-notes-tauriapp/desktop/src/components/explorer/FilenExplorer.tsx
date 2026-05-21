@@ -37,6 +37,9 @@ interface Props {
   stackMinimized?: boolean;
   canMinimize?: boolean;
   onMinimize?: () => void;
+  instanceKey?: string;
+  onFolderPathChange?: (folderName: string, displayPath: string) => void;
+  prevExplorerPath?: string;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -87,9 +90,9 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize }: Props) {
+export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
   const rootUuid = (account.providerData as { baseFolderUuid?: string } | undefined)?.baseFolderUuid ?? '';
-  const navKey = `notes-filen-nav-${account.id}`;
+  const navKey = `notes-filen-nav-${account.id}${instanceKey ? `-${instanceKey}` : ''}`;
 
   const savedNav = useMemo(() => {
     try {
@@ -182,6 +185,15 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
       page, search, sortBy, ascending, viewMode,
     }));
   }, [folderUUID, breadcrumbs, page, search, sortBy, ascending, viewMode, navKey]);
+
+  // ── Notify parent of current folder ─────────────────────────────────────────
+  const onFolderPathChangeRef = useRef(onFolderPathChange);
+  onFolderPathChangeRef.current = onFolderPathChange;
+  useEffect(() => {
+    const displayPath = breadcrumbs.slice(1).map(b => b.name).join('/');
+    onFolderPathChangeRef.current?.(breadcrumbs[breadcrumbs.length - 1].name, displayPath);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderUUID, breadcrumbs]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
   const queryCache = useCallback(async (
@@ -926,6 +938,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           onCreateFolder={pickerCreateFolderForFilen}
           onResolvePath={pickerResolvePath}
           isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+          prevExplorerPath={prevExplorerPath}
         />
       )}
       {bulkAction && (
@@ -943,6 +956,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           onCreateFolder={pickerCreateFolderForFilen}
           onResolvePath={pickerResolvePath}
           isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+          prevExplorerPath={prevExplorerPath}
         />
       )}
 

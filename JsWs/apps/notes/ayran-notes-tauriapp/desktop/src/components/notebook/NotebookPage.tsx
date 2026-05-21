@@ -4,6 +4,7 @@ import { readFile } from '@tauri-apps/plugin-fs';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getNotebook, updateNotebook, updateNotebooksByFile, deleteNotebook, type NotebookEntry } from '../../lib/notebooks-db';
+import config from '../../config.json';
 import { MAX_TAB_HISTORY } from '../../lib/config';
 import AllFilesExplorerTab from './AllFilesExplorerTab';
 import { useTheme } from '../../hooks/useTheme';
@@ -302,6 +303,8 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   // ── Minimized explorer stacks ─────────────────────────────────────────────────
   const [minimizedExplorerTabs, setMinimizedExplorerTabs] = useState<Set<string>>(new Set());
   const [explorerRestoreTriggers, setExplorerRestoreTriggers] = useState<Map<string, number>>(new Map());
+  // tabId → displayPath of the current folder in that explorer tab
+  const [explorerFolderPaths, setExplorerFolderPaths] = useState<Map<string, string>>(new Map());
 
   const handleExplorerMinimizedChange = (tabId: string, isMinimized: boolean) => {
     setMinimizedExplorerTabs((prev) => {
@@ -320,6 +323,22 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       next.set(tabId, (prev.get(tabId) ?? 0) + 1);
       return next;
     });
+  };
+
+  const handleExplorerFolderPathChange = (tabId: string, folderName: string, displayPath: string) => {
+    setExplorerFolderPaths((prev) => new Map(prev).set(tabId, displayPath));
+    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, name: folderName || 'All Files' } : t));
+  };
+
+  const getPrevExplorerPath = (tabId: string): string | undefined => {
+    for (let i = historyIndex - 1; i >= 0; i--) {
+      const hid = tabHistory[i];
+      if (hid === tabId) continue;
+      const t = tabs.find((t) => t.id === hid);
+      if (!t) continue;
+      return t.type === 'all-files-explorer' ? explorerFolderPaths.get(hid) : undefined;
+    }
+    return undefined;
   };
 
   // ── Home tab context menu ─────────────────────────────────────────────────────
@@ -398,17 +417,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     ));
   };
 
-  const openTab = (type: TabType, name: string) => {
-    // Reuse existing tab of same type (except 'home' which can have multiples)
-    if (type !== 'home') {
-      const existing = tabs.find((t) => t.type === type);
-      if (existing) { navigateToTab(existing.id); return; }
-    }
-    const id = crypto.randomUUID();
-    setTabs((prev) => [...prev, { id, type, name }]);
-    navigateToTab(id);
-  };
-
   const openNewHomeTab = () => {
     const id = crypto.randomUUID();
     setTabs((prev) => [...prev, { id, type: 'home', name: 'Home' }]);
@@ -433,10 +441,12 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     }
   };
 
-  // Mutates the active tab's type to home without changing history.
-  const navigateCurrentTabToHome = () => {
-    setTabs((prev) => prev.map((t) => t.id === activeTabId ? { ...t, type: 'home' as TabType, name: 'Home' } : t));
+  // Mutates the active tab's type in-place (no new tab, no history change).
+  const navigateCurrentTabTo = (type: TabType, name: string) => {
+    setTabs((prev) => prev.map((t) => t.id === activeTabId ? { ...t, type, name } : t));
   };
+
+  const navigateCurrentTabToHome = () => navigateCurrentTabTo('home', 'Home');
 
   const closeCurrentTab = () => closeTabById(activeTabId);
   const closeTab = (id: string) => closeTabById(id);
@@ -567,7 +577,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
         let content: string | null = null;
         try {
-          const path = await invoke<string>('open_file', { accountId: nb.accountId, itemId: nb.itemId, force: false });
+          const path = await invoke<string>('open_file', { accountId: nb.accountId, itemId: nb.itemId, force: false, itemName: config.notebookFileName });
           const bytes = await readFile(path);
           content = new TextDecoder().decode(bytes);
           setFileContent(content);
@@ -676,7 +686,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
         const parsed = JSON.parse(fileContent) as Record<string, unknown>;
         parsed.Title = editTitle;
         const updatedJson = JSON.stringify(parsed, null, 2);
-        newItemId = await invoke<string>('save_text_file', { accountId: entry.accountId, itemId: oldItemId, parentId: entry.parentId, content: updatedJson });
+        newItemId = await invoke<string>('save_text_file', { accountId: entry.accountId, itemId: oldItemId, parentId: entry.parentId, content: updatedJson, itemName: config.notebookFileName });
         setFileContent(updatedJson);
       }
       await updateNotebooksByFile(entry.accountId, entry.provider, oldItemId, { title: editTitle, ...(newItemId !== oldItemId ? { itemId: newItemId } : {}) });
@@ -697,7 +707,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
         const parsed = JSON.parse(fileContent) as Record<string, unknown>;
         parsed.Title = promptTitle;
         const updatedJson = JSON.stringify(parsed, null, 2);
-        newItemId = await invoke<string>('save_text_file', { accountId: entry.accountId, itemId: oldItemId, parentId: entry.parentId, content: updatedJson });
+        newItemId = await invoke<string>('save_text_file', { accountId: entry.accountId, itemId: oldItemId, parentId: entry.parentId, content: updatedJson, itemName: config.notebookFileName });
         setFileContent(updatedJson);
       }
       await updateNotebooksByFile(entry.accountId, entry.provider, oldItemId, { title: promptTitle, ...(newItemId !== oldItemId ? { itemId: newItemId } : {}) });
@@ -946,7 +956,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       {homeCtxMenu && (
         <Popover title={homeCtxMenu.name} onClose={() => setHomeCtxMenu(null)} panelStyle={{ left: homeCtxMenu.x, top: homeCtxMenu.y }}>
           <div className="py-1">
-            <button onClick={() => { openTab(homeCtxMenu.type, homeCtxMenu.name); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in current tab</button>
+            <button onClick={() => { navigateCurrentTabTo(homeCtxMenu.type, homeCtxMenu.name); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in current tab</button>
             <button onClick={() => { openInNewTab(homeCtxMenu.type, homeCtxMenu.name, false); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new tab</button>
             <button onClick={() => { openInNewTab(homeCtxMenu.type, homeCtxMenu.name, true); setHomeCtxMenu(null); }} className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Open in new tab and stay here</button>
           </div>
@@ -1085,10 +1095,10 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           <>
             {tab.type === 'home' && (
               <NotebookHomeTab
-                onOpenExplorer={() => openTab('notes-explorer', 'Notes Explorer')}
-                onOpenAllFiles={() => openTab('all-files-explorer', 'All Files Explorer')}
+                onOpenExplorer={() => navigateCurrentTabTo('notes-explorer', 'Notes Explorer')}
+                onOpenAllFiles={() => navigateCurrentTabTo('all-files-explorer', 'All Files Explorer')}
                 onNewTab={openNewHomeTabWithModal}
-                onOpenSettings={() => openTab('settings', 'Notebook Settings')}
+                onOpenSettings={() => navigateCurrentTabTo('settings', 'Notebook Settings')}
                 onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
               />
             )}
@@ -1098,6 +1108,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 accountId={entry.accountId}
                 onMinimizedChange={(isMin) => handleExplorerMinimizedChange(tab.id, isMin)}
                 restoreTrigger={explorerRestoreTriggers.get(tab.id) ?? 0}
+                instanceKey={tab.id}
+                onFolderPathChange={(name, path) => handleExplorerFolderPathChange(tab.id, name, path)}
+                prevExplorerPath={getPrevExplorerPath(tab.id)}
               />
             )}
             {tab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
@@ -1136,9 +1149,28 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           );
         }
 
+        // All-files-explorer tabs stay permanently mounted so minimized modal state
+        // survives tab switches. Other tab types unmount when inactive.
         return (
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-            {renderTabContent(activeTab)}
+            {tabs.filter((t) => t.type === 'all-files-explorer').map((tab) => (
+              <div
+                key={tab.id}
+                className={tab.id === activeTabId ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : 'hidden'}
+              >
+                {entry && (
+                  <AllFilesExplorerTab
+                    accountId={entry.accountId}
+                    onMinimizedChange={(isMin) => handleExplorerMinimizedChange(tab.id, isMin)}
+                    restoreTrigger={explorerRestoreTriggers.get(tab.id) ?? 0}
+                    instanceKey={tab.id}
+                    onFolderPathChange={(name, path) => handleExplorerFolderPathChange(tab.id, name, path)}
+                    prevExplorerPath={getPrevExplorerPath(tab.id)}
+                  />
+                )}
+              </div>
+            ))}
+            {activeTab.type !== 'all-files-explorer' && renderTabContent(activeTab)}
           </div>
         );
       })()}

@@ -93,7 +93,7 @@ export default function Popover({
     ? { position: 'fixed', left: dragPos.x, top: dragPos.y, width: dragPos.w, margin: 0 }
     : adjustedStyle ?? panelStyle;
 
-  const panelCls = `z-50 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg flex flex-col ${
+  const panelCls = `z-[60] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg flex flex-col ${
     maximized ? 'fixed rounded-xl' : dragPos ? '' : panelClassName
   }`;
 
@@ -104,7 +104,7 @@ export default function Popover({
     <>
       {/* Transparent backdrop — blocks click-through to background controls */}
       <div
-        className={`fixed inset-0 z-40 ${maximized ? 'bg-black/50' : ''}`}
+        className={`fixed inset-0 z-[55] ${maximized ? 'bg-black/50' : ''}`}
         onClick={onClose}
       />
 

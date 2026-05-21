@@ -870,6 +870,8 @@ fn find_account_cache_dir(c_dir: &std::path::Path, account: &StoredAccount) -> O
 
 /// Shared inner logic for resolving a file to a local path, used by both
 /// `open_file` and `get_thumbnail`.
+/// `item_name_hint` is used as the leaf filename when the item is not in the
+/// folder cache, preventing UUID-named files in the content-cache directory.
 async fn open_file_inner(
     app: &tauri::AppHandle,
     filen_sessions: &filen::FilenSessions,
@@ -877,6 +879,7 @@ async fn open_file_inner(
     account: &StoredAccount,
     item_id: &str,
     force: bool,
+    item_name_hint: Option<&str>,
 ) -> Result<String, String> {
     if account.provider == "local-fs" {
         // item_id is a relative path; resolve to absolute for the caller.
@@ -900,7 +903,16 @@ async fn open_file_inner(
     let root_parent = account_root_parent_id(account);
     let path_parts = {
         let conn = cache_db.lock().map_err(|e| e.to_string())?;
-        cache::item_path_from_root(&conn, &account.id, item_id, &root_parent)
+        let mut parts = cache::item_path_from_root(&conn, &account.id, item_id, &root_parent);
+        // When the item is not in the folder cache, item_path_from_root returns
+        // [item_id] (a UUID). Use the provided filename hint instead so cached
+        // files get real names and folder structure rather than raw UUIDs.
+        if parts.len() == 1 && parts[0] == item_id {
+            if let Some(name) = item_name_hint {
+                parts = vec![name.to_string()];
+            }
+        }
+        parts
     };
 
     let rel: std::path::PathBuf = path_parts.iter().map(|p| sanitize_path_component(p)).collect();
@@ -937,6 +949,8 @@ async fn open_file_inner(
 /// For cloud providers the file is downloaded into a persistent content cache.
 /// For local-fs the original path is returned directly.
 /// Pass `force = true` to force a fresh download even when the cache file already exists.
+/// Pass `item_name` when the caller knows the filename — used as a fallback when
+/// the item is not yet in the folder-items cache (prevents UUID-named cache files).
 #[tauri::command]
 async fn open_file(
     app: tauri::AppHandle,
@@ -945,13 +959,14 @@ async fn open_file(
     account_id: String,
     item_id: String,
     force: bool,
+    item_name: Option<String>,
 ) -> Result<String, String> {
     let accounts = load_accounts(&app)?;
     let account = accounts
         .get(&account_id)
         .ok_or_else(|| format!("Account '{}' not found", account_id))?
         .clone();
-    open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, force).await
+    open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, force, item_name.as_deref()).await
 }
 
 /// Resolve the thumbnail cache path for an item, mirroring its relative path
@@ -1018,7 +1033,7 @@ async fn get_thumbnail(
         return Ok(thumb_path.to_string_lossy().into_owned());
     }
 
-    let file_path = open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, false).await?;
+    let file_path = open_file_inner(&app, &filen_sessions, &cache_state.0, &account, &item_id, false, None).await?;
     create_thumbnail_file(&file_path, &thumb_path)?;
     Ok(thumb_path.to_string_lossy().into_owned())
 }
@@ -1027,6 +1042,8 @@ async fn get_thumbnail(
 /// Takes the content as a UTF-8 string so no file path crosses the IPC boundary.
 /// Returns the effective item ID after upload: unchanged for GDrive/LocalFS, but a
 /// *new* UUID for Filen because Filen creates a new file on every overwrite.
+/// Pass `item_name` when the caller knows the filename — used as a fallback when
+/// the item is not yet in the folder-items cache (prevents UUID-named cache files).
 #[tauri::command]
 async fn save_text_file(
     app: tauri::AppHandle,
@@ -1036,6 +1053,7 @@ async fn save_text_file(
     item_id: String,
     parent_id: String,
     content: String,
+    item_name: Option<String>,
 ) -> Result<String, String> {
     let bytes = content.into_bytes();
     let accounts = load_accounts(&app)?;
@@ -1061,7 +1079,13 @@ async fn save_text_file(
             r
         } else {
             let root_parent = account_root_parent_id(&account);
-            let parts = cache::item_path_from_root(&conn, &account_id, &item_id, &root_parent);
+            let mut parts = cache::item_path_from_root(&conn, &account_id, &item_id, &root_parent);
+            // Use the provided filename hint when the item is not in the cache.
+            if parts.len() == 1 && parts[0] == item_id {
+                if let Some(ref name) = item_name {
+                    parts = vec![name.clone()];
+                }
+            }
             let p: std::path::PathBuf = parts.iter().map(|s| sanitize_path_component(s)).collect();
             p.to_string_lossy().into_owned()
         }

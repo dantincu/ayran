@@ -35,6 +35,9 @@ interface Props {
   stackMinimized?: boolean;
   canMinimize?: boolean;
   onMinimize?: () => void;
+  instanceKey?: string;
+  onFolderPathChange?: (folderName: string, displayPath: string) => void;
+  prevExplorerPath?: string;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -87,8 +90,8 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize }: Props) {
-  const navKey = `notes-gdrive-nav-${account.id}`;
+export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
+  const navKey = `notes-gdrive-nav-${account.id}${instanceKey ? `-${instanceKey}` : ''}`;
 
   const savedNav = useMemo(() => {
     try {
@@ -190,6 +193,15 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
       page, search, sortBy, ascending, viewMode,
     }));
   }, [folderId, breadcrumbs, page, search, sortBy, ascending, viewMode, navKey]);
+
+  // ── Notify parent of current folder ─────────────────────────────────────────
+  const onFolderPathChangeRef = useRef(onFolderPathChange);
+  onFolderPathChangeRef.current = onFolderPathChange;
+  useEffect(() => {
+    const displayPath = breadcrumbs.slice(1).map(b => b.name).join('/');
+    onFolderPathChangeRef.current?.(breadcrumbs[breadcrumbs.length - 1].name, displayPath);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderId, breadcrumbs]);
 
   // ── Query SQLite cache (no network call) ─────────────────────────────────────
   const queryCache = useCallback(async (
@@ -913,6 +925,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           onCreateFolder={pickerCreateFolderForGDrive}
           onResolvePath={pickerResolvePath}
           isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+          prevExplorerPath={prevExplorerPath}
         />
       )}
       {bulkAction && (
@@ -930,6 +943,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           onCreateFolder={pickerCreateFolderForGDrive}
           onResolvePath={pickerResolvePath}
           isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+          prevExplorerPath={prevExplorerPath}
         />
       )}
       {/* Duplicate-name error modal */}
