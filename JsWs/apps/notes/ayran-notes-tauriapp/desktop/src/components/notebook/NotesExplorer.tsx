@@ -165,12 +165,13 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
   };
 
   const openCreateForm = () => {
-    // Default to first non-full interval.
-    let defaultIdx = 0;
-    for (let i = 0; i < nc.noteIntervals.length; i++) {
-      const { lo, hi } = nc.noteIntervals[i];
-      if (nextDigitsInInterval(noteEntries.map((e) => e.digits), lo, hi) !== null) {
-        defaultIdx = i; break;
+    // Default to "plain notes" (last interval); fall back to first non-full interval.
+    const existingDigits = noteEntries.map((e) => e.digits);
+    let defaultIdx = nc.noteIntervals.length - 1;
+    if (nextDigitsInInterval(existingDigits, nc.noteIntervals[defaultIdx].lo, nc.noteIntervals[defaultIdx].hi) === null) {
+      for (let i = 0; i < nc.noteIntervals.length; i++) {
+        const { lo, hi } = nc.noteIntervals[i];
+        if (nextDigitsInInterval(existingDigits, lo, hi) !== null) { defaultIdx = i; break; }
       }
     }
     setCreateIntervalIdx(defaultIdx);
@@ -290,7 +291,7 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
     switch (account.provider) {
       case 'filen':
         return await invoke<string>('filen_create_directory', {
-          accountId: account.id, parentId, name: folderName,
+          accountId: account.id, parentUuid: parentId, name: folderName,
         });
       case 'google-drive':
         return await invoke<string>('gdrive_create_folder', {
@@ -532,10 +533,9 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         <button
           onClick={openCreateForm}
           title="New note"
-          className="flex items-center gap-1.5 px-2.5 py-1 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors shrink-0"
+          className={hdrBtn}
         >
           <PlusIcon />
-          New note
         </button>
 
         {/* Quick actions */}
