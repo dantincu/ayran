@@ -220,31 +220,10 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       // 1. List folder to populate SQLite cache.
       await invoke('list_folder', { accountId: account.id, parentId: folderId, force });
 
-      // 2. Find [note-children].json in the cache.
-      const searchResult = await invoke<FolderPage>('query_folder_items', {
-        accountId: account.id, parentId: folderId,
-        search: nc.noteChildrenJsonFileName, sortBy: 'name', ascending: true,
-        page: 0, pageSize: PAGE_SIZE,
-      });
-      const jsonItem = searchResult.items.find((i) => !i.isDir && i.name === nc.noteChildrenJsonFileName);
-
-      if (!jsonItem) {
-        if (isMountedRef.current) setNoteEntries([]);
-        return;
-      }
-      if (isMountedRef.current) setNoteChildrenJsonId(jsonItem.itemId);
-
-      // 3. Download and parse [note-children].json.
-      const localPath = await invoke<string>('open_file', {
-        accountId: account.id, itemId: jsonItem.itemId, force,
-        itemName: nc.noteChildrenJsonFileName,
-      });
-      const bytes = await readFile(localPath);
-      const data = JSON.parse(new TextDecoder().decode(bytes)) as NoteChildrenJson;
-
-      // 4. Build shortFolderMap by paginating through all folder items.
-      //    Only track folders whose digit numbers fall within a valid interval.
+      // 2. Single paginated scan — find [note-children].json by exact name and
+      //    build the shortFolderMap in the same pass (avoids search-filter quirks).
       const newShortFolderMap = new Map<string, string>();
+      let jsonItem: CachedItem | null = null;
       let pg = 0;
       while (true) {
         const r = await invoke<FolderPage>('query_folder_items', {
@@ -254,7 +233,9 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
           page: pg, pageSize: PAGE_SIZE,
         });
         for (const item of r.items) {
-          if (item.isDir) {
+          if (!item.isDir && item.name === nc.noteChildrenJsonFileName) {
+            jsonItem = item;
+          } else if (item.isDir) {
             const d = extractDigits(item.name);
             if (d !== null) newShortFolderMap.set(d, item.itemId);
           }
@@ -264,7 +245,21 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       }
       if (!isMountedRef.current) return;
 
-      // 5. Build sorted NoteEntry list — show all notes regardless of interval.
+      if (!jsonItem) {
+        setError(`Note index file (${nc.noteChildrenJsonFileName}) not found in this folder.`);
+        return;
+      }
+      setNoteChildrenJsonId(jsonItem.itemId);
+
+      // 3. Download and parse [note-children].json.
+      const localPath = await invoke<string>('open_file', {
+        accountId: account.id, itemId: jsonItem.itemId, force,
+        itemName: nc.noteChildrenJsonFileName,
+      });
+      const bytes = await readFile(localPath);
+      const data = JSON.parse(new TextDecoder().decode(bytes)) as NoteChildrenJson;
+
+      // 4. Build sorted NoteEntry list.
       const entries: NoteEntry[] = Object.entries(data.ChildNotes ?? {})
         .map(([digits, meta]) => ({
           digits,
