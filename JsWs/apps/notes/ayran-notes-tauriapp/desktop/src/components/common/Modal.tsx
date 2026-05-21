@@ -5,6 +5,8 @@ import { useDraggable } from '../../hooks/useDraggable';
 interface Props {
   title: string;
   onClose?: () => void;
+  /** When provided, a minimize button is shown in the header. */
+  onMinimize?: () => void;
   children: React.ReactNode;
   /** Tailwind max-width class for the normal (non-maximised) state, e.g. 'max-w-md' */
   maxWidth?: string;
@@ -34,7 +36,15 @@ function RestoreIcon() {
   );
 }
 
-export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' }: Props) {
+function MinimizeIcon() {
+  return (
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" className="w-3.5 h-3.5">
+      <path d="M2 10h10"/>
+    </svg>
+  );
+}
+
+export default function Modal({ title, onClose, onMinimize, children, maxWidth = 'max-w-md' }: Props) {
   const [maximized, setMaximized] = useState(false);
   const [id] = useState(() => crypto.randomUUID());
   const [isRegistered, setIsRegistered] = useState(false);
@@ -116,6 +126,11 @@ export default function Modal({ title, onClose, children, maxWidth = 'max-w-md' 
 
           {/* Right controls */}
           <div className="flex items-center gap-0.5 shrink-0">
+            {isTop && onMinimize && (
+              <button onClick={onMinimize} title="Minimize" className={btnCls}>
+                <MinimizeIcon />
+              </button>
+            )}
             <button onClick={() => setMaximized((m) => !m)} title={maximized ? 'Restore' : 'Maximize'} className={btnCls}>
               {maximized ? <RestoreIcon /> : <MaximizeIcon />}
             </button>

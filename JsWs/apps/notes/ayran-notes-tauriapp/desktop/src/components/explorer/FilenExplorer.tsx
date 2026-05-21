@@ -34,6 +34,9 @@ interface Props {
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
   onCompactChange?: (compact: boolean) => void;
   highlightItemId?: string;
+  stackMinimized?: boolean;
+  canMinimize?: boolean;
+  onMinimize?: () => void;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -84,7 +87,7 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId }: Props) {
+export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize }: Props) {
   const rootUuid = (account.providerData as { baseFolderUuid?: string } | undefined)?.baseFolderUuid ?? '';
   const navKey = `notes-filen-nav-${account.id}`;
 
@@ -922,6 +925,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           onDelete={pickerDeleteForFilen}
           onCreateFolder={pickerCreateFolderForFilen}
           onResolvePath={pickerResolvePath}
+          isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
         />
       )}
       {bulkAction && (
@@ -938,6 +942,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
           onDelete={pickerDeleteForFilen}
           onCreateFolder={pickerCreateFolderForFilen}
           onResolvePath={pickerResolvePath}
+          isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
         />
       )}
 

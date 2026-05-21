@@ -11,6 +11,7 @@ import CreateTextFileModal from './CreateTextFileModal';
 import ThumbnailImage from './ThumbnailImage';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
+import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
 import { UploadIcon, FolderPlusIcon, NewFileIcon, PencilIcon, TypeCursorIcon, CopyFilesIcon, MoveArrowIcon, DownloadArrowIcon, TrashIcon, DotsHorizontalIcon, ArrowUpIcon, ArrowDownIcon, AncestorsIcon } from './ExplorerIcons';
 import config from '../../config.json';
 
@@ -23,7 +24,13 @@ interface Props {
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
   onCompactChange?: (compact: boolean) => void;
   highlightItemId?: string;
+  stackMinimized?: boolean;
+  canMinimize?: boolean;
+  onMinimize?: () => void;
 }
+
+type FolderPickerState = { itemId: string; name: string; isDir: boolean; action: 'copy' | 'move' };
+type BulkPickerState = { action: 'copy' | 'move' };
 
 type SortBy = 'name' | 'size' | 'modified';
 
@@ -80,7 +87,7 @@ function toAbs(rootPath: string, rel: string): string {
   return `${rootPath}${SEP}${rel.replace(/\//g, SEP)}`;
 }
 
-export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId }: Props) {
+export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize }: Props) {
   const rootPath = account.path ?? '';
   const navKey = `notes-fs-nav-${account.id}`;
 
@@ -120,6 +127,8 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [copyingPath, setCopyingPath] = useState<string | null>(null);
   const [movingPath, setMovingPath] = useState<string | null>(null);
+  const [folderPicker, setFolderPicker] = useState<FolderPickerState | null>(null);
+  const [bulkPickerAction, setBulkPickerAction] = useState<BulkPickerState | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
@@ -280,23 +289,66 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     } catch (err) { alert(err instanceof Error ? err.message : 'Rename failed'); }
     finally { setRenamingPath(null); }
   };
-  const handleCopy = async (item: CachedItem) => {
-    const destDir = await dialogOpen({ multiple: false, directory: true });
-    if (!destDir || typeof destDir !== 'string') return;
-    setCopyingPath(item.itemId);
-    try { await fsCopyFile(toAbs(rootPath, item.itemId), `${destDir}${SEP}${item.name}`); }
-    catch (err) { alert(err instanceof Error ? err.message : 'Copy failed'); }
-    finally { setCopyingPath(null); }
+  const handleCopy = (item: CachedItem) => setFolderPicker({ itemId: item.itemId, name: item.name, isDir: item.isDir, action: 'copy' });
+  const handleMove = (item: CachedItem) => setFolderPicker({ itemId: item.itemId, name: item.name, isDir: item.isDir, action: 'move' });
+
+  const listItemsForPicker = async (id: string): Promise<FolderEntry[]> => {
+    await invoke('list_folder', { accountId: account.id, parentId: id, force: false });
+    const result = await invoke<FolderPage>('query_folder_items', {
+      accountId: account.id, parentId: id, search: null, sortBy: 'name', ascending: true, page: 0, pageSize: 10000,
+    });
+    return result.items.map((i) => ({ id: i.itemId, name: i.name, isDir: i.isDir }));
   };
-  const handleMove = async (item: CachedItem) => {
-    const destDir = await dialogOpen({ multiple: false, directory: true });
-    if (!destDir || typeof destDir !== 'string') return;
-    setMovingPath(item.itemId);
+
+  const handleFolderPickerConfirm = async (destFolderPath: string, destNames: string[]) => {
+    if (!folderPicker) return;
+    const destAbs = `${toAbs(rootPath, destFolderPath)}${SEP}${destNames[0]}`;
+    if (folderPicker.action === 'copy') {
+      setCopyingPath(folderPicker.itemId);
+      try { await fsCopyFile(toAbs(rootPath, folderPicker.itemId), destAbs); }
+      catch (err) { setError(err instanceof Error ? err.message : 'Copy failed'); }
+      finally { setCopyingPath(null); }
+    } else {
+      setMovingPath(folderPicker.itemId);
+      try {
+        await fsRename(toAbs(rootPath, folderPicker.itemId), destAbs);
+        setEntries((p) => p.filter((e) => e.itemId !== folderPicker.itemId));
+      } catch (err) { setError(err instanceof Error ? err.message : 'Move failed'); }
+      finally { setMovingPath(null); }
+    }
+    setFolderPicker(null);
+  };
+
+  const handleBulkPickerConfirm = async (destFolderPath: string, destNames: string[]) => {
+    if (!bulkPickerAction) return;
+    const ids = [...selectedIds];
+    for (let i = 0; i < ids.length; i++) {
+      const item = entries.find((e) => e.itemId === ids[i]);
+      if (!item || (bulkPickerAction.action === 'copy' && item.isDir)) continue;
+      const destAbs = `${toAbs(rootPath, destFolderPath)}${SEP}${destNames[i] ?? item.name}`;
+      try {
+        if (bulkPickerAction.action === 'copy') await fsCopyFile(toAbs(rootPath, ids[i]), destAbs);
+        else await fsRename(toAbs(rootPath, ids[i]), destAbs);
+      } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
+    }
+    if (bulkPickerAction.action === 'move') void loadDir(currentPath, true, 0, search, sortBy, ascending);
+    setBulkPickerAction(null);
+    setSelectedIds(new Set());
+  };
+
+  const pickerCreateFolder = async (parentId: string, name: string): Promise<FolderEntry> => {
+    const newPath = parentId ? `${parentId}/${name}` : name;
+    await mkdir(toAbs(rootPath, newPath));
+    return { id: newPath, name, isDir: true };
+  };
+
+  const pickerResolvePath = async (pathStr: string): Promise<Array<{ id: string; name: string }> | null> => {
+    const parts = pathStr.trim().split(/[/\\]/).map((s) => s.trim()).filter(Boolean);
+    const relPath = parts.join('/');
     try {
-      await fsRename(toAbs(rootPath, item.itemId), `${destDir}${SEP}${item.name}`);
-      setEntries((p) => p.filter((e) => e.itemId !== item.itemId));
-    } catch (err) { alert(err instanceof Error ? err.message : 'Move failed'); }
-    finally { setMovingPath(null); }
+      await invoke('list_folder', { accountId: account.id, parentId: relPath, force: false });
+      return parts.map((name, i) => ({ id: parts.slice(0, i + 1).join('/'), name }));
+    } catch { return null; }
   };
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
@@ -369,28 +421,8 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
     }
     void loadDir(currentPath, true, 0, search, sortBy, ascending);
   };
-  const handleBulkCopy = async () => {
-    const destDir = await dialogOpen({ multiple: false, directory: true });
-    if (!destDir || typeof destDir !== 'string') return;
-    const ids = [...selectedIds]; setSelectedIds(new Set());
-    for (const id of ids) {
-      const item = entries.find((e) => e.itemId === id);
-      if (!item || item.isDir) continue;
-      try { await fsCopyFile(toAbs(rootPath, id), `${destDir}${SEP}${item.name}`); }
-      catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    }
-  };
-  const handleBulkMove = async () => {
-    const destDir = await dialogOpen({ multiple: false, directory: true });
-    if (!destDir || typeof destDir !== 'string') return;
-    const ids = [...selectedIds]; setSelectedIds(new Set());
-    for (const id of ids) {
-      const item = entries.find((e) => e.itemId === id); if (!item) continue;
-      try { await fsRename(toAbs(rootPath, id), `${destDir}${SEP}${item.name}`); }
-      catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    }
-    void loadDir(currentPath, true, 0, search, sortBy, ascending);
-  };
+  const handleBulkCopy = () => setBulkPickerAction({ action: 'copy' });
+  const handleBulkMove = () => setBulkPickerAction({ action: 'move' });
 
   const handleNavigateUp = () => {
     if (breadcrumbs.length <= 1) return;
@@ -679,6 +711,37 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
           <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
         </div>
       </div>
+
+      {folderPicker && (
+        <FolderPickerModal
+          title={folderPicker.action === 'copy' ? 'Copy to…' : 'Move to…'}
+          rootId="" rootName={account.displayName ?? rootPath.split(/[/\\]/).pop() ?? 'Root'}
+          initialFolderId={currentPath}
+          initialBreadcrumbs={breadcrumbs.map((b) => ({ id: b.path, name: b.name }))}
+          onList={listItemsForPicker}
+          onConfirm={handleFolderPickerConfirm}
+          onClose={() => setFolderPicker(null)}
+          sourceItems={[{ id: folderPicker.itemId, name: folderPicker.name, isDir: folderPicker.isDir }]}
+          onCreateFolder={pickerCreateFolder}
+          onResolvePath={pickerResolvePath}
+          isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+        />
+      )}
+      {bulkPickerAction && (
+        <FolderPickerModal
+          title={bulkPickerAction.action === 'copy' ? `Copy ${selectedIds.size} item(s) to…` : `Move ${selectedIds.size} item(s) to…`}
+          rootId="" rootName={account.displayName ?? rootPath.split(/[/\\]/).pop() ?? 'Root'}
+          initialFolderId={currentPath}
+          initialBreadcrumbs={breadcrumbs.map((b) => ({ id: b.path, name: b.name }))}
+          onList={listItemsForPicker}
+          onConfirm={handleBulkPickerConfirm}
+          onClose={() => setBulkPickerAction(null)}
+          sourceItems={entries.filter((e) => selectedIds.has(e.itemId)).map((e) => ({ id: e.itemId, name: e.name, isDir: e.isDir }))}
+          onCreateFolder={pickerCreateFolder}
+          onResolvePath={pickerResolvePath}
+          isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
+        />
+      )}
 
       {rowCtxMenu && (() => {
         const item = rowCtxMenu.item;

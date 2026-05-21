@@ -38,6 +38,11 @@ interface Props {
    * with an error message if the path is ambiguous.
    */
   onResolvePath?: (pathStr: string) => Promise<Array<{ id: string; name: string }> | null>;
+  /** When true the modal keeps its state but renders nothing (minimize). */
+  isMinimized?: boolean;
+  /** Whether to show the minimize button. */
+  minimizable?: boolean;
+  onMinimize?: () => void;
 }
 
 export default function FolderPickerModal({
@@ -45,7 +50,11 @@ export default function FolderPickerModal({
   onList, onConfirm, onClose,
   sourceItems = [],
   onRename, onDelete, onCreateFolder, onResolvePath,
+  isMinimized = false, minimizable = false, onMinimize,
 }: Props) {
+  // Keep state alive but render nothing while minimized.
+  if (isMinimized) return <></>;
+
   const [folderId, setFolderId] = useState(initialFolderId ?? rootId);
   const [breadcrumbs, setBreadcrumbs] = useState(
     initialBreadcrumbs ?? [{ id: rootId, name: rootName }]
@@ -306,7 +315,7 @@ export default function FolderPickerModal({
         />
       )}
 
-      <Modal title={title} onClose={onClose}>
+      <Modal title={title} onClose={onClose} onMinimize={minimizable ? onMinimize : undefined}>
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
 
           {/* Breadcrumb + New Folder button */}

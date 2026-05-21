@@ -299,6 +299,29 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   // Derived: the split pair (if any) that contains the currently active tab.
   const activeSplitPair = splitPairs.find((p) => p.primaryId === activeTabId || p.secondaryId === activeTabId) ?? null;
 
+  // ── Minimized explorer stacks ─────────────────────────────────────────────────
+  const [minimizedExplorerTabs, setMinimizedExplorerTabs] = useState<Set<string>>(new Set());
+  const [explorerRestoreTriggers, setExplorerRestoreTriggers] = useState<Map<string, number>>(new Map());
+
+  const handleExplorerMinimizedChange = (tabId: string, isMinimized: boolean) => {
+    setMinimizedExplorerTabs((prev) => {
+      const next = new Set(prev);
+      if (isMinimized) next.add(tabId); else next.delete(tabId);
+      return next;
+    });
+  };
+
+  const handleRestoreMinimized = () => {
+    const tabId = [...minimizedExplorerTabs][0];
+    if (!tabId) return;
+    navigateToTab(tabId);
+    setExplorerRestoreTriggers((prev) => {
+      const next = new Map(prev);
+      next.set(tabId, (prev.get(tabId) ?? 0) + 1);
+      return next;
+    });
+  };
+
   // ── Home tab context menu ─────────────────────────────────────────────────────
   const [homeCtxMenu, setHomeCtxMenu] = useState<{ x: number; y: number; type: TabType; name: string } | null>(null);
 
@@ -1026,6 +1049,15 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-200 truncate select-none">
             {activeTab.name}
           </span>
+          {/* Minimized-stack restore indicator */}
+          {minimizedExplorerTabs.size > 0 && (
+            <button onClick={handleRestoreMinimized} title="Restore minimized modals" className={`${hdrBtn} text-amber-500 dark:text-amber-400 hover:text-amber-600 dark:hover:text-amber-300`}>
+              <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
+                <rect x="1" y="4" width="12" height="8" rx="1"/>
+                <rect x="3" y="2" width="8" height="2" rx="0.5" fill="currentColor" stroke="none" opacity="0.5"/>
+              </svg>
+            </button>
+          )}
           <button onClick={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList((o) => !o); }} title="Open tabs" className={hdrBtn}>
             <TabsListIcon className="w-3.5 h-3.5"/>
           </button>
@@ -1061,7 +1093,13 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               />
             )}
             {tab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
-            {tab.type === 'all-files-explorer' && entry && <AllFilesExplorerTab accountId={entry.accountId} />}
+            {tab.type === 'all-files-explorer' && entry && (
+              <AllFilesExplorerTab
+                accountId={entry.accountId}
+                onMinimizedChange={(isMin) => handleExplorerMinimizedChange(tab.id, isMin)}
+                restoreTrigger={explorerRestoreTriggers.get(tab.id) ?? 0}
+              />
+            )}
             {tab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
           </>
         );

@@ -32,6 +32,9 @@ interface Props {
   onOpenNotebook?: (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => void;
   onCompactChange?: (compact: boolean) => void;
   highlightItemId?: string;
+  stackMinimized?: boolean;
+  canMinimize?: boolean;
+  onMinimize?: () => void;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -84,7 +87,7 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId }: Props) {
+export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize }: Props) {
   const navKey = `notes-gdrive-nav-${account.id}`;
 
   const savedNav = useMemo(() => {
@@ -909,6 +912,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           onDelete={pickerDeleteForGDrive}
           onCreateFolder={pickerCreateFolderForGDrive}
           onResolvePath={pickerResolvePath}
+          isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
         />
       )}
       {bulkAction && (
@@ -925,6 +929,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
           onDelete={pickerDeleteForGDrive}
           onCreateFolder={pickerCreateFolderForGDrive}
           onResolvePath={pickerResolvePath}
+          isMinimized={stackMinimized} minimizable={canMinimize} onMinimize={onMinimize}
         />
       )}
       {/* Duplicate-name error modal */}
