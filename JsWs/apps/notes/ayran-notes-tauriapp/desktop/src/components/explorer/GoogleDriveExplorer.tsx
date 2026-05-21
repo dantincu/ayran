@@ -38,6 +38,7 @@ interface Props {
   instanceKey?: string;
   onFolderPathChange?: (folderName: string, displayPath: string) => void;
   prevExplorerPath?: string;
+  onQuickActions?: () => void;
 }
 
 type SortBy = 'name' | 'size' | 'modified';
@@ -90,7 +91,7 @@ function openFileSiblings(item: CachedItem, allItems: CachedItem[]): { siblings:
   return { siblings, siblingIdx: siblings.findIndex((i) => i.itemId === item.itemId) };
 }
 
-export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
+export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath, onQuickActions }: Props) {
   const navKey = `notes-gdrive-nav-${account.id}${instanceKey ? `-${instanceKey}` : ''}`;
 
   const savedNav = useMemo(() => {
@@ -737,6 +738,12 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                   </Popover>
                 )}
               </div>
+              {onQuickActions !== undefined && (
+                <button onClick={onQuickActions} title="Quick actions"
+                  className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                  <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 1L4 8h5l-3 5"/></svg>
+                </button>
+              )}
               <button onClick={() => setHeaderCollapsed(true)} title="Collapse toolbar"
                 className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
                 <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 10l5-5 5 5"/></svg>

@@ -1093,14 +1093,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               </svg>
             </button>
           )}
-          {/* Quick actions */}
-          <button
-            onClick={() => { openNewHomeTabWithModal(); }}
-            title="Quick actions — new tab"
-            className={hdrBtn}
-          >
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5"><path d="M8 1L4 8h5l-3 5"/></svg>
-          </button>
           <button onClick={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList((o) => !o); }} title="Open tabs" className={hdrBtn}>
             <TabsListIcon className="w-3.5 h-3.5"/>
           </button>
@@ -1133,7 +1125,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 onNewTab={openNewHomeTabWithModal}
                 onOpenSettings={() => navigateCurrentTabTo('settings', 'Notebook Settings')}
                 onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
-                onQuickActions={openNewHomeTabWithModal}
+                onQuickActions={() => {}}
               />
             )}
             {tab.type === 'notes-explorer' && <PlaceholderTab label="Notes Explorer" />}
@@ -1146,8 +1138,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 onFolderPathChange={(name, path) => handleExplorerFolderPathChange(tab.id, name, path)}
                 prevExplorerPath={getPrevExplorerPath(tab.id)}
                 onViewingFileChange={(fileName) => handleExplorerViewingFileChange(tab.id, fileName)}
-                onNewTab={openNewHomeTab}
-                onOpenTabs={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList(true); }}
               />
             )}
             {tab.type === 'settings' && <PlaceholderTab label="Notebook Settings" />}
@@ -1204,8 +1194,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                     onFolderPathChange={(name, path) => handleExplorerFolderPathChange(tab.id, name, path)}
                     prevExplorerPath={getPrevExplorerPath(tab.id)}
                     onViewingFileChange={(fileName) => handleExplorerViewingFileChange(tab.id, fileName)}
-                    onNewTab={openNewHomeTab}
-                    onOpenTabs={() => { setHistoryPreviewIndex(historyIndex); setShowTabsList(true); }}
                   />
                 )}
               </div>

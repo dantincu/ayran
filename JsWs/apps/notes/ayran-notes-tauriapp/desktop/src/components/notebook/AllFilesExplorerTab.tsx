@@ -20,9 +20,6 @@ interface Props {
   prevExplorerPath?: string;
   /** Called when the user opens or closes a file in the viewer (null = closed). */
   onViewingFileChange?: (fileName: string | null) => void;
-  /** Quick-action callbacks forwarded to FileViewer. */
-  onNewTab?: () => void;
-  onOpenTabs?: () => void;
 }
 
 interface ViewingFile {
@@ -32,7 +29,7 @@ interface ViewingFile {
   siblingIdx?: number;
 }
 
-export default function AllFilesExplorerTab({ accountId, onMinimizedChange, restoreTrigger, instanceKey, onFolderPathChange, prevExplorerPath, onViewingFileChange, onNewTab, onOpenTabs }: Props) {
+export default function AllFilesExplorerTab({ accountId, onMinimizedChange, restoreTrigger, instanceKey, onFolderPathChange, prevExplorerPath, onViewingFileChange }: Props) {
   const [account, setAccount] = useState<StoredAccount | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,8 +111,6 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             setViewingFile((prev) => prev ? { ...prev, item, siblingIdx } : null)
           }
           inNotebook
-          onNewTab={onNewTab}
-          onOpenTabs={onOpenTabs}
         />
       )}
 
@@ -134,6 +129,7 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             instanceKey={instanceKey}
             onFolderPathChange={onFolderPathChange}
             prevExplorerPath={prevExplorerPath}
+            onQuickActions={() => {}}
           />
         )}
         {account.provider === 'filen' && (
@@ -149,6 +145,7 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             instanceKey={instanceKey}
             onFolderPathChange={onFolderPathChange}
             prevExplorerPath={prevExplorerPath}
+            onQuickActions={() => {}}
           />
         )}
         {account.provider === 'local-fs' && (
@@ -163,6 +160,7 @@ export default function AllFilesExplorerTab({ accountId, onMinimizedChange, rest
             instanceKey={instanceKey}
             onFolderPathChange={onFolderPathChange}
             prevExplorerPath={prevExplorerPath}
+            onQuickActions={() => {}}
           />
         )}
       </div>

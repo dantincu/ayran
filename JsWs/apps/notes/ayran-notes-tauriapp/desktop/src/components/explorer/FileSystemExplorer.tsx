@@ -30,6 +30,7 @@ interface Props {
   instanceKey?: string;
   onFolderPathChange?: (folderName: string, displayPath: string) => void;
   prevExplorerPath?: string;
+  onQuickActions?: () => void;
 }
 
 type FolderPickerState = { itemId: string; name: string; isDir: boolean; action: 'copy' | 'move' };
@@ -90,7 +91,7 @@ function toAbs(rootPath: string, rel: string): string {
   return `${rootPath}${SEP}${rel.replace(/\//g, SEP)}`;
 }
 
-export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath }: Props) {
+export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, onOpenNotebook, onCompactChange, highlightItemId, stackMinimized, canMinimize, onMinimize, instanceKey, onFolderPathChange, prevExplorerPath, onQuickActions }: Props) {
   const rootPath = account.path ?? '';
   const navKey = `notes-fs-nav-${account.id}${instanceKey ? `-${instanceKey}` : ''}`;
 
@@ -569,6 +570,12 @@ export default function FileSystemExplorer({ account, onDisconnect, onOpenFile, 
                 </Popover>
               )}
             </div>
+            {onQuickActions !== undefined && (
+              <button onClick={onQuickActions} title="Quick actions"
+                className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M8 1L4 8h5l-3 5"/></svg>
+              </button>
+            )}
             <button onClick={() => setHeaderCollapsed(true)} title="Collapse toolbar"
               className="p-1.5 rounded-lg bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors">
               <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4"><path d="M2 10l5-5 5 5"/></svg>

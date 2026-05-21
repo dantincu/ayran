@@ -35,9 +35,6 @@ interface Props {
   onNavigate?: (item: CachedItem, siblingIdx: number) => void;
   /** When true, integrates with the notebook layout (no fixed overlay, notebook toolbar). */
   inNotebook?: boolean;
-  /** Quick-action callbacks wired from NotebookPage. */
-  onNewTab?: () => void;
-  onOpenTabs?: () => void;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -112,7 +109,7 @@ function EndIcon() {
 
 export default function FileViewer({
   account, item, onClose, onOpenNotebook, displayPath, siblings, siblingIdx, onNavigate,
-  inNotebook = false, onNewTab, onOpenTabs,
+  inNotebook = false,
 }: Props) {
   const mode = detectMode(item);
 
@@ -135,9 +132,7 @@ export default function FileViewer({
 
   // notebook toolbar popovers
   const [showOptions, setShowOptions] = useState(false);
-  const [showQuickActions, setShowQuickActions] = useState(false);
   const optionsRef = useRef<HTMLDivElement>(null);
-  const quickActionsRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
 
   // image overlay + zoom + pan
@@ -185,18 +180,16 @@ export default function FileViewer({
     return () => { document.body.style.overflow = prev; };
   }, [inNotebook]);
 
-  // Close notebook popovers on outside click.
+  // Close options popover on outside click.
   useEffect(() => {
-    if (!showOptions && !showQuickActions) return;
+    if (!showOptions) return;
     const handler = (e: MouseEvent) => {
-      if (showOptions && optionsRef.current && !optionsRef.current.contains(e.target as Node))
+      if (optionsRef.current && !optionsRef.current.contains(e.target as Node))
         setShowOptions(false);
-      if (showQuickActions && quickActionsRef.current && !quickActionsRef.current.contains(e.target as Node))
-        setShowQuickActions(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
-  }, [showOptions, showQuickActions]);
+  }, [showOptions]);
 
   // ── Load file ────────────────────────────────────────────────────────────────
 
@@ -565,29 +558,6 @@ export default function FileViewer({
   const ib = 'shrink-0 w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
   const ibDis = `${ib} disabled:opacity-30 disabled:cursor-default`;
 
-  // Quick-actions popover (reused in both the regular bar and overlay bars).
-  const QuickActionsPopover = ({ right = true }: { right?: boolean }) => (
-    <div className={`absolute ${right ? 'right-0' : 'left-0'} top-full mt-1 z-[60] min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg`}>
-      <div className="px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">Quick actions</div>
-      <div className="py-1">
-        {onNewTab && (
-          <button onClick={() => { setShowQuickActions(false); onNewTab(); }}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            New tab
-          </button>
-        )}
-        {onOpenTabs && (
-          <button onClick={() => { setShowQuickActions(false); onOpenTabs(); }}
-            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
-            Open tabs list
-          </button>
-        )}
-        {!onNewTab && !onOpenTabs && (
-          <p className="px-4 py-2 text-sm text-gray-400 dark:text-gray-500 italic">No actions available</p>
-        )}
-      </div>
-    </div>
-  );
 
   // Options popover (text-mode-only).
   const OptionsPopover = () => (
@@ -694,10 +664,7 @@ export default function FileViewer({
       <div className="flex-1" />
 
       {/* Quick actions */}
-      <div ref={quickActionsRef} className="relative shrink-0">
-        <button onClick={() => setShowQuickActions(o => !o)} title="Quick actions" className={ib}><QuickActionsIcon /></button>
-        {showQuickActions && <QuickActionsPopover />}
-      </div>
+      <button onClick={() => {}} title="Quick actions" className={ib}><QuickActionsIcon /></button>
     </div>
   );
 
@@ -898,10 +865,7 @@ export default function FileViewer({
               {isFullscreen ? '⊡' : '⛶'}
             </button>
             {inNotebook ? (
-              <div ref={quickActionsRef} className="relative shrink-0">
-                <button onClick={() => setShowQuickActions(o => !o)} title="Quick actions" className={overlayBtnCls}><QuickActionsIcon /></button>
-                {showQuickActions && <QuickActionsPopover />}
-              </div>
+              <button onClick={() => {}} title="Quick actions" className={overlayBtnCls}><QuickActionsIcon /></button>
             ) : (
               <button onClick={(e) => { e.stopPropagation(); onClose(); }}
                 className="text-white/80 hover:text-white text-xl leading-none w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white/20 transition-colors">
@@ -983,10 +947,7 @@ export default function FileViewer({
               <div className="flex-1" />
               <CacheControls white />
               {inNotebook && (
-                <div ref={quickActionsRef} className="relative shrink-0">
-                  <button onClick={() => setShowQuickActions(o => !o)} title="Quick actions" className={overlayBtnCls}><QuickActionsIcon /></button>
-                  {showQuickActions && <QuickActionsPopover />}
-                </div>
+                <button onClick={() => {}} title="Quick actions" className={overlayBtnCls}><QuickActionsIcon /></button>
               )}
             </div>
             {/* Centre play/pause */}
