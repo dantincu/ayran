@@ -10,6 +10,7 @@
   "notePdfSuffix": "[note].md.pdf",
   "noteJsonFileName": "[note].json",
   "noteChildrenJsonFileName": "[note-children].json",
+  "generatePdf": true,
   "noteIntervals": [
     { "lo": 110, "hi": 199, "label": "primary note sections" },
     { "lo": 200, "hi": 299, "label": "secondary note sections" },

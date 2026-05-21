@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { readFile, mkdir } from '@tauri-apps/plugin-fs';
+import { readFile, mkdir, copyFile } from '@tauri-apps/plugin-fs';
+import { marked } from 'marked';
 import type { StoredAccount, CachedItem, FolderPage } from '../../types';
 import { getAccount } from '../../lib/account-store';
 import nc from '../../notesConfig.json';
 import config from '../../config.json';
 import {
   computeShortFolderName, computeFullFolderName, computeFullNamePart,
-  computeMarkdownFileName, extractDigits,
-  initialMarkdownContent, noteJsonContent, addNoteToChildrenJson,
+  computeMarkdownFileName, computeHtmlFileName, computePdfFileName, extractDigits,
+  initialMarkdownContent, noteJsonContent, addNoteToChildrenJson, updateNoteUpdatedAt,
   toAbsPath, joinRelPath,
   isValidNoteNumber, nextDigitsInInterval,
 } from '../../lib/notes-utils';
 import FileViewer from '../explorer/FileViewer';
 import PaginationBar from '../explorer/PaginationBar';
+import Popover from '../common/Popover';
 
 const PAGE_SIZE = config.defaultListPageSize;
 
@@ -38,6 +40,10 @@ interface NoteEntry {
 interface BreadcrumbEntry {
   folderId: string;
   label: string;
+  /** Digits of this note within its parent's [note-children].json. Absent at root level. */
+  digits?: string;
+  /** [note-children].json item ID that was active at the PARENT level when we navigated into this note. */
+  parentChildrenJsonId?: string | null;
 }
 interface ViewingFile {
   item: CachedItem;
@@ -114,6 +120,9 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
   const [viewingFile, setViewingFile] = useState<ViewingFile | null>(null);
 
   // ── Create-note form state ────────────────────────────────────────────────
+  const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
+  const [cacheCleared, setCacheCleared] = useState(false);
+
   const [showCreate, setShowCreate] = useState(false);
   const [createTitle, setCreateTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -352,6 +361,8 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       const fullNamePart = computeFullNamePart(title);
       const fullFolderName = computeFullFolderName(digits, title);
       const markdownFileName = computeMarkdownFileName(fullNamePart);
+      const htmlFileName = computeHtmlFileName(fullNamePart);
+      const pdfFileName = computePdfFileName(fullNamePart);
 
       // Create the two folders.
       const shortFolderId = await createFolderInParent(currentFolderId, shortFolderName);
@@ -375,6 +386,39 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         filename: nc.noteJsonFileName, content: noteJsonContent(title),
       });
 
+      // Generate HTML from markdown; create HTML + PDF files if there is
+      // content beyond the title line.
+      const mdContent = initialMarkdownContent(title);
+      const hasExtraContent = mdContent.replace(/^#[^\n]*\n?/, '').trim().length > 0;
+      if (hasExtraContent) {
+        const htmlContent = String(await marked.parse(mdContent));
+
+        await invoke('create_text_file', {
+          accountId: account.id, parentId: shortFolderId,
+          filename: htmlFileName, content: htmlContent,
+        });
+
+        if (nc.generatePdf) {
+          try {
+            const tempPdfPath = await invoke<string>('generate_note_pdf', { htmlContent, filename: pdfFileName });
+            const sep = tempPdfPath.includes('\\') ? '\\' : '/';
+            const tempPdfDir = tempPdfPath.substring(0, tempPdfPath.lastIndexOf(sep));
+            try {
+              if (account.provider === 'filen') {
+                await invoke('filen_upload_file', { accountId: account.id, parentUuid: shortFolderId, filePath: tempPdfPath });
+              } else if (account.provider === 'google-drive') {
+                await invoke('gdrive_upload_file', { accountId: account.id, folderId: shortFolderId, filePath: tempPdfPath });
+              } else if (account.provider === 'local-fs') {
+                const targetPath = toAbsPath(account.path ?? '', joinRelPath(shortFolderId, pdfFileName));
+                await copyFile(tempPdfPath, targetPath);
+              }
+            } finally {
+              void invoke('remove_temp_dir', { path: tempPdfDir });
+            }
+          } catch { /* PDF generation is non-fatal */ }
+        }
+      }
+
       // Create / update [note-children].json in the current folder.
       const newChildrenContent = addNoteToChildrenJson(existingContent, digits, title);
       let newChildrenJsonId: string;
@@ -389,6 +433,24 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
           accountId: account.id, parentId: currentFolderId,
           filename: nc.noteChildrenJsonFileName, content: newChildrenContent,
         });
+      }
+
+      // If we are inside a parent note, update its UpdatedAt in the grandparent's JSON.
+      const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
+      if (currentCrumb.digits && currentCrumb.parentChildrenJsonId) {
+        try {
+          const parentJsonPath = await invoke<string>('open_file', {
+            accountId: account.id, itemId: currentCrumb.parentChildrenJsonId, force: false,
+            itemName: nc.noteChildrenJsonFileName,
+          });
+          const parentJsonContent = new TextDecoder().decode(await readFile(parentJsonPath));
+          const updatedParentJson = updateNoteUpdatedAt(parentJsonContent, currentCrumb.digits, new Date().toISOString());
+          await invoke('save_text_file', {
+            accountId: account.id, itemId: currentCrumb.parentChildrenJsonId,
+            parentId: breadcrumbs[breadcrumbs.length - 2].folderId,
+            content: updatedParentJson, itemName: nc.noteChildrenJsonFileName,
+          });
+        } catch { /* non-fatal */ }
       }
 
       // Update state without a full reload.
@@ -424,7 +486,12 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
       folderId = found.itemId;
       setNoteEntries((prev) => prev.map((e) => e.digits === note.digits ? { ...e, shortFolderId: folderId! } : e));
     }
-    setBreadcrumbs((prev) => [...prev, { folderId: folderId!, label: note.title || note.shortFolderName }]);
+    setBreadcrumbs((prev) => [...prev, {
+      folderId: folderId!,
+      label: note.title || note.shortFolderName,
+      digits: note.digits,
+      parentChildrenJsonId: noteChildrenJsonId,
+    }]);
   };
 
   // ── Navigate back via breadcrumb ──────────────────────────────────────────
@@ -519,15 +586,51 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
           ))}
         </nav>
 
-        {/* Refresh */}
-        <button
-          onClick={() => void loadNotes(currentFolderId, true)}
-          disabled={loading}
-          title="Refresh"
-          className={hdrBtn}
-        >
-          <RefreshIcon />
-        </button>
+        {/* Refresh split-button */}
+        {cacheCleared && <span className="text-xs text-green-600 dark:text-green-400">✓ Cleared</span>}
+        <div className="relative flex items-center shrink-0">
+          <button
+            onClick={() => void loadNotes(currentFolderId, false)}
+            disabled={loading}
+            title="Refresh"
+            className="w-6 h-6 flex items-center justify-center rounded-l text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-40 border-r border-gray-200 dark:border-gray-600"
+          >
+            <RefreshIcon />
+          </button>
+          <button
+            onClick={() => setRefreshMenuOpen((o) => !o)}
+            disabled={loading}
+            title="Refresh options"
+            className="h-6 px-0.5 flex items-center justify-center rounded-r text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors disabled:opacity-40"
+          >
+            <svg viewBox="0 0 8 8" fill="currentColor" className="w-2.5 h-2.5"><path d="M0 2l4 4 4-4z"/></svg>
+          </button>
+          {refreshMenuOpen && (
+            <Popover title="Refresh options" onClose={() => setRefreshMenuOpen(false)} panelClassName="absolute right-0 top-full mt-1 min-w-max">
+              <div className="py-1">
+                <button
+                  onClick={() => { setRefreshMenuOpen(false); void loadNotes(currentFolderId, true); }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Hard refresh
+                </button>
+                <button
+                  onClick={async () => {
+                    setRefreshMenuOpen(false);
+                    try {
+                      await invoke('invalidate_folder_cache', { accountId: account.id, parentId: currentFolderId });
+                      setCacheCleared(true);
+                      setTimeout(() => setCacheCleared(false), 2000);
+                    } catch { /* non-fatal */ }
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Clear cached listing
+                </button>
+              </div>
+            </Popover>
+          )}
+        </div>
 
         {/* New Note */}
         <button

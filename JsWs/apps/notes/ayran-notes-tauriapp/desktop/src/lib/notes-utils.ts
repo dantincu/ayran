@@ -29,6 +29,14 @@ export function computeMarkdownFileName(fullNamePart: string): string {
   return `${nc.noteMarkdownPrefix}${fullNamePart}${nc.noteMarkdownSuffix}`;
 }
 
+export function computeHtmlFileName(fullNamePart: string): string {
+  return `${nc.noteMarkdownPrefix}${fullNamePart}${nc.noteHtmlSuffix}`;
+}
+
+export function computePdfFileName(fullNamePart: string): string {
+  return `${nc.noteMarkdownPrefix}${fullNamePart}${nc.notePdfSuffix}`;
+}
+
 // ── Note detection ───────────────────────────────────────────────────────────
 
 /** Returns true when the folder name is a valid note short name (prefix + digits only). */
@@ -81,6 +89,20 @@ export function initialMarkdownContent(title: string): string {
 /** `[note].json` content for a newly created note. */
 export function noteJsonContent(title: string): string {
   return JSON.stringify({ Title: title, CreatedAt: new Date().toISOString() }, null, 2);
+}
+
+/** Sets `UpdatedAt` on an existing entry in a `[note-children].json` string without touching other fields. */
+export function updateNoteUpdatedAt(existing: string, digits: string, updatedAt: string): string {
+  let data: { ChildNotes: Record<string, { Title: string; CreatedAt: string; UpdatedAt?: string }> };
+  try {
+    data = JSON.parse(existing) as typeof data;
+  } catch {
+    return existing;
+  }
+  if (data.ChildNotes?.[digits]) {
+    data.ChildNotes[digits].UpdatedAt = updatedAt;
+  }
+  return JSON.stringify(data, null, 2);
 }
 
 /** Merges a new note entry into an existing `[note-children].json` string (or creates fresh). */

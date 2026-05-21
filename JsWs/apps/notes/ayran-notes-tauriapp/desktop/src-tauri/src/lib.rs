@@ -2312,6 +2312,105 @@ fn sqlite_run_query(
     result
 }
 
+// ── PDF generation ───────────────────────────────────────────────────────────
+
+fn find_headless_browser() -> Result<std::path::PathBuf, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let candidates = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ];
+        for c in &candidates {
+            let p = std::path::Path::new(c);
+            if p.exists() { return Ok(p.to_path_buf()); }
+        }
+        Err("No suitable browser found for PDF generation (Edge or Chrome required)".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        ];
+        for c in &candidates {
+            let p = std::path::Path::new(c);
+            if p.exists() { return Ok(p.to_path_buf()); }
+        }
+        Err("No suitable browser found for PDF generation (Chrome, Chromium or Edge required)".into())
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        for name in &["chromium-browser", "chromium", "google-chrome", "google-chrome-stable"] {
+            if let Ok(p) = which::which(name) { return Ok(p); }
+        }
+        Err("No suitable browser found for PDF generation (Chromium or Chrome required)".into())
+    }
+}
+
+/// Renders `html_content` to a PDF using the system's headless browser.
+/// Returns the path to the generated PDF file (inside a unique temp subdirectory).
+/// The caller is responsible for deleting the temp directory when done.
+#[tauri::command]
+async fn generate_note_pdf(html_content: String, filename: String) -> Result<String, String> {
+    use std::io::Write as _;
+
+    let browser = find_headless_browser()?;
+    let temp_base = std::env::temp_dir();
+    let temp_subdir = temp_base.join(format!("ayran_note_{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&temp_subdir).map_err(|e| e.to_string())?;
+
+    let html_path = temp_subdir.join("input.html");
+    let pdf_path  = temp_subdir.join(&filename);
+
+    {
+        let mut f = std::fs::File::create(&html_path).map_err(|e| e.to_string())?;
+        f.write_all(html_content.as_bytes()).map_err(|e| e.to_string())?;
+    }
+
+    let html_url = format!("file:///{}", html_path.to_string_lossy().replace('\\', "/"));
+    let pdf_str  = pdf_path.to_string_lossy();
+
+    let status = std::process::Command::new(&browser)
+        .args([
+            "--headless=new",
+            "--disable-gpu",
+            "--no-pdf-header-footer",
+            "--disable-extensions",
+            &format!("--print-to-pdf={pdf_str}"),
+            &html_url,
+        ])
+        .status()
+        .map_err(|e| format!("Failed to launch browser: {e}"))?;
+
+    let _ = std::fs::remove_file(&html_path);
+
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&temp_subdir);
+        return Err(format!("Browser exited with non-zero status: {status}"));
+    }
+    if !pdf_path.exists() {
+        let _ = std::fs::remove_dir_all(&temp_subdir);
+        return Err("Browser ran but no PDF was produced".into());
+    }
+
+    Ok(pdf_path.to_string_lossy().into_owned())
+}
+
+/// Deletes a directory that lives inside the OS temp folder (safety check included).
+#[tauri::command]
+fn remove_temp_dir(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    let temp = std::env::temp_dir();
+    if !p.starts_with(&temp) {
+        return Err("Path is not inside the OS temp directory".into());
+    }
+    std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2479,6 +2578,9 @@ pub fn run() {
             sqlite_table_schema,
             sqlite_query_table,
             sqlite_run_query,
+            // PDF generation
+            generate_note_pdf,
+            remove_temp_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -27,7 +27,8 @@
       "PowerShell(Invoke-WebRequest https://bootstrap.pypa.io/get-pip.py -OutFile $env:TEMP\\\\get-pip.py; python $env:TEMP\\\\get-pip.py; python -m pip install Pillow)",
       "PowerShell(python \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\recolor_icon.py\")",
       "Bash(Select-String -Pattern \"interface Props\" -Path \"*.tsx\" -Context 0,12)",
-      "Bash(Select-Object -First 60)"
+      "Bash(Select-Object -First 60)",
+      "Bash(npm install *)"
     ]
   }
 }
