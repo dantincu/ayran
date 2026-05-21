@@ -545,7 +545,7 @@ pub fn query_items_paged(
 
     let total: u64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM folder_items
+            "SELECT COUNT(*) FROM folder_items \
              WHERE account_id = ?1 AND parent_id = ?2 AND (?3 IS NULL OR name LIKE ?3)",
             params![account_id, parent_id, pattern.as_deref()],
             |row| row.get(0),

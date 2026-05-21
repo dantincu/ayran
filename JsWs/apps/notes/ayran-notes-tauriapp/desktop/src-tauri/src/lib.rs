@@ -700,18 +700,6 @@ async fn list_folder(
         }
     }
 
-    // Fire-and-forget: remove cached rows whose parent_id is a folder that no
-    // longer exists in the cache (grandchildren of externally-deleted folders).
-    // The user should not wait for this housekeeping work.
-    tauri::async_runtime::spawn(async move {
-        let _ = tokio::task::spawn_blocking(move || {
-            if let Ok(conn) = db.lock() {
-                let _ = cache::cleanup_orphans(&conn, &account_id, &root);
-            }
-        })
-        .await;
-    });
-
     Ok(total)
 }
 

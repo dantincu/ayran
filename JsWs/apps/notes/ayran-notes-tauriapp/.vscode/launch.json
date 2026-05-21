@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Tauri Dev (Rust debug)",
+      "cargo": {
+        "args": ["build", "--manifest-path", "desktop/src-tauri/Cargo.toml", "--no-default-features"],
+        "filter": { "name": "desktop", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}/desktop",
+      "env": {
+        "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=9222"
+      },
+      "preLaunchTask": "vite-dev"
+    }
+  ]
+}
