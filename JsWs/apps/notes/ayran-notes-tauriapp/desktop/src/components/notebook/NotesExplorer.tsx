@@ -57,6 +57,7 @@ interface Props {
   notebookParentId: string;
   instanceKey?: string;
   onDisplayNameChange?: (name: string) => void;
+  onViewingFileChange?: (isViewing: boolean) => void;
   onQuickActions?: () => void;
 }
 
@@ -97,7 +98,7 @@ function BackIcon() {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function NotesExplorer({ accountId, notebookParentId, instanceKey, onDisplayNameChange, onQuickActions }: Props) {
+export default function NotesExplorer({ accountId, notebookParentId, instanceKey, onDisplayNameChange, onViewingFileChange, onQuickActions }: Props) {
   const [account, setAccount] = useState<StoredAccount | null>(null);
   const [acctLoading, setAcctLoading] = useState(true);
   const [acctError, setAcctError] = useState<string | null>(null);
@@ -214,12 +215,16 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
   const onDisplayNameChangeRef = useRef(onDisplayNameChange);
   onDisplayNameChangeRef.current = onDisplayNameChange;
 
+  const onViewingFileChangeRef = useRef(onViewingFileChange);
+  onViewingFileChangeRef.current = onViewingFileChange;
+
   useEffect(() => {
     onDisplayNameChangeRef.current?.(
       viewingFile
-        ? viewingFile.item.name
+        ? (viewingFile.displayPath || viewingFile.item.name)
         : breadcrumbs[breadcrumbs.length - 1]?.label ?? 'Notes Explorer'
     );
+    onViewingFileChangeRef.current?.(!!viewingFile);
   }, [breadcrumbs, viewingFile]);
 
   // ── Load notes at current folder ──────────────────────────────────────────

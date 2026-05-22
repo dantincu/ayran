@@ -229,12 +229,13 @@ function PlaceholderTab({ label }: { label: string }) {
 interface SplitTabHeaderProps {
   tab: NbTab;
   isPrimary: boolean;
+  isNotesViewing?: boolean;
   onClose: () => void;
   onOpenTabsList?: () => void;
   onOpenSplitOptions?: (e: React.MouseEvent) => void;
 }
 
-function SplitTabHeader({ tab, isPrimary, onClose, onOpenTabsList, onOpenSplitOptions }: SplitTabHeaderProps) {
+function SplitTabHeader({ tab, isPrimary, isNotesViewing, onClose, onOpenTabsList, onOpenSplitOptions }: SplitTabHeaderProps) {
   const btn = 'shrink-0 w-6 h-6 flex items-center justify-center rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
   const closeBtn = (
     <button onClick={onClose} title="Close tab" className={btn}>
@@ -243,7 +244,7 @@ function SplitTabHeader({ tab, isPrimary, onClose, onOpenTabsList, onOpenSplitOp
   );
   return (
     <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-2 py-1.5 shrink-0 flex items-center gap-1.5">
-      <span className="shrink-0 text-gray-500 dark:text-gray-400">{tabIcon(tab.type, 'w-3.5 h-3.5')}</span>
+      <span className={`shrink-0 ${isNotesViewing ? 'text-amber-500 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400'}`}>{tabIcon(tab.type, 'w-3.5 h-3.5')}</span>
       <span className="flex-1 text-xs font-medium text-gray-700 dark:text-gray-200 truncate select-none">{tab.name}</span>
       {isPrimary ? (
         <div className="flex items-center gap-0.5 shrink-0">
@@ -313,6 +314,17 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   const [splitOptionsMenu, setSplitOptionsMenu] = useState<{ x: number; y: number } | null>(null);
   // Derived: the split pair (if any) that contains the currently active tab.
   const activeSplitPair = splitPairs.find((p) => p.primaryId === activeTabId || p.secondaryId === activeTabId) ?? null;
+
+  // ── Notes-explorer file-viewing state ────────────────────────────────────────
+  const [notesViewingTabIds, setNotesViewingTabIds] = useState<Set<string>>(new Set());
+
+  const handleNotesViewingFileChange = (tabId: string, isViewing: boolean) => {
+    setNotesViewingTabIds((prev) => {
+      const next = new Set(prev);
+      isViewing ? next.add(tabId) : next.delete(tabId);
+      return next;
+    });
+  };
 
   // ── Minimized explorer stacks ─────────────────────────────────────────────────
   const [minimizedExplorerTabs, setMinimizedExplorerTabs] = useState<Set<string>>(new Set());
@@ -921,7 +933,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleTabCheck(idx, true, isSelected); }}
                         className="shrink-0 accent-blue-500 w-3.5 h-3.5"
                       />
-                      <span className={`shrink-0 ${isSelected ? 'text-blue-500 dark:text-blue-400' : isPreviewed ? 'text-violet-600 dark:text-violet-400' : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
+                      <span className={`shrink-0 ${isSelected ? 'text-blue-500 dark:text-blue-400' : isPreviewed ? 'text-violet-600 dark:text-violet-400' : notesViewingTabIds.has(tab.id) ? 'text-amber-500 dark:text-amber-400' : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
                         {tabIcon(tab.type, 'w-3.5 h-3.5')}
                       </span>
                       <span className={`flex-1 text-sm truncate ${isSelected ? 'text-blue-700 dark:text-blue-300' : isPreviewed ? 'text-violet-700 dark:text-violet-300 font-medium' : isActive ? 'text-emerald-700 dark:text-emerald-300 font-medium' : 'text-gray-700 dark:text-gray-200'}`}>
@@ -1099,7 +1111,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
       {showTabsHeader && !activeSplitPair && (
         <div className="bg-gray-50 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-1.5 shrink-0 flex items-center gap-2">
-          <span className="shrink-0 text-gray-500 dark:text-gray-400">
+          <span className={`shrink-0 ${notesViewingTabIds.has(activeTabId) ? 'text-amber-500 dark:text-amber-400' : 'text-gray-500 dark:text-gray-400'}`}>
             {tabIcon(activeTab.type, 'w-3.5 h-3.5')}
           </span>
           <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-200 truncate select-none">
@@ -1176,7 +1188,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               {/* Primary panel (left / top) */}
               <div className={`flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden ${dividerCls}`}>
                 {showTabsHeader && (
-                  <SplitTabHeader tab={primaryTab} isPrimary onClose={() => closeTabById(activeSplitPair.primaryId)} onOpenTabsList={openTabsList}/>
+                  <SplitTabHeader tab={primaryTab} isPrimary isNotesViewing={notesViewingTabIds.has(primaryTab.id)} onClose={() => closeTabById(activeSplitPair.primaryId)} onOpenTabsList={openTabsList}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   {renderTabContent(primaryTab)}
@@ -1185,7 +1197,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               {/* Secondary panel (right / bottom) */}
               <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                 {showTabsHeader && (
-                  <SplitTabHeader tab={secondaryTab} isPrimary={false} onClose={() => closeTabById(activeSplitPair.secondaryId)}
+                  <SplitTabHeader tab={secondaryTab} isPrimary={false} isNotesViewing={notesViewingTabIds.has(secondaryTab.id)} onClose={() => closeTabById(activeSplitPair.secondaryId)}
                     onOpenSplitOptions={(e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY })}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
@@ -1211,6 +1223,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                     notebookParentId={entry.parentId}
                     instanceKey={tab.id}
                     onDisplayNameChange={(name) => setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, name } : t))}
+                    onViewingFileChange={(isViewing) => handleNotesViewingFileChange(tab.id, isViewing)}
                     onQuickActions={() => {}}
                   />
                 )}
