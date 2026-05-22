@@ -492,18 +492,19 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       search: null as any, sortBy: 'name', ascending: true, page: 0, pageSize: 200,
     });
     const allFiles = r.items.filter((i) => !i.isDir);
-    const oldHtmlPdfFiles = allFiles.filter((i) =>
-      i.name.endsWith(nc.noteHtmlSuffix) || i.name.endsWith(nc.notePdfSuffix),
-    );
-    const markdownFile = allFiles.find((i) =>
+    const oldMarkdownFiles = allFiles.filter((i) =>
       i.name.endsWith(nc.noteMarkdownSuffix)
       && !i.name.endsWith(nc.noteHtmlSuffix)
       && !i.name.endsWith(nc.notePdfSuffix),
     );
+    const oldHtmlPdfFiles = allFiles.filter((i) =>
+      i.name.endsWith(nc.noteHtmlSuffix) || i.name.endsWith(nc.notePdfSuffix),
+    );
+    const markdownFile = oldMarkdownFiles[0] ?? null;
     const noteJsonFileItem = allFiles.find((i) => i.name === nc.noteJsonFileName);
 
-    // Get markdown content and, when doing a manual rename (no currentMdContent),
-    // update the h1 heading in the file content and save it back before renaming.
+    // Get markdown content. For a manual rename (no currentMdContent), also update
+    // the h1 heading to match the new title.
     let mdContent = currentMdContent;
     if (mdContent === undefined) {
       if (!markdownFile) throw new Error('Markdown file not found in note folder');
@@ -515,14 +516,12 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       mdContent = /^#\s+.+/m.test(raw)
         ? raw.replace(/^#\s+.+/m, `# ${escaped}`)
         : `# ${escaped}\n${raw}`;
-      await invoke('save_text_file', {
-        accountId: account.id, itemId: markdownFile.itemId, parentId: note.shortFolderId,
-        content: mdContent, itemName: markdownFile.name,
-      });
     }
 
-    // Delete old HTML and PDF files.
-    for (const f of oldHtmlPdfFiles) {
+    // Delete all old markdown, HTML, and PDF files; then create a fresh markdown
+    // file under the correct new name. This is the same strategy used for PDFs
+    // and avoids provider-specific rename commands entirely.
+    for (const f of [...oldMarkdownFiles, ...oldHtmlPdfFiles]) {
       try {
         if (account.provider === 'filen') {
           await invoke('filen_trash_file', { accountId: account.id, uuid: f.itemId });
@@ -535,20 +534,10 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       } catch { /* non-fatal */ }
     }
 
-    // Rename the markdown file if the name changed.
-    if (markdownFile && markdownFile.name !== newMarkdownFileName) {
-      if (account.provider === 'filen') {
-        await invoke('filen_rename_file', { accountId: account.id, uuid: markdownFile.itemId, newName: newMarkdownFileName });
-      } else if (account.provider === 'google-drive') {
-        await invoke('gdrive_rename', { accountId: account.id, fileId: markdownFile.itemId, newName: newMarkdownFileName });
-      } else if (account.provider === 'local-fs') {
-        await fsRename(
-          toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, markdownFile.name)),
-          toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, newMarkdownFileName)),
-        );
-      }
-      await invoke('rename_cached_item', { accountId: account.id, itemId: markdownFile.itemId, newName: newMarkdownFileName }).catch(() => {});
-    }
+    const newMarkdownItemId = await invoke<string>('create_text_file', {
+      accountId: account.id, parentId: note.shortFolderId,
+      filename: newMarkdownFileName, content: mdContent ?? '',
+    });
 
     // Regenerate HTML and PDF from the new content.
     if (mdContent) {
@@ -655,12 +644,31 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
     ));
     setViewingFile((prev) => {
       if (!prev || prev.item.parentId !== note.shortFolderId) return prev;
-      const newItem = markdownFile && prev.item.itemId === markdownFile.itemId
-        ? { ...prev.item, name: newMarkdownFileName }
-        : prev.item;
-      return { item: newItem, displayPath: newTitle };
+      return { item: { ...prev.item, itemId: newMarkdownItemId, name: newMarkdownFileName }, displayPath: newTitle };
     });
   }, [account, noteChildrenJsonId, currentFolderId]);
+
+  // Stable refs so handleAfterSave always reads the latest values even when
+  // noteEntries or viewingFile weren't populated at the time of the last render.
+  const noteEntriesRef = useRef(noteEntries);
+  noteEntriesRef.current = noteEntries;
+  const viewingFileRef = useRef(viewingFile);
+  viewingFileRef.current = viewingFile;
+  const performRenameNoteRef = useRef(performRenameNote);
+  performRenameNoteRef.current = performRenameNote;
+
+  const handleAfterSave = useCallback(async (newContent: string) => {
+    const vf = viewingFileRef.current;
+    if (!vf) return;
+    const note = noteEntriesRef.current.find((e) => e.shortFolderId === vf.item.parentId) ?? null;
+    if (!note) return;
+    const m = /^#\s+(.+)$/m.exec(newContent);
+    const newTitle = m ? m[1].trim() : '';
+    const oldTitle = (vf.displayPath ?? '').trim();
+    if (newTitle && newTitle !== oldTitle) {
+      await performRenameNoteRef.current(note, newTitle, newContent).catch(() => {});
+    }
+  }, []);
 
   const handleRename = useCallback(async () => {
     if (!renamingNote || !renameTitle.trim() || renameSaving) return;
@@ -996,14 +1004,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
           displayPath={viewingFile.displayPath}
           onClose={() => setViewingFile(null)}
           inNotebook
-          onAfterSave={currentViewingNote ? async (newContent) => {
-            const m = /^#\s+(.+)$/m.exec(newContent);
-            const newTitle = m ? m[1].trim() : '';
-            const oldTitle = (viewingFile.displayPath ?? '').trim();
-            if (newTitle && newTitle !== oldTitle) {
-              await performRenameNote(currentViewingNote, newTitle, newContent).catch(() => {});
-            }
-          } : undefined}
+          onAfterSave={handleAfterSave}
           onRenameNote={currentViewingNote ? () => startRename(currentViewingNote) : undefined}
         />
       )}
