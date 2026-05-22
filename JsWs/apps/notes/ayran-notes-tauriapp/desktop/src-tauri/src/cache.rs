@@ -166,6 +166,75 @@ pub fn delete_content_cache_entry(conn: &Connection, account_id: &str, item_id: 
     .map_err(|e| e.to_string())
 }
 
+/// Seeds `path_index` for `root_item_id` at `root_path` and cascades the correct
+/// full paths to every cached descendant found in `folder_items`.
+/// Also evicts every affected item from `content_cache` so the next `open_file`
+/// re-downloads to the new (correct, hierarchy-mirroring) location.
+pub fn register_path_cascade(
+    conn: &mut Connection,
+    account_id: &str,
+    root_item_id: &str,
+    root_path: &str,
+) -> Result<(), String> {
+    // BFS through folder_items to collect (item_id, full_path) for all descendants.
+    let mut all: Vec<(String, String)> = Vec::new(); // (item_id, path)
+    let mut queue: std::collections::VecDeque<(String, String)> =
+        std::collections::VecDeque::new();
+    queue.push_back((root_item_id.to_string(), root_path.to_string()));
+
+    while let Some((parent_id, parent_path)) = queue.pop_front() {
+        all.push((parent_id.clone(), parent_path.clone()));
+
+        let children: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT item_id, name FROM folder_items \
+                 WHERE account_id = ?1 AND parent_id = ?2",
+            )
+            .map_err(|e| e.to_string())?
+            .query_map(params![account_id, &parent_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (child_id, child_name) in children {
+            let child_path = if parent_path.is_empty() {
+                child_name
+            } else {
+                format!("{}/{}", parent_path, child_name)
+            };
+            queue.push_back((child_id, child_path));
+        }
+    }
+
+    // Write everything in a single transaction.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    {
+        let mut pi_stmt = tx
+            .prepare_cached(
+                "INSERT OR REPLACE INTO path_index \
+                 (account_id, path, path_hash, item_id, is_dir) \
+                 VALUES (?1, ?2, ?3, ?4, 1)",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut cc_stmt = tx
+            .prepare_cached(
+                "DELETE FROM content_cache WHERE account_id = ?1 AND item_id = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        for (item_id, path) in &all {
+            pi_stmt
+                .execute(params![account_id, path, path_hash(path), item_id])
+                .map_err(|e| e.to_string())?;
+            cc_stmt
+                .execute(params![account_id, item_id])
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 // ── Path index ────────────────────────────────────────────────────────────────
 
 /// FNV-1a 64-bit hash, stored as SQLite INTEGER for fast prefix filtering.

@@ -43,6 +43,10 @@ interface Props {
   onNavigate?: (item: CachedItem, siblingIdx: number) => void;
   /** When true, integrates with the notebook layout (no fixed overlay, notebook toolbar). */
   inNotebook?: boolean;
+  /** Called after a successful save with the new text content and item ID. */
+  onAfterSave?: (newContent: string, newItemId: string) => Promise<void>;
+  /** When provided, a "Rename note" option is added to the notebook options popover. */
+  onRenameNote?: () => void;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -117,7 +121,7 @@ function EndIcon() {
 
 export default function FileViewer({
   account, item, onClose, onOpenNotebook, displayPath, siblings, siblingIdx, onNavigate,
-  inNotebook = false,
+  inNotebook = false, onAfterSave, onRenameNote,
 }: Props) {
   const mode = detectMode(item);
   const { theme } = useTheme();
@@ -384,6 +388,7 @@ export default function FileViewer({
     setSaving(true); setSaveError(null);
     try {
       const content = lineEnding === 'crlf' ? editedText.replace(/\n/g, '\r\n') : editedText;
+      let savedItemId = effectiveItemId;
       if (account.shelvesetActive) {
         await invoke('shelveset_save_content', {
           accountId: account.id, itemId: effectiveItemId, itemName: item.name,
@@ -395,12 +400,13 @@ export default function FileViewer({
           accountId: account.id, itemId: effectiveItemId, parentId: item.parentId,
           content, itemName: item.name,
         });
-        if (newId !== effectiveItemId) setEffectiveItemId(newId);
+        if (newId !== effectiveItemId) { setEffectiveItemId(newId); savedItemId = newId; }
       }
       setTextContent(editedText); setIsDirty(false);
       if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
       setSavedFlash(true);
       savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
+      if (onAfterSave) await onAfterSave(editedText, savedItemId).catch(() => {});
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -543,8 +549,14 @@ export default function FileViewer({
 
 
   // Options popover (text-mode-only).
-  const OptionsPopover = () => (
-    <div className="absolute right-0 top-full mt-1 z-[60] min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg">
+  // Uses fixed positioning so it is not clipped by the toolbar's overflow-x-auto.
+  const OptionsPopover = () => {
+    const rect = optionsRef.current?.getBoundingClientRect();
+    return (
+    <div
+      style={{ position: 'fixed', top: (rect?.bottom ?? 0) + 4, right: window.innerWidth - (rect?.right ?? 0) }}
+      className="z-[60] min-w-max bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg"
+    >
       <div className="px-4 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 border-b border-gray-100 dark:border-gray-700">Options</div>
       <div className="py-1">
         <button
@@ -557,6 +569,12 @@ export default function FileViewer({
           <button onClick={() => { setShowOptions(false); setShowDiff(true); }}
             className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             Compare with saved
+          </button>
+        )}
+        {onRenameNote && (
+          <button onClick={() => { setShowOptions(false); onRenameNote(); }}
+            className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+            Rename note
           </button>
         )}
         {item.name === config.notebookFileName && onOpenNotebook && (
@@ -585,6 +603,7 @@ export default function FileViewer({
       </div>
     </div>
   );
+  };
 
   // The compact notebook toolbar (for text / audio / unsupported / loading / error).
   const NotebookBar = () => (

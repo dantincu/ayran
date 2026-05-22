@@ -1221,6 +1221,11 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                   <NotesExplorer
                     accountId={entry.accountId}
                     notebookParentId={entry.parentId}
+                    notebookFolderRelPath={(() => {
+                      const p = entry.displayPath ?? '';
+                      const slash = p.lastIndexOf('/');
+                      return slash >= 0 ? p.substring(0, slash) : '';
+                    })()}
                     instanceKey={tab.id}
                     onDisplayNameChange={(name) => setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, name } : t))}
                     onViewingFileChange={(isViewing) => handleNotesViewingFileChange(tab.id, isViewing)}

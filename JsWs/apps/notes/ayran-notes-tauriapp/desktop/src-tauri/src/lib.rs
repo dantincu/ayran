@@ -889,18 +889,26 @@ async fn open_file_inner(
     }
 
     let root_parent = account_root_parent_id(account);
-    let path_parts = {
+    let path_parts: Vec<String> = {
         let conn = cache_db.lock().map_err(|e| e.to_string())?;
-        let mut parts = cache::item_path_from_root(&conn, &account.id, item_id, &root_parent);
-        // When the item is not in the folder cache, item_path_from_root returns
-        // [item_id] (a UUID). Use the provided filename hint instead so cached
-        // files get real names and folder structure rather than raw UUIDs.
-        if parts.len() == 1 && parts[0] == item_id {
-            if let Some(name) = item_name_hint {
-                parts = vec![name.to_string()];
+        // Prefer path_index: list_folder populates it with full cloud-mirrored paths when
+        // ancestor folders have been registered via register_path_in_index.  This lets the
+        // notes explorer (which only lists two folder levels) produce correct deep paths
+        // without needing every ancestor present in folder_items.
+        if let Some(indexed) = cache::get_path_for_item(&conn, &account.id, item_id) {
+            indexed.split('/').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect()
+        } else {
+            let mut parts = cache::item_path_from_root(&conn, &account.id, item_id, &root_parent);
+            // When the item is not in the folder cache, item_path_from_root returns
+            // [item_id] (a UUID). Use the provided filename hint instead so cached
+            // files get real names and folder structure rather than raw UUIDs.
+            if parts.len() == 1 && parts[0] == item_id {
+                if let Some(name) = item_name_hint {
+                    parts = vec![name.to_string()];
+                }
             }
+            parts
         }
-        parts
     };
 
     let rel: std::path::PathBuf = path_parts.iter().map(|p| sanitize_path_component(p)).collect();
@@ -2419,6 +2427,27 @@ async fn generate_note_pdf(html_content: String, filename: String) -> Result<Str
     Ok(pdf_path.to_string_lossy().into_owned())
 }
 
+/// Seeds `path_index` for `item_id` at `path` and cascades correct full paths to
+/// every cached descendant in `folder_items`.  Also evicts those items from
+/// `content_cache` so the next `open_file` re-downloads to the right location.
+/// Call this before `list_folder` for any folder that is opened by ID without
+/// first being discovered by browsing (e.g. the notes explorer root folder).
+#[tauri::command]
+async fn register_path_in_index(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    item_id: String,
+    path: String,
+) -> Result<(), String> {
+    let db = std::sync::Arc::clone(&cache_state.0);
+    tokio::task::spawn_blocking(move || {
+        let mut conn = db.lock().map_err(|e| e.to_string())?;
+        cache::register_path_cascade(&mut conn, &account_id, &item_id, &path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Deletes a directory that lives inside the OS temp folder (safety check included).
 #[tauri::command]
 fn remove_temp_dir(path: String) -> Result<(), String> {
@@ -2598,6 +2627,8 @@ pub fn run() {
             sqlite_table_schema,
             sqlite_query_table,
             sqlite_run_query,
+            // Path index
+            register_path_in_index,
             // PDF generation
             generate_note_pdf,
             remove_temp_dir,

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { readFile, mkdir, copyFile } from '@tauri-apps/plugin-fs';
+import { readFile, mkdir, copyFile, rename as fsRename, remove as fsRemove } from '@tauri-apps/plugin-fs';
 import { marked } from 'marked';
 import type { StoredAccount, CachedItem, FolderPage } from '../../types';
 import { getAccount } from '../../lib/account-store';
@@ -18,6 +18,7 @@ import { extractFirstH1 } from '../../lib/markdown-utils';
 import FileViewer from '../explorer/FileViewer';
 import PaginationBar from '../explorer/PaginationBar';
 import Popover from '../common/Popover';
+import Modal from '../common/Modal';
 
 const PAGE_SIZE = config.defaultListPageSize;
 
@@ -62,6 +63,9 @@ interface RepairPair {
 interface Props {
   accountId: string;
   notebookParentId: string;
+  /** Relative cloud path of the notes folder (e.g. "Drive/Notes"). Used to
+   *  seed path_index so open_file caches files in the correct hierarchy. */
+  notebookFolderRelPath?: string;
   instanceKey?: string;
   onDisplayNameChange?: (name: string) => void;
   onViewingFileChange?: (isViewing: boolean) => void;
@@ -105,7 +109,7 @@ function BackIcon() {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function NotesExplorer({ accountId, notebookParentId, instanceKey, onDisplayNameChange, onViewingFileChange, onQuickActions }: Props) {
+export default function NotesExplorer({ accountId, notebookParentId, notebookFolderRelPath, instanceKey, onDisplayNameChange, onViewingFileChange, onQuickActions }: Props) {
   const [account, setAccount] = useState<StoredAccount | null>(null);
   const [acctLoading, setAcctLoading] = useState(true);
   const [acctError, setAcctError] = useState<string | null>(null);
@@ -135,6 +139,13 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
   const [repairing, setRepairing] = useState(false);
   const [repairProgress, setRepairProgress] = useState<string | null>(null);
   const [repairNoteErrors, setRepairNoteErrors] = useState<string[]>([]);
+
+  // ── Rename state ─────────────────────────────────────────────────────────
+  const [renamingNote, setRenamingNote] = useState<NoteEntry | null>(null);
+  const [renameTitle, setRenameTitle] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
+  const [noteCtxMenu, setNoteCtxMenu] = useState<{ note: NoteEntry; x: number; y: number } | null>(null);
 
   // ── Create-note form state ────────────────────────────────────────────────
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
@@ -224,6 +235,7 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
       .finally(() => { if (isMountedRef.current) setAcctLoading(false); });
   }, [accountId]);
 
+
   // ── Notify parent of display name ─────────────────────────────────────────
 
   const onDisplayNameChangeRef = useRef(onDisplayNameChange);
@@ -255,7 +267,17 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
     setRepairPairs([]);
     setRepairNoteErrors([]);
     try {
-      // 1. List folder to populate SQLite cache.
+      // 1. Seed path_index for the notes root BEFORE listing so that list_folder
+      //    can build correct cloud-mirrored paths for every descendant.
+      //    Also evicts stale content_cache entries so re-downloads go to the right place.
+      if (folderId === notebookParentId && notebookFolderRelPath !== undefined) {
+        const folderPath = notebookFolderRelPath.replace(/^\/+|\/+$/g, '');
+        await invoke('register_path_in_index', {
+          accountId: account.id, itemId: notebookParentId, path: folderPath,
+        }).catch(() => {});
+      }
+
+      // 2. List folder to populate SQLite cache.
       await invoke('list_folder', { accountId: account.id, parentId: folderId, force });
 
       // 2. Single paginated scan — find [note-children].json by exact name and
@@ -441,6 +463,218 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
       setError(`Failed to create index: ${e instanceof Error ? e.message : String(e)}`);
     }
   }, [account, currentFolderId, repairPairs, loadNotes]);
+
+  // ── Rename note ───────────────────────────────────────────────────────────
+
+  const startRename = useCallback((note: NoteEntry) => {
+    setRenamingNote(note);
+    setRenameTitle(note.title);
+    setRenameError(null);
+  }, []);
+
+  const performRenameNote = useCallback(async (
+    note: NoteEntry,
+    newTitle: string,
+    currentMdContent?: string,
+  ): Promise<void> => {
+    if (!account || !note.shortFolderId) throw new Error('Cannot rename: short folder not found');
+
+    const newFullNamePart = computeFullNamePart(newTitle);
+    const newMarkdownFileName = computeMarkdownFileName(newFullNamePart);
+    const newHtmlFileName = computeHtmlFileName(newFullNamePart);
+    const newPdfFileName = computePdfFileName(newFullNamePart);
+
+    // List the short folder to get up-to-date file list.
+    await invoke('list_folder', { accountId: account.id, parentId: note.shortFolderId, force: false });
+    const r = await invoke<FolderPage>('query_folder_items', {
+      accountId: account.id, parentId: note.shortFolderId,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      search: null as any, sortBy: 'name', ascending: true, page: 0, pageSize: 200,
+    });
+    const allFiles = r.items.filter((i) => !i.isDir);
+    const oldHtmlPdfFiles = allFiles.filter((i) =>
+      i.name.endsWith(nc.noteHtmlSuffix) || i.name.endsWith(nc.notePdfSuffix),
+    );
+    const markdownFile = allFiles.find((i) =>
+      i.name.endsWith(nc.noteMarkdownSuffix)
+      && !i.name.endsWith(nc.noteHtmlSuffix)
+      && !i.name.endsWith(nc.notePdfSuffix),
+    );
+    const noteJsonFileItem = allFiles.find((i) => i.name === nc.noteJsonFileName);
+
+    // Get markdown content and, when doing a manual rename (no currentMdContent),
+    // update the h1 heading in the file content and save it back before renaming.
+    let mdContent = currentMdContent;
+    if (mdContent === undefined) {
+      if (!markdownFile) throw new Error('Markdown file not found in note folder');
+      const path = await invoke<string>('open_file', {
+        accountId: account.id, itemId: markdownFile.itemId, force: false, itemName: markdownFile.name,
+      });
+      const raw = new TextDecoder().decode(await readFile(path));
+      const escaped = newTitle.replace(/[\\`*_[\]]/g, '\\$&');
+      mdContent = /^#\s+.+/m.test(raw)
+        ? raw.replace(/^#\s+.+/m, `# ${escaped}`)
+        : `# ${escaped}\n${raw}`;
+      await invoke('save_text_file', {
+        accountId: account.id, itemId: markdownFile.itemId, parentId: note.shortFolderId,
+        content: mdContent, itemName: markdownFile.name,
+      });
+    }
+
+    // Delete old HTML and PDF files.
+    for (const f of oldHtmlPdfFiles) {
+      try {
+        if (account.provider === 'filen') {
+          await invoke('filen_trash_file', { accountId: account.id, uuid: f.itemId });
+        } else if (account.provider === 'google-drive') {
+          await invoke('gdrive_delete_file', { accountId: account.id, fileId: f.itemId });
+        } else if (account.provider === 'local-fs') {
+          await fsRemove(toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, f.name)));
+        }
+        await invoke('delete_cached_file', { accountId: account.id, itemId: f.itemId }).catch(() => {});
+      } catch { /* non-fatal */ }
+    }
+
+    // Rename the markdown file if the name changed.
+    if (markdownFile && markdownFile.name !== newMarkdownFileName) {
+      if (account.provider === 'filen') {
+        await invoke('filen_rename_file', { accountId: account.id, uuid: markdownFile.itemId, newName: newMarkdownFileName });
+      } else if (account.provider === 'google-drive') {
+        await invoke('gdrive_rename', { accountId: account.id, fileId: markdownFile.itemId, newName: newMarkdownFileName });
+      } else if (account.provider === 'local-fs') {
+        await fsRename(
+          toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, markdownFile.name)),
+          toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, newMarkdownFileName)),
+        );
+      }
+      await invoke('rename_cached_item', { accountId: account.id, itemId: markdownFile.itemId, newName: newMarkdownFileName }).catch(() => {});
+    }
+
+    // Regenerate HTML and PDF from the new content.
+    if (mdContent) {
+      const htmlContent = String(await marked.parse(mdContent));
+      const hasExtraContent = mdContent.replace(/^#[^\n]*\n?/, '').trim().length > 0;
+
+      if (nc.generatePdf) {
+        try {
+          const tempPdfPath = await invoke<string>('generate_note_pdf', { htmlContent, filename: newPdfFileName });
+          const sep = tempPdfPath.includes('\\') ? '\\' : '/';
+          const tempPdfDir = tempPdfPath.substring(0, tempPdfPath.lastIndexOf(sep));
+          try {
+            if (account.provider === 'filen') {
+              await invoke('filen_upload_file', { accountId: account.id, parentUuid: note.shortFolderId, filePath: tempPdfPath });
+            } else if (account.provider === 'google-drive') {
+              await invoke('gdrive_upload_file', { accountId: account.id, folderId: note.shortFolderId, filePath: tempPdfPath });
+            } else if (account.provider === 'local-fs') {
+              await copyFile(tempPdfPath, toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, newPdfFileName)));
+            }
+          } finally {
+            void invoke('remove_temp_dir', { path: tempPdfDir });
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      if (hasExtraContent) {
+        await invoke('create_text_file', {
+          accountId: account.id, parentId: note.shortFolderId,
+          filename: newHtmlFileName, content: htmlContent,
+        });
+      }
+    }
+
+    // Update [note].json with the new title.
+    const updatedAt = new Date().toISOString();
+    if (noteJsonFileItem) {
+      try {
+        const path = await invoke<string>('open_file', {
+          accountId: account.id, itemId: noteJsonFileItem.itemId, force: false, itemName: nc.noteJsonFileName,
+        });
+        const existing = JSON.parse(new TextDecoder().decode(await readFile(path))) as { Title: string; CreatedAt: string };
+        await invoke('save_text_file', {
+          accountId: account.id, itemId: noteJsonFileItem.itemId, parentId: note.shortFolderId,
+          content: JSON.stringify({ ...existing, Title: newTitle, UpdatedAt: updatedAt }, null, 2),
+          itemName: nc.noteJsonFileName,
+        });
+      } catch { /* non-fatal */ }
+    } else {
+      await invoke('create_text_file', {
+        accountId: account.id, parentId: note.shortFolderId,
+        filename: nc.noteJsonFileName, content: noteJsonContent(newTitle),
+      }).catch(() => {});
+    }
+
+    // Update the parent [note-children].json.
+    if (noteChildrenJsonId) {
+      try {
+        const path = await invoke<string>('open_file', {
+          accountId: account.id, itemId: noteChildrenJsonId, force: false, itemName: nc.noteChildrenJsonFileName,
+        });
+        const data = JSON.parse(new TextDecoder().decode(await readFile(path))) as {
+          ChildNotes: Record<string, { Title: string; CreatedAt: string; UpdatedAt?: string }>;
+        };
+        if (data.ChildNotes?.[note.digits]) {
+          data.ChildNotes[note.digits] = { ...data.ChildNotes[note.digits], Title: newTitle, UpdatedAt: updatedAt };
+        }
+        await invoke('save_text_file', {
+          accountId: account.id, itemId: noteChildrenJsonId, parentId: currentFolderId,
+          content: JSON.stringify(data, null, 2), itemName: nc.noteChildrenJsonFileName,
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    // Rename the full folder (e.g. "110-Old Title" → "110-New Title") in the parent.
+    const oldFullFolderName = computeFullFolderName(note.digits, note.title);
+    const newFullFolderName = computeFullFolderName(note.digits, newTitle);
+    if (oldFullFolderName !== newFullFolderName) {
+      try {
+        const fullFolderItem = await invoke<CachedItem | null>('query_item_by_name', {
+          accountId: account.id, parentId: currentFolderId, name: oldFullFolderName,
+        });
+        if (fullFolderItem) {
+          if (account.provider === 'filen') {
+            await invoke('filen_rename_directory', { accountId: account.id, uuid: fullFolderItem.itemId, newName: newFullFolderName });
+          } else if (account.provider === 'google-drive') {
+            await invoke('gdrive_rename', { accountId: account.id, fileId: fullFolderItem.itemId, newName: newFullFolderName });
+          } else if (account.provider === 'local-fs') {
+            await fsRename(
+              toAbsPath(account.path ?? '', joinRelPath(currentFolderId, oldFullFolderName)),
+              toAbsPath(account.path ?? '', joinRelPath(currentFolderId, newFullFolderName)),
+            );
+          }
+          await invoke('rename_cached_item', { accountId: account.id, itemId: fullFolderItem.itemId, newName: newFullFolderName }).catch(() => {});
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    // Force-refresh the short folder cache so next open reads fresh data from the cloud.
+    await invoke('list_folder', { accountId: account.id, parentId: note.shortFolderId, force: true }).catch(() => {});
+
+    // Update local UI state.
+    setNoteEntries((prev) => prev.map((e) =>
+      e.digits === note.digits ? { ...e, title: newTitle, updatedAt } : e,
+    ));
+    setViewingFile((prev) => {
+      if (!prev || prev.item.parentId !== note.shortFolderId) return prev;
+      const newItem = markdownFile && prev.item.itemId === markdownFile.itemId
+        ? { ...prev.item, name: newMarkdownFileName }
+        : prev.item;
+      return { item: newItem, displayPath: newTitle };
+    });
+  }, [account, noteChildrenJsonId, currentFolderId]);
+
+  const handleRename = useCallback(async () => {
+    if (!renamingNote || !renameTitle.trim() || renameSaving) return;
+    setRenameSaving(true);
+    setRenameError(null);
+    try {
+      await performRenameNote(renamingNote, renameTitle.trim());
+      setRenamingNote(null);
+    } catch (e) {
+      setRenameError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRenameSaving(false);
+    }
+  }, [renamingNote, renameTitle, renameSaving, performRenameNote]);
 
   // ── Folder creation (provider-agnostic) ───────────────────────────────────
 
@@ -693,32 +927,89 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
   if (acctLoading) return <div className="flex items-center justify-center flex-1 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>;
   if (acctError || !account) return <div className="flex items-center justify-center flex-1 text-red-500 dark:text-red-400 text-sm p-4">{acctError ?? 'Account not found.'}</div>;
 
-  // ── File viewer ───────────────────────────────────────────────────────────
+  // ── Derived state ─────────────────────────────────────────────────────────
 
-  if (viewingFile) {
-    return (
-      <FileViewer
-        account={account}
-        item={viewingFile.item}
-        displayPath={viewingFile.displayPath}
-        onClose={() => setViewingFile(null)}
-        inNotebook
-      />
-    );
-  }
-
-  // ── Derived create state ──────────────────────────────────────────────────
+  // The NoteEntry that owns the currently-viewed markdown file (if any).
+  const currentViewingNote = viewingFile
+    ? noteEntries.find((e) => e.shortFolderId === viewingFile.item.parentId) ?? null
+    : null;
 
   const digits = effectiveCreateDigits();
   const pageStart = page * PAGE_SIZE;
   const visibleNotes = noteEntries.slice(pageStart, pageStart + PAGE_SIZE);
-
-  // ── Button style constants ────────────────────────────────────────────────
-
   const hdrBtn = 'shrink-0 w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
+  const menuRow = 'w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700';
 
   return (
     <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-white dark:bg-gray-900">
+
+      {/* ── Note context menu ────────────────────────────────────────────── */}
+      {noteCtxMenu && (
+        <Popover
+          title={noteCtxMenu.note.title || noteCtxMenu.note.shortFolderName}
+          onClose={() => setNoteCtxMenu(null)}
+          panelStyle={{ left: noteCtxMenu.x, top: noteCtxMenu.y }}
+        >
+          <div className="py-1">
+            <button onClick={() => { setNoteCtxMenu(null); startRename(noteCtxMenu.note); }} className={menuRow}>
+              Rename
+            </button>
+          </div>
+        </Popover>
+      )}
+
+      {/* ── Rename modal ─────────────────────────────────────────────────── */}
+      {renamingNote && (
+        <Modal title={`Rename "${renamingNote.title || renamingNote.shortFolderName}"`} onClose={() => setRenamingNote(null)} maxWidth="max-w-sm">
+          <div className="p-4 space-y-3 overflow-y-auto">
+            {renameError && <p className="text-sm text-red-500 dark:text-red-400">{renameError}</p>}
+            <input
+              type="text"
+              value={renameTitle}
+              onChange={(e) => setRenameTitle(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleRename(); if (e.key === 'Escape') setRenamingNote(null); }}
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
+              className="w-full px-3 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-400"
+            />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRenamingNote(null)} className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleRename()}
+                disabled={renameSaving || !renameTitle.trim()}
+                className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 transition-colors"
+              >
+                {renameSaving ? 'Renaming…' : 'Rename'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* ── File viewer (shown instead of notes list) ────────────────────── */}
+      {viewingFile && (
+        <FileViewer
+          account={account}
+          item={viewingFile.item}
+          displayPath={viewingFile.displayPath}
+          onClose={() => setViewingFile(null)}
+          inNotebook
+          onAfterSave={currentViewingNote ? async (newContent) => {
+            const m = /^#\s+(.+)$/m.exec(newContent);
+            const newTitle = m ? m[1].trim() : '';
+            const oldTitle = (viewingFile.displayPath ?? '').trim();
+            if (newTitle && newTitle !== oldTitle) {
+              await performRenameNote(currentViewingNote, newTitle, newContent).catch(() => {});
+            }
+          } : undefined}
+          onRenameNote={currentViewingNote ? () => startRename(currentViewingNote) : undefined}
+        />
+      )}
+
+      {/* ── Notes list (hidden while viewing a file) ─────────────────────── */}
+      {!viewingFile && (<>
 
       {/* ── Header ──────────────────────────────────────────────────────── */}
 
@@ -983,9 +1274,10 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
               {note.shortFolderName}
             </button>
 
-            {/* Note title button — open markdown */}
+            {/* Note title button — open markdown; right-click to rename */}
             <button
               onClick={() => void openNoteMarkdown(note)}
+              onContextMenu={(e) => { e.preventDefault(); setNoteCtxMenu({ note, x: e.clientX, y: e.clientY }); }}
               title={`Open "${note.title}"`}
               className="flex-1 min-w-12 text-left text-sm text-gray-800 dark:text-gray-200 hover:text-emerald-700 dark:hover:text-emerald-300 truncate transition-colors"
             >
@@ -1009,6 +1301,8 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
           <PaginationBar page={page} total={noteEntries.length} pageSize={PAGE_SIZE} onPage={setPage} />
         </div>
       )}
+
+      </>)}
     </div>
   );
 }
