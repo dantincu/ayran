@@ -475,6 +475,40 @@ pub fn all_item_ids_for_account(conn: &Connection, account_id: &str) -> Result<V
     Ok(ids)
 }
 
+/// Returns the single cached item in `parent_id` whose name matches `name` exactly.
+/// Returns `None` when the folder has not been listed or the item does not exist.
+pub fn get_item_by_name(
+    conn: &Connection,
+    account_id: &str,
+    parent_id: &str,
+    name: &str,
+) -> Result<Option<CachedItem>, String> {
+    conn.query_row(
+        "SELECT account_id, account_email, storage_type, item_id, parent_id,
+                name, is_dir, size, modified_ms, mime_type
+         FROM folder_items
+         WHERE account_id = ?1 AND parent_id = ?2 AND name = ?3
+         LIMIT 1",
+        params![account_id, parent_id, name],
+        |row| {
+            Ok(CachedItem {
+                account_id:    row.get(0)?,
+                account_email: row.get(1)?,
+                storage_type:  row.get(2)?,
+                item_id:       row.get(3)?,
+                parent_id:     row.get(4)?,
+                name:          row.get(5)?,
+                is_dir:        row.get::<_, i32>(6)? != 0,
+                size:          row.get(7)?,
+                modified_ms:   row.get(8)?,
+                mime_type:     row.get(9)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
 pub fn insert_batch(conn: &mut Connection, items: &[CachedItem]) -> Result<(), String> {
     if items.is_empty() {
         return Ok(());

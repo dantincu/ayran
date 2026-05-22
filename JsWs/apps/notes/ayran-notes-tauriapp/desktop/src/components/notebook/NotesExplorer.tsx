@@ -8,11 +8,13 @@ import nc from '../../notesConfig.json';
 import config from '../../config.json';
 import {
   computeShortFolderName, computeFullFolderName, computeFullNamePart,
-  computeMarkdownFileName, computeHtmlFileName, computePdfFileName, extractDigits,
+  computeMarkdownFileName, computeHtmlFileName, computePdfFileName,
+  extractDigits, extractDigitsFromFullFolderName,
   initialMarkdownContent, noteJsonContent, addNoteToChildrenJson, updateNoteUpdatedAt,
   toAbsPath, joinRelPath,
   isValidNoteNumber, nextDigitsInInterval,
 } from '../../lib/notes-utils';
+import { extractFirstH1 } from '../../lib/markdown-utils';
 import FileViewer from '../explorer/FileViewer';
 import PaginationBar from '../explorer/PaginationBar';
 import Popover from '../common/Popover';
@@ -48,6 +50,11 @@ interface BreadcrumbEntry {
 interface ViewingFile {
   item: CachedItem;
   displayPath: string;
+}
+interface RepairPair {
+  digits: string;
+  shortFolderId: string;
+  hasFullFolder: boolean;
 }
 
 // ── Props ────────────────────────────────────────────────────────────────────
@@ -121,6 +128,13 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
   const [page, setPage] = useState(0);
 
   const [viewingFile, setViewingFile] = useState<ViewingFile | null>(savedNav?.viewingFile ?? null);
+
+  // ── Repair state (rebuild missing [note-children].json) ───────────────────
+  const [indexMissing, setIndexMissing] = useState(false);
+  const [repairPairs, setRepairPairs] = useState<RepairPair[]>([]);
+  const [repairing, setRepairing] = useState(false);
+  const [repairProgress, setRepairProgress] = useState<string | null>(null);
+  const [repairNoteErrors, setRepairNoteErrors] = useState<string[]>([]);
 
   // ── Create-note form state ────────────────────────────────────────────────
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
@@ -237,13 +251,17 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
     setNoteEntries([]);
     setNoteChildrenJsonId(null);
     setPage(0);
+    setIndexMissing(false);
+    setRepairPairs([]);
+    setRepairNoteErrors([]);
     try {
       // 1. List folder to populate SQLite cache.
       await invoke('list_folder', { accountId: account.id, parentId: folderId, force });
 
       // 2. Single paginated scan — find [note-children].json by exact name and
       //    build the shortFolderMap in the same pass (avoids search-filter quirks).
-      const newShortFolderMap = new Map<string, string>();
+      const newShortFolderMap = new Map<string, string>(); // digits → itemId
+      const fullFolderDigits = new Set<string>();           // digits that have a full folder
       let jsonItem: CachedItem | null = null;
       let pg = 0;
       while (true) {
@@ -257,8 +275,13 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
           if (!item.isDir && item.name === nc.noteChildrenJsonFileName) {
             jsonItem = item;
           } else if (item.isDir) {
-            const d = extractDigits(item.name);
-            if (d !== null) newShortFolderMap.set(d, item.itemId);
+            const shortDigits = extractDigits(item.name);
+            if (shortDigits !== null) {
+              newShortFolderMap.set(shortDigits, item.itemId);
+            } else {
+              const fullDigits = extractDigitsFromFullFolderName(item.name);
+              if (fullDigits !== null) fullFolderDigits.add(fullDigits);
+            }
           }
         }
         if (r.items.length < PAGE_SIZE) break;
@@ -267,6 +290,14 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
       if (!isMountedRef.current) return;
 
       if (!jsonItem) {
+        const pairs: RepairPair[] = [];
+        for (const [digits, shortFolderId] of newShortFolderMap.entries()) {
+          if (isValidNoteNumber(parseInt(digits, 10))) {
+            pairs.push({ digits, shortFolderId, hasFullFolder: fullFolderDigits.has(digits) });
+          }
+        }
+        setRepairPairs(pairs);
+        setIndexMissing(true);
         setError(`Note index file (${nc.noteChildrenJsonFileName}) not found in this folder.`);
         return;
       }
@@ -308,6 +339,108 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
   useEffect(() => {
     if (account) void loadNotes(currentFolderId);
   }, [account, currentFolderId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Repair: rebuild missing [note-children].json ──────────────────────────
+
+  const repairIndex = useCallback(async () => {
+    if (!account) return;
+    setRepairing(true);
+    setRepairProgress(null);
+    setRepairNoteErrors([]);
+
+    const entries: Array<{ digits: string; title: string; createdAt: string }> = [];
+    const errors: string[] = [];
+
+    for (const { digits, shortFolderId } of repairPairs) {
+      setRepairProgress(`Scanning note ${digits}…`);
+      try {
+        await invoke('list_folder', { accountId: account.id, parentId: shortFolderId, force: false });
+
+        const noteJsonItem = await invoke<CachedItem | null>('query_item_by_name', {
+          accountId: account.id, parentId: shortFolderId, name: nc.noteJsonFileName,
+        });
+
+        let title: string;
+        let createdAt: string;
+
+        if (noteJsonItem) {
+          const path = await invoke<string>('open_file', {
+            accountId: account.id, itemId: noteJsonItem.itemId, force: false,
+            itemName: nc.noteJsonFileName,
+          });
+          const data = JSON.parse(new TextDecoder().decode(await readFile(path))) as { Title?: string; CreatedAt?: string };
+          title = data.Title ?? `Note ${digits}`;
+          createdAt = data.CreatedAt ?? new Date().toISOString();
+        } else {
+          // Look for the single markdown file in the short folder.
+          const r = await invoke<FolderPage>('query_folder_items', {
+            accountId: account.id, parentId: shortFolderId,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            search: null as any, sortBy: 'name', ascending: true,
+            page: 0, pageSize: 200,
+          });
+          const mdItems = r.items.filter(
+            (i) => !i.isDir
+              && i.name.endsWith(nc.noteMarkdownSuffix)
+              && !i.name.endsWith(nc.noteHtmlSuffix)
+              && !i.name.endsWith(nc.notePdfSuffix),
+          );
+
+          if (mdItems.length === 0) {
+            errors.push(`Note ${digits}: no [note].json or markdown file found.`);
+            continue;
+          }
+          if (mdItems.length > 1) {
+            errors.push(`Note ${digits}: ${mdItems.length} markdown files found — cannot determine which to use.`);
+            continue;
+          }
+
+          const mdItem = mdItems[0];
+          const mdPath = await invoke<string>('open_file', {
+            accountId: account.id, itemId: mdItem.itemId, force: false, itemName: mdItem.name,
+          });
+          const mdContent = new TextDecoder().decode(await readFile(mdPath));
+          const h1 = await extractFirstH1(mdContent);
+          if (!h1) errors.push(`Note ${digits}: no h1 heading found — using folder name as title.`);
+          title = h1 ?? `Note ${digits}`;
+          createdAt = new Date().toISOString();
+
+          await invoke('create_text_file', {
+            accountId: account.id, parentId: shortFolderId,
+            filename: nc.noteJsonFileName, content: noteJsonContent(title),
+          });
+        }
+
+        entries.push({ digits, title, createdAt });
+      } catch (e) {
+        errors.push(`Note ${digits}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    setRepairNoteErrors(errors);
+
+    const childNotes: Record<string, { Title: string; CreatedAt: string }> = {};
+    for (const { digits, title, createdAt } of entries) {
+      childNotes[digits] = { Title: title, CreatedAt: createdAt };
+    }
+    const content = JSON.stringify({ ChildNotes: childNotes }, null, 2);
+
+    try {
+      await invoke('create_text_file', {
+        accountId: account.id, parentId: currentFolderId,
+        filename: nc.noteChildrenJsonFileName, content,
+      });
+      setRepairProgress(null);
+      setRepairing(false);
+      setError(null);
+      setIndexMissing(false);
+      await loadNotes(currentFolderId, false);
+    } catch (e) {
+      setRepairProgress(null);
+      setRepairing(false);
+      setError(`Failed to create index: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [account, currentFolderId, repairPairs, loadNotes]);
 
   // ── Folder creation (provider-agnostic) ───────────────────────────────────
 
@@ -787,9 +920,33 @@ export default function NotesExplorer({ accountId, notebookParentId, instanceKey
       {/* ── Error banner ─────────────────────────────────────────────────── */}
 
       {error && (
-        <div className="shrink-0 px-3 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-100 dark:border-red-800 text-red-600 dark:text-red-400 text-sm flex items-center justify-between">
-          <span>{error}</span>
-          <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 ml-2">✕</button>
+        <div className="shrink-0 px-3 py-2 bg-red-50 dark:bg-red-900/20 border-b border-red-100 dark:border-red-800 text-sm">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-red-600 dark:text-red-400 flex-1">{error}</span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              {indexMissing && !repairing && (
+                <button
+                  onClick={() => void repairIndex()}
+                  className="px-2 py-0.5 text-xs rounded bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 hover:bg-amber-200 dark:hover:bg-amber-800/50 transition-colors"
+                >
+                  {repairPairs.length > 0 ? 'Reconstruct index' : 'Create empty index'}
+                </button>
+              )}
+              {repairing && (
+                <span className="text-xs text-amber-600 dark:text-amber-400 italic">
+                  {repairProgress ?? 'Working…'}
+                </span>
+              )}
+              <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-300">✕</button>
+            </div>
+          </div>
+          {repairNoteErrors.length > 0 && (
+            <div className="mt-1.5 pt-1.5 border-t border-red-200 dark:border-red-800 space-y-0.5">
+              {repairNoteErrors.map((e, i) => (
+                <p key={i} className="text-xs text-red-500 dark:text-red-400">{e}</p>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

@@ -54,6 +54,19 @@ export function extractDigits(name: string): string | null {
   return nc.shortNamePrefix ? name.slice(nc.shortNamePrefix.length) : name;
 }
 
+/**
+ * Extracts the digits part from a full folder name (e.g. "110-My Note" → "110").
+ * Returns null when the name is not a valid full folder name.
+ * A full folder name starts with a short folder name followed by the fullNameJoinString.
+ */
+export function extractDigitsFromFullFolderName(name: string): string | null {
+  const joinStr = nc.fullNameJoinString;
+  if (!joinStr) return null;
+  const idx = name.indexOf(joinStr);
+  if (idx < 0) return null;
+  return extractDigits(name.substring(0, idx));
+}
+
 // ── Short name generation ────────────────────────────────────────────────────
 
 /** Computes the next sequential short name (numeric, 1-based) given existing digit strings. */

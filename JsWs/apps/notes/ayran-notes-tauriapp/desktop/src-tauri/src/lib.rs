@@ -1233,6 +1233,25 @@ fn rename_cached_item(
     cache::rename_item(&conn, &account_id, &item_id, &new_name)
 }
 
+/// Looks up one item in the SQLite cache by its exact name within a parent folder.
+/// Returns `None` when the folder has not been listed or the item doesn't exist.
+/// Callers must call `list_folder` first to populate the cache.
+#[tauri::command]
+async fn query_item_by_name(
+    cache_state: tauri::State<'_, CacheState>,
+    account_id: String,
+    parent_id: String,
+    name: String,
+) -> Result<Option<cache::CachedItem>, String> {
+    let db = std::sync::Arc::clone(&cache_state.0);
+    tokio::task::spawn_blocking(move || {
+        let conn = db.lock().map_err(|e| e.to_string())?;
+        cache::get_item_by_name(&conn, &account_id, &parent_id, &name)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Queries the SQLite cache for one page of a folder's contents.
 /// `sort_by` accepts `"name"`, `"size"`, or `"modified"`.
 /// `page` is 0-indexed; `page_size` is the number of rows per page.
@@ -2503,6 +2522,7 @@ pub fn run() {
             // Folder cache
             list_folder,
             query_folder_items,
+            query_item_by_name,
             uncache_item,
             rename_cached_item,
             invalidate_folder_cache,
