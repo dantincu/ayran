@@ -476,7 +476,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
     note: NoteEntry,
     newTitle: string,
     currentMdContent?: string,
-  ): Promise<void> => {
+  ): Promise<string> => {
     if (!account || !note.shortFolderId) throw new Error('Cannot rename: short folder not found');
 
     const newFullNamePart = computeFullNamePart(newTitle);
@@ -518,22 +518,8 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
         : `# ${escaped}\n${raw}`;
     }
 
-    // Delete all old markdown, HTML, and PDF files; then create a fresh markdown
-    // file under the correct new name. This is the same strategy used for PDFs
-    // and avoids provider-specific rename commands entirely.
-    for (const f of [...oldMarkdownFiles, ...oldHtmlPdfFiles]) {
-      try {
-        if (account.provider === 'filen') {
-          await invoke('filen_trash_file', { accountId: account.id, uuid: f.itemId });
-        } else if (account.provider === 'google-drive') {
-          await invoke('gdrive_delete_file', { accountId: account.id, fileId: f.itemId });
-        } else if (account.provider === 'local-fs') {
-          await fsRemove(toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, f.name)));
-        }
-        await invoke('delete_cached_file', { accountId: account.id, itemId: f.itemId }).catch(() => {});
-      } catch { /* non-fatal */ }
-    }
-
+    // Create new files first so the note is never left without content if an
+    // error occurs mid-way. Old files are deleted afterwards by their original IDs.
     const newMarkdownItemId = await invoke<string>('create_text_file', {
       accountId: account.id, parentId: note.shortFolderId,
       filename: newMarkdownFileName, content: mdContent ?? '',
@@ -569,6 +555,20 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
           filename: newHtmlFileName, content: htmlContent,
         });
       }
+    }
+
+    // Delete old markdown, HTML, and PDF files by their original IDs.
+    for (const f of [...oldMarkdownFiles, ...oldHtmlPdfFiles]) {
+      try {
+        if (account.provider === 'filen') {
+          await invoke('filen_trash_file', { accountId: account.id, uuid: f.itemId });
+        } else if (account.provider === 'google-drive') {
+          await invoke('gdrive_delete_file', { accountId: account.id, fileId: f.itemId });
+        } else if (account.provider === 'local-fs') {
+          await fsRemove(toAbsPath(account.path ?? '', joinRelPath(note.shortFolderId, f.name)));
+        }
+        await invoke('delete_cached_file', { accountId: account.id, itemId: f.itemId }).catch(() => {});
+      } catch { /* non-fatal */ }
     }
 
     // Update [note].json with the new title.
@@ -646,6 +646,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       if (!prev || prev.item.parentId !== note.shortFolderId) return prev;
       return { item: { ...prev.item, itemId: newMarkdownItemId, name: newMarkdownFileName }, displayPath: newTitle };
     });
+    return newMarkdownItemId;
   }, [account, noteChildrenJsonId, currentFolderId]);
 
   // Stable refs so handleAfterSave always reads the latest values even when
@@ -657,17 +658,16 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const performRenameNoteRef = useRef(performRenameNote);
   performRenameNoteRef.current = performRenameNote;
 
-  const handleAfterSave = useCallback(async (newContent: string) => {
+  const handleBeforeSave = useCallback(async (content: string): Promise<string | null> => {
     const vf = viewingFileRef.current;
-    if (!vf) return;
+    if (!vf) return null;
     const note = noteEntriesRef.current.find((e) => e.shortFolderId === vf.item.parentId) ?? null;
-    if (!note) return;
-    const m = /^#\s+(.+)$/m.exec(newContent);
+    if (!note) return null;
+    const m = /^#\s+(.+)$/m.exec(content);
     const newTitle = m ? m[1].trim() : '';
     const oldTitle = (vf.displayPath ?? '').trim();
-    if (newTitle && newTitle !== oldTitle) {
-      await performRenameNoteRef.current(note, newTitle, newContent).catch(() => {});
-    }
+    if (!newTitle || newTitle === oldTitle) return null;
+    return await performRenameNoteRef.current(note, newTitle, content);
   }, []);
 
   const handleRename = useCallback(async () => {
@@ -999,12 +999,13 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       {/* ── File viewer (shown instead of notes list) ────────────────────── */}
       {viewingFile && (
         <FileViewer
+          key={viewingFile.item.itemId}
           account={account}
           item={viewingFile.item}
           displayPath={viewingFile.displayPath}
           onClose={() => setViewingFile(null)}
           inNotebook
-          onAfterSave={handleAfterSave}
+          onBeforeSave={handleBeforeSave}
           onRenameNote={currentViewingNote ? () => startRename(currentViewingNote) : undefined}
         />
       )}

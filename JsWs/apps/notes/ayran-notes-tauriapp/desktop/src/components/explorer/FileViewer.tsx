@@ -43,6 +43,10 @@ interface Props {
   onNavigate?: (item: CachedItem, siblingIdx: number) => void;
   /** When true, integrates with the notebook layout (no fixed overlay, notebook toolbar). */
   inNotebook?: boolean;
+  /** Called before saving with the pending content. Return the new item ID if the
+   *  save was handled by the caller (skips the normal save_text_file), or null to
+   *  let FileViewer proceed with the regular save. */
+  onBeforeSave?: (content: string) => Promise<string | null>;
   /** Called after a successful save with the new text content and item ID. */
   onAfterSave?: (newContent: string, newItemId: string) => Promise<void>;
   /** When provided, a "Rename note" option is added to the notebook options popover. */
@@ -121,7 +125,7 @@ function EndIcon() {
 
 export default function FileViewer({
   account, item, onClose, onOpenNotebook, displayPath, siblings, siblingIdx, onNavigate,
-  inNotebook = false, onAfterSave, onRenameNote,
+  inNotebook = false, onBeforeSave, onAfterSave, onRenameNote,
 }: Props) {
   const mode = detectMode(item);
   const { theme } = useTheme();
@@ -389,6 +393,18 @@ export default function FileViewer({
     try {
       const content = lineEnding === 'crlf' ? editedText.replace(/\n/g, '\r\n') : editedText;
       let savedItemId = effectiveItemId;
+      if (onBeforeSave) {
+        const newId = await onBeforeSave(content);
+        if (newId !== null) {
+          if (newId !== effectiveItemId) setEffectiveItemId(newId);
+          setTextContent(editedText); setIsDirty(false);
+          if (savedFlashTimerRef.current) clearTimeout(savedFlashTimerRef.current);
+          setSavedFlash(true);
+          savedFlashTimerRef.current = setTimeout(() => setSavedFlash(false), 2000);
+          if (onAfterSave) await onAfterSave(editedText, newId).catch(() => {});
+          return;
+        }
+      }
       if (account.shelvesetActive) {
         await invoke('shelveset_save_content', {
           accountId: account.id, itemId: effectiveItemId, itemName: item.name,
@@ -590,6 +606,10 @@ export default function FileViewer({
           </button>
         )}
         <div className="border-t border-gray-100 dark:border-gray-700 my-1" />
+        <button onClick={() => { setShowOptions(false); void loadFile(false); }}
+          className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
+          Refresh
+        </button>
         <button onClick={() => { setShowOptions(false); void loadFile(true); }}
           className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
           Hard refresh
