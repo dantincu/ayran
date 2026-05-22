@@ -272,8 +272,12 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
     setRepairPairs([]);
     setRepairNoteErrors([]);
     try {
-      // 1. Seed path_index for the notes root BEFORE listing so that list_folder
-      //    can build correct cloud-mirrored paths for every descendant.
+      // 1. List folder to populate SQLite cache with the latest items
+      //    (including any files just created by repair or create_text_file).
+      await invoke('list_folder', { accountId: account.id, parentId: folderId, force });
+
+      // 2. Seed path_index AFTER listing so that every item now in folder_items —
+      //    including ones just created — gets a correct cloud-mirrored cache path.
       //    Also evicts stale content_cache entries so re-downloads go to the right place.
       if (folderId === notebookParentId && notebookFolderRelPath !== undefined) {
         const folderPath = notebookFolderRelPath.replace(/^\/+|\/+$/g, '');
@@ -281,9 +285,6 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
           accountId: account.id, itemId: notebookParentId, path: folderPath,
         }).catch(() => {});
       }
-
-      // 2. List folder to populate SQLite cache.
-      await invoke('list_folder', { accountId: account.id, parentId: folderId, force });
 
       // 2. Single paginated scan — find [note-children].json by exact name and
       //    build the shortFolderMap in the same pass (avoids search-filter quirks).
