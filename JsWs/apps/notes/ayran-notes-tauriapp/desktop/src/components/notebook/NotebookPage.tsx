@@ -633,6 +633,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
         let content: string | null = null;
         try {
+          // Seed path_index for the notebook's parent folder so open_file caches
+          // the file in the correct cloud-mirrored hierarchy (not flat under c/001/).
+          const folderPath = (nb.displayPath ?? '').split('/').slice(0, -1).join('/');
+          if (folderPath) {
+            await invoke('register_path_in_index', {
+              accountId: nb.accountId, itemId: nb.parentId, path: folderPath,
+            }).catch(() => {});
+          }
           const path = await invoke<string>('open_file', { accountId: nb.accountId, itemId: nb.itemId, force: false, itemName: config.notebookFileName });
           const bytes = await readFile(path);
           content = new TextDecoder().decode(bytes);
