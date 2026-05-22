@@ -51,6 +51,8 @@ interface Props {
   onAfterSave?: (newContent: string, newItemId: string) => Promise<void>;
   /** When provided, a "Rename note" option is added to the notebook options popover. */
   onRenameNote?: () => void;
+  /** When provided, a "Delete note" option is added to the notebook options popover. */
+  onDeleteNote?: () => void;
 }
 
 type Mode = 'loading' | 'text' | 'image' | 'audio' | 'video' | 'unsupported' | 'error';
@@ -125,7 +127,7 @@ function EndIcon() {
 
 export default function FileViewer({
   account, item, onClose, onOpenNotebook, displayPath, siblings, siblingIdx, onNavigate,
-  inNotebook = false, onBeforeSave, onAfterSave, onRenameNote,
+  inNotebook = false, onBeforeSave, onAfterSave, onRenameNote, onDeleteNote,
 }: Props) {
   const mode = detectMode(item);
   const { theme } = useTheme();
@@ -591,6 +593,12 @@ export default function FileViewer({
           <button onClick={() => { setShowOptions(false); onRenameNote(); }}
             className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">
             Rename note
+          </button>
+        )}
+        {onDeleteNote && (
+          <button onClick={() => { setShowOptions(false); onDeleteNote(); }}
+            className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+            Delete note
           </button>
         )}
         {item.name === config.notebookFileName && onOpenNotebook && (

@@ -147,6 +147,11 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const [renameError, setRenameError] = useState<string | null>(null);
   const [noteCtxMenu, setNoteCtxMenu] = useState<{ note: NoteEntry; x: number; y: number } | null>(null);
 
+  // ── Delete state ──────────────────────────────────────────────────────────
+  const [deletingNote, setDeletingNote] = useState<NoteEntry | null>(null);
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   // ── Create-note form state ────────────────────────────────────────────────
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
@@ -465,6 +470,77 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   }, [account, currentFolderId, repairPairs, loadNotes]);
 
   // ── Rename note ───────────────────────────────────────────────────────────
+
+  const startDelete = useCallback((note: NoteEntry) => {
+    setDeletingNote(note);
+    setDeleteError(null);
+  }, []);
+
+  const performDeleteNote = useCallback(async (note: NoteEntry) => {
+    if (!account || !note.shortFolderId) throw new Error('Cannot delete: short folder not found');
+
+    // Delete short folder and all its contents.
+    try {
+      if (account.provider === 'filen') {
+        await invoke('filen_trash_directory', { accountId: account.id, uuid: note.shortFolderId });
+      } else if (account.provider === 'google-drive') {
+        await invoke('gdrive_delete_file', { accountId: account.id, fileId: note.shortFolderId });
+      } else if (account.provider === 'local-fs') {
+        await fsRemove(toAbsPath(account.path ?? '', note.shortFolderId), { recursive: true });
+      }
+      await invoke('invalidate_folder_cache', { accountId: account.id, parentId: note.shortFolderId }).catch(() => {});
+    } catch { /* non-fatal if already gone */ }
+
+    // Delete full folder (e.g. "110-Note Title").
+    try {
+      const fullFolderName = computeFullFolderName(note.digits, note.title);
+      const fullFolderItem = await invoke<CachedItem | null>('query_item_by_name', {
+        accountId: account.id, parentId: currentFolderId, name: fullFolderName,
+      });
+      if (fullFolderItem) {
+        if (account.provider === 'filen') {
+          await invoke('filen_trash_directory', { accountId: account.id, uuid: fullFolderItem.itemId });
+        } else if (account.provider === 'google-drive') {
+          await invoke('gdrive_delete_file', { accountId: account.id, fileId: fullFolderItem.itemId });
+        } else if (account.provider === 'local-fs') {
+          await fsRemove(toAbsPath(account.path ?? '', joinRelPath(currentFolderId, fullFolderName)), { recursive: true });
+        }
+      }
+    } catch { /* non-fatal */ }
+
+    // Remove the note from parent [note-children].json.
+    if (noteChildrenJsonId) {
+      try {
+        const path = await invoke<string>('open_file', {
+          accountId: account.id, itemId: noteChildrenJsonId, force: false, itemName: nc.noteChildrenJsonFileName,
+        });
+        const data = JSON.parse(new TextDecoder().decode(await readFile(path))) as NoteChildrenJson;
+        delete data.ChildNotes[note.digits];
+        await invoke('save_text_file', {
+          accountId: account.id, itemId: noteChildrenJsonId, parentId: currentFolderId,
+          content: JSON.stringify(data, null, 2), itemName: nc.noteChildrenJsonFileName,
+        });
+      } catch { /* non-fatal */ }
+    }
+
+    // Update local state.
+    setNoteEntries((prev) => prev.filter((e) => e.digits !== note.digits));
+    setViewingFile((prev) => (prev?.item.parentId === note.shortFolderId ? null : prev));
+  }, [account, noteChildrenJsonId, currentFolderId]);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!deletingNote || deleteConfirming) return;
+    setDeleteConfirming(true);
+    setDeleteError(null);
+    try {
+      await performDeleteNote(deletingNote);
+      setDeletingNote(null);
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeleteConfirming(false);
+    }
+  }, [deletingNote, deleteConfirming, performDeleteNote]);
 
   const startRename = useCallback((note: NoteEntry) => {
     setRenamingNote(note);
@@ -962,8 +1038,34 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
             <button onClick={() => { setNoteCtxMenu(null); startRename(noteCtxMenu.note); }} className={menuRow}>
               Rename
             </button>
+            <button onClick={() => { setNoteCtxMenu(null); startDelete(noteCtxMenu.note); }}
+              className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20">
+              Delete
+            </button>
           </div>
         </Popover>
+      )}
+
+      {/* ── Delete confirmation modal ────────────────────────────────────── */}
+      {deletingNote && (
+        <Modal title={`Delete "${deletingNote.title || deletingNote.shortFolderName}"?`} onClose={() => setDeletingNote(null)} maxWidth="max-w-sm">
+          <div className="p-4 space-y-3 overflow-y-auto">
+            {deleteError && <p className="text-sm text-red-500 dark:text-red-400">{deleteError}</p>}
+            <p className="text-sm text-gray-600 dark:text-gray-300">
+              This will permanently delete the note and all its files. This action cannot be undone.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setDeletingNote(null)} disabled={deleteConfirming}
+                className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors">
+                Cancel
+              </button>
+              <button onClick={() => void handleDeleteConfirm()} disabled={deleteConfirming}
+                className="px-3 py-1.5 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors">
+                {deleteConfirming ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {/* ── Rename modal ─────────────────────────────────────────────────── */}
@@ -1007,6 +1109,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
           inNotebook
           onBeforeSave={handleBeforeSave}
           onRenameNote={currentViewingNote ? () => startRename(currentViewingNote) : undefined}
+          onDeleteNote={currentViewingNote ? () => startDelete(currentViewingNote) : undefined}
         />
       )}
 
