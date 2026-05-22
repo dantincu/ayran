@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { readFile, mkdir, copyFile } from '@tauri-apps/plugin-fs';
 import { marked } from 'marked';
@@ -55,6 +55,7 @@ interface ViewingFile {
 interface Props {
   accountId: string;
   notebookParentId: string;
+  instanceKey?: string;
   onDisplayNameChange?: (name: string) => void;
   onQuickActions?: () => void;
 }
@@ -96,21 +97,29 @@ function BackIcon() {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function NotesExplorer({ accountId, notebookParentId, onDisplayNameChange, onQuickActions }: Props) {
+export default function NotesExplorer({ accountId, notebookParentId, instanceKey, onDisplayNameChange, onQuickActions }: Props) {
   const [account, setAccount] = useState<StoredAccount | null>(null);
   const [acctLoading, setAcctLoading] = useState(true);
   const [acctError, setAcctError] = useState<string | null>(null);
 
-  const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbEntry[]>([
-    { folderId: notebookParentId, label: 'Notes' },
-  ]);
+  const navKey = `notes-explorer-nav-${accountId}${instanceKey ? `-${instanceKey}` : ''}`;
+  const savedNav = useMemo(() => {
+    try {
+      const raw = localStorage.getItem(navKey);
+      return raw ? (JSON.parse(raw) as { breadcrumbs: BreadcrumbEntry[]; viewingFile?: ViewingFile | null }) : null;
+    } catch { return null; }
+  }, [navKey]);
+
+  const [breadcrumbs, setBreadcrumbs] = useState<BreadcrumbEntry[]>(
+    savedNav?.breadcrumbs ?? [{ folderId: notebookParentId, label: 'Notes' }],
+  );
   const [noteEntries, setNoteEntries] = useState<NoteEntry[]>([]);
   const [noteChildrenJsonId, setNoteChildrenJsonId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(0);
 
-  const [viewingFile, setViewingFile] = useState<ViewingFile | null>(null);
+  const [viewingFile, setViewingFile] = useState<ViewingFile | null>(savedNav?.viewingFile ?? null);
 
   // ── Create-note form state ────────────────────────────────────────────────
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
@@ -134,6 +143,10 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
     isMountedRef.current = true;
     return () => { isMountedRef.current = false; };
   }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem(navKey, JSON.stringify({ breadcrumbs, viewingFile })); } catch { /* non-fatal */ }
+  }, [navKey, breadcrumbs, viewingFile]);
 
   // Close interval picker on outside click.
   useEffect(() => {
@@ -384,37 +397,44 @@ export default function NotesExplorer({ accountId, notebookParentId, onDisplayNa
         filename: nc.noteJsonFileName, content: noteJsonContent(title),
       });
 
-      // Generate HTML from markdown; create HTML + PDF files if there is
-      // content beyond the title line.
-      const mdContent = initialMarkdownContent(title);
-      const hasExtraContent = mdContent.replace(/^#[^\n]*\n?/, '').trim().length > 0;
-      if (hasExtraContent) {
-        const htmlContent = String(await marked.parse(mdContent));
+      // Create empty [note-children].json so the note is immediately navigable.
+      await invoke('create_text_file', {
+        accountId: account.id, parentId: shortFolderId,
+        filename: nc.noteChildrenJsonFileName,
+        content: JSON.stringify({ ChildNotes: {} }, null, 2),
+      });
 
+      // Generate HTML in memory, then PDF (always), then write HTML file only
+      // when there is content beyond the title line.
+      const mdContent = initialMarkdownContent(title);
+      const htmlContent = String(await marked.parse(mdContent));
+      const hasExtraContent = mdContent.replace(/^#[^\n]*\n?/, '').trim().length > 0;
+
+      if (nc.generatePdf) {
+        try {
+          const tempPdfPath = await invoke<string>('generate_note_pdf', { htmlContent, filename: pdfFileName });
+          const sep = tempPdfPath.includes('\\') ? '\\' : '/';
+          const tempPdfDir = tempPdfPath.substring(0, tempPdfPath.lastIndexOf(sep));
+          try {
+            if (account.provider === 'filen') {
+              await invoke('filen_upload_file', { accountId: account.id, parentUuid: shortFolderId, filePath: tempPdfPath });
+            } else if (account.provider === 'google-drive') {
+              await invoke('gdrive_upload_file', { accountId: account.id, folderId: shortFolderId, filePath: tempPdfPath });
+            } else if (account.provider === 'local-fs') {
+              const targetPath = toAbsPath(account.path ?? '', joinRelPath(shortFolderId, pdfFileName));
+              await copyFile(tempPdfPath, targetPath);
+            }
+          } finally {
+            void invoke('remove_temp_dir', { path: tempPdfDir });
+          }
+        } catch { /* PDF generation is non-fatal */ }
+      }
+
+      if (hasExtraContent) {
         await invoke('create_text_file', {
           accountId: account.id, parentId: shortFolderId,
           filename: htmlFileName, content: htmlContent,
         });
-
-        if (nc.generatePdf) {
-          try {
-            const tempPdfPath = await invoke<string>('generate_note_pdf', { htmlContent, filename: pdfFileName });
-            const sep = tempPdfPath.includes('\\') ? '\\' : '/';
-            const tempPdfDir = tempPdfPath.substring(0, tempPdfPath.lastIndexOf(sep));
-            try {
-              if (account.provider === 'filen') {
-                await invoke('filen_upload_file', { accountId: account.id, parentUuid: shortFolderId, filePath: tempPdfPath });
-              } else if (account.provider === 'google-drive') {
-                await invoke('gdrive_upload_file', { accountId: account.id, folderId: shortFolderId, filePath: tempPdfPath });
-              } else if (account.provider === 'local-fs') {
-                const targetPath = toAbsPath(account.path ?? '', joinRelPath(shortFolderId, pdfFileName));
-                await copyFile(tempPdfPath, targetPath);
-              }
-            } finally {
-              void invoke('remove_temp_dir', { path: tempPdfDir });
-            }
-          } catch { /* PDF generation is non-fatal */ }
-        }
       }
 
       // Create / update [note-children].json in the current folder.

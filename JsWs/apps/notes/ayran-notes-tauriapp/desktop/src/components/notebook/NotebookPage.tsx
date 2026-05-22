@@ -376,6 +376,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   const [tabWorkingOrder, setTabWorkingOrder] = useState<NbTab[]>([]);
   const [tabStripPos, setTabStripPos] = useState(0);
   const [tabStripActive, setTabStripActive] = useState(false);
+  const lastCheckedTabIdxRef = useRef<number | null>(null);
 
   // ── Tab management ───────────────────────────────────────────────────────────
 
@@ -485,6 +486,22 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     return next;
   });
 
+  const handleTabCheck = (idx: number, shiftHeld: boolean, deselect = false) => {
+    const list = tabSortMode ? tabWorkingOrder : tabs;
+    if (shiftHeld && lastCheckedTabIdxRef.current !== null) {
+      const lo = Math.min(lastCheckedTabIdxRef.current, idx);
+      const hi = Math.max(lastCheckedTabIdxRef.current, idx);
+      setSelectedTabIds((prev) => {
+        const next = new Set(prev);
+        list.slice(lo, hi + 1).forEach((t) => deselect ? next.delete(t.id) : next.add(t.id));
+        return next;
+      });
+    } else {
+      toggleTabSelected(list[idx].id);
+      lastCheckedTabIdxRef.current = idx;
+    }
+  };
+
   const enterTabSortMode = () => {
     setTabWorkingOrder([...tabs]);
     setTabStripPos(0);
@@ -560,6 +577,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     setShowTabsList(false);
     cancelTabSortMode();
     setSelectedTabIds(new Set());
+    lastCheckedTabIdxRef.current = null;
   };
 
   // ── Load notebook entry ───────────────────────────────────────────────────────
@@ -868,8 +886,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 return (
                   <div key={tab.id}>
                     <div
-                      onClick={() => {
+                      onClick={(e) => {
                         if (tabSortMode) { handleTabRowBodyClick(idx); return; }
+                        if (e.shiftKey) { handleTabCheck(idx, true, isSelected); return; }
                         if (tab.id === activeTabId && !isPreviewed) { closeTabsList(); return; }
                         if (isPreviewed) {
                           // Commit the previewed history position
@@ -897,8 +916,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={() => toggleTabSelected(tab.id)}
-                        onClick={(e) => e.stopPropagation()}
+                        onChange={() => {}}
+                        onClick={(e) => { e.stopPropagation(); handleTabCheck(idx, e.shiftKey, e.shiftKey && isSelected); }}
+                        onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); handleTabCheck(idx, true, isSelected); }}
                         className="shrink-0 accent-blue-500 w-3.5 h-3.5"
                       />
                       <span className={`shrink-0 ${isSelected ? 'text-blue-500 dark:text-blue-400' : isPreviewed ? 'text-violet-600 dark:text-violet-400' : isActive ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
@@ -1129,14 +1149,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 onQuickActions={() => {}}
               />
             )}
-            {tab.type === 'notes-explorer' && entry && (
-              <NotesExplorer
-                accountId={entry.accountId}
-                notebookParentId={entry.parentId}
-                onDisplayNameChange={(name) => setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, name } : t))}
-                onQuickActions={() => {}}
-              />
-            )}
             {tab.type === 'all-files-explorer' && entry && (
               <AllFilesExplorerTab
                 accountId={entry.accountId}
@@ -1184,10 +1196,26 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
           );
         }
 
-        // All-files-explorer tabs stay permanently mounted so minimized modal state
-        // survives tab switches. Other tab types unmount when inactive.
+        // Notes-explorer and all-files-explorer tabs stay permanently mounted so
+        // their state survives tab switches. Other tab types unmount when inactive.
         return (
           <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+            {tabs.filter((t) => t.type === 'notes-explorer').map((tab) => (
+              <div
+                key={tab.id}
+                className={tab.id === activeTabId ? 'flex-1 min-h-0 flex flex-col overflow-hidden' : 'hidden'}
+              >
+                {entry && (
+                  <NotesExplorer
+                    accountId={entry.accountId}
+                    notebookParentId={entry.parentId}
+                    instanceKey={tab.id}
+                    onDisplayNameChange={(name) => setTabs((prev) => prev.map((t) => t.id === tab.id ? { ...t, name } : t))}
+                    onQuickActions={() => {}}
+                  />
+                )}
+              </div>
+            ))}
             {tabs.filter((t) => t.type === 'all-files-explorer').map((tab) => (
               <div
                 key={tab.id}
@@ -1206,7 +1234,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 )}
               </div>
             ))}
-            {activeTab.type !== 'all-files-explorer' && renderTabContent(activeTab)}
+            {activeTab.type !== 'all-files-explorer' && activeTab.type !== 'notes-explorer' && renderTabContent(activeTab)}
           </div>
         );
       })()}
