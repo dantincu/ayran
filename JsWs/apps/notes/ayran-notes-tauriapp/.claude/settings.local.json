@@ -28,7 +28,9 @@
       "PowerShell(python \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\recolor_icon.py\")",
       "Bash(Select-String -Pattern \"interface Props\" -Path \"*.tsx\" -Context 0,12)",
       "Bash(Select-Object -First 60)",
-      "Bash(npm install *)"
+      "Bash(npm install *)",
+      "Bash(Get-ChildItem -Path \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\desktop\\\\src\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

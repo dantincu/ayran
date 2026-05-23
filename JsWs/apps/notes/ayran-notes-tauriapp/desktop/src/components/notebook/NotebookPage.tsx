@@ -9,6 +9,7 @@ import { MAX_TAB_HISTORY } from '../../lib/config';
 import AllFilesExplorerTab from './AllFilesExplorerTab';
 import NotesExplorer from './NotesExplorer';
 import { useTheme } from '../../hooks/useTheme';
+import { useKeyboardShortcut, useKeyboardScopes } from '../common/KeyboardShortcutsContext';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 
@@ -489,6 +490,55 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
   const closeCurrentTab = () => closeTabById(activeTabId);
   const closeTab = (id: string) => closeTabById(id);
+
+  // ── Keyboard shortcut handlers ────────────────────────────────────────────────
+
+  // Navigate backward in tab history without truncating (browser back-button model).
+  const navigateBackInHistory = () => {
+    for (let i = historyIndex - 1; i >= 0; i--) {
+      const id = tabHistory[i];
+      if (tabs.some((t) => t.id === id)) {
+        setHistoryIndex(i);
+        setHistoryPreviewIndex(i);
+        setActiveTabId(id);
+        break;
+      }
+    }
+  };
+
+  // Navigate forward in tab history (only possible after going back without navigating elsewhere).
+  const navigateForwardInHistory = () => {
+    for (let i = historyIndex + 1; i < tabHistory.length; i++) {
+      const id = tabHistory[i];
+      if (tabs.some((t) => t.id === id)) {
+        setHistoryIndex(i);
+        setHistoryPreviewIndex(i);
+        setActiveTabId(id);
+        break;
+      }
+    }
+  };
+
+  // Push 'notebookModule' scope so tab shortcuts are active in this window.
+  useKeyboardScopes(['global', 'notebookModule']);
+
+  useKeyboardShortcut('showCurrentlyOpenedTabsModal', () => {
+    setHistoryPreviewIndex(historyIndex);
+    setShowTabsList(true);
+  });
+  useKeyboardShortcut('openNewTab', openNewHomeTab);
+  useKeyboardShortcut('goToPrevTabFromHistory', navigateBackInHistory);
+  useKeyboardShortcut('goToNextTabFromHistory', navigateForwardInHistory);
+  useKeyboardShortcut('goToNextTab', () => {
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    const next = tabs[(idx + 1) % tabs.length];
+    if (next) navigateToTab(next.id);
+  });
+  useKeyboardShortcut('goToPrevTab', () => {
+    const idx = tabs.findIndex((t) => t.id === activeTabId);
+    const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+    if (prev) navigateToTab(prev.id);
+  });
 
   // ── Tab sort handlers ────────────────────────────────────────────────────────
 

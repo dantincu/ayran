@@ -2459,6 +2459,50 @@ fn remove_temp_dir(path: String) -> Result<(), String> {
     std::fs::remove_dir_all(p).map_err(|e| e.to_string())
 }
 
+// ── Keyboard shortcuts persistence ────────────────────────────────────────────
+
+/// Reads the user's keyboard shortcut overrides from `keyboardShortcuts.json`
+/// in the app data directory. Returns `None` if the file does not exist.
+#[tauri::command]
+fn read_keyboard_shortcuts(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = app_base_dir(&app)?.join("keyboardShortcuts.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(&path).map(Some).map_err(|e| e.to_string())
+}
+
+/// Writes the user's keyboard shortcut overrides to `keyboardShortcuts.json`
+/// in the app data directory.
+#[tauri::command]
+fn write_keyboard_shortcuts(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    let dir = app_base_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("keyboardShortcuts.json"), content).map_err(|e| e.to_string())
+}
+
+/// Reads a text file at an arbitrary path. Returns `None` if the file does not exist.
+#[tauri::command]
+fn read_file_text(path: String) -> Result<Option<String>, String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Ok(None);
+    }
+    std::fs::read_to_string(p).map(Some).map_err(|e| e.to_string())
+}
+
+/// Writes text content to an arbitrary file path, creating directories as needed.
+#[tauri::command]
+fn write_file_text(path: String, content: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if let Some(dir) = p.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(p, content).map_err(|e| e.to_string())
+}
+
 // ── App entry point ───────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2632,6 +2676,11 @@ pub fn run() {
             // PDF generation
             generate_note_pdf,
             remove_temp_dir,
+            // Keyboard shortcuts
+            read_keyboard_shortcuts,
+            write_keyboard_shortcuts,
+            read_file_text,
+            write_file_text,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

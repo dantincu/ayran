@@ -1,5 +1,6 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { useModalStack } from './ModalStack';
+import { useKeyboardScopes } from './KeyboardShortcutsContext';
 import { useDraggable } from '../../hooks/useDraggable';
 
 interface Props {
@@ -44,14 +45,19 @@ function MinimizeIcon() {
   );
 }
 
+const GLOBAL_ONLY_SCOPES = ['global'];
+
 export default function Modal({ title, onClose, onMinimize, children, maxWidth = 'max-w-md' }: Props) {
   const [maximized, setMaximized] = useState(false);
   const [id] = useState(() => crypto.randomUUID());
   const [isRegistered, setIsRegistered] = useState(false);
-  const { stack, register, unregister, updateHasClose, closeAllCounter, triggerCloseAll } = useModalStack();
+  const { stack, register, unregister, updateHasClose, updateCallbacks, closeAllCounter, triggerCloseAll } = useModalStack();
   const panelRef = useRef<HTMLDivElement>(null);
   const { dragPos, setDragPos, onHeaderMouseDown } = useDraggable(panelRef, maximized);
   const closeAllSeenRef = useRef(closeAllCounter);
+
+  // Narrow active keyboard shortcuts to global-only while this modal is open
+  useKeyboardScopes(GLOBAL_ONLY_SCOPES);
 
   useLayoutEffect(() => {
     register(id, !!onClose);
@@ -63,6 +69,15 @@ export default function Modal({ title, onClose, onMinimize, children, maxWidth =
   useEffect(() => {
     if (isRegistered) updateHasClose(id, !!onClose);
   }, [id, isRegistered, onClose, updateHasClose]);
+
+  const toggleMaximize = useCallback(() => setMaximized((m) => !m), []);
+
+  // Register close/maximize/minimize callbacks for keyboard shortcut handlers.
+  useEffect(() => {
+    if (isRegistered) {
+      updateCallbacks(id, { onClose, onToggleMaximize: toggleMaximize, onMinimize });
+    }
+  }, [id, isRegistered, onClose, toggleMaximize, onMinimize, updateCallbacks]);
 
   // Close this modal when the close-all trigger fires.
   useEffect(() => {
@@ -131,7 +146,7 @@ export default function Modal({ title, onClose, onMinimize, children, maxWidth =
                 <MinimizeIcon />
               </button>
             )}
-            <button onClick={() => setMaximized((m) => !m)} title={maximized ? 'Restore' : 'Maximize'} className={btnCls}>
+            <button onClick={toggleMaximize} title={maximized ? 'Restore' : 'Maximize'} className={btnCls}>
               {maximized ? <RestoreIcon /> : <MaximizeIcon />}
             </button>
             {showCloseAll && (

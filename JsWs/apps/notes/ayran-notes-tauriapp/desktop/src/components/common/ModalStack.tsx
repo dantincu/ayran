@@ -3,6 +3,15 @@ import { createContext, useCallback, useContext, useMemo, useState } from 'react
 interface ModalEntry {
   id: string;
   hasClose: boolean;
+  onClose?: () => void;
+  onToggleMaximize?: () => void;
+  onMinimize?: () => void;
+}
+
+interface ModalCallbacks {
+  onClose?: () => void;
+  onToggleMaximize?: () => void;
+  onMinimize?: () => void;
 }
 
 interface ModalStackContextValue {
@@ -10,8 +19,12 @@ interface ModalStackContextValue {
   register: (id: string, hasClose: boolean) => void;
   unregister: (id: string) => void;
   updateHasClose: (id: string, hasClose: boolean) => void;
+  updateCallbacks: (id: string, callbacks: ModalCallbacks) => void;
   closeAllCounter: number;
   triggerCloseAll: () => void;
+  closeTop: () => void;
+  toggleMaximizeTop: () => void;
+  minimizeAll: () => void;
 }
 
 const ModalStackContext = createContext<ModalStackContextValue>({
@@ -19,8 +32,12 @@ const ModalStackContext = createContext<ModalStackContextValue>({
   register: () => {},
   unregister: () => {},
   updateHasClose: () => {},
+  updateCallbacks: () => {},
   closeAllCounter: 0,
   triggerCloseAll: () => {},
+  closeTop: () => {},
+  toggleMaximizeTop: () => {},
+  minimizeAll: () => {},
 });
 
 export function ModalStackProvider({ children }: { children: React.ReactNode }) {
@@ -39,13 +56,34 @@ export function ModalStackProvider({ children }: { children: React.ReactNode }) 
     setStack((s) => s.map((e) => e.id === id ? { ...e, hasClose } : e));
   }, []);
 
+  const updateCallbacks = useCallback((id: string, callbacks: ModalCallbacks) => {
+    setStack((s) => s.map((e) => e.id === id ? { ...e, ...callbacks } : e));
+  }, []);
+
   const triggerCloseAll = useCallback(() => {
     setCloseAllCounter((c) => c + 1);
   }, []);
 
+  const closeTop = useCallback(() => {
+    const top = stack[stack.length - 1];
+    if (top?.hasClose && top?.onClose) top.onClose();
+  }, [stack]);
+
+  const toggleMaximizeTop = useCallback(() => {
+    const top = stack[stack.length - 1];
+    top?.onToggleMaximize?.();
+  }, [stack]);
+
+  const minimizeAll = useCallback(() => {
+    stack.forEach((e) => e.onMinimize?.());
+  }, [stack]);
+
   const value = useMemo(
-    () => ({ stack, register, unregister, updateHasClose, closeAllCounter, triggerCloseAll }),
-    [stack, register, unregister, updateHasClose, closeAllCounter, triggerCloseAll],
+    () => ({
+      stack, register, unregister, updateHasClose, updateCallbacks,
+      closeAllCounter, triggerCloseAll, closeTop, toggleMaximizeTop, minimizeAll,
+    }),
+    [stack, register, unregister, updateHasClose, updateCallbacks, closeAllCounter, triggerCloseAll, closeTop, toggleMaximizeTop, minimizeAll],
   );
 
   return <ModalStackContext.Provider value={value}>{children}</ModalStackContext.Provider>;

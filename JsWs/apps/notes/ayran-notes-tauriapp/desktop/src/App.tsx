@@ -1,6 +1,7 @@
 import React from 'react';
 import AppShell from './components/AppShell';
 import { ModalStackProvider } from './components/common/ModalStack';
+import { KeyboardShortcutsProvider } from './components/common/KeyboardShortcutsContext';
 
 function App() {
   React.useEffect(() => {
@@ -12,9 +13,11 @@ function App() {
 
   return (
     <ModalStackProvider>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 antialiased">
-        <AppShell />
-      </div>
+      <KeyboardShortcutsProvider>
+        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 antialiased">
+          <AppShell />
+        </div>
+      </KeyboardShortcutsProvider>
     </ModalStackProvider>
   );
 }

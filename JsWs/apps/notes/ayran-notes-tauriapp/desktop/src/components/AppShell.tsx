@@ -9,6 +9,8 @@ import { listAccounts, upsertAccount, deleteAccount } from '../lib/account-store
 import { connectGoogleDrive } from '../lib/google-auth';
 import { addNotebook } from '../lib/notebooks-db';
 import { useTheme } from '../hooks/useTheme';
+import { useModalStack } from './common/ModalStack';
+import { useKeyboardShortcut, useKeyboardScopes } from './common/KeyboardShortcutsContext';
 import ManageAccountsPage from './ManageAccountsPage';
 import ShelvesetChangesModal from './explorer/ShelvesetChangesModal';
 import MoveDataDirsModal from './MoveDataDirsModal';
@@ -61,6 +63,17 @@ export default function AppShell() {
   const [interruptedMove, setInterruptedMove] = useState<{ old: string; new: string } | null>(null);
   const { theme, toggleTheme } = useTheme();
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
+
+  // Base scope: 'global' + 'mainApp' are always active in the main shell.
+  // NotebookPage will push its own scope on top of this when it mounts.
+  useKeyboardScopes(['global', 'mainApp']);
+
+  // Wire global modal shortcuts to ModalStack actions
+  const { closeTop, triggerCloseAll, toggleMaximizeTop, minimizeAll } = useModalStack();
+  useKeyboardShortcut('closeModal', closeTop);
+  useKeyboardShortcut('closeAllModals', triggerCloseAll);
+  useKeyboardShortcut('maximizeModal', toggleMaximizeTop);
+  useKeyboardShortcut('minimizeAllModals', minimizeAll);
   // Must be true before the persist effect is allowed to write/clear storage,
   // so the initial null render doesn't wipe a saved viewer on startup.
   const viewerRestoredRef = useRef(false);
