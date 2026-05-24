@@ -920,9 +920,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                   >
                     <HomeIcon className="w-3.5 h-3.5"/>
                   </button>
-                  {/* Plus button: open a new home tab and make it current */}
+                  {/* Plus button: add a new home tab without switching to it */}
                   <button
-                    onClick={() => { openNewHomeTab(); }}
+                    onClick={() => setTabs((prev) => [...prev, { id: crypto.randomUUID(), type: 'home', name: 'Home' }])}
                     title="New tab"
                     className="w-6 h-6 flex items-center justify-center rounded transition-colors text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-600 hover:text-gray-700 dark:hover:text-gray-200"
                   >
