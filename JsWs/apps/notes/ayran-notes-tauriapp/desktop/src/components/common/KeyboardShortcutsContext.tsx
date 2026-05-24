@@ -169,6 +169,10 @@ export function KeyboardShortcutsProvider({ children }: { children: React.ReactN
     const handler = (e: KeyboardEvent) => {
       // Never intercept bare Enter (textarea submit, button activation, etc.)
       if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) return;
+      // Skip standalone modifier key presses — they can never match a chord and
+      // would otherwise clear in-progress partial matches (e.g. Shift clears the
+      // partial from Ctrl+T before the user can press Shift+=).
+      if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
 
       // Build active scopes by accumulating all frames, starting from the
       // last "isolate" frame (if any). An isolate frame (e.g. a modal) acts
