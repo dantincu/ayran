@@ -1,6 +1,7 @@
 import React from 'react';
 import AppShell from './components/AppShell';
 import { ModalStackProvider } from './components/common/ModalStack';
+import { PopoverStackProvider } from './components/common/PopoverStack';
 import { KeyboardShortcutsProvider } from './components/common/KeyboardShortcutsContext';
 
 function App() {
@@ -13,11 +14,13 @@ function App() {
 
   return (
     <ModalStackProvider>
-      <KeyboardShortcutsProvider>
-        <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 antialiased">
-          <AppShell />
-        </div>
-      </KeyboardShortcutsProvider>
+      <PopoverStackProvider>
+        <KeyboardShortcutsProvider>
+          <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100 antialiased">
+            <AppShell />
+          </div>
+        </KeyboardShortcutsProvider>
+      </PopoverStackProvider>
     </ModalStackProvider>
   );
 }

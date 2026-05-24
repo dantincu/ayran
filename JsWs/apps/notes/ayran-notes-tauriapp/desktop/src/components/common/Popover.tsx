@@ -1,5 +1,6 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useId } from 'react';
 import { useDraggable } from '../../hooks/useDraggable';
+import { usePopoverStack } from './PopoverStack';
 
 interface Props {
   title: string;
@@ -39,6 +40,17 @@ export default function Popover({
   panelClassName = 'absolute right-0 top-full mt-1 min-w-[160px]',
   panelStyle,
 }: Props) {
+  const id = useId();
+  const { register, unregister } = usePopoverStack();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    register(id, () => onCloseRef.current());
+    return () => unregister(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
   const [maximized, setMaximized] = useState(false);
   const [adjustedStyle, setAdjustedStyle] = useState<React.CSSProperties | undefined>(panelStyle);
   const panelRef = useRef<HTMLDivElement>(null);

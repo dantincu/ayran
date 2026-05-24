@@ -66,13 +66,17 @@ export default function Modal({ title, onClose, onMinimize, children, maxWidth =
   }, [id, register, unregister]);
 
   // Keep the stack entry in sync when onClose availability changes.
+  // Depend on the boolean, not the function reference — function refs change on
+  // every parent re-render but the boolean value rarely does, preventing a loop.
+  const hasClose = !!onClose;
   useEffect(() => {
-    if (isRegistered) updateHasClose(id, !!onClose);
-  }, [id, isRegistered, onClose, updateHasClose]);
+    if (isRegistered) updateHasClose(id, hasClose);
+  }, [id, isRegistered, hasClose, updateHasClose]);
 
   const toggleMaximize = useCallback(() => setMaximized((m) => !m), []);
 
   // Register close/maximize/minimize callbacks for keyboard shortcut handlers.
+  // updateCallbacks writes to a ref only — no setState, no re-render cascade.
   useEffect(() => {
     if (isRegistered) {
       updateCallbacks(id, { onClose, onToggleMaximize: toggleMaximize, onMinimize });

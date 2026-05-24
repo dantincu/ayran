@@ -683,12 +683,15 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
         let content: string | null = null;
         try {
-          // Seed path_index for the notebook's parent folder so open_file caches
-          // the file in the correct cloud-mirrored hierarchy (not flat under c/001/).
-          const folderPath = (nb.displayPath ?? '').split('/').slice(0, -1).join('/');
-          if (folderPath) {
+          // Seed path_index so open_file resolves to the correct cloud-mirrored path
+          // instead of flat under c/001/.
+          // nb.itemId    = [note-book].json file UUID
+          // nb.displayPath = full relative path including the filename
+          //                  (e.g. "My Filen/Notes/MyNotebook/[note-book].json")
+          const fullFilePath = (nb.displayPath ?? '').replace(/^\/+|\/+$/g, '');
+          if (fullFilePath) {
             await invoke('register_path_in_index', {
-              accountId: nb.accountId, itemId: nb.parentId, path: folderPath,
+              accountId: nb.accountId, itemId: nb.itemId, path: fullFilePath,
             }).catch(() => {});
           }
           const path = await invoke<string>('open_file', { accountId: nb.accountId, itemId: nb.itemId, force: false, itemName: config.notebookFileName });

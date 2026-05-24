@@ -10,6 +10,7 @@ import { connectGoogleDrive } from '../lib/google-auth';
 import { addNotebook } from '../lib/notebooks-db';
 import { useTheme } from '../hooks/useTheme';
 import { useModalStack } from './common/ModalStack';
+import { usePopoverStack } from './common/PopoverStack';
 import { useKeyboardShortcut, useKeyboardScopes } from './common/KeyboardShortcutsContext';
 import ManageAccountsPage from './ManageAccountsPage';
 import ShelvesetChangesModal from './explorer/ShelvesetChangesModal';
@@ -68,10 +69,15 @@ export default function AppShell() {
   // NotebookPage will push its own scope on top of this when it mounts.
   useKeyboardScopes(['global', 'mainApp']);
 
-  // Wire global modal shortcuts to ModalStack actions
+  // Wire global shortcuts — popovers take priority over modals for close actions
   const { closeTop, triggerCloseAll, toggleMaximizeTop, minimizeAll } = useModalStack();
-  useKeyboardShortcut('closeModal', closeTop);
-  useKeyboardShortcut('closeAllModals', triggerCloseAll);
+  const { stack: popoverStack, closeTop: closeTopPopover, closeAll: closeAllPopovers } = usePopoverStack();
+  useKeyboardShortcut('closeModal', () => {
+    if (popoverStack.length > 0) closeTopPopover(); else closeTop();
+  });
+  useKeyboardShortcut('closeAllModals', () => {
+    if (popoverStack.length > 0) closeAllPopovers(); else triggerCloseAll();
+  });
   useKeyboardShortcut('maximizeModal', toggleMaximizeTop);
   useKeyboardShortcut('minimizeAllModals', minimizeAll);
   // Must be true before the persist effect is allowed to write/clear storage,

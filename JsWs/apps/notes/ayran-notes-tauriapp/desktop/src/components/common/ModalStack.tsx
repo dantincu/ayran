@@ -1,11 +1,8 @@
-import { createContext, useCallback, useContext, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react';
 
 interface ModalEntry {
   id: string;
   hasClose: boolean;
-  onClose?: () => void;
-  onToggleMaximize?: () => void;
-  onMinimize?: () => void;
 }
 
 interface ModalCallbacks {
@@ -44,11 +41,18 @@ export function ModalStackProvider({ children }: { children: React.ReactNode }) 
   const [stack, setStack] = useState<ModalEntry[]>([]);
   const [closeAllCounter, setCloseAllCounter] = useState(0);
 
+  // Callbacks live in a ref — updating them never triggers a re-render.
+  const callbacksRef = useRef<Map<string, ModalCallbacks>>(new Map());
+  // Mirror of stack in a ref so action callbacks can read it without a dep.
+  const stackRef = useRef<ModalEntry[]>([]);
+  stackRef.current = stack;
+
   const register = useCallback((id: string, hasClose: boolean) => {
     setStack((s) => [...s, { id, hasClose }]);
   }, []);
 
   const unregister = useCallback((id: string) => {
+    callbacksRef.current.delete(id);
     setStack((s) => s.filter((e) => e.id !== id));
   }, []);
 
@@ -56,27 +60,31 @@ export function ModalStackProvider({ children }: { children: React.ReactNode }) 
     setStack((s) => s.map((e) => e.id === id ? { ...e, hasClose } : e));
   }, []);
 
+  // Pure ref write — no setState, no re-render cascade.
   const updateCallbacks = useCallback((id: string, callbacks: ModalCallbacks) => {
-    setStack((s) => s.map((e) => e.id === id ? { ...e, ...callbacks } : e));
+    callbacksRef.current.set(id, callbacks);
   }, []);
 
   const triggerCloseAll = useCallback(() => {
     setCloseAllCounter((c) => c + 1);
   }, []);
 
+  // All three action callbacks are stable (no stack dep) because they read
+  // through refs. This breaks the re-render loop caused by consumers
+  // re-registering callbacks when the context value changes.
   const closeTop = useCallback(() => {
-    const top = stack[stack.length - 1];
-    if (top?.hasClose && top?.onClose) top.onClose();
-  }, [stack]);
+    const top = stackRef.current[stackRef.current.length - 1];
+    if (top?.hasClose) callbacksRef.current.get(top.id)?.onClose?.();
+  }, []);
 
   const toggleMaximizeTop = useCallback(() => {
-    const top = stack[stack.length - 1];
-    top?.onToggleMaximize?.();
-  }, [stack]);
+    const top = stackRef.current[stackRef.current.length - 1];
+    callbacksRef.current.get(top?.id ?? '')?.onToggleMaximize?.();
+  }, []);
 
   const minimizeAll = useCallback(() => {
-    stack.forEach((e) => e.onMinimize?.());
-  }, [stack]);
+    stackRef.current.forEach((e) => callbacksRef.current.get(e.id)?.onMinimize?.());
+  }, []);
 
   const value = useMemo(
     () => ({
