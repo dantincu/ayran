@@ -9,7 +9,8 @@ import { isTextFile } from '../../lib/file-type';
 const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
 import { deleteAccount } from '../../lib/account-store';
 import FolderPickerModal, { type FolderEntry } from './FolderPickerModal';
-import PaginationBar from './PaginationBar';
+import PaginationBar, { type PaginationBarHandle } from './PaginationBar';
+import { useListKeyNav } from '../../hooks/useListKeyNav';
 import NewNotebookModal from './NewNotebookModal';
 import ThumbnailImage from './ThumbnailImage';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
@@ -622,6 +623,32 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     });
   };
 
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const paginationBarRef = useRef<PaginationBarHandle>(null);
+
+  const { focusedRelIdx: listFocusedRelIdx, containerProps: listContainerProps } = useListKeyNav({
+    totalItems: total,
+    pageSize: PAGE_SIZE,
+    page,
+    onPage: (pg) => void handlePage(pg),
+    onOpen: (absIdx) => {
+      const relIdx = absIdx - page * PAGE_SIZE;
+      const item = files[relIdx];
+      if (!item) return;
+      if (item.isDir) { openFolder(item); return; }
+      const isDup = duplicateNames.has(item.name);
+      if (isDup) { setDuplicateNameError(item); return; }
+      setLastOpenedId(item.itemId);
+      const s = openFileSiblings(item, files.filter(f => !duplicateNames.has(f.name)));
+      onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx);
+    },
+    onParent: breadcrumbs.length > 1 ? handleNavigateUp : undefined,
+    onOpenSelectPageModal: () => paginationBarRef.current?.openPicker(),
+    onOpenEditPagePopover: () => paginationBarRef.current?.openEdit(),
+    containerRef: listContainerRef,
+    listKey: folderId,
+  });
+
   const sortBtn = (col: SortBy, label: string) => (
     <button
       onClick={() => handleSort(col)}
@@ -819,7 +846,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
         )}
 
         {/* Scrollable list */}
-        <div className="flex-1 overflow-y-auto" onScroll={handleListScroll}>
+        <div ref={listContainerRef} className="flex-1 overflow-y-auto outline-none" onScroll={handleListScroll} {...listContainerProps}>
         <div className="px-3 py-2">
           {selectedIds.size > 0 && (
             <div className="mb-3 flex items-center gap-3 px-3 py-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg text-sm">
@@ -876,7 +903,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                   || downloadingId === item.itemId || deletingId === item.itemId;
                 return (
                   <div key={item.itemId}
-                    className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    data-nav-idx={idx}
+                    className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${idx === listFocusedRelIdx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : ''} ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; const isDup = duplicateNames.has(item.name); if (item.isDir) { openFolder(item); } else if (isDup) { setDuplicateNameError(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files.filter(f => !duplicateNames.has(f.name))); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
                     onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                     <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}
@@ -913,7 +941,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
         </div>
         </div>{/* end scrollable list */}
         <div className="shrink-0">
-          <PaginationBar page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
+          <PaginationBar ref={paginationBarRef} page={page} total={total} pageSize={PAGE_SIZE} onPage={handlePage} />
         </div>
       </div>
 

@@ -16,9 +16,10 @@ import {
 } from '../../lib/notes-utils';
 import { extractFirstH1 } from '../../lib/markdown-utils';
 import FileViewer from '../explorer/FileViewer';
-import PaginationBar from '../explorer/PaginationBar';
+import PaginationBar, { type PaginationBarHandle } from '../explorer/PaginationBar';
 import Popover from '../common/Popover';
 import Modal from '../common/Modal';
+import { useListKeyNav } from '../../hooks/useListKeyNav';
 
 const PAGE_SIZE = config.defaultListPageSize;
 
@@ -1022,6 +1023,22 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const digits = effectiveCreateDigits();
   const pageStart = page * PAGE_SIZE;
   const visibleNotes = noteEntries.slice(pageStart, pageStart + PAGE_SIZE);
+
+  const notesListRef = useRef<HTMLDivElement>(null);
+  const notesPaginationRef = useRef<PaginationBarHandle>(null);
+
+  const { focusedRelIdx: notesFocusedRelIdx, containerProps: notesContainerProps } = useListKeyNav({
+    totalItems: noteEntries.length,
+    pageSize: PAGE_SIZE,
+    page,
+    onPage: setPage,
+    onOpen: (absIdx) => { void openNoteMarkdown(noteEntries[absIdx]); },
+    onParent: breadcrumbs.length > 1 ? () => navigateTo(breadcrumbs.length - 2) : undefined,
+    onOpenSelectPageModal: () => notesPaginationRef.current?.openPicker(),
+    onOpenEditPagePopover: () => notesPaginationRef.current?.openEdit(),
+    containerRef: notesListRef,
+    listKey: currentFolderId,
+  });
   const hdrBtn = 'shrink-0 w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
   const menuRow = 'w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700';
 
@@ -1349,7 +1366,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
 
       {/* ── Notes list ───────────────────────────────────────────────────── */}
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div ref={notesListRef} className="flex-1 min-h-0 overflow-y-auto outline-none" {...notesContainerProps}>
         {loading && (
           <div className="flex items-center justify-center h-32 text-sm text-gray-400 dark:text-gray-500">Loading…</div>
         )}
@@ -1366,10 +1383,11 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
             </button>
           </div>
         )}
-        {!loading && visibleNotes.map((note) => (
+        {!loading && visibleNotes.map((note, relIdx) => (
           <div
             key={note.digits}
-            className="flex items-center gap-2 px-3 py-2.5 border-b border-gray-100 dark:border-gray-700/60 hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors"
+            data-nav-idx={relIdx}
+            className={`flex items-center gap-2 px-3 py-2.5 border-b border-gray-100 dark:border-gray-700/60 transition-colors ${relIdx === notesFocusedRelIdx ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}
           >
             {/* Short name button — navigate into children */}
             <button
@@ -1404,7 +1422,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
 
       {noteEntries.length > PAGE_SIZE && (
         <div className="shrink-0">
-          <PaginationBar page={page} total={noteEntries.length} pageSize={PAGE_SIZE} onPage={setPage} />
+          <PaginationBar ref={notesPaginationRef} page={page} total={noteEntries.length} pageSize={PAGE_SIZE} onPage={setPage} />
         </div>
       )}
 

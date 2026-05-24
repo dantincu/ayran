@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
-import PaginationBar from './PaginationBar';
+import PaginationBar, { type PaginationBarHandle } from './PaginationBar';
 import { FolderPlusIcon, AncestorsIcon } from './ExplorerIcons';
 import BreadcrumbAncestorsModal, { type AncestorEntry } from './BreadcrumbAncestorsModal';
 import BreadcrumbChangePathModal from './BreadcrumbChangePathModal';
 import config from '../../config.json';
+import { useListKeyNav } from '../../hooks/useListKeyNav';
 
 export interface FolderEntry {
   id: string;
@@ -100,6 +101,25 @@ export default function FolderPickerModal({
 
   const onListRef = useRef(onList);
   onListRef.current = onList;
+
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const paginationBarRef = useRef<PaginationBarHandle>(null);
+
+  const { focusedRelIdx, containerProps: listContainerProps } = useListKeyNav({
+    totalItems: items.length,
+    pageSize: config.defaultListPageSize,
+    page,
+    onPage: setPage,
+    onOpen: (absIdx) => {
+      const item = items[absIdx];
+      if (item?.isDir) navigate(item.id, item.name);
+    },
+    onParent: breadcrumbs.length > 1 ? () => navigateTo(breadcrumbs.length - 2) : undefined,
+    onOpenSelectPageModal: () => paginationBarRef.current?.openPicker(),
+    onOpenEditPagePopover: () => paginationBarRef.current?.openEdit(),
+    containerRef: listContainerRef,
+    listKey: folderId,
+  });
 
   const reload = () => {
     setLoading(true);
@@ -396,7 +416,7 @@ export default function FolderPickerModal({
             </div>
           ) : (
             /* ── Normal folder browser ── */
-            <div className="flex-1 overflow-y-auto min-h-40">
+            <div ref={listContainerRef} className="flex-1 overflow-y-auto min-h-40 outline-none" {...listContainerProps}>
               {loading && <div className="flex items-center justify-center h-32 text-sm text-gray-400 dark:text-gray-500">Loading…</div>}
               {!loading && !error && (
                 <div>
@@ -428,12 +448,13 @@ export default function FolderPickerModal({
                     </div>
                   )}
 
-                  {visibleItems.map((item) => {
+                  {visibleItems.map((item, relIdx) => {
                     const isRenaming = renamingId === item.id;
                     const isConfirmingDelete = deletingId === item.id;
                     return (
                       <div key={item.id}
-                        className="group flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50 dark:hover:bg-gray-700/40 border-b border-gray-50 dark:border-gray-700/50 last:border-0"
+                        data-nav-idx={relIdx}
+                        className={`group flex items-center gap-2 px-3 py-1.5 border-b border-gray-50 dark:border-gray-700/50 last:border-0 ${relIdx === focusedRelIdx ? 'bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'}`}
                         onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
 
                         <span className="text-base select-none shrink-0">{item.isDir ? '📁' : '📄'}</span>
@@ -504,7 +525,7 @@ export default function FolderPickerModal({
           {!destNamesMode && (
             <div className="flex items-center shrink-0 border-t border-gray-100 dark:border-gray-700">
               <div className="flex-1">
-                <PaginationBar page={page} total={items.length} pageSize={pageSize} onPage={setPage} />
+                <PaginationBar ref={paginationBarRef} page={page} total={items.length} pageSize={pageSize} onPage={setPage} />
               </div>
               {sourceItems.length > 0 && (
                 <div className="relative pr-2">

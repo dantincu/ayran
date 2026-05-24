@@ -21,6 +21,14 @@ Let's add keyboard shortcuts for our app (for our entire app). I want our shortc
       "name": "Minimize all modals",
       "keys": "Ctrl+M N"
     },
+    "showSelectListPageModal": {
+      "name": "Show select list page modal",
+      "keys": "Ctrl+T P"
+    },
+    "showEditListPagePopover": {
+      "name": "Show edit list page popover",
+      "keys": "Ctrl+T Shift+P"
+    },
     "showCurrentlyOpenedTabsModal": {
       "name": "Show currently opened tabs modal",
       "keys": "Ctrl+T L"
@@ -52,7 +60,9 @@ Let's add keyboard shortcuts for our app (for our entire app). I want our shortc
         "closeModal",
         "closeAllModals",
         "maximizeModal",
-        "minimizeAllModals"
+        "minimizeAllModals",
+        "showSelectListPageModal",
+        "showEditListPagePopover"
       ]
     },
     "mainApp": {},

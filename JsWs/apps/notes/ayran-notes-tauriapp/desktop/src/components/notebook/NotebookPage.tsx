@@ -10,6 +10,7 @@ import AllFilesExplorerTab from './AllFilesExplorerTab';
 import NotesExplorer from './NotesExplorer';
 import { useTheme } from '../../hooks/useTheme';
 import { useKeyboardShortcut } from '../common/KeyboardShortcutsContext';
+import { useListKeyNav } from '../../hooks/useListKeyNav';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 
@@ -639,6 +640,27 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
     lastCheckedTabIdxRef.current = null;
   };
 
+  // ── Tab list keyboard navigation ─────────────────────────────────────────────
+
+  const displayTabs = tabSortMode ? tabWorkingOrder : tabs;
+  const tabListRef = useRef<HTMLDivElement>(null);
+
+  const { focusedRelIdx: tabFocusedRelIdx, containerProps: tabListContainerProps } = useListKeyNav({
+    totalItems: displayTabs.length,
+    pageSize: Math.max(1, displayTabs.length),
+    page: 0,
+    onPage: () => {},
+    onOpen: (absIdx) => {
+      if (tabSortMode) return;
+      const tab = displayTabs[absIdx];
+      if (!tab) return;
+      if (tab.id === activeTabId) { closeTabsList(); return; }
+      navigateToTab(tab.id);
+      closeTabsList();
+    },
+    containerRef: tabListRef,
+  });
+
   // ── Load notebook entry ───────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -851,7 +873,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       {/* ── Modals ──────────────────────────────────────────────────────────── */}
 
       {showTabsList && (() => {
-        const displayTabs = tabSortMode ? tabWorkingOrder : tabs;
         const someTabSelected = selectedTabIds.size > 0;
         const allTabsSelected = displayTabs.length > 0 && selectedTabIds.size === displayTabs.length;
         const tbBtn = 'px-2 py-0.5 text-xs rounded-lg transition-colors';
@@ -935,7 +956,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
             </div>
 
             {/* Tab list */}
-            <div className="py-1">
+            <div ref={tabListRef} className="py-1 overflow-y-auto outline-none" {...tabListContainerProps}>
               {/* Strip above first row */}
               {tabSortMode && tabStripPos === 0 && (
                 <SortStrip hasSelected={someTabSelected} active={tabStripActive} stripPos={tabStripPos} maxPos={tabWorkingOrder.length}
@@ -956,6 +977,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 return (
                   <div key={tab.id}>
                     <div
+                      data-nav-idx={idx}
                       onClick={(e) => {
                         if (tabSortMode) { handleTabRowBodyClick(idx); return; }
                         if (e.shiftKey) { handleTabCheck(idx, true, isSelected); return; }
@@ -973,6 +995,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                       }}
                       className={[
                         'flex items-center gap-2 px-3 py-2 transition-colors cursor-pointer',
+                        idx === tabFocusedRelIdx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : '',
                         isSelected
                           ? 'bg-blue-50 dark:bg-blue-900/20'
                           : isPreviewed

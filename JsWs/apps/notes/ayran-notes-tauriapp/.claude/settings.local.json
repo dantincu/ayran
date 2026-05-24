@@ -30,7 +30,8 @@
       "Bash(Select-Object -First 60)",
       "Bash(npm install *)",
       "Bash(Get-ChildItem -Path \"f:\\\\T\\\\ayran\\\\JsWs\\\\apps\\\\notes\\\\ayran-notes-tauriapp\\\\desktop\\\\src\" -Recurse -Directory)",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(echo \"Exit: $?\")"
     ]
   }
 }

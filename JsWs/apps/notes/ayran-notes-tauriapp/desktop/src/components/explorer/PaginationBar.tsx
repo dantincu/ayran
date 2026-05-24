@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useImperativeHandle, forwardRef } from 'react';
 import Popover from '../common/Popover';
 import Modal from '../common/Modal';
 import config from '../../config.json';
@@ -10,11 +10,24 @@ interface Props {
   onPage: (page: number) => void;
 }
 
-export default function PaginationBar({ page, total, pageSize, onPage }: Props) {
+export interface PaginationBarHandle {
+  openPicker: () => void;
+  openEdit: () => void;
+}
+
+const PaginationBar = forwardRef<PaginationBarHandle, Props>(function PaginationBar(
+  { page, total, pageSize, onPage },
+  ref,
+) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [editValue, setEditValue] = useState('');
   const totalPages = pageSize > 0 ? Math.ceil(total / pageSize) : 1;
+
+  useImperativeHandle(ref, () => ({
+    openPicker: () => setPickerOpen(true),
+    openEdit: () => { setEditValue(String(page + 1)); setEditOpen(true); },
+  }), [page]);
 
   if (totalPages <= 1) return null;
 
@@ -110,4 +123,6 @@ export default function PaginationBar({ page, total, pageSize, onPage }: Props) 
       })()}
     </>
   );
-}
+});
+
+export default PaginationBar;
