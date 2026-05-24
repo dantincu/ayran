@@ -143,6 +143,6 @@ export function useListKeyNav({
     focusedAbsIdx,
     setFocusedAbsIdx,
     focusedRelIdx,
-    containerProps: { tabIndex: 0 as const, onKeyDown },
+    containerProps: { tabIndex: 0 as const, onKeyDown, 'data-list-nav-container': 'true' },
   };
 }

@@ -10,6 +10,7 @@
     "goToPrevTabFromHistory": { "name": "Go to prev tab from history", "keys": "Ctrl+T -" },
     "goToNextTab": { "name": "Go to next tab", "keys": "Ctrl+T N" },
     "goToPrevTab": { "name": "Go to prev tab", "keys": "Ctrl+T P" },
+    "listNavFocusContainer": { "name": "Focus the active list for keyboard navigation", "keys": "Ctrl+M F" },
     "listNavOpenSelectPage": { "name": "Open select-page modal (focused list)", "keys": "Ctrl+M P" },
     "listNavOpenEditPage": { "name": "Open page-number input (focused list)", "keys": "Ctrl+M Shift+P" }
   },
@@ -29,7 +30,7 @@
       ]
     },
     "listNav": {
-      "shortcuts": ["listNavOpenSelectPage", "listNavOpenEditPage"]
+      "shortcuts": ["listNavFocusContainer", "listNavOpenSelectPage", "listNavOpenEditPage"]
     }
   }
 }

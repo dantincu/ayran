@@ -12,6 +12,36 @@ function App() {
     initialStyles?.remove();
   }, []);
 
+  React.useEffect(() => {
+    let ctrlMPressed = false;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyM') {
+        ctrlMPressed = true;
+        return;
+      }
+      if (ctrlMPressed) {
+        ctrlMPressed = false;
+        if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyF') {
+          e.preventDefault();
+          const containers = Array.from(
+            document.querySelectorAll<HTMLElement>('[data-list-nav-container]'),
+          );
+          for (let i = containers.length - 1; i >= 0; i--) {
+            const el = containers[i];
+            const rect = el.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden') {
+              el.focus();
+              break;
+            }
+          }
+        }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
   return (
     <ModalStackProvider>
       <PopoverStackProvider>
