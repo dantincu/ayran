@@ -115,7 +115,7 @@ export interface KeyboardShortcutsContextValue {
   overrides: Record<string, string>;
   registerHandler: (id: string, handler: () => void) => void;
   unregisterHandler: (id: string) => void;
-  pushScopes: (scopes: string[]) => () => void;
+  pushScopes: (scopes: string[], isolate?: boolean) => () => void;
   updateShortcutKeys: (id: string, keys: string) => void;
   resetShortcutKeys: (id: string) => void;
   saveShortcuts: (currentOverrides: Record<string, string>, syncFilePath?: string | null) => Promise<void>;
@@ -144,7 +144,7 @@ export function KeyboardShortcutsProvider({ children }: { children: React.ReactN
   const handlersRef = useRef<Map<string, () => void>>(new Map());
   const partialMatchesRef = useRef<Array<{ id: string; chordIndex: number }>>([]);
   const scopeKeyRef = useRef(0);
-  const scopeStackRef = useRef<Array<{ key: number; scopes: string[] }>>([]);
+  const scopeStackRef = useRef<Array<{ key: number; scopes: string[]; isolate: boolean }>>([]);
 
   useEffect(() => {
     parsedRef.current = buildParsedShortcuts(shortcuts, defaultScopesConfig);
@@ -170,8 +170,19 @@ export function KeyboardShortcutsProvider({ children }: { children: React.ReactN
       // Never intercept bare Enter (textarea submit, button activation, etc.)
       if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) return;
 
-      const topFrame = scopeStackRef.current[scopeStackRef.current.length - 1];
-      const activeScopes = new Set<string>(topFrame?.scopes ?? ['global']);
+      // Build active scopes by accumulating all frames, starting from the
+      // last "isolate" frame (if any). An isolate frame (e.g. a modal) acts
+      // as a wall: only it and anything pushed after it count, suppressing
+      // wider module scopes that were pushed earlier in the tree.
+      const frames = scopeStackRef.current;
+      let startIdx = 0;
+      for (let i = frames.length - 1; i >= 0; i--) {
+        if (frames[i].isolate) { startIdx = i; break; }
+      }
+      const activeScopes = new Set<string>(frames.length === 0 ? ['global'] : []);
+      for (let i = startIdx; i < frames.length; i++) {
+        for (const s of frames[i].scopes) activeScopes.add(s);
+      }
       const candidates = parsedRef.current.filter((s) =>
         s.scopeIds.some((sid) => activeScopes.has(sid)),
       );
@@ -236,9 +247,9 @@ export function KeyboardShortcutsProvider({ children }: { children: React.ReactN
     handlersRef.current.delete(id);
   }, []);
 
-  const pushScopes = useCallback((scopes: string[]) => {
+  const pushScopes = useCallback((scopes: string[], isolate = false) => {
     const key = ++scopeKeyRef.current;
-    scopeStackRef.current = [...scopeStackRef.current, { key, scopes }];
+    scopeStackRef.current = [...scopeStackRef.current, { key, scopes, isolate }];
     return () => {
       scopeStackRef.current = scopeStackRef.current.filter((f) => f.key !== key);
     };
@@ -304,13 +315,15 @@ export function useKeyboardShortcut(id: string, handler: () => void) {
 }
 
 // Push scopes while mounted — auto-pops on unmount.
-// Scopes are captured once on mount; pass stable literals or useMemo'd arrays.
-export function useKeyboardScopes(scopes: string[]) {
+// Pass isolate=true (modals) to suppress scopes pushed by outer components.
+// Scopes and isolate are captured once on mount; pass stable values.
+export function useKeyboardScopes(scopes: string[], isolate = false) {
   const { pushScopes } = useKeyboardShortcuts();
   const scopesRef = useRef(scopes);
+  const isolateRef = useRef(isolate);
 
   useEffect(() => {
-    return pushScopes(scopesRef.current);
+    return pushScopes(scopesRef.current, isolateRef.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pushScopes]);
 }

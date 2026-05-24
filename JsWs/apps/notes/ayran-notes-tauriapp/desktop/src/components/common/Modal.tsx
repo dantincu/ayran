@@ -56,8 +56,8 @@ export default function Modal({ title, onClose, onMinimize, children, maxWidth =
   const { dragPos, setDragPos, onHeaderMouseDown } = useDraggable(panelRef, maximized);
   const closeAllSeenRef = useRef(closeAllCounter);
 
-  // Narrow active keyboard shortcuts to global-only while this modal is open
-  useKeyboardScopes(GLOBAL_ONLY_SCOPES);
+  // Isolate: suppress module-level scopes; only global shortcuts remain active.
+  useKeyboardScopes(GLOBAL_ONLY_SCOPES, true);
 
   useLayoutEffect(() => {
     register(id, !!onClose);

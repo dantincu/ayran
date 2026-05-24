@@ -9,7 +9,7 @@ import { MAX_TAB_HISTORY } from '../../lib/config';
 import AllFilesExplorerTab from './AllFilesExplorerTab';
 import NotesExplorer from './NotesExplorer';
 import { useTheme } from '../../hooks/useTheme';
-import { useKeyboardShortcut, useKeyboardScopes } from '../common/KeyboardShortcutsContext';
+import { useKeyboardShortcut } from '../common/KeyboardShortcutsContext';
 import Modal from '../common/Modal';
 import Popover from '../common/Popover';
 
@@ -518,9 +518,6 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       }
     }
   };
-
-  // Push 'notebookModule' scope so tab shortcuts are active in this window.
-  useKeyboardScopes(['global', 'notebookModule']);
 
   useKeyboardShortcut('showCurrentlyOpenedTabsModal', () => {
     setHistoryPreviewIndex(historyIndex);

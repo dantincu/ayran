@@ -65,9 +65,9 @@ export default function AppShell() {
   const { theme, toggleTheme } = useTheme();
   const acctSwitcherRef = useRef<HTMLDivElement>(null);
 
-  // Base scope: 'global' + 'mainApp' are always active in the main shell.
-  // NotebookPage will push its own scope on top of this when it mounts.
-  useKeyboardScopes(['global', 'mainApp']);
+  // Scope is determined by window type: notebook windows get 'notebookModule',
+  // the main window gets 'mainApp'. Both always include 'global'.
+  useKeyboardScopes(isNotebookWindow ? ['global', 'notebookModule'] : ['global', 'mainApp']);
 
   // Wire global shortcuts — popovers take priority over modals for close actions
   const { closeTop, triggerCloseAll, toggleMaximizeTop, minimizeAll } = useModalStack();
