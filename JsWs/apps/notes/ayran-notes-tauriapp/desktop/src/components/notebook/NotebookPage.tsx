@@ -645,6 +645,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   const displayTabs = tabSortMode ? tabWorkingOrder : tabs;
   const tabListRef = useRef<HTMLDivElement>(null);
 
+  useEffect(() => {
+    if (showTabsList) {
+      // Defer one frame so the modal finishes rendering before we focus.
+      const id = requestAnimationFrame(() => { tabListRef.current?.focus(); });
+      return () => cancelAnimationFrame(id);
+    }
+  }, [showTabsList]);
+
   const { focusedRelIdx: tabFocusedRelIdx, containerProps: tabListContainerProps } = useListKeyNav({
     totalItems: displayTabs.length,
     pageSize: Math.max(1, displayTabs.length),

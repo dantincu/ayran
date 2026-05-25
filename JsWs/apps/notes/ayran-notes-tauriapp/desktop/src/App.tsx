@@ -54,14 +54,18 @@ function App() {
           for (let i = containers.length - 1; i >= 0; i--) {
             const el = containers[i];
             const rect = el.getBoundingClientRect();
-            if (rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden') {
-              if (el.tabIndex >= 0) {
-                el.focus();
-              } else {
-                el.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
-              }
-              break;
+            if (rect.width === 0 || rect.height === 0) continue;
+            if (getComputedStyle(el).visibility === 'hidden') continue;
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const top = document.elementFromPoint(cx, cy);
+            if (!top || (!el.contains(top) && el !== top)) continue;
+            if (el.tabIndex >= 0) {
+              el.focus();
+            } else {
+              el.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
             }
+            break;
           }
         }
       }

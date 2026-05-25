@@ -1138,6 +1138,19 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       {/* ── Header ──────────────────────────────────────────────────────── */}
 
       <div className="shrink-0 border-b border-gray-200 dark:border-gray-700 px-3 py-2 flex items-center gap-2">
+        {/* Parent folder button */}
+        <button
+          onClick={() => navigateTo(breadcrumbs.length - 2)}
+          disabled={breadcrumbs.length <= 1}
+          title="Parent folder"
+          data-back-btn
+          className="p-1 shrink-0 rounded text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-30 transition-colors"
+        >
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
+            <path d="M10 2H6L4 4H2a1 1 0 00-1 1v6a1 1 0 001 1h10a1 1 0 001-1V3a1 1 0 00-1-1z"/>
+            <path d="M7 7l-2 2 2 2M9 9H5"/>
+          </svg>
+        </button>
         {/* Breadcrumb navigation */}
         <nav className="flex items-center flex-wrap gap-1 text-sm text-gray-500 dark:text-gray-400 flex-1 min-w-0">
           {breadcrumbs.map((crumb, i) => (
