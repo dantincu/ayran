@@ -49,13 +49,17 @@ function App() {
         if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyF') {
           e.preventDefault();
           const containers = Array.from(
-            document.querySelectorAll<HTMLElement>('[data-list-nav-container]'),
+            document.querySelectorAll<HTMLElement>('[data-list-nav-container],[data-focus-target]'),
           );
           for (let i = containers.length - 1; i >= 0; i--) {
             const el = containers[i];
             const rect = el.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0 && getComputedStyle(el).visibility !== 'hidden') {
-              el.focus();
+              if (el.tabIndex >= 0) {
+                el.focus();
+              } else {
+                el.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
+              }
               break;
             }
           }

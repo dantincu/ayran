@@ -637,7 +637,7 @@ export default function FileViewer({
   const NotebookBar = () => (
     <div className="shrink-0 flex items-center gap-0.5 px-2 py-1 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
       {/* Back */}
-      <button onClick={onClose} title="Back to explorer" className={ib}><BackChevron /></button>
+      <button onClick={onClose} title="Back to explorer" className={ib} data-back-btn><BackChevron /></button>
 
       {/* Sibling navigation */}
       {hasSiblings && (
@@ -811,7 +811,7 @@ export default function FileViewer({
               <button onClick={() => setSaveError(null)} className="text-red-400 hover:text-red-600 dark:hover:text-red-300 ml-2">✕</button>
             </div>
           )}
-          <div className="flex-1 min-h-0 overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-hidden" data-focus-target>
             <CodeEditor
               ref={cmRef}
               value={editedText}
