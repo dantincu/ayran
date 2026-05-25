@@ -1008,6 +1008,23 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
     }
   };
 
+  const notesListRef = useRef<HTMLDivElement>(null);
+  const notesPaginationRef = useRef<PaginationBarHandle>(null);
+
+  const { focusedRelIdx: notesFocusedRelIdx, containerProps: notesContainerProps } = useListKeyNav({
+    totalItems: noteEntries.length,
+    pageSize: PAGE_SIZE,
+    page,
+    onPage: setPage,
+    onOpen: (absIdx) => { void openNoteMarkdown(noteEntries[absIdx]); },
+    onNavigateInto: (absIdx) => { void navigateInto(noteEntries[absIdx]); },
+    onParent: breadcrumbs.length > 1 ? () => navigateTo(breadcrumbs.length - 2) : undefined,
+    onOpenSelectPageModal: () => notesPaginationRef.current?.openPicker(),
+    onOpenEditPagePopover: () => notesPaginationRef.current?.openEdit(),
+    containerRef: notesListRef,
+    listKey: currentFolderId,
+  });
+
   // ── Render guards ─────────────────────────────────────────────────────────
 
   if (acctLoading) return <div className="flex items-center justify-center flex-1 text-gray-400 dark:text-gray-500 text-sm">Loading…</div>;
@@ -1023,22 +1040,6 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const digits = effectiveCreateDigits();
   const pageStart = page * PAGE_SIZE;
   const visibleNotes = noteEntries.slice(pageStart, pageStart + PAGE_SIZE);
-
-  const notesListRef = useRef<HTMLDivElement>(null);
-  const notesPaginationRef = useRef<PaginationBarHandle>(null);
-
-  const { focusedRelIdx: notesFocusedRelIdx, containerProps: notesContainerProps } = useListKeyNav({
-    totalItems: noteEntries.length,
-    pageSize: PAGE_SIZE,
-    page,
-    onPage: setPage,
-    onOpen: (absIdx) => { void openNoteMarkdown(noteEntries[absIdx]); },
-    onParent: breadcrumbs.length > 1 ? () => navigateTo(breadcrumbs.length - 2) : undefined,
-    onOpenSelectPageModal: () => notesPaginationRef.current?.openPicker(),
-    onOpenEditPagePopover: () => notesPaginationRef.current?.openEdit(),
-    containerRef: notesListRef,
-    listKey: currentFolderId,
-  });
   const hdrBtn = 'shrink-0 w-7 h-7 flex items-center justify-center rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors';
   const menuRow = 'w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700';
 

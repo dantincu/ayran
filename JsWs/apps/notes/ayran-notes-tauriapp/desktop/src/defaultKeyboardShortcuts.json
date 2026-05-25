@@ -2,21 +2,49 @@
   "shortcuts": {
     "closeModal": { "name": "Close modal", "keys": "Esc" },
     "closeAllModals": { "name": "Close all modals", "keys": "Shift+Esc" },
-    "maximizeModal": { "name": "Maximize or restore modal", "keys": "Ctrl+M X" },
+    "maximizeModal": {
+      "name": "Maximize or restore modal",
+      "keys": "Ctrl+M X"
+    },
     "minimizeAllModals": { "name": "Minimize all modals", "keys": "Ctrl+M N" },
-    "showCurrentlyOpenedTabsModal": { "name": "Show currently opened tabs modal", "keys": "Ctrl+T L" },
+    "showCurrentlyOpenedTabsModal": {
+      "name": "Show currently opened tabs modal",
+      "keys": "Ctrl+T L"
+    },
     "openNewTab": { "name": "Open new tab", "keys": "Ctrl+T T" },
-    "goToNextTabFromHistory": { "name": "Go to next tab from history", "keys": "Ctrl+T Shift+=" },
-    "goToPrevTabFromHistory": { "name": "Go to prev tab from history", "keys": "Ctrl+T -" },
+    "goToNextTabFromHistory": {
+      "name": "Go to next tab from history",
+      "keys": "Ctrl+T Shift+="
+    },
+    "goToPrevTabFromHistory": {
+      "name": "Go to prev tab from history",
+      "keys": "Ctrl+T -"
+    },
     "goToNextTab": { "name": "Go to next tab", "keys": "Ctrl+T N" },
     "goToPrevTab": { "name": "Go to prev tab", "keys": "Ctrl+T P" },
-    "listNavFocusContainer": { "name": "Focus the active list for keyboard navigation", "keys": "Ctrl+M F" },
-    "listNavOpenSelectPage": { "name": "Open select-page modal (focused list)", "keys": "Ctrl+M P" },
-    "listNavOpenEditPage": { "name": "Open page-number input (focused list)", "keys": "Ctrl+M Shift+P" }
+    "listNavFocusContainer": {
+      "name": "Focus the active list for keyboard navigation",
+      "keys": "Ctrl+M F"
+    },
+    "listNavOpenSelectPage": {
+      "name": "Open select-page modal (focused list)",
+      "keys": "Ctrl+M P"
+    },
+    "listNavOpenEditPage": {
+      "name": "Open page-number input (focused list)",
+      "keys": "Ctrl+M Shift+P"
+    },
+    "goBack": { "name": "Go back", "keys": "Shift+Esc" }
   },
   "scopes": {
     "global": {
-      "shortcuts": ["closeModal", "closeAllModals", "maximizeModal", "minimizeAllModals"]
+      "shortcuts": [
+        "closeModal",
+        "closeAllModals",
+        "maximizeModal",
+        "minimizeAllModals",
+        "goBack"
+      ]
     },
     "mainApp": {},
     "notebookModule": {
@@ -30,7 +58,11 @@
       ]
     },
     "listNav": {
-      "shortcuts": ["listNavFocusContainer", "listNavOpenSelectPage", "listNavOpenEditPage"]
+      "shortcuts": [
+        "listNavFocusContainer",
+        "listNavOpenSelectPage",
+        "listNavOpenEditPage"
+      ]
     }
   }
 }

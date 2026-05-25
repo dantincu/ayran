@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useListKeyNav } from '../../hooks/useListKeyNav';
 import { invoke } from '@tauri-apps/api/core';
 import { getAllWebviewWindows, WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen, emit } from '@tauri-apps/api/event';
@@ -102,6 +103,20 @@ export default function ManageNotebooksPage({ onViewPendingChanges }: Props) {
   const [stripActive, setStripActive] = useState(false);
 
   const displayOrder = sortMode ? workingOrder : notebooks;
+
+  const listContainerRef = useRef<HTMLDivElement>(null);
+  const { focusedRelIdx, containerProps: listContainerProps } = useListKeyNav({
+    totalItems: displayOrder.length,
+    pageSize: Math.max(1, displayOrder.length),
+    page: 0,
+    onPage: () => {},
+    onOpen: (absIdx) => {
+      if (sortMode) handleRowBodyClick(absIdx);
+      else void openInNewWindow(displayOrder[absIdx]);
+    },
+    containerRef: listContainerRef,
+    listKey: sortMode,
+  });
 
   // ── Data load ──────────────────────────────────────────────────────────────
 
@@ -403,13 +418,14 @@ export default function ManageNotebooksPage({ onViewPendingChanges }: Props) {
               onConfirm={handleConfirmMove} />
           )}
 
-          <div className="space-y-1">
+          <div ref={listContainerRef} className="space-y-1 outline-none" {...listContainerProps}>
             {displayOrder.map((nb, idx) => {
               const isOpen = !!nb.windowLabel;
               const isSelected = selectedIds.has(nb.id);
               return (
                 <div key={nb.id}>
                   <div
+                    data-nav-idx={idx}
                     draggable={!sortMode}
                     onDragStart={() => handleDragStart(idx)}
                     onDragOver={(e) => handleDragOver(e, idx)}
@@ -434,6 +450,7 @@ export default function ManageNotebooksPage({ onViewPendingChanges }: Props) {
                       !isSelected && !isOpen ? 'hover:bg-gray-50 dark:hover:bg-gray-700' : '',
                       dragIdx === idx ? 'opacity-50' : '',
                       dragOverIdx === idx && !sortMode ? 'border-t-2 border-blue-500' : '',
+                      focusedRelIdx === idx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : '',
                     ].join(' ')}
                   >
                     {/* Checkbox */}

@@ -529,7 +529,7 @@ export default function FileViewer({
 
   const HeaderBar = ({ right }: { right?: React.ReactNode }) => (
     <div className="flex items-center px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 gap-2 shrink-0">
-      <button onClick={onClose} title="Back"
+      <button onClick={onClose} title="Back" data-back-btn
         className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors shrink-0">
         <BackChevron />
       </button>
@@ -873,7 +873,7 @@ export default function FileViewer({
             onMouseUp={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}
           >
-            <button onClick={(e) => { e.stopPropagation(); onClose(); }} title="Back" className={overlayBtnCls}><BackChevron /></button>
+            <button onClick={(e) => { e.stopPropagation(); onClose(); }} title="Back" className={overlayBtnCls} {...(!inNotebook ? { 'data-back-btn': '' } : {})}><BackChevron /></button>
             <span className="text-white/40 shrink-0">|</span>
             {hasSiblings && (
               <>
@@ -960,7 +960,7 @@ export default function FileViewer({
           <div className="absolute inset-0 flex flex-col pointer-events-none">
             {/* Top bar */}
             <div className="flex items-center px-2 py-2 bg-gradient-to-b from-black/70 to-transparent text-white gap-1 pointer-events-auto">
-              <button onClick={(e) => { e.stopPropagation(); onClose(); }} title="Back" className={overlayBtnCls}><BackChevron /></button>
+              <button onClick={(e) => { e.stopPropagation(); onClose(); }} title="Back" className={overlayBtnCls} {...(!inNotebook ? { 'data-back-btn': '' } : {})}><BackChevron /></button>
               <span className="text-white/40 shrink-0">|</span>
               {hasSiblings && (
                 <>

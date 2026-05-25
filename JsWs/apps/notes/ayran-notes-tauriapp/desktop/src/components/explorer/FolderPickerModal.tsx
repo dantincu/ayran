@@ -382,6 +382,7 @@ export default function FolderPickerModal({
                 <button
                   onClick={() => setDestNamesMode(false)}
                   className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+                  data-back-btn
                 >
                   <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
                     <path d="M9 1L3 7l6 6"/>

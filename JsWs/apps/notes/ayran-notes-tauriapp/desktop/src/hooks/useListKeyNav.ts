@@ -9,6 +9,7 @@ export interface UseListKeyNavOptions {
   page: number;
   onPage: (p: number) => void;
   onOpen: (absIdx: number) => void;
+  onNavigateInto?: (absIdx: number) => void;
   onParent?: () => void;
   onOpenSelectPageModal?: () => void;
   onOpenEditPagePopover?: () => void;
@@ -23,6 +24,7 @@ export function useListKeyNav({
   page,
   onPage,
   onOpen,
+  onNavigateInto,
   onParent,
   onOpenSelectPageModal,
   onOpenEditPagePopover,
@@ -124,10 +126,15 @@ export function useListKeyNav({
         navigate(totalItems - 1);
         break;
       case 'Enter':
-      case 'ArrowRight':
         if (focusedAbsIdx >= 0) {
           e.preventDefault();
           onOpen(focusedAbsIdx);
+        }
+        break;
+      case 'ArrowRight':
+        if (focusedAbsIdx >= 0) {
+          e.preventDefault();
+          (onNavigateInto ?? onOpen)(focusedAbsIdx);
         }
         break;
       case 'ArrowLeft':

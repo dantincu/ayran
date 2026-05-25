@@ -132,7 +132,7 @@ export default function KeyboardShortcutsPage({ onBack }: Props) {
     <div className="space-y-4 max-w-xl">
       {/* Header */}
       <div className="flex items-center gap-2">
-        <button onClick={onBack} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors" title="Back">
+        <button onClick={onBack} className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-500 dark:text-gray-400 transition-colors" title="Back" data-back-btn>
           <ChevronLeft />
         </button>
         <h2 className="text-base font-semibold text-gray-900 dark:text-white">Keyboard Shortcuts</h2>

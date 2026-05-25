@@ -134,7 +134,7 @@ export default function Modal({ title, onClose, onMinimize, children, maxWidth =
           {/* Back button (left) — close current modal only */}
           <div className="shrink-0 w-6">
             {showBack && (
-              <button onClick={onClose} title="Back" className={btnCls}>
+              <button onClick={onClose} title="Back" className={btnCls} data-back-btn>
                 <BackIcon />
               </button>
             )}

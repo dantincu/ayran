@@ -13,6 +13,30 @@ function App() {
   }, []);
 
   React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.key !== 'Escape') return;
+      const buttons = Array.from(document.querySelectorAll<HTMLElement>('[data-back-btn]'));
+      for (let i = buttons.length - 1; i >= 0; i--) {
+        const el = buttons[i];
+        if ((el as HTMLButtonElement).disabled) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        if (getComputedStyle(el).visibility === 'hidden') continue;
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        if (top && (el === top || el.contains(top))) {
+          e.preventDefault();
+          el.click();
+          break;
+        }
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  React.useEffect(() => {
     let ctrlMPressed = false;
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') return;
