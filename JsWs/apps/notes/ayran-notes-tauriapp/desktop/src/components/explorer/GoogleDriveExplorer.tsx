@@ -291,7 +291,10 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     if (!item.isDir) return;
     navigate(item.itemId, [...breadcrumbs, { id: item.itemId, name: item.name }]);
   };
-  const navigateTo = (i: number) => navigate(breadcrumbs[i].id, breadcrumbs.slice(0, i + 1));
+  const navigateTo = (i: number) => {
+    if (i < breadcrumbs.length - 1) setLastOpenedId(breadcrumbs[i + 1].id);
+    navigate(breadcrumbs[i].id, breadcrumbs.slice(0, i + 1));
+  };
 
   // ── Search / sort / page ─────────────────────────────────────────────────────
   const handleSearch = async (e: React.SyntheticEvent<HTMLFormElement>) => {
@@ -626,6 +629,8 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
   const listContainerRef = useRef<HTMLDivElement>(null);
   const paginationBarRef = useRef<PaginationBarHandle>(null);
 
+  const lastOpenedRelIdx = lastOpenedId ? files.findIndex((i) => i.itemId === lastOpenedId) : -1;
+
   const { focusedRelIdx: listFocusedRelIdx, containerProps: listContainerProps } = useListKeyNav({
     totalItems: total,
     pageSize: PAGE_SIZE,
@@ -647,6 +652,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
     onOpenEditPagePopover: () => paginationBarRef.current?.openEdit(),
     containerRef: listContainerRef,
     listKey: folderId,
+    currentAbsIdx: lastOpenedRelIdx >= 0 ? page * PAGE_SIZE + lastOpenedRelIdx : -1,
   });
 
   const sortBtn = (col: SortBy, label: string) => (
@@ -904,7 +910,7 @@ export default function GoogleDriveExplorer({ account, onDisconnect, onOpenFile,
                 return (
                   <div key={item.itemId}
                     data-nav-idx={idx}
-                    className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${idx === listFocusedRelIdx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : ''} ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${idx === listFocusedRelIdx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : ''} ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; const isDup = duplicateNames.has(item.name); if (item.isDir) { openFolder(item); } else if (isDup) { setDuplicateNameError(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, files.filter(f => !duplicateNames.has(f.name))); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
                     onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                     <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}

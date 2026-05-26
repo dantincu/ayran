@@ -282,7 +282,10 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     setSelectedIds(new Set()); lastCheckedIdxRef.current = null;
     void loadFolder(uuid, false, 0, '', sortBy, ascending);
   }
-  function navigateTo(index: number) { navigate(breadcrumbs[index].uuid, breadcrumbs.slice(0, index + 1)); }
+  function navigateTo(index: number) {
+    if (index < breadcrumbs.length - 1) setLastOpenedId(breadcrumbs[index + 1].uuid);
+    navigate(breadcrumbs[index].uuid, breadcrumbs.slice(0, index + 1));
+  }
   function openDir(item: CachedItem) { navigate(item.itemId, [...breadcrumbs, { uuid: item.itemId, name: item.name }]); }
 
   // ── Search / sort / page ─────────────────────────────────────────────────────
@@ -311,6 +314,8 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
   const listContainerRef = useRef<HTMLDivElement>(null);
   const paginationBarRef = useRef<PaginationBarHandle>(null);
 
+  const lastOpenedRelIdx = lastOpenedId ? items.findIndex((i) => i.itemId === lastOpenedId) : -1;
+
   const { focusedRelIdx: listFocusedRelIdx, containerProps: listContainerProps } = useListKeyNav({
     totalItems: total,
     pageSize: PAGE_SIZE,
@@ -330,6 +335,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     onOpenEditPagePopover: () => paginationBarRef.current?.openEdit(),
     containerRef: listContainerRef,
     listKey: folderUUID,
+    currentAbsIdx: lastOpenedRelIdx >= 0 ? page * PAGE_SIZE + lastOpenedRelIdx : -1,
   });
 
   // ── Refresh split-button handlers ────────────────────────────────────────────
@@ -916,7 +922,7 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
                 return (
                   <div key={item.itemId}
                     data-nav-idx={idx}
-                    className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${idx === listFocusedRelIdx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : ''} ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : !item.isDir && item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    className={`flex items-center gap-3 py-2 px-2 rounded-lg group cursor-pointer ${idx === listFocusedRelIdx ? 'ring-1 ring-inset ring-blue-400 dark:ring-blue-500' : ''} ${selectedIds.has(item.itemId) ? 'bg-blue-50 dark:bg-blue-900/20' : item.itemId === lastOpenedId ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-amber-300 dark:ring-amber-700' : 'bg-white dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
                     onClick={(e) => { if ((e.target as HTMLElement).closest('button,input')) return; if (item.isDir) { openDir(item); } else { setLastOpenedId(item.itemId); const s = openFileSiblings(item, items); onOpenFile(item, [...breadcrumbs.map(b => b.name), item.name].join(' / '), s.siblings, s.siblingIdx); } }}
                     onContextMenu={(e) => { e.preventDefault(); setRowCtxMenu({ x: e.clientX, y: e.clientY, item }); }}>
                     <input type="checkbox" checked={selectedIds.has(item.itemId)} onChange={() => {}}

@@ -133,6 +133,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const [page, setPage] = useState(0);
 
   const [viewingFile, setViewingFile] = useState<ViewingFile | null>(savedNav?.viewingFile ?? null);
+  const [lastNavigatedNoteDigits, setLastNavigatedNoteDigits] = useState<string | null>(null);
 
   // ── Repair state (rebuild missing [note-children].json) ───────────────────
   const [indexMissing, setIndexMissing] = useState(false);
@@ -962,6 +963,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
       folderId = found.itemId;
       setNoteEntries((prev) => prev.map((e) => e.digits === note.digits ? { ...e, shortFolderId: folderId! } : e));
     }
+    setLastNavigatedNoteDigits(null);
     setBreadcrumbs((prev) => [...prev, {
       folderId: folderId!,
       label: note.title || note.shortFolderName,
@@ -973,7 +975,10 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   // ── Navigate back via breadcrumb ──────────────────────────────────────────
 
   const navigateTo = (index: number) => {
-    setBreadcrumbs((prev) => prev.slice(0, index + 1));
+    setBreadcrumbs((prev) => {
+      if (index < prev.length - 1) setLastNavigatedNoteDigits(prev[index + 1].digits ?? null);
+      return prev.slice(0, index + 1);
+    });
   };
 
   // ── Open the markdown file for a note ────────────────────────────────────
@@ -1011,9 +1016,14 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const notesListRef = useRef<HTMLDivElement>(null);
   const notesPaginationRef = useRef<PaginationBarHandle>(null);
 
-  const currentNoteAbsIdx = viewingFile
-    ? noteEntries.findIndex((e) => e.shortFolderId === viewingFile.item.parentId)
-    : -1;
+  const currentNoteAbsIdx = (() => {
+    if (lastNavigatedNoteDigits !== null) {
+      const idx = noteEntries.findIndex((e) => e.digits === lastNavigatedNoteDigits);
+      if (idx >= 0) return idx;
+    }
+    if (viewingFile) return noteEntries.findIndex((e) => e.shortFolderId === viewingFile.item.parentId);
+    return -1;
+  })();
 
   const { focusedRelIdx: notesFocusedRelIdx, containerProps: notesContainerProps } = useListKeyNav({
     totalItems: noteEntries.length,
@@ -1406,7 +1416,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
           <div
             key={note.digits}
             data-nav-idx={relIdx}
-            className={`flex items-center gap-2 px-3 py-2.5 border-b border-gray-100 dark:border-gray-700/60 transition-colors ${relIdx === notesFocusedRelIdx ? 'bg-emerald-50 dark:bg-emerald-900/20' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}
+            className={`flex items-center gap-2 px-3 py-2.5 border-b border-gray-100 dark:border-gray-700/60 transition-colors ${relIdx === notesFocusedRelIdx ? 'bg-emerald-50 dark:bg-emerald-900/20' : pageStart + relIdx === currentNoteAbsIdx ? 'bg-amber-50 dark:bg-amber-900/10 ring-1 ring-inset ring-amber-300 dark:ring-amber-700' : 'hover:bg-gray-50 dark:hover:bg-gray-700/30'}`}
           >
             {/* Short name button — navigate into children */}
             <button
