@@ -13,6 +13,9 @@ export interface UseListKeyNavOptions {
   onParent?: () => void;
   onOpenSelectPageModal?: () => void;
   onOpenEditPagePopover?: () => void;
+  onRefresh?: () => void;
+  onHardRefresh?: () => void;
+  onClearCache?: () => void;
   containerRef: RefObject<HTMLElement | null>;
   pageJump?: number;
   listKey?: unknown;
@@ -29,6 +32,9 @@ export function useListKeyNav({
   onParent,
   onOpenSelectPageModal,
   onOpenEditPagePopover,
+  onRefresh,
+  onHardRefresh,
+  onClearCache,
   containerRef,
   pageJump = DEFAULT_PAGE_JUMP,
   listKey,
@@ -92,10 +98,15 @@ export function useListKeyNav({
 
     if (ctrlMPressedRef.current) {
       ctrlMPressedRef.current = false;
-      if (!e.ctrlKey && !e.altKey && !e.metaKey && e.code === 'KeyP') {
+      if (!e.altKey && !e.metaKey && e.code === 'KeyP') {
         e.preventDefault();
-        if (e.shiftKey) onOpenEditPagePopover?.();
-        else onOpenSelectPageModal?.();
+        if (e.shiftKey && !e.ctrlKey) onOpenEditPagePopover?.();
+        else if (!e.shiftKey && !e.ctrlKey) onOpenSelectPageModal?.();
+      } else if (!e.altKey && !e.metaKey && e.code === 'KeyR') {
+        e.preventDefault();
+        if (e.ctrlKey && e.shiftKey) onHardRefresh?.();
+        else if (e.shiftKey && !e.ctrlKey) onClearCache?.();
+        else if (!e.ctrlKey && !e.shiftKey) onRefresh?.();
       }
       return;
     }

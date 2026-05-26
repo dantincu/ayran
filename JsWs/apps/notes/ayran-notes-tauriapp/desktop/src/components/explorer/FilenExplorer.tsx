@@ -311,6 +311,18 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     catch (e) { setError(e instanceof Error ? e.message : String(e)); }
   };
 
+  // ── Refresh split-button handlers ────────────────────────────────────────────
+  const handleRefresh = () => void loadFolder(folderUUID, false, page, search, sortBy, ascending);
+  const handleHardRefresh = () => { setMenuOpen(false); void loadFolder(folderUUID, true, page, search, sortBy, ascending); };
+  const handleClearCache = async () => {
+    setMenuOpen(false);
+    try {
+      await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderUUID });
+      setCacheCleared(true);
+      setTimeout(() => setCacheCleared(false), 2000);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+  };
+
   const listContainerRef = useRef<HTMLDivElement>(null);
   const paginationBarRef = useRef<PaginationBarHandle>(null);
 
@@ -333,22 +345,13 @@ export default function FilenExplorer({ account, onDisconnect, onNeedsRelogin, o
     onParent: breadcrumbs.length > 1 ? () => navigateTo(breadcrumbs.length - 2) : undefined,
     onOpenSelectPageModal: () => paginationBarRef.current?.openPicker(),
     onOpenEditPagePopover: () => paginationBarRef.current?.openEdit(),
+    onRefresh: handleRefresh,
+    onHardRefresh: handleHardRefresh,
+    onClearCache: () => void handleClearCache(),
     containerRef: listContainerRef,
     listKey: folderUUID,
     currentAbsIdx: lastOpenedRelIdx >= 0 ? page * PAGE_SIZE + lastOpenedRelIdx : -1,
   });
-
-  // ── Refresh split-button handlers ────────────────────────────────────────────
-  const handleRefresh = () => void loadFolder(folderUUID, false, page, search, sortBy, ascending);
-  const handleHardRefresh = () => { setMenuOpen(false); void loadFolder(folderUUID, true, page, search, sortBy, ascending); };
-  const handleClearCache = async () => {
-    setMenuOpen(false);
-    try {
-      await invoke('invalidate_folder_cache', { accountId: account.id, parentId: folderUUID });
-      setCacheCleared(true);
-      setTimeout(() => setCacheCleared(false), 2000);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-  };
 
   // ── File actions ─────────────────────────────────────────────────────────────
   const handleDownload = async (item: CachedItem) => {

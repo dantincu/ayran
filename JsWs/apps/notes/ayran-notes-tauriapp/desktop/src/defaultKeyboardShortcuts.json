@@ -34,6 +34,9 @@
       "name": "Open page-number input (focused list)",
       "keys": "Ctrl+M Shift+P"
     },
+    "refresh": { "name": "Refresh", "keys": "Ctrl+M R" },
+    "hardRefresh": { "name": "Hard refresh", "keys": "Ctrl+M Ctrl+Shift+R" },
+    "clearCache": { "name": "Clear cache", "keys": "Ctrl+M Shift+R" },
     "goBack": { "name": "Go back", "keys": "Shift+Esc" }
   },
   "scopes": {
@@ -61,7 +64,10 @@
       "shortcuts": [
         "listNavFocusContainer",
         "listNavOpenSelectPage",
-        "listNavOpenEditPage"
+        "listNavOpenEditPage",
+        "refresh",
+        "hardRefresh",
+        "clearCache"
       ]
     }
   }

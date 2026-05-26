@@ -158,6 +158,18 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const [refreshMenuOpen, setRefreshMenuOpen] = useState(false);
   const [cacheCleared, setCacheCleared] = useState(false);
 
+  const handleClearCache = async () => {
+    setRefreshMenuOpen(false);
+    try {
+      await invoke('invalidate_folder_cache', { accountId: account?.id, parentId: currentFolderId });
+      if (noteChildrenJsonId) {
+        await invoke('delete_cached_file', { accountId: account?.id, itemId: noteChildrenJsonId });
+      }
+      setCacheCleared(true);
+      setTimeout(() => setCacheCleared(false), 2000);
+    } catch { /* non-fatal */ }
+  };
+
   const [showCreate, setShowCreate] = useState(false);
   const [createTitle, setCreateTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -1035,6 +1047,9 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
     onParent: breadcrumbs.length > 1 ? () => navigateTo(breadcrumbs.length - 2) : undefined,
     onOpenSelectPageModal: () => notesPaginationRef.current?.openPicker(),
     onOpenEditPagePopover: () => notesPaginationRef.current?.openEdit(),
+    onRefresh: () => void loadNotes(currentFolderId, false),
+    onHardRefresh: () => void loadNotes(currentFolderId, true),
+    onClearCache: () => void handleClearCache(),
     containerRef: notesListRef,
     listKey: currentFolderId,
     currentAbsIdx: currentNoteAbsIdx,
@@ -1208,17 +1223,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
                 >Hard refresh</button>
                 <button
-                  onClick={async () => {
-                    setRefreshMenuOpen(false);
-                    try {
-                      await invoke('invalidate_folder_cache', { accountId: account.id, parentId: currentFolderId });
-                      if (noteChildrenJsonId) {
-                        await invoke('delete_cached_file', { accountId: account.id, itemId: noteChildrenJsonId });
-                      }
-                      setCacheCleared(true);
-                      setTimeout(() => setCacheCleared(false), 2000);
-                    } catch { /* non-fatal */ }
-                  }}
+                  onClick={() => void handleClearCache()}
                   className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700"
                 >Clear cached listing</button>
               </div>

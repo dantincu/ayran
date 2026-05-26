@@ -192,6 +192,29 @@ export default function FileViewer({
     return () => { isMountedRef.current = false; };
   }, []);
 
+  const viewerCtrlMRef = useRef(false);
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.target as HTMLElement)?.closest?.('[data-file-viewer]')) return;
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyM') {
+        viewerCtrlMRef.current = true;
+        return;
+      }
+      if (viewerCtrlMRef.current) {
+        viewerCtrlMRef.current = false;
+        if (!e.altKey && !e.metaKey && e.code === 'KeyR') {
+          e.preventDefault();
+          if (e.ctrlKey && e.shiftKey) handleHardRefresh();
+          else if (e.shiftKey && !e.ctrlKey) void handleClearCache();
+          else if (!e.ctrlKey && !e.shiftKey) void loadFile(false);
+        }
+      }
+    };
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Prevent body scroll only in standalone (non-notebook) mode.
   useEffect(() => {
     if (inNotebook) return;
@@ -703,7 +726,7 @@ export default function FileViewer({
     : 'fixed inset-0 z-50 flex flex-col bg-white dark:bg-gray-900';
 
   if (loading) return (
-    <div className={wrapCls}>
+    <div className={wrapCls} data-file-viewer="">
       {inNotebook ? <NotebookBar /> : <HeaderBar />}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="flex flex-col items-center gap-4 w-full max-w-sm">
@@ -730,7 +753,7 @@ export default function FileViewer({
   );
 
   if (error) return (
-    <div className={wrapCls}>
+    <div className={wrapCls} data-file-viewer="">
       {inNotebook ? <NotebookBar /> : <HeaderBar />}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center space-y-3 max-w-md">
@@ -764,7 +787,7 @@ export default function FileViewer({
             />
           </Suspense>
         )}
-        <div className={outerCls}>
+        <div className={outerCls} data-file-viewer="">
           {inNotebook ? <NotebookBar /> : (
             <HeaderBar right={
               <>
@@ -836,6 +859,7 @@ export default function FileViewer({
       <div
         ref={imgContainerRef}
         className={imgOuterCls}
+        data-file-viewer=""
         onMouseDown={handleImgMouseDown}
         onMouseMove={handleImgMouseMove}
         onMouseUp={handleImgMouseUp}
@@ -915,7 +939,7 @@ export default function FileViewer({
       ? 'flex-1 min-h-0 flex flex-col bg-gray-900 text-white overflow-hidden'
       : 'fixed inset-0 z-50 flex flex-col bg-gray-900 text-white';
     return (
-      <div className={audioCls}>
+      <div className={audioCls} data-file-viewer="">
         {inNotebook ? <NotebookBar /> : <HeaderBar />}
         <div className="flex-1 flex flex-col items-center justify-center gap-8 px-8 overflow-auto">
           <div className="text-center space-y-2">
@@ -940,6 +964,7 @@ export default function FileViewer({
     return (
       <div ref={videoContainerRef}
         className={videoCls}
+        data-file-viewer=""
         onClick={showVideoControlsBriefly}
         onMouseMove={showVideoControlsBriefly}
         onTouchStart={showVideoControlsBriefly}>
