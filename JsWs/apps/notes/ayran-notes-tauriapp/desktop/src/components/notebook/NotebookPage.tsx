@@ -1249,14 +1249,14 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       {/* ── Tab content (split-aware) ─────────────────────────────────────────── */}
 
       {(() => {
-        const renderTabContent = (tab: NbTab) => (
+        const renderTabContent = (tab: NbTab, navigateTo: (type: TabType, name: string) => void) => (
           <>
             {tab.type === 'home' && (
               <NotebookHomeTab
-                onOpenExplorer={() => navigateCurrentTabTo('notes-explorer', 'Notes Explorer')}
-                onOpenAllFiles={() => navigateCurrentTabTo('all-files-explorer', 'All Files Explorer')}
+                onOpenExplorer={() => navigateTo('notes-explorer', 'Notes Explorer')}
+                onOpenAllFiles={() => navigateTo('all-files-explorer', 'All Files Explorer')}
                 onNewTab={openNewHomeTabWithModal}
-                onOpenSettings={() => navigateCurrentTabTo('settings', 'Notebook Settings')}
+                onOpenSettings={() => navigateTo('settings', 'Notebook Settings')}
                 onContextMenu={(type, name, e) => { e.preventDefault(); setHomeCtxMenu({ x: e.clientX, y: e.clientY, type, name }); }}
                 onQuickActions={() => {}}
               />
@@ -1293,7 +1293,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                     onOpenSplitOptions={isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY, targetTabId: activeSplitPair.primaryId }) : undefined}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                  {renderTabContent(primaryTab)}
+                  {renderTabContent(primaryTab, (type, name) => navigateTabTo(activeSplitPair.primaryId, type, name))}
                 </div>
               </div>
               {/* Secondary panel (right / bottom) */}
@@ -1304,7 +1304,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                     onOpenSplitOptions={!isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY, targetTabId: activeSplitPair.secondaryId }) : undefined}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-                  {renderTabContent(secondaryTab)}
+                  {renderTabContent(secondaryTab, (type, name) => navigateTabTo(activeSplitPair.secondaryId, type, name))}
                 </div>
               </div>
             </div>
@@ -1355,7 +1355,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 )}
               </div>
             ))}
-            {activeTab.type !== 'all-files-explorer' && activeTab.type !== 'notes-explorer' && renderTabContent(activeTab)}
+            {activeTab.type !== 'all-files-explorer' && activeTab.type !== 'notes-explorer' && renderTabContent(activeTab, navigateCurrentTabTo)}
           </div>
         );
       })()}
