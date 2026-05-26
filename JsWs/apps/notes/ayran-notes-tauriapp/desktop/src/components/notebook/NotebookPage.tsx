@@ -313,7 +313,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
   // ── Split view ────────────────────────────────────────────────────────────────
   const [splitPairs, setSplitPairs] = useState<SplitPair[]>([]);
-  const [splitOptionsMenu, setSplitOptionsMenu] = useState<{ x: number; y: number; targetTabId?: string } | null>(null);
+  const [splitOptionsMenu, setSplitOptionsMenu] = useState<{ x: number; y: number } | null>(null);
   // Derived: the split pair (if any) that contains the currently active tab.
   const activeSplitPair = splitPairs.find((p) => p.primaryId === activeTabId || p.secondaryId === activeTabId) ?? null;
   // True when the active tab is on the right/bottom panel (i.e. tabs have been swapped).
@@ -1083,7 +1083,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
             const close = () => setSplitOptionsMenu(null);
             return (
               <div className="py-1">
-                <button onClick={() => { splitOptionsMenu?.targetTabId ? navigateTabTo(splitOptionsMenu.targetTabId, 'home', 'Home') : navigateCurrentTabToHome(); close(); }} className={row}>
+                <button onClick={() => { activeSplitPair ? navigateTabTo(activeSplitPair.primaryId, 'home', 'Home') : navigateCurrentTabToHome(); close(); }} className={row}>
                   <HomeIcon className="w-3.5 h-3.5 shrink-0 text-gray-400"/>
                   <span>Go to home</span>
                 </button>
@@ -1291,7 +1291,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 {showTabsHeader && (
                   <SplitTabHeader tab={primaryTab} isPrimary={!isSwapped} isNotesViewing={notesViewingTabIds.has(primaryTab.id)} onClose={() => closeTabById(activeSplitPair.primaryId)}
                     onOpenTabsList={!isSwapped ? openTabsList : undefined}
-                    onOpenSplitOptions={isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY, targetTabId: activeSplitPair.primaryId }) : undefined}/>
+                    onOpenSplitOptions={isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY }) : undefined}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   {renderTabContent(primaryTab, (type, name) => navigateTabTo(activeSplitPair.primaryId, type, name))}
@@ -1302,7 +1302,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
                 {showTabsHeader && (
                   <SplitTabHeader tab={secondaryTab} isPrimary={isSwapped} isNotesViewing={notesViewingTabIds.has(secondaryTab.id)} onClose={() => closeTabById(activeSplitPair.secondaryId)}
                     onOpenTabsList={isSwapped ? openTabsList : undefined}
-                    onOpenSplitOptions={!isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY, targetTabId: activeSplitPair.secondaryId }) : undefined}/>
+                    onOpenSplitOptions={!isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY }) : undefined}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   {renderTabContent(secondaryTab, (type, name) => navigateTabTo(activeSplitPair.secondaryId, type, name))}
