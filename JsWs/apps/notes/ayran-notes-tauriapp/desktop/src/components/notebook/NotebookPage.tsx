@@ -313,9 +313,11 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
 
   // ── Split view ────────────────────────────────────────────────────────────────
   const [splitPairs, setSplitPairs] = useState<SplitPair[]>([]);
-  const [splitOptionsMenu, setSplitOptionsMenu] = useState<{ x: number; y: number } | null>(null);
+  const [splitOptionsMenu, setSplitOptionsMenu] = useState<{ x: number; y: number; targetTabId?: string } | null>(null);
   // Derived: the split pair (if any) that contains the currently active tab.
   const activeSplitPair = splitPairs.find((p) => p.primaryId === activeTabId || p.secondaryId === activeTabId) ?? null;
+  // True when the active tab is on the right/bottom panel (i.e. tabs have been swapped).
+  const isSwapped = !!activeSplitPair && activeTabId === activeSplitPair.secondaryId;
 
   // ── Notes-explorer file-viewing state ────────────────────────────────────────
   const [notesViewingTabIds, setNotesViewingTabIds] = useState<Set<string>>(new Set());
@@ -488,6 +490,10 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
   };
 
   const navigateCurrentTabToHome = () => navigateCurrentTabTo('home', 'Home');
+
+  const navigateTabTo = (tabId: string, type: TabType, name: string) => {
+    setTabs((prev) => prev.map((t) => t.id === tabId ? { ...t, type, name } : t));
+  };
 
   const closeCurrentTab = () => closeTabById(activeTabId);
   const closeTab = (id: string) => closeTabById(id);
@@ -1076,7 +1082,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
             const close = () => setSplitOptionsMenu(null);
             return (
               <div className="py-1">
-                <button onClick={() => { navigateCurrentTabToHome(); close(); }} className={row}>
+                <button onClick={() => { splitOptionsMenu?.targetTabId ? navigateTabTo(splitOptionsMenu.targetTabId, 'home', 'Home') : navigateCurrentTabToHome(); close(); }} className={row}>
                   <HomeIcon className="w-3.5 h-3.5 shrink-0 text-gray-400"/>
                   <span>Go to home</span>
                 </button>
@@ -1282,7 +1288,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               {/* Primary panel (left / top) */}
               <div className={`flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden ${dividerCls}`}>
                 {showTabsHeader && (
-                  <SplitTabHeader tab={primaryTab} isPrimary isNotesViewing={notesViewingTabIds.has(primaryTab.id)} onClose={() => closeTabById(activeSplitPair.primaryId)} onOpenTabsList={openTabsList}/>
+                  <SplitTabHeader tab={primaryTab} isPrimary={!isSwapped} isNotesViewing={notesViewingTabIds.has(primaryTab.id)} onClose={() => closeTabById(activeSplitPair.primaryId)}
+                    onOpenTabsList={!isSwapped ? openTabsList : undefined}
+                    onOpenSplitOptions={isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY, targetTabId: activeSplitPair.primaryId }) : undefined}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   {renderTabContent(primaryTab)}
@@ -1291,8 +1299,9 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
               {/* Secondary panel (right / bottom) */}
               <div className="flex-1 min-w-0 min-h-0 flex flex-col overflow-hidden">
                 {showTabsHeader && (
-                  <SplitTabHeader tab={secondaryTab} isPrimary={false} isNotesViewing={notesViewingTabIds.has(secondaryTab.id)} onClose={() => closeTabById(activeSplitPair.secondaryId)}
-                    onOpenSplitOptions={(e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY })}/>
+                  <SplitTabHeader tab={secondaryTab} isPrimary={isSwapped} isNotesViewing={notesViewingTabIds.has(secondaryTab.id)} onClose={() => closeTabById(activeSplitPair.secondaryId)}
+                    onOpenTabsList={isSwapped ? openTabsList : undefined}
+                    onOpenSplitOptions={!isSwapped ? (e) => setSplitOptionsMenu({ x: e.clientX, y: e.clientY, targetTabId: activeSplitPair.secondaryId }) : undefined}/>
                 )}
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                   {renderTabContent(secondaryTab)}
