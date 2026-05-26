@@ -528,7 +528,7 @@ export default function FileViewer({
   // ── Standalone HeaderBar (non-notebook mode) ─────────────────────────────────
 
   const HeaderBar = ({ right }: { right?: React.ReactNode }) => (
-    <div className="flex items-center px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 gap-2 shrink-0">
+    <div className="flex flex-wrap items-center px-4 py-3 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 gap-2 shrink-0">
       <button onClick={onClose} title="Back" data-back-btn
         className="p-1 rounded text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors shrink-0">
         <BackChevron />
@@ -635,7 +635,7 @@ export default function FileViewer({
 
   // The compact notebook toolbar (for text / audio / unsupported / loading / error).
   const NotebookBar = () => (
-    <div className="shrink-0 flex items-center gap-0.5 px-2 py-1 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
+    <div className="shrink-0 flex flex-wrap items-center gap-0.5 px-2 py-1 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700">
       {/* Back */}
       <button onClick={onClose} title="Back to explorer" className={ib} data-back-btn><BackChevron /></button>
 
@@ -690,8 +690,6 @@ export default function FileViewer({
           <CacheControls />
         </>
       )}
-
-      <div className="flex-1" />
 
       {/* Quick actions */}
       <button onClick={() => {}} title="Quick actions" className={ib}><QuickActionsIcon /></button>

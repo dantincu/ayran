@@ -1011,6 +1011,10 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
   const notesListRef = useRef<HTMLDivElement>(null);
   const notesPaginationRef = useRef<PaginationBarHandle>(null);
 
+  const currentNoteAbsIdx = viewingFile
+    ? noteEntries.findIndex((e) => e.shortFolderId === viewingFile.item.parentId)
+    : -1;
+
   const { focusedRelIdx: notesFocusedRelIdx, containerProps: notesContainerProps } = useListKeyNav({
     totalItems: noteEntries.length,
     pageSize: PAGE_SIZE,
@@ -1023,6 +1027,7 @@ export default function NotesExplorer({ accountId, notebookParentId, notebookFol
     onOpenEditPagePopover: () => notesPaginationRef.current?.openEdit(),
     containerRef: notesListRef,
     listKey: currentFolderId,
+    currentAbsIdx: currentNoteAbsIdx,
   });
 
   // ── Render guards ─────────────────────────────────────────────────────────

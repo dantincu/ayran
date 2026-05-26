@@ -16,6 +16,7 @@ export interface UseListKeyNavOptions {
   containerRef: RefObject<HTMLElement | null>;
   pageJump?: number;
   listKey?: unknown;
+  currentAbsIdx?: number;
 }
 
 export function useListKeyNav({
@@ -31,6 +32,7 @@ export function useListKeyNav({
   containerRef,
   pageJump = DEFAULT_PAGE_JUMP,
   listKey,
+  currentAbsIdx,
 }: UseListKeyNavOptions) {
   const [focusedAbsIdx, setFocusedAbsIdx] = useState(-1);
   const ctrlMPressedRef = useRef(false);
@@ -103,11 +105,11 @@ export function useListKeyNav({
     switch (e.key) {
       case 'ArrowDown':
         e.preventDefault();
-        navigate(focusedAbsIdx < 0 ? page * ps : focusedAbsIdx + 1);
+        navigate(focusedAbsIdx < 0 ? (currentAbsIdx != null && currentAbsIdx >= 0 ? currentAbsIdx : page * ps) : focusedAbsIdx + 1);
         break;
       case 'ArrowUp':
         e.preventDefault();
-        navigate(focusedAbsIdx < 0 ? Math.min((page + 1) * ps, totalItems) - 1 : focusedAbsIdx - 1);
+        navigate(focusedAbsIdx < 0 ? (currentAbsIdx != null && currentAbsIdx >= 0 ? currentAbsIdx : Math.min((page + 1) * ps, totalItems) - 1) : focusedAbsIdx - 1);
         break;
       case 'PageDown':
         e.preventDefault();

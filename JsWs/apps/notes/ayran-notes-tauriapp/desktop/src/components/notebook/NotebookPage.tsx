@@ -673,6 +673,7 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
       closeTabsList();
     },
     containerRef: tabListRef,
+    currentAbsIdx: displayTabs.findIndex((t) => t.id === activeTabId),
   });
 
   // ── Load notebook entry ───────────────────────────────────────────────────────
