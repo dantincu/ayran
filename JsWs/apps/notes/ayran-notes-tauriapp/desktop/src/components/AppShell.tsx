@@ -60,6 +60,7 @@ export default function AppShell() {
   const [explorerCompact, setExplorerCompact] = useState(false);
   const [highlightItemId, setHighlightItemId] = useState<string | null>(null);
   const [shelvesetModalOpen, setShelvesetModalOpen] = useState(false);
+  const [opModal, setOpModal] = useState<{ title: string; state: 'running' | 'done' | 'error'; message?: string } | null>(null);
   const [moveInProgress, setMoveInProgress] = useState(false);
   const [interruptedMove, setInterruptedMove] = useState<{ old: string; new: string } | null>(null);
   const { theme, toggleTheme } = useTheme();
@@ -253,20 +254,26 @@ export default function AppShell() {
 
   const handleDeleteAccountCache = async (id: string) => {
     if (!confirm('Delete all cached folder/file data for this account?')) return;
-    try { await invoke('delete_account_cache', { accountId: id }); }
-    catch (e) { alert(String(e)); }
+    setOpModal({ title: 'Deleting cache', state: 'running' });
+    try {
+      await invoke('delete_account_cache', { accountId: id });
+      setOpModal({ title: 'Deleting cache', state: 'done', message: 'Cache deleted successfully.' });
+    } catch (e) { setOpModal({ title: 'Deleting cache', state: 'error', message: String(e) }); }
   };
 
   const handleDeleteAccountAppData = async (id: string) => {
     if (!confirm('Delete ALL app data for this account? This will remove the account connection as well.')) return;
+    setOpModal({ title: 'Deleting app data', state: 'running' });
     try {
       await invoke('delete_account_app_data', { accountId: id });
       await handleDisconnect(id);
-    } catch (e) { alert(String(e)); }
+      setOpModal({ title: 'Deleting app data', state: 'done', message: 'App data deleted successfully.' });
+    } catch (e) { setOpModal({ title: 'Deleting app data', state: 'error', message: String(e) }); }
   };
 
   const handleResetApp = async () => {
     if (!confirm('Reset app? This will clear all browser data (localStorage, IndexedDB) and reload the app.')) return;
+    setOpModal({ title: 'Resetting app', state: 'running' });
     try {
       localStorage.clear();
       const dbs = await indexedDB.databases();
@@ -276,8 +283,8 @@ export default function AppShell() {
         req.onsuccess = () => resolve();
         req.onerror = () => reject(req.error);
       })));
-      window.location.reload();
-    } catch (e) { alert(String(e)); }
+      setOpModal({ title: 'Resetting app', state: 'done', message: 'Browser data cleared. The app will reload when you click OK.' });
+    } catch (e) { setOpModal({ title: 'Resetting app', state: 'error', message: String(e) }); }
   };
 
   const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => {
@@ -559,6 +566,44 @@ export default function AppShell() {
           </div>
         )}
       </div>
+
+      {opModal && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/50" />
+          <div className="relative bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-sm mx-4 p-6 flex flex-col items-center gap-4">
+            <p className="text-base font-semibold text-gray-900 dark:text-white">{opModal.title}</p>
+            {opModal.state === 'running' ? (
+              <>
+                <svg className="w-8 h-8 text-blue-500 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+                </svg>
+                <p className="text-sm text-gray-500 dark:text-gray-400">Please wait…</p>
+              </>
+            ) : (
+              <>
+                {opModal.state === 'done' ? (
+                  <svg className="w-8 h-8 text-emerald-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+                  </svg>
+                ) : (
+                  <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/>
+                  </svg>
+                )}
+                {opModal.message && (
+                  <p className="text-sm text-gray-600 dark:text-gray-300 text-center">{opModal.message}</p>
+                )}
+                <button
+                  onClick={() => { setOpModal(null); if (opModal.state === 'done' && opModal.title === 'Resetting app') window.location.reload(); }}
+                  className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors">
+                  OK
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </>
   );
 }
