@@ -265,6 +265,21 @@ export default function AppShell() {
     } catch (e) { alert(String(e)); }
   };
 
+  const handleResetApp = async () => {
+    if (!confirm('Reset app? This will clear all browser data (localStorage, IndexedDB) and reload the app.')) return;
+    try {
+      localStorage.clear();
+      const dbs = await indexedDB.databases();
+      await Promise.all(dbs.map((db) => new Promise<void>((resolve, reject) => {
+        if (!db.name) { resolve(); return; }
+        const req = indexedDB.deleteDatabase(db.name);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      })));
+      window.location.reload();
+    } catch (e) { alert(String(e)); }
+  };
+
   const handleOpenNotebook = async (info: { title: string; itemId: string; parentId: string; displayName: string; description?: string }) => {
     if (!selected) return;
     const entry = await addNotebook({
@@ -475,6 +490,7 @@ export default function AppShell() {
               connectError={connectError}
               onDeleteCache={handleDeleteAccountCache}
               onDeleteAppData={handleDeleteAccountAppData}
+              onResetApp={handleResetApp}
             />
           </div>
         )}

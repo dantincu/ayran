@@ -14,6 +14,7 @@ interface Props {
   connectError?: string | null;
   onDeleteCache?: (id: string) => void;
   onDeleteAppData?: (id: string) => void;
+  onResetApp?: () => void;
 }
 
 export default function ManageAccountsPage({
@@ -21,7 +22,7 @@ export default function ManageAccountsPage({
   onSelect, onDisconnect,
   onConnectGoogle, onConnectFilen, onConnectFs,
   connectError,
-  onDeleteCache, onDeleteAppData,
+  onDeleteCache, onDeleteAppData, onResetApp,
 }: Props) {
   const google = p.GoogleDrive.enabled     ? accounts.filter((a) => a.provider === 'google-drive') : [];
   const filen  = p.Filen.enabled           ? accounts.filter((a) => a.provider === 'filen')        : [];
@@ -55,6 +56,19 @@ export default function ManageAccountsPage({
         <Section label="Local file system">
           {fs.map((a) => <AccountRow key={a.id} account={a} selected={selectedId === a.id} onSelect={onSelect} onDisconnect={onDisconnect} onDeleteCache={onDeleteCache} onDeleteAppData={onDeleteAppData} />)}
         </Section>
+      )}
+
+      {onResetApp && (
+        <div className="pt-2 border-t border-red-100 dark:border-red-900/40">
+          <p className="text-xs font-medium text-red-400 dark:text-red-500 uppercase tracking-wide mb-2">Danger zone</p>
+          <button onClick={onResetApp}
+            className="w-full flex items-center gap-3 px-4 py-2.5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 text-sm rounded-lg hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors">
+            <svg className="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
+            Reset app
+          </button>
+        </div>
       )}
 
       <div className="space-y-2 pt-2">
