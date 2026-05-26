@@ -1076,8 +1076,13 @@ export default function NotebookPage({ notebookId, onBack, onDeleted }: Props) {
             const close = () => setSplitOptionsMenu(null);
             return (
               <div className="py-1">
+                <button onClick={() => { navigateCurrentTabToHome(); close(); }} className={row}>
+                  <HomeIcon className="w-3.5 h-3.5 shrink-0 text-gray-400"/>
+                  <span>Go to home</span>
+                </button>
                 {tabs.length > 1 && (
                   <>
+                    <div className="border-t border-gray-100 dark:border-gray-700 my-1"/>
                     <button onClick={() => { enableSplit('vertical'); close(); }} className={row}>
                       {activeSplitPair?.mode === 'vertical' ? check : <span className="w-3"/>}
                       <span>Split Tabs Vertically</span>
