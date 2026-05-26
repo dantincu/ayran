@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
+import { useKeyboardShortcuts } from '../components/common/KeyboardShortcutsContext';
 
 const DEFAULT_PAGE_JUMP = 10;
 
@@ -41,8 +42,14 @@ export function useListKeyNav({
   currentAbsIdx,
 }: UseListKeyNavOptions) {
   const [focusedAbsIdx, setFocusedAbsIdx] = useState(-1);
-  const ctrlMPressedRef = useRef(false);
+  const [isFocused, setIsFocused] = useState(false);
   const listKeyRef = useRef(listKey);
+
+  const { pushScopes, registerHandler, unregisterHandler } = useKeyboardShortcuts();
+
+  // Keep callback refs up to date so the registered handlers always call the latest version
+  const callbacksRef = useRef({ onOpenSelectPageModal, onOpenEditPagePopover, onRefresh, onHardRefresh, onClearCache });
+  callbacksRef.current = { onOpenSelectPageModal, onOpenEditPagePopover, onRefresh, onHardRefresh, onClearCache };
 
   useEffect(() => {
     if (!Object.is(listKeyRef.current, listKey)) {
@@ -59,6 +66,25 @@ export function useListKeyNav({
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalItems]);
+
+  // Push listNav scope and register shortcut handlers only while the container is focused
+  useEffect(() => {
+    if (!isFocused) return;
+    const pop = pushScopes(['listNav']);
+    registerHandler('listNavOpenSelectPage', () => callbacksRef.current.onOpenSelectPageModal?.());
+    registerHandler('listNavOpenEditPage', () => callbacksRef.current.onOpenEditPagePopover?.());
+    registerHandler('refresh', () => callbacksRef.current.onRefresh?.());
+    registerHandler('hardRefresh', () => callbacksRef.current.onHardRefresh?.());
+    registerHandler('clearCache', () => callbacksRef.current.onClearCache?.());
+    return () => {
+      pop();
+      unregisterHandler('listNavOpenSelectPage');
+      unregisterHandler('listNavOpenEditPage');
+      unregisterHandler('refresh');
+      unregisterHandler('hardRefresh');
+      unregisterHandler('clearCache');
+    };
+  }, [isFocused, pushScopes, registerHandler, unregisterHandler]);
 
   const ps = Math.max(1, pageSize);
   const focusedRelIdx =
@@ -90,26 +116,6 @@ export function useListKeyNav({
       target.tagName === 'SELECT' ||
       target.isContentEditable
     ) return;
-
-    if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyM') {
-      ctrlMPressedRef.current = true;
-      return;
-    }
-
-    if (ctrlMPressedRef.current) {
-      ctrlMPressedRef.current = false;
-      if (!e.altKey && !e.metaKey && e.code === 'KeyP') {
-        e.preventDefault();
-        if (e.shiftKey && !e.ctrlKey) onOpenEditPagePopover?.();
-        else if (!e.shiftKey && !e.ctrlKey) onOpenSelectPageModal?.();
-      } else if (!e.altKey && !e.metaKey && e.code === 'KeyR') {
-        e.preventDefault();
-        if (e.ctrlKey && e.shiftKey) onHardRefresh?.();
-        else if (e.shiftKey && !e.ctrlKey) onClearCache?.();
-        else if (!e.ctrlKey && !e.shiftKey) onRefresh?.();
-      }
-      return;
-    }
 
     if (totalItems === 0) return;
 
@@ -163,6 +169,14 @@ export function useListKeyNav({
     focusedAbsIdx,
     setFocusedAbsIdx,
     focusedRelIdx,
-    containerProps: { tabIndex: 0 as const, onKeyDown, 'data-list-nav-container': 'true' },
+    containerProps: {
+      tabIndex: 0 as const,
+      onKeyDown,
+      'data-list-nav-container': 'true',
+      onFocus: () => setIsFocused(true),
+      onBlur: (e: React.FocusEvent<HTMLElement>) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setIsFocused(false);
+      },
+    },
   };
 }

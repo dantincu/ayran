@@ -239,8 +239,8 @@ export function KeyboardShortcutsProvider({ children }: { children: React.ReactN
       }
     };
 
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    document.addEventListener('keydown', handler, true);
+    return () => document.removeEventListener('keydown', handler, true);
   }, []);
 
   const registerHandler = useCallback((id: string, handler: () => void) => {

@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense, useMemo } from 'react';
+import { useKeyboardShortcuts } from '../../components/common/KeyboardShortcutsContext';
 const DiffViewerModal = lazy(() => import('./DiffViewerModal'));
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -192,28 +193,43 @@ export default function FileViewer({
     return () => { isMountedRef.current = false; };
   }, []);
 
-  const viewerCtrlMRef = useRef(false);
+  // Unique ID per FileViewer instance for focus tracking in split-tab scenarios
+  const viewerId = useMemo(() => `fv-${Math.random().toString(36).slice(2)}`, []);
+  const [isFocused, setIsFocused] = useState(false);
+  const { pushScopes, registerHandler, unregisterHandler } = useKeyboardShortcuts();
+
+  // Refs updated every render so the registered handlers always call the latest closures
+  const shortcutHandlersRef = useRef({ refresh: () => {}, hardRefresh: () => {}, clearCache: async () => {} });
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (!(e.target as HTMLElement)?.closest?.('[data-file-viewer]')) return;
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyM') {
-        viewerCtrlMRef.current = true;
-        return;
-      }
-      if (viewerCtrlMRef.current) {
-        viewerCtrlMRef.current = false;
-        if (!e.altKey && !e.metaKey && e.code === 'KeyR') {
-          e.preventDefault();
-          if (e.ctrlKey && e.shiftKey) handleHardRefresh();
-          else if (e.shiftKey && !e.ctrlKey) void handleClearCache();
-          else if (!e.ctrlKey && !e.shiftKey) void loadFile(false);
-        }
-      }
+    const onFocusIn = (e: FocusEvent) => {
+      if ((e.target as HTMLElement)?.closest?.(`[data-fv="${viewerId}"]`)) setIsFocused(true);
     };
-    document.addEventListener('keydown', handler, true);
-    return () => document.removeEventListener('keydown', handler, true);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const onFocusOut = (e: FocusEvent) => {
+      const rel = e.relatedTarget as HTMLElement | null;
+      if (!rel?.closest?.(`[data-fv="${viewerId}"]`)) setIsFocused(false);
+    };
+    document.addEventListener('focusin', onFocusIn);
+    document.addEventListener('focusout', onFocusOut);
+    return () => {
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('focusout', onFocusOut);
+    };
+  }, [viewerId]);
+
+  useEffect(() => {
+    if (!isFocused) return;
+    const pop = pushScopes(['listNav']);
+    registerHandler('refresh', () => shortcutHandlersRef.current.refresh());
+    registerHandler('hardRefresh', () => shortcutHandlersRef.current.hardRefresh());
+    registerHandler('clearCache', () => void shortcutHandlersRef.current.clearCache());
+    return () => {
+      pop();
+      unregisterHandler('refresh');
+      unregisterHandler('hardRefresh');
+      unregisterHandler('clearCache');
+    };
+  }, [isFocused, pushScopes, registerHandler, unregisterHandler]);
 
   // Prevent body scroll only in standalone (non-notebook) mode.
   useEffect(() => {
@@ -464,6 +480,11 @@ export default function FileViewer({
       await invoke('delete_cached_file', { accountId: account.id, itemId: effectiveItemId }).catch(() => {});
     }
   };
+
+  // Update shortcut handler refs so the registered context handlers always call the latest closures
+  shortcutHandlersRef.current.refresh = () => void loadFile(false);
+  shortcutHandlersRef.current.hardRefresh = handleHardRefresh;
+  shortcutHandlersRef.current.clearCache = handleClearCache;
 
   // ── Video controls ───────────────────────────────────────────────────────────
 
@@ -726,7 +747,7 @@ export default function FileViewer({
     : 'fixed inset-0 z-50 flex flex-col bg-white dark:bg-gray-900';
 
   if (loading) return (
-    <div className={wrapCls} data-file-viewer="">
+    <div className={wrapCls} data-file-viewer="" data-fv={viewerId}>
       {inNotebook ? <NotebookBar /> : <HeaderBar />}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="flex flex-col items-center gap-4 w-full max-w-sm">
@@ -753,7 +774,7 @@ export default function FileViewer({
   );
 
   if (error) return (
-    <div className={wrapCls} data-file-viewer="">
+    <div className={wrapCls} data-file-viewer="" data-fv={viewerId}>
       {inNotebook ? <NotebookBar /> : <HeaderBar />}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center space-y-3 max-w-md">
@@ -787,7 +808,7 @@ export default function FileViewer({
             />
           </Suspense>
         )}
-        <div className={outerCls} data-file-viewer="">
+        <div className={outerCls} data-file-viewer="" data-fv={viewerId}>
           {inNotebook ? <NotebookBar /> : (
             <HeaderBar right={
               <>
@@ -860,6 +881,7 @@ export default function FileViewer({
         ref={imgContainerRef}
         className={imgOuterCls}
         data-file-viewer=""
+        data-fv={viewerId}
         onMouseDown={handleImgMouseDown}
         onMouseMove={handleImgMouseMove}
         onMouseUp={handleImgMouseUp}
@@ -939,7 +961,7 @@ export default function FileViewer({
       ? 'flex-1 min-h-0 flex flex-col bg-gray-900 text-white overflow-hidden'
       : 'fixed inset-0 z-50 flex flex-col bg-gray-900 text-white';
     return (
-      <div className={audioCls} data-file-viewer="">
+      <div className={audioCls} data-file-viewer="" data-fv={viewerId}>
         {inNotebook ? <NotebookBar /> : <HeaderBar />}
         <div className="flex-1 flex flex-col items-center justify-center gap-8 px-8 overflow-auto">
           <div className="text-center space-y-2">
@@ -965,6 +987,7 @@ export default function FileViewer({
       <div ref={videoContainerRef}
         className={videoCls}
         data-file-viewer=""
+        data-fv={viewerId}
         onClick={showVideoControlsBriefly}
         onMouseMove={showVideoControlsBriefly}
         onTouchStart={showVideoControlsBriefly}>
@@ -1038,7 +1061,7 @@ export default function FileViewer({
     : 'fixed inset-0 z-50 flex flex-col bg-white dark:bg-gray-900';
 
   return (
-    <div className={unsupCls}>
+    <div className={unsupCls} data-file-viewer="" data-fv={viewerId}>
       {inNotebook ? <NotebookBar /> : <HeaderBar />}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center space-y-3">
