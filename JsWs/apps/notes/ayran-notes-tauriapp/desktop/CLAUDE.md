@@ -96,6 +96,19 @@ cargo check          # fast Rust type check without linking
 
 ---
 
+## Non-obvious architectural rules
+
+### Local cache path mirroring (`c/` folder)
+The Rust backend stores downloaded file content under `<app_data>/c/<account_id>/<relative_cloud_path>`. For a file to land at the correct nested path instead of directly under the account root, its folder hierarchy **must be registered in `path_index` (SQLite) before any `open_file` call**. This is done by calling `register_path_in_index` for each folder whose items will be opened.
+
+**Rule:** Any component that opens files from a cloud folder must call `register_path_in_index` for that folder's ID and its correct relative path *after* `list_folder` (which populates `folder_items`) but *before* `open_file`. Without this, the cache entry is written with only the item ID as the path fragment, placing the file directly under the account root and corrupting the mirror structure.
+
+**Symptom of violation:** Folders/files from the cloud (e.g. `My Filen`, `[note-book].json`) appear directly inside `c/<account_id>/` instead of inside the correct subfolder. Clearing the cache and refreshing reproduces the problem because the newly-downloaded files are placed at the wrong path again.
+
+**Where it's done correctly:** `NotesExplorer.loadNotes` calls `register_path_in_index` for `notebookParentId` using `notebookFolderRelPath` immediately after `list_folder`. Every other explorer that opens files must follow the same pattern.
+
+---
+
 ## Filen protocol notes (non-obvious)
 - Upload ingest checksum: SHA-512 of `JSON.stringify({uuid:"…", index:"0", parent:"…", uploadKey:"…", hash:"…"})` — the `index` value MUST be the string `"0"`, not the number `0`, because URLSearchParams coercion is replicated in the JSON
 - Metadata versions: "003" uses hex-decoded 32-byte key; "002" uses PBKDF2-SHA512(key, key, 1, 32) as key
