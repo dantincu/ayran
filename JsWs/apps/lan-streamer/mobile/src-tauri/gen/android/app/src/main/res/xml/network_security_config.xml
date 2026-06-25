@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lets this app trust user-installed CA certificates (e.g. the LAN Streamer
+  API's self-signed dev cert, after the user installs it via Settings ->
+  Security -> Encryption & credentials -> Install a CA certificate).
+  Android ignores user-added CAs for app network connections by default
+  since API 24 unless explicitly opted in here.
+-->
+<network-security-config>
+    <base-config>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

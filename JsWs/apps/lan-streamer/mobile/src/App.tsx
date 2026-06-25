@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LoginScreen } from "./components/LoginScreen";
 import { HostPanel } from "./components/HostPanel";
 import { ListenerPanel } from "./components/ListenerPanel";
 import * as api from "./lib/api";
+import { clearSession, loadSession, saveSession } from "./lib/sessionStore";
 import type { Session } from "./lib/types";
 
 type Role = "host" | "listener";
@@ -10,15 +11,42 @@ type Role = "host" | "listener";
 export default function App() {
   const [session, setSession] = useState<Session>();
   const [role, setRole] = useState<Role>();
+  const [restoring, setRestoring] = useState(true);
 
-  if (!session) {
-    return <LoginScreen onLogin={setSession} />;
+  useEffect(() => {
+    loadSession()
+      .then(async (restored) => {
+        if (!restored) return;
+        // The API keeps sessions in memory, so a restart invalidates any
+        // persisted token; verify it still works before trusting it.
+        try {
+          await api.listStreams(restored.apiBaseUrl, restored.token);
+          setSession(restored);
+        } catch {
+          await clearSession().catch(() => {});
+        }
+      })
+      .finally(() => setRestoring(false));
+  }, []);
+
+  async function handleLogin(newSession: Session) {
+    setSession(newSession);
+    await saveSession(newSession).catch(() => {});
   }
 
   async function handleSignOut() {
     await api.logout(session!.apiBaseUrl, session!.token).catch(() => {});
+    await clearSession().catch(() => {});
     setSession(undefined);
     setRole(undefined);
+  }
+
+  if (restoring) {
+    return <div className="flex h-screen items-center justify-center bg-neutral-950 text-neutral-100">Loading…</div>;
+  }
+
+  if (!session) {
+    return <LoginScreen onLogin={handleLogin} />;
   }
 
   return (

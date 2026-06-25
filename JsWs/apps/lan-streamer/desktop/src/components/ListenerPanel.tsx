@@ -1,14 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioPlayback } from "../lib/audioPlayback";
+import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
 import type { Session, StreamRecord } from "../lib/types";
+
+function connectionStatusLabel(status: ConnectionStatus, attempt: number): string {
+  switch (status) {
+    case "connecting":
+      return "Connecting…";
+    case "reconnecting":
+      return `Reconnecting… (attempt ${attempt})`;
+    case "closed":
+      return "Disconnected";
+    case "open":
+      return "Connected";
+  }
+}
 
 export function ListenerPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
   const [listeningStreamId, setListeningStreamId] = useState<string>();
   const [error, setError] = useState<string>();
+  const [connectionStatus, setConnectionStatus] = useState<{ status: ConnectionStatus; attempt: number }>();
 
-  const wsRef = useRef<WebSocket | undefined>(undefined);
+  const socketRef = useRef<ReconnectingSocket | undefined>(undefined);
   const playbackRef = useRef<AudioPlayback | undefined>(undefined);
 
   async function refresh() {
@@ -29,25 +44,27 @@ export function ListenerPanel({ session }: { session: Session }) {
     stopListening();
     setError(undefined);
 
-    const ws = new WebSocket(api.wsUrl(session.apiBaseUrl, "listen", streamId, session.token));
-    ws.binaryType = "arraybuffer";
     const playback = new AudioPlayback();
+    const socket = connectWithBackoff(
+      () => api.wsUrl(session.apiBaseUrl, "listen", streamId, session.token),
+      {
+        onMessage: (event) => playback.enqueueFrame(event.data as ArrayBuffer),
+        onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }),
+      },
+    );
 
-    ws.onmessage = (event) => playback.enqueueFrame(event.data as ArrayBuffer);
-    ws.onclose = () => stopListening();
-    ws.onerror = () => setError("Listening connection failed");
-
-    wsRef.current = ws;
+    socketRef.current = socket;
     playbackRef.current = playback;
     setListeningStreamId(streamId);
   }
 
   function stopListening() {
-    wsRef.current?.close();
-    wsRef.current = undefined;
+    socketRef.current?.close();
+    socketRef.current = undefined;
     playbackRef.current?.stop();
     playbackRef.current = undefined;
     setListeningStreamId(undefined);
+    setConnectionStatus(undefined);
   }
 
   return (
@@ -61,7 +78,14 @@ export function ListenerPanel({ session }: { session: Session }) {
             <li key={stream.id} className="flex items-center justify-between rounded border border-neutral-800 px-3 py-2">
               <div>
                 <p className="font-medium">{stream.name}</p>
-                <p className="text-xs text-neutral-400">{stream.activeHostAccountIds.length} active host(s)</p>
+                <p className="text-xs text-neutral-400">
+                  {stream.activeHostAccountIds.length} active host(s)
+                  {isListening && connectionStatus && connectionStatus.status !== "open" && (
+                    <span className="ml-2 text-amber-400">
+                      {connectionStatusLabel(connectionStatus.status, connectionStatus.attempt)}
+                    </span>
+                  )}
+                </p>
               </div>
               {isListening ? (
                 <button className="rounded bg-neutral-700 px-2 py-1 text-sm hover:bg-neutral-600" onClick={stopListening}>

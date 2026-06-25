@@ -1,7 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioCapture, captureStream, type AudioSource } from "../lib/audioCapture";
+import { startNativeLoopback, stopNativeLoopback } from "../lib/nativeLoopback";
+import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
 import type { Session, StreamRecord } from "../lib/types";
+
+function connectionStatusLabel(status: ConnectionStatus, attempt: number): string {
+  switch (status) {
+    case "connecting":
+      return "Connecting…";
+    case "reconnecting":
+      return `Reconnecting… (attempt ${attempt})`;
+    case "closed":
+      return "Disconnected";
+    case "open":
+      return "Connected";
+  }
+}
 
 export function HostPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
@@ -10,10 +25,12 @@ export function HostPanel({ session }: { session: Session }) {
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
   const [hostingStreamId, setHostingStreamId] = useState<string>();
   const [paused, setPaused] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<{ status: ConnectionStatus; attempt: number }>();
 
-  const wsRef = useRef<WebSocket | undefined>(undefined);
+  const socketRef = useRef<ReconnectingSocket | undefined>(undefined);
   const captureRef = useRef<AudioCapture | undefined>(undefined);
   const mediaStreamRef = useRef<MediaStream | undefined>(undefined);
+  const usingNativeLoopbackRef = useRef(false);
   const pausedRef = useRef(false);
 
   async function refresh() {
@@ -54,26 +71,35 @@ export function HostPanel({ session }: { session: Session }) {
   async function startHosting(streamId: string) {
     setError(undefined);
     try {
-      const mediaStream = await captureStream(audioSource);
-      const ws = new WebSocket(api.wsUrl(session.apiBaseUrl, "host", streamId, session.token));
-      ws.binaryType = "arraybuffer";
+      // The connection and the capture pipeline are independent: a dropped
+      // WebSocket reconnects with backoff in the background while capture
+      // keeps running, rather than tearing down hosting on a network blip.
+      const socket = connectWithBackoff(
+        () => api.wsUrl(session.apiBaseUrl, "host", streamId, session.token),
+        { onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }) },
+      );
+      socketRef.current = socket;
 
-      ws.onopen = () => {
-        const capture = new AudioCapture(mediaStream, (frame) => {
-          if (!pausedRef.current && ws.readyState === WebSocket.OPEN) ws.send(frame.buffer);
+      if (audioSource === "system") {
+        usingNativeLoopbackRef.current = true;
+        await startNativeLoopback((frame) => {
+          if (!pausedRef.current) socket.send(frame);
         });
-        captureRef.current = capture;
-      };
-      ws.onclose = () => stopHosting();
-      ws.onerror = () => setError("Hosting connection failed");
+      } else {
+        usingNativeLoopbackRef.current = false;
+        const mediaStream = await captureStream(audioSource);
+        mediaStreamRef.current = mediaStream;
+        captureRef.current = new AudioCapture(mediaStream, (frame) => {
+          if (!pausedRef.current) socket.send(frame.buffer);
+        });
+      }
 
-      wsRef.current = ws;
-      mediaStreamRef.current = mediaStream;
       pausedRef.current = false;
       setPaused(false);
       setHostingStreamId(streamId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start hosting");
+      stopHosting();
     }
   }
 
@@ -82,9 +108,14 @@ export function HostPanel({ session }: { session: Session }) {
     captureRef.current = undefined;
     mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
     mediaStreamRef.current = undefined;
-    wsRef.current?.close();
-    wsRef.current = undefined;
+    if (usingNativeLoopbackRef.current) {
+      void stopNativeLoopback();
+      usingNativeLoopbackRef.current = false;
+    }
+    socketRef.current?.close();
+    socketRef.current = undefined;
     setHostingStreamId(undefined);
+    setConnectionStatus(undefined);
     setPaused(false);
     pausedRef.current = false;
   }
@@ -122,7 +153,7 @@ export function HostPanel({ session }: { session: Session }) {
           />
           Microphone
         </label>
-        <label className="flex items-center gap-1">
+        <label className="flex items-center gap-1" title="Captures the default output device via native loopback (see README for OS support notes)">
           <input
             type="radio"
             checked={audioSource === "system"}
@@ -144,6 +175,11 @@ export function HostPanel({ session }: { session: Session }) {
                 <p className="font-medium">{stream.name}</p>
                 <p className="text-xs text-neutral-400">
                   {stream.activeHostAccountIds.length} active host(s)
+                  {isHosting && connectionStatus && connectionStatus.status !== "open" && (
+                    <span className="ml-2 text-amber-400">
+                      {connectionStatusLabel(connectionStatus.status, connectionStatus.attempt)}
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex gap-2">

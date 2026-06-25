@@ -1,7 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioCapture, captureStream, type AudioSource } from "../lib/audioCapture";
+import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
 import type { Session, StreamRecord } from "../lib/types";
+
+function connectionStatusLabel(status: ConnectionStatus, attempt: number): string {
+  switch (status) {
+    case "connecting":
+      return "Connecting…";
+    case "reconnecting":
+      return `Reconnecting… (attempt ${attempt})`;
+    case "closed":
+      return "Disconnected";
+    case "open":
+      return "Connected";
+  }
+}
 
 export function HostPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
@@ -10,8 +24,9 @@ export function HostPanel({ session }: { session: Session }) {
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
   const [hostingStreamId, setHostingStreamId] = useState<string>();
   const [paused, setPaused] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<{ status: ConnectionStatus; attempt: number }>();
 
-  const wsRef = useRef<WebSocket | undefined>(undefined);
+  const socketRef = useRef<ReconnectingSocket | undefined>(undefined);
   const captureRef = useRef<AudioCapture | undefined>(undefined);
   const mediaStreamRef = useRef<MediaStream | undefined>(undefined);
   const pausedRef = useRef(false);
@@ -54,26 +69,27 @@ export function HostPanel({ session }: { session: Session }) {
   async function startHosting(streamId: string) {
     setError(undefined);
     try {
+      // The connection and the capture pipeline are independent: a dropped
+      // WebSocket reconnects with backoff in the background while capture
+      // keeps running, rather than tearing down hosting on a network blip.
+      const socket = connectWithBackoff(
+        () => api.wsUrl(session.apiBaseUrl, "host", streamId, session.token),
+        { onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }) },
+      );
+      socketRef.current = socket;
+
       const mediaStream = await captureStream(audioSource);
-      const ws = new WebSocket(api.wsUrl(session.apiBaseUrl, "host", streamId, session.token));
-      ws.binaryType = "arraybuffer";
-
-      ws.onopen = () => {
-        const capture = new AudioCapture(mediaStream, (frame) => {
-          if (!pausedRef.current && ws.readyState === WebSocket.OPEN) ws.send(frame.buffer);
-        });
-        captureRef.current = capture;
-      };
-      ws.onclose = () => stopHosting();
-      ws.onerror = () => setError("Hosting connection failed");
-
-      wsRef.current = ws;
       mediaStreamRef.current = mediaStream;
+      captureRef.current = new AudioCapture(mediaStream, (frame) => {
+        if (!pausedRef.current) socket.send(frame.buffer);
+      });
+
       pausedRef.current = false;
       setPaused(false);
       setHostingStreamId(streamId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start hosting");
+      stopHosting();
     }
   }
 
@@ -82,9 +98,10 @@ export function HostPanel({ session }: { session: Session }) {
     captureRef.current = undefined;
     mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
     mediaStreamRef.current = undefined;
-    wsRef.current?.close();
-    wsRef.current = undefined;
+    socketRef.current?.close();
+    socketRef.current = undefined;
     setHostingStreamId(undefined);
+    setConnectionStatus(undefined);
     setPaused(false);
     pausedRef.current = false;
   }
@@ -122,14 +139,9 @@ export function HostPanel({ session }: { session: Session }) {
           />
           Microphone
         </label>
-        <label className="flex items-center gap-1">
-          <input
-            type="radio"
-            checked={audioSource === "system"}
-            disabled={!!hostingStreamId}
-            onChange={() => setAudioSource("system")}
-          />
-          System / speaker output
+        <label className="flex items-center gap-1 text-neutral-500" title="Desktop-only — see README">
+          <input type="radio" checked={false} disabled />
+          System / speaker output (desktop-only, see README)
         </label>
       </div>
 
@@ -144,6 +156,11 @@ export function HostPanel({ session }: { session: Session }) {
                 <p className="font-medium">{stream.name}</p>
                 <p className="text-xs text-neutral-400">
                   {stream.activeHostAccountIds.length} active host(s)
+                  {isHosting && connectionStatus && connectionStatus.status !== "open" && (
+                    <span className="ml-2 text-amber-400">
+                      {connectionStatusLabel(connectionStatus.status, connectionStatus.attempt)}
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="flex gap-2">
