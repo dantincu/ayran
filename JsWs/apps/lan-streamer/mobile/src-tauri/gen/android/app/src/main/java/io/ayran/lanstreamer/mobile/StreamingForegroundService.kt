@@ -30,6 +30,16 @@ class StreamingForegroundService : Service() {
         private const val NOTIFICATION_ID = 1
         private const val EXTRA_ROLE = "role"
 
+        // Read by MainActivity.onPause() - a foreground service keeps the
+        // *process* alive in the background, but WryActivity's onPause()
+        // separately calls WebView.onPause(), which suspends JS timers and
+        // processing regardless of the process's foreground-service status.
+        // That silently breaks active audio capture/playback. This flag
+        // lets MainActivity know whether to immediately undo that pause.
+        @Volatile
+        @JvmStatic
+        var isActive: Boolean = false
+
         // Called from Rust via JNI (see mobile/src-tauri/src/foreground_service.rs)
         // rather than exposing a Tauri plugin for what's otherwise two one-line
         // calls - role is "hosting-microphone", "hosting-test-tone", or
@@ -40,6 +50,7 @@ class StreamingForegroundService : Service() {
         // doesn't touch the mic at all and shouldn't need that permission.
         @JvmStatic
         fun start(context: Context, role: String) {
+            isActive = true
             val intent = Intent(context, StreamingForegroundService::class.java)
             intent.putExtra(EXTRA_ROLE, role)
             context.startForegroundService(intent)
@@ -47,6 +58,7 @@ class StreamingForegroundService : Service() {
 
         @JvmStatic
         fun stop(context: Context) {
+            isActive = false
             context.stopService(Intent(context, StreamingForegroundService::class.java))
         }
     }
