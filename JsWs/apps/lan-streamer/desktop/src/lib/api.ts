@@ -1,4 +1,4 @@
-import type { FilenAccount, StreamRecord } from "./types";
+import type { AccountSettings, FilenAccount, HostAudioSource, StreamRecord } from "./types";
 
 export class ApiError extends Error {}
 
@@ -59,10 +59,33 @@ export function resumeStream(apiBaseUrl: string, token: string, id: string): Pro
   return request(apiBaseUrl, `/streams/${id}/resume`, { method: "POST", token });
 }
 
-export function wsUrl(apiBaseUrl: string, kind: "host" | "listen", streamId: string, token: string): string {
+export function getAccountSettings(apiBaseUrl: string, token: string): Promise<AccountSettings> {
+  return request(apiBaseUrl, "/account/settings", { token });
+}
+
+export function updateAccountSettings(
+  apiBaseUrl: string,
+  token: string,
+  settings: AccountSettings,
+): Promise<AccountSettings> {
+  return request(apiBaseUrl, "/account/settings", {
+    method: "PUT",
+    token,
+    body: JSON.stringify(settings),
+  });
+}
+
+export function wsUrl(
+  apiBaseUrl: string,
+  kind: "host" | "listen",
+  streamId: string,
+  token: string,
+  audioSource?: HostAudioSource,
+): string {
   const url = new URL(apiBaseUrl);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.pathname = `/ws/${kind}/${streamId}`;
   url.searchParams.set("token", token);
+  if (audioSource) url.searchParams.set("source", audioSource);
   return url.toString();
 }

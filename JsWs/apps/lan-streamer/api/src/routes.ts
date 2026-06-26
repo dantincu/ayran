@@ -1,11 +1,14 @@
 import { Router } from "express";
 import type { Response } from "express";
 import { type AuthedRequest, endSession, issueSession, loginWithFilen, requireAuth } from "./auth.js";
+import { MAX_MAX_DEVICE_AMPLITUDE, MIN_MAX_DEVICE_AMPLITUDE } from "./config.js";
 import {
   createStream,
   deleteStream,
+  getAccountSettings,
   getStream,
   listStreamsForAccount,
+  setAccountSettings,
   setHostPaused,
 } from "./store.js";
 
@@ -74,4 +77,25 @@ router.post("/streams/:id/resume", requireAuth, (req: AuthedRequest, res) => {
   }
   setHostPaused((req.params.id as string), req.account!.userId, false);
   res.status(204).end();
+});
+
+router.get("/account/settings", requireAuth, (req: AuthedRequest, res) => {
+  res.json(getAccountSettings(req.account!.userId));
+});
+
+router.put("/account/settings", requireAuth, (req: AuthedRequest, res) => {
+  const { maxDeviceAmplitude } = req.body ?? {};
+  if (
+    typeof maxDeviceAmplitude !== "number" ||
+    !Number.isFinite(maxDeviceAmplitude) ||
+    maxDeviceAmplitude < MIN_MAX_DEVICE_AMPLITUDE ||
+    maxDeviceAmplitude > MAX_MAX_DEVICE_AMPLITUDE
+  ) {
+    res.status(400).json({
+      error: `maxDeviceAmplitude must be a number between ${MIN_MAX_DEVICE_AMPLITUDE} and ${MAX_MAX_DEVICE_AMPLITUDE}`,
+    });
+    return;
+  }
+  setAccountSettings(req.account!.userId, { maxDeviceAmplitude });
+  res.json(getAccountSettings(req.account!.userId));
 });

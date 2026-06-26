@@ -1,21 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioPlayback } from "../lib/audioPlayback";
+import { activeHostsSummary, connectionStatusLabel } from "../lib/format";
 import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
 import type { Session, StreamRecord } from "../lib/types";
+import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
 
-function connectionStatusLabel(status: ConnectionStatus, attempt: number): string {
-  switch (status) {
-    case "connecting":
-      return "Connecting…";
-    case "reconnecting":
-      return `Reconnecting… (attempt ${attempt})`;
-    case "closed":
-      return "Disconnected";
-    case "open":
-      return "Connected";
-  }
-}
+const REFRESH_INTERVAL_MS = 4000;
 
 export function ListenerPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
@@ -36,7 +27,11 @@ export function ListenerPanel({ session }: { session: Session }) {
 
   useEffect(() => {
     void refresh();
-    return () => stopListening();
+    const interval = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
+    return () => {
+      clearInterval(interval);
+      stopListening();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -69,6 +64,8 @@ export function ListenerPanel({ session }: { session: Session }) {
 
   return (
     <div className="space-y-4">
+      <MaxAmplitudeControl session={session} />
+
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <ul className="space-y-2">
@@ -79,7 +76,7 @@ export function ListenerPanel({ session }: { session: Session }) {
               <div>
                 <p className="font-medium">{stream.name}</p>
                 <p className="text-xs text-neutral-400">
-                  {stream.activeHostAccountIds.length} active host(s)
+                  {activeHostsSummary(stream.activeHosts)}
                   {isListening && connectionStatus && connectionStatus.status !== "open" && (
                     <span className="ml-2 text-amber-400">
                       {connectionStatusLabel(connectionStatus.status, connectionStatus.attempt)}

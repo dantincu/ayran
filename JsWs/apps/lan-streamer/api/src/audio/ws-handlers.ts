@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { accountForToken } from "../auth.js";
 import { addActiveHost, getStream, removeActiveHost } from "../store.js";
+import type { HostAudioSource } from "../types.js";
 import {
   BYTES_PER_FRAME,
   pushHostFrame,
@@ -44,7 +45,10 @@ export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
     // An account can host any number of distinct streams at once (each from a
     // different device/window "device stream"); only a single connection is
     // ever tied to one streamId, since that's inherent to one WebSocket.
-    wss.handleUpgrade(req, socket, head, (ws) => attachHost(ws, streamId, account.userId));
+    const sourceParam = url.searchParams.get("source");
+    const audioSource: HostAudioSource =
+      sourceParam === "system" || sourceParam === "test-tone" ? sourceParam : "microphone";
+    wss.handleUpgrade(req, socket, head, (ws) => attachHost(ws, streamId, account.userId, audioSource));
     return;
   }
 
@@ -56,11 +60,11 @@ export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
   closeWith(socket, 404, "Not Found");
 }
 
-function attachHost(ws: WebSocket, streamId: string, accountId: number): void {
+function attachHost(ws: WebSocket, streamId: string, accountId: number, audioSource: HostAudioSource): void {
   const connectionId = randomUUID();
 
-  registerHost(streamId, connectionId);
-  addActiveHost(streamId, accountId);
+  registerHost(streamId, connectionId, accountId);
+  addActiveHost(streamId, connectionId, accountId, audioSource);
 
   ws.on("message", (data, isBinary) => {
     if (!isBinary) return;
@@ -71,7 +75,7 @@ function attachHost(ws: WebSocket, streamId: string, accountId: number): void {
 
   ws.on("close", () => {
     unregisterHost(streamId, connectionId);
-    removeActiveHost(streamId, accountId);
+    removeActiveHost(streamId, connectionId, accountId);
   });
 }
 

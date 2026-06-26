@@ -1,14 +1,22 @@
 import { useState } from "react";
 import { login } from "../lib/api";
+import { DEFAULT_API_BASE_URL } from "../lib/config";
 import type { Session } from "../lib/types";
 
 export function LoginScreen({ onLogin }: { onLogin: (session: Session) => void }) {
-  const [apiBaseUrl, setApiBaseUrl] = useState(localStorage.getItem("lan-streamer:apiBaseUrl") ?? "https://localhost:8443");
+  const [apiBaseUrl, setApiBaseUrl] = useState(localStorage.getItem("lan-streamer:apiBaseUrl") ?? DEFAULT_API_BASE_URL);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [twoFactorCode, setTwoFactorCode] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+
+  function handleApiBaseUrlChange(value: string) {
+    setApiBaseUrl(value);
+    // Persist as the user types, not just on successful login, so a typed
+    // URL isn't lost if they close the app before logging in successfully.
+    localStorage.setItem("lan-streamer:apiBaseUrl", value);
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -16,7 +24,6 @@ export function LoginScreen({ onLogin }: { onLogin: (session: Session) => void }
     setError(undefined);
     try {
       const { token, account } = await login(apiBaseUrl, email, password, twoFactorCode || undefined);
-      localStorage.setItem("lan-streamer:apiBaseUrl", apiBaseUrl);
       onLogin({ apiBaseUrl, token, account });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -36,7 +43,7 @@ export function LoginScreen({ onLogin }: { onLogin: (session: Session) => void }
           <input
             className="mt-1 w-full rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
             value={apiBaseUrl}
-            onChange={(e) => setApiBaseUrl(e.target.value)}
+            onChange={(e) => handleApiBaseUrlChange(e.target.value)}
           />
         </label>
 

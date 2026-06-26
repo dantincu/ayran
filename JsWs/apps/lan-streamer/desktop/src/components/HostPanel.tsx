@@ -1,21 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioCapture, captureStream, type AudioSource } from "../lib/audioCapture";
-import { startNativeLoopback, stopNativeLoopback } from "../lib/nativeLoopback";
+import { activeHostsSummary, connectionStatusLabel } from "../lib/format";
+import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
+import { setNativeLoopbackGain, startNativeLoopback, stopNativeLoopback } from "../lib/nativeLoopback";
 import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
 import type { Session, StreamRecord } from "../lib/types";
 
-function connectionStatusLabel(status: ConnectionStatus, attempt: number): string {
-  switch (status) {
-    case "connecting":
-      return "Connecting…";
-    case "reconnecting":
-      return `Reconnecting… (attempt ${attempt})`;
-    case "closed":
-      return "Disconnected";
-    case "open":
-      return "Connected";
-  }
+const REFRESH_INTERVAL_MS = 4000;
+const GAIN_STORAGE_KEY = "lan-streamer:deviceGain";
+
+function loadStoredGain(): number {
+  const raw = localStorage.getItem(GAIN_STORAGE_KEY);
+  const parsed = raw === null ? NaN : Number(raw);
+  return Number.isFinite(parsed) ? Math.min(1, Math.max(0, parsed)) : 1;
 }
 
 export function HostPanel({ session }: { session: Session }) {
@@ -25,6 +23,10 @@ export function HostPanel({ session }: { session: Session }) {
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
   const [hostingStreamId, setHostingStreamId] = useState<string>();
   const [paused, setPaused] = useState(false);
+  // Persisted per-device, not per-account: this is "how loud THIS device's
+  // contribution is," a local hardware/placement preference, not something
+  // that should follow the user to a different device.
+  const [gain, setGain] = useState(loadStoredGain);
   const [connectionStatus, setConnectionStatus] = useState<{ status: ConnectionStatus; attempt: number }>();
 
   const socketRef = useRef<ReconnectingSocket | undefined>(undefined);
@@ -43,7 +45,14 @@ export function HostPanel({ session }: { session: Session }) {
 
   useEffect(() => {
     void refresh();
-    return () => stopHosting();
+    // Active-host counts/sources reflect server state that can change from
+    // other devices/windows at any time, so poll rather than relying solely
+    // on this instance's own start/stop actions.
+    const interval = setInterval(() => void refresh(), REFRESH_INTERVAL_MS);
+    return () => {
+      clearInterval(interval);
+      stopHosting();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -75,7 +84,7 @@ export function HostPanel({ session }: { session: Session }) {
       // WebSocket reconnects with backoff in the background while capture
       // keeps running, rather than tearing down hosting on a network blip.
       const socket = connectWithBackoff(
-        () => api.wsUrl(session.apiBaseUrl, "host", streamId, session.token),
+        () => api.wsUrl(session.apiBaseUrl, "host", streamId, session.token, audioSource),
         { onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }) },
       );
       socketRef.current = socket;
@@ -84,19 +93,27 @@ export function HostPanel({ session }: { session: Session }) {
         usingNativeLoopbackRef.current = true;
         await startNativeLoopback((frame) => {
           if (!pausedRef.current) socket.send(frame);
-        });
+        }, gain);
       } else {
         usingNativeLoopbackRef.current = false;
         const mediaStream = await captureStream(audioSource);
         mediaStreamRef.current = mediaStream;
-        captureRef.current = new AudioCapture(mediaStream, (frame) => {
-          if (!pausedRef.current) socket.send(frame.buffer);
-        });
+        captureRef.current = new AudioCapture(
+          mediaStream,
+          (frame) => {
+            if (!pausedRef.current) socket.send(frame.buffer);
+          },
+          gain,
+        );
       }
 
       pausedRef.current = false;
       setPaused(false);
       setHostingStreamId(streamId);
+      // The server only registers this connection once the WebSocket finishes
+      // opening, slightly after this point - nudge a refresh shortly after so
+      // the count/source breakdown updates without waiting for the next poll.
+      setTimeout(() => void refresh(), 500);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start hosting");
       stopHosting();
@@ -118,6 +135,7 @@ export function HostPanel({ session }: { session: Session }) {
     setConnectionStatus(undefined);
     setPaused(false);
     pausedRef.current = false;
+    setTimeout(() => void refresh(), 500);
   }
 
   async function togglePause(streamId: string) {
@@ -126,6 +144,13 @@ export function HostPanel({ session }: { session: Session }) {
     setPaused(next);
     if (next) await api.pauseStream(session.apiBaseUrl, session.token, streamId);
     else await api.resumeStream(session.apiBaseUrl, session.token, streamId);
+  }
+
+  function handleGainChange(next: number) {
+    setGain(next);
+    localStorage.setItem(GAIN_STORAGE_KEY, String(next));
+    if (usingNativeLoopbackRef.current) void setNativeLoopbackGain(next);
+    else captureRef.current?.setGain(next);
   }
 
   return (
@@ -162,7 +187,36 @@ export function HostPanel({ session }: { session: Session }) {
           />
           System / speaker output
         </label>
+        <label className="flex items-center gap-1" title="Plays a bundled quiet/loud/quiet test signal on a loop - useful for testing the pipeline and the account-wide volume cap without a mic or speakers">
+          <input
+            type="radio"
+            checked={audioSource === "test-tone"}
+            disabled={!!hostingStreamId}
+            onChange={() => setAudioSource("test-tone")}
+          />
+          App's test sound
+        </label>
       </div>
+
+      <div className="rounded border border-neutral-800 px-3 py-2 text-sm">
+        <div className="flex items-center justify-between gap-3">
+          <label htmlFor="device-gain" className="text-neutral-300">
+            This device's volume
+          </label>
+          <span className="tabular-nums text-neutral-400">{Math.round(gain * 100)}%</span>
+        </div>
+        <input
+          id="device-gain"
+          type="range"
+          min={0}
+          max={100}
+          value={Math.round(gain * 100)}
+          onChange={(e) => handleGainChange(Number(e.target.value) / 100)}
+          className="mt-1 w-full"
+        />
+      </div>
+
+      <MaxAmplitudeControl session={session} />
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
@@ -174,7 +228,7 @@ export function HostPanel({ session }: { session: Session }) {
               <div>
                 <p className="font-medium">{stream.name}</p>
                 <p className="text-xs text-neutral-400">
-                  {stream.activeHostAccountIds.length} active host(s)
+                  {activeHostsSummary(stream.activeHosts)}
                   {isHosting && connectionStatus && connectionStatus.status !== "open" && (
                     <span className="ml-2 text-amber-400">
                       {connectionStatusLabel(connectionStatus.status, connectionStatus.attempt)}

@@ -5,7 +5,7 @@ import cors from "cors";
 import express from "express";
 import { handleUpgrade } from "./audio/ws-handlers.js";
 import { router } from "./routes.js";
-import { loadStreams } from "./store.js";
+import { loadAccountSettings, loadSessions, loadStreams } from "./store.js";
 import { ensureDevCertificate } from "./tls.js";
 
 const PORT = Number(process.env.PORT ?? 8443);
@@ -13,6 +13,8 @@ const CERT_DIR = path.resolve(process.cwd(), "certs");
 
 async function main(): Promise<void> {
   await loadStreams();
+  await loadSessions();
+  await loadAccountSettings();
 
   if (!existsSync(CERT_DIR)) mkdirSync(CERT_DIR, { recursive: true });
   const { keyPath, certPath } = await ensureDevCertificate(CERT_DIR);

@@ -1,4 +1,4 @@
-import { FRAME_SAMPLES, SAMPLE_RATE } from "./audioCapture";
+import { CHANNELS, FRAME_SAMPLES, SAMPLE_RATE } from "./audioCapture";
 
 export class AudioPlayback {
   private ctx: AudioContext;
@@ -10,10 +10,14 @@ export class AudioPlayback {
 
   enqueueFrame(data: ArrayBuffer): void {
     const samples = new Int16Array(data);
-    const buffer = this.ctx.createBuffer(1, FRAME_SAMPLES, SAMPLE_RATE);
-    const channel = buffer.getChannelData(0);
-    for (let i = 0; i < FRAME_SAMPLES && i < samples.length; i++) {
-      channel[i] = samples[i] / 32768;
+    const buffer = this.ctx.createBuffer(CHANNELS, FRAME_SAMPLES, SAMPLE_RATE);
+    const left = buffer.getChannelData(0);
+    const right = buffer.getChannelData(1);
+    for (let i = 0; i < FRAME_SAMPLES; i++) {
+      const base = i * CHANNELS;
+      if (base + 1 >= samples.length) break;
+      left[i] = samples[base] / 32768;
+      right[i] = samples[base + 1] / 32768;
     }
 
     const source = this.ctx.createBufferSource();

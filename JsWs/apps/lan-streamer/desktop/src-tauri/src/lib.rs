@@ -11,7 +11,8 @@ pub fn run() {
             session::load_session,
             session::clear_session,
             loopback::start_loopback_capture,
-            loopback::stop_loopback_capture
+            loopback::stop_loopback_capture,
+            loopback::set_loopback_gain
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
