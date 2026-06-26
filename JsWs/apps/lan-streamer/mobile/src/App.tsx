@@ -3,6 +3,7 @@ import { LoginScreen } from "./components/LoginScreen";
 import { HostPanel } from "./components/HostPanel";
 import { ListenerPanel } from "./components/ListenerPanel";
 import * as api from "./lib/api";
+import { ApiError } from "./lib/api";
 import { clearSession, loadSession, saveSession } from "./lib/sessionStore";
 import type { Session } from "./lib/types";
 
@@ -17,13 +18,21 @@ export default function App() {
     loadSession()
       .then(async (restored) => {
         if (!restored) return;
-        // The API keeps sessions in memory, so a restart invalidates any
-        // persisted token; verify it still works before trusting it.
+        // Verify the token still works before trusting it - but only clear
+        // the stored credential if the API explicitly rejected it (401).
+        // Any other failure (API unreachable, DNS hiccup, a redeploy still
+        // settling, etc.) is transient and shouldn't destroy a perfectly
+        // valid session just because this one check couldn't complete.
         try {
           await api.listStreams(restored.apiBaseUrl, restored.token);
           setSession(restored);
-        } catch {
-          await clearSession().catch(() => {});
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 401) {
+            await clearSession().catch(() => {});
+          }
+          // Otherwise: leave the stored session alone and just don't log in
+          // automatically this time: the user can retry, and a successful
+          // login later will only ever happen via the actual login form.
         }
       })
       .finally(() => setRestoring(false));

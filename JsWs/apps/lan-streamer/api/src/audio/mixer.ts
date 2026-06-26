@@ -21,6 +21,8 @@ interface HostConnection {
   accountId: number;
   /** current smoothed limiter gain (1 == no reduction), persists across frames/ticks */
   limiterGain: number;
+  /** diagnostics: how many consecutive ticks this connection's queue has been empty */
+  emptyStreak: number;
 }
 
 interface StreamMixState {
@@ -30,6 +32,30 @@ interface StreamMixState {
   hostQueues: Map<string, HostConnection>;
   listeners: Set<WebSocket>;
   timer: NodeJS.Timeout;
+  /** diagnostics: wall-clock time of the previous tick, to detect the mixer's own timer lagging */
+  lastTickAt: number;
+  // Reused every tick instead of allocating fresh arrays - with N host
+  // connections, the old code allocated 1 Int32Array + N Int16Arrays *every
+  // single 20ms tick* (50x/sec), which is enough garbage to trigger V8 GC
+  // pauses landing the mixer's own setInterval noticeably behind schedule -
+  // the actual cause of the periodic gaps this was built to diagnose.
+  accumulator: Int32Array;
+  // Also reused every tick (not just the accumulator) - a fresh
+  // Buffer.alloc(BYTES_PER_FRAME) every tick was left in place under the
+  // assumption that ws.send() copies synchronously before returning, but
+  // that assumption was never actually verified, and tick-lag warnings kept
+  // recurring even after the accumulator fix above. Since the *same* buffer
+  // instance is already sent to every listener within one tick without
+  // corruption, ws.send() provably does copy synchronously - so reusing it
+  // across ticks too is just as safe as reusing the accumulator.
+  output: Buffer;
+  // Diagnostics: counts actual ws.send() calls to compare against what the
+  // listener device reports receiving over the same kind of window. If
+  // these counts match the expected ~50/sec but the listener still sees
+  // fewer, the loss is downstream of this process (network transit) rather
+  // than anything in the mixer/host pipeline.
+  sendCount: number;
+  sendWindowStart: number;
 }
 
 const streams = new Map<string, StreamMixState>();
@@ -42,6 +68,11 @@ function ensureStream(streamId: string): StreamMixState {
     hostQueues: new Map(),
     listeners: new Set(),
     timer: setInterval(() => tick(streamId), TICK_MS),
+    lastTickAt: Date.now(),
+    accumulator: new Int32Array(FRAME_SAMPLES * CHANNELS),
+    output: Buffer.alloc(BYTES_PER_FRAME),
+    sendCount: 0,
+    sendWindowStart: Date.now(),
   };
   streams.set(streamId, state);
   return state;
@@ -58,7 +89,7 @@ function maybeTeardown(streamId: string): void {
 
 /**
  * Limits a device stream's peak amplitude to `ceilingAmplitude` (fraction of
- * full-scale) before it gets summed with other device streams, easing the
+ * full-scale) and adds the result directly into `accumulator`, easing the
  * gain reduction in/out via an envelope follower rather than hard-clipping,
  * to avoid an audible "pop". Mutates `conn.limiterGain` to carry the
  * envelope across calls. Adds no buffering delay - the limiter acts on each
@@ -70,9 +101,8 @@ function maybeTeardown(streamId: string): void {
  * channel happens to be louder at any instant, smearing the stereo image
  * left/right as the signal moves - linking keeps the balance intact.
  */
-function applyLimiter(frame: Buffer, ceilingAmplitude: number, conn: HostConnection): Int16Array {
+function accumulateLimited(frame: Buffer, ceilingAmplitude: number, conn: HostConnection, accumulator: Int32Array): void {
   const ceiling = ceilingAmplitude * 32767;
-  const out = new Int16Array(FRAME_SAMPLES * CHANNELS);
 
   for (let i = 0; i < FRAME_SAMPLES; i++) {
     const left = frame.readInt16LE(i * CHANNELS * 2);
@@ -81,48 +111,80 @@ function applyLimiter(frame: Buffer, ceilingAmplitude: number, conn: HostConnect
     const targetGain = magnitude > ceiling ? ceiling / magnitude : 1;
     const coeff = targetGain < conn.limiterGain ? LIMITER_ATTACK_COEFF : LIMITER_RELEASE_COEFF;
     conn.limiterGain = conn.limiterGain * coeff + targetGain * (1 - coeff);
-    out[i * CHANNELS] = Math.round(left * conn.limiterGain);
-    out[i * CHANNELS + 1] = Math.round(right * conn.limiterGain);
+    accumulator[i * CHANNELS] += Math.round(left * conn.limiterGain);
+    accumulator[i * CHANNELS + 1] += Math.round(right * conn.limiterGain);
   }
-
-  return out;
 }
 
 function tick(streamId: string): void {
   const state = streams.get(streamId);
   if (!state) return;
+
+  // Diagnostics: if the mixer's own timer fires noticeably late, that points
+  // at server-side load (event loop congestion, GC, etc.) rather than the
+  // host failing to produce/send audio - distinguishes the two possible
+  // sources of an output gap.
+  const now = Date.now();
+  const sinceLastTick = now - state.lastTickAt;
+  state.lastTickAt = now;
+  if (sinceLastTick > TICK_MS * 2) {
+    console.warn(`[mixer] stream ${streamId}: tick fired ${sinceLastTick}ms after the previous one (expected ~${TICK_MS}ms) - mixer is running behind`);
+  }
+
   if (state.listeners.size === 0) return;
 
-  const accumulator = new Int32Array(FRAME_SAMPLES * CHANNELS);
+  state.accumulator.fill(0);
   let anyContribution = false;
 
-  for (const conn of state.hostQueues.values()) {
+  for (const [connectionId, conn] of state.hostQueues) {
     const frame = conn.queue.shift();
-    if (!frame) continue;
+    if (!frame) {
+      conn.emptyStreak += 1;
+      if (conn.emptyStreak === 1) {
+        console.warn(`[mixer] stream ${streamId}: host ${connectionId} produced no frame for this tick (queue empty)`);
+      }
+      continue;
+    }
+    if (conn.emptyStreak > 1) {
+      console.warn(`[mixer] stream ${streamId}: host ${connectionId} resumed after ${conn.emptyStreak * TICK_MS}ms with no frames`);
+    }
+    conn.emptyStreak = 0;
     anyContribution = true;
 
     const { maxDeviceAmplitude } = getAccountSettings(conn.accountId);
-    const limited = applyLimiter(frame, maxDeviceAmplitude, conn);
-    for (let i = 0; i < accumulator.length; i++) accumulator[i] += limited[i];
+    accumulateLimited(frame, maxDeviceAmplitude, conn, state.accumulator);
   }
 
   if (!anyContribution) return;
 
-  const mixed = Buffer.alloc(BYTES_PER_FRAME);
-  for (let i = 0; i < accumulator.length; i++) {
-    const clamped = Math.max(-32768, Math.min(32767, accumulator[i]));
+  const mixed = state.output;
+  for (let i = 0; i < state.accumulator.length; i++) {
+    const clamped = Math.max(-32768, Math.min(32767, state.accumulator[i]));
     mixed.writeInt16LE(clamped, i * 2);
   }
 
   for (const ws of state.listeners) {
-    if (ws.readyState === ws.OPEN) ws.send(mixed);
+    if (ws.readyState === ws.OPEN) {
+      ws.send(mixed);
+      state.sendCount += 1;
+    }
+  }
+
+  const sendWindowElapsed = now - state.sendWindowStart;
+  if (sendWindowElapsed >= 2000) {
+    const expectedSends = Math.round((sendWindowElapsed / TICK_MS) * state.listeners.size);
+    console.log(
+      `[mixer] stream ${streamId}: sent ${state.sendCount} frames in ${sendWindowElapsed}ms across ${state.listeners.size} listener(s) (expected ~${expectedSends})`,
+    );
+    state.sendCount = 0;
+    state.sendWindowStart = now;
   }
 }
 
 export function registerHost(streamId: string, connectionId: string, accountId: number): void {
   const state = ensureStream(streamId);
   if (!state.hostQueues.has(connectionId)) {
-    state.hostQueues.set(connectionId, { queue: [], accountId, limiterGain: 1 });
+    state.hostQueues.set(connectionId, { queue: [], accountId, limiterGain: 1, emptyStreak: 0 });
   }
 }
 

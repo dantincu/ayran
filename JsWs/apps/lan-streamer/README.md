@@ -28,6 +28,33 @@ Notes:
 - Copy just `api/dist/bundle.cjs` (plus a `package.json` isn't even needed) to wherever you're running it; `certs/` and `data/streams.json` are created relative to the process's working directory on first run, so launch it from a consistent directory you want that state to live in.
 - This is **not** wired up as an OS service (no systemd unit / NSSM / launchd config) — it's just a plain Node process you start manually or via whatever process manager you prefer. Say if you want one of those set up.
 
+## Deploying to Android
+
+```
+cd mobile
+npm install
+npm run tauri android build -- --target aarch64 --debug
+```
+
+Produces an installable universal APK at `mobile/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` (and an `.aab` alongside it, for Play Store-style distribution — not used here). `--target aarch64` matches the vast majority of real phones; drop it to build all ABIs if you need to support x86 emulators too (slower build).
+
+Install over USB with the device's "USB debugging" developer option enabled:
+
+```
+adb devices                              # confirm the device shows as "device", not "unauthorized"
+adb install --user 0 <path-to-apk>       # use -r instead of a fresh install to update in place
+```
+
+**Always pass `--user 0` explicitly.** Without it, a plain `adb install` can end up installing into *every* Android user profile on the device — including a Samsung "Dual Apps"/Dual Messenger profile if one exists (`adb shell pm list users` will show something like `UserInfo{95:DUAL_APP:...}` if so), which shows up as a confusing second "ghost" icon with a small badge in the app drawer. If that's already happened, removing it doesn't require reinstalling: `adb shell pm uninstall --user <id> io.ayran.lanstreamer.mobile` removes it from just that one profile.
+
+Toolchain note specific to this dev machine: if `tauri android build`/`dev` fails trying to invoke a broken Java install, the system's default Android Studio JBR can be missing core JRE files. Point `JAVA_HOME` at a working JDK for the command instead, e.g.:
+
+```
+JAVA_HOME="C:\Program Files\Android\Android Studio1\jbr" npm run tauri android build -- --target aarch64 --debug
+```
+
+(Note the `Android Studio1` vs `Android Studio` — there were two installs on this machine, only one with a complete JBR.)
+
 ## TLS certificate: real cert via DuckDNS + Let's Encrypt (DNS-01)
 
 The API serves whatever's at `certs/dev-cert.pem`/`certs/dev-key.pem` (relative to wherever the process runs from) — by default it auto-generates a **self-signed** cert there on first run. That works for desktop (just trust it once via `certutil`), but **Android increasingly restricts manually installing user CA certificates through the Settings UI** — on at least some Samsung/One UI versions, every install path (Settings → Encryption & credentials, tapping the file directly, even the WPA2-Enterprise CA-cert picker) demands a private key as if it were a client identity cert, with no working manual fix short of MDM enrollment or root.

@@ -7,6 +7,7 @@ import type { Session, StreamRecord } from "../lib/types";
 import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
 
 const REFRESH_INTERVAL_MS = 4000;
+const EXPECTED_FRAME_INTERVAL_MS = 20;
 
 export function ListenerPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
@@ -40,11 +41,58 @@ export function ListenerPanel({ session }: { session: Session }) {
     setError(undefined);
 
     const playback = new AudioPlayback();
+    let lastReceivedAt: number | undefined;
+    // Diagnostics: a ~8-13% audio buffer deficit was measured on the
+    // playback side despite every *timing* diagnostic (WS receive gaps,
+    // main-thread relay, audio-thread delivery) coming back clean. A gap
+    // diagnostic can only catch delay, not loss - if messages are being
+    // silently dropped without delaying the *next* one's arrival, gap
+    // checks would never see it. This counts actual message throughput
+    // against the expected rate to check for loss directly.
+    let messageCount = 0;
+    let throughputWindowStart: number | undefined;
     const socket = connectWithBackoff(
       () => api.wsUrl(session.apiBaseUrl, "listen", streamId, session.token),
       {
-        onMessage: (event) => playback.enqueueFrame(event.data as ArrayBuffer),
-        onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }),
+        onMessage: (event) => {
+          // Diagnostics: each frame is 20ms of audio. A gap much larger than
+          // that between WebSocket messages arriving means the network path
+          // from the API to this device is the one introducing the delay -
+          // by elimination, after the host-side capture/IPC/send path was
+          // already confirmed to be on time.
+          const now = performance.now();
+          if (lastReceivedAt !== undefined) {
+            const gap = now - lastReceivedAt;
+            if (gap > EXPECTED_FRAME_INTERVAL_MS * 3) {
+              console.warn(
+                `[ListenerPanel] frame receive gap: ${gap.toFixed(1)}ms since previous frame (expected ~${EXPECTED_FRAME_INTERVAL_MS}ms) - network delay to this device`,
+              );
+            }
+          }
+          lastReceivedAt = now;
+
+          if (throughputWindowStart === undefined) throughputWindowStart = now;
+          messageCount += 1;
+          const windowElapsed = now - throughputWindowStart;
+          if (windowElapsed >= 2000) {
+            const expectedCount = Math.round(windowElapsed / EXPECTED_FRAME_INTERVAL_MS);
+            const lossPct = (100 * (expectedCount - messageCount)) / expectedCount;
+            console.log(
+              `[ListenerPanel] throughput: received ${messageCount} frames in ${windowElapsed.toFixed(0)}ms (expected ~${expectedCount}) - ${lossPct.toFixed(1)}% loss`,
+            );
+            messageCount = 0;
+            throughputWindowStart = now;
+          }
+
+          playback.enqueueFrame(event.data as ArrayBuffer);
+        },
+        onStatusChange: (status, attempt) => {
+          // Diagnostics: confirms (or refutes) whether the large, infrequent
+          // gaps seen are WebSocket reconnect cycles rather than ordinary
+          // network jitter on an otherwise-stable connection.
+          console.warn(`[ListenerPanel] connection status: ${status}${attempt ? ` (attempt ${attempt})` : ""}`);
+          setConnectionStatus({ status, attempt });
+        },
       },
     );
 

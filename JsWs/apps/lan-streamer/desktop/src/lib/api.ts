@@ -1,6 +1,13 @@
 import type { AccountSettings, FilenAccount, HostAudioSource, StreamRecord } from "./types";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+  }
+}
 
 async function request<T>(
   apiBaseUrl: string,
@@ -16,7 +23,7 @@ async function request<T>(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(body.error ?? `Request failed with status ${res.status}`);
+    throw new ApiError(body.error ?? `Request failed with status ${res.status}`, res.status);
   }
 
   if (res.status === 204) return undefined as T;

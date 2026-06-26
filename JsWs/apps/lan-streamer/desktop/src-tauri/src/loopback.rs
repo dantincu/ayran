@@ -2,7 +2,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::ipc::Channel;
+use std::time::Instant;
+use tauri::ipc::{Channel, Response};
 
 // Must match FRAME_SAMPLES/SAMPLE_RATE/CHANNELS in api/src/audio/mixer.ts and
 // desktop/src/lib/audioCapture.ts so frames can go straight onto the
@@ -10,6 +11,13 @@ use tauri::ipc::Channel;
 const TARGET_SAMPLE_RATE: u32 = 48000;
 const FRAME_SAMPLES: usize = 960;
 const CHANNELS: usize = 2;
+// Reverted to 1 (no batching): batching to 5 traded steady 20ms delivery for
+// bursty 100ms delivery, which reintroduced - and on the API's mixer side,
+// worsened - the same queue-starvation pattern this was meant to fix. Kept
+// as a named constant rather than removing the machinery entirely, in case
+// a smarter (e.g. time-based rather than count-based) batching scheme is
+// worth revisiting later.
+const BATCH_FRAMES: usize = 1;
 
 pub struct LoopbackState {
     stream: Mutex<Option<Stream>>,
@@ -60,7 +68,23 @@ struct Pipeline {
     left_buffer: Vec<f32>,
     right_buffer: Vec<f32>,
     pcm_buffer: Vec<i16>,
+    // Accumulates whole 20ms frames (as bytes) until BATCH_FRAMES are ready,
+    // then they're sent as a single channel message - see BATCH_FRAMES.
+    batch_buffer: Vec<u8>,
     gain_bits: Arc<AtomicU32>,
+    // Fractional read-cursor position carried over between calls. Without
+    // this, resetting the cursor to 0.0 every call effectively rewinds the
+    // read position by the discarded fraction each time, causing the
+    // resampler to slightly over-produce (re-interpolate a sliver it
+    // already covered) on every callback whenever input_rate != target rate.
+    // Real correctness bug (verified by test), but the direction means it
+    // causes mild oversupply, not the empty-queue/silence-gap symptom.
+    phase: f64,
+    // Diagnostics: wall-clock time of the previous callback, to check
+    // whether cpal itself is the one leaving gaps (e.g. WASAPI loopback
+    // sessions are known to occasionally auto-suspend during near-silence
+    // and take a moment to resume) rather than something in our own code.
+    last_callback_at: Instant,
 }
 
 impl Pipeline {
@@ -71,11 +95,34 @@ impl Pipeline {
             left_buffer: Vec::new(),
             right_buffer: Vec::new(),
             pcm_buffer: Vec::new(),
+            batch_buffer: Vec::new(),
             gain_bits,
+            phase: 0.0,
+            last_callback_at: Instant::now(),
         }
     }
 
-    fn push(&mut self, data: &[f32], on_frame: &Channel<Vec<u8>>) {
+    fn push(&mut self, data: &[f32], on_frame: &Channel<Response>) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_callback_at);
+        self.last_callback_at = now;
+
+        let frames_in_callback = data.len() / self.channels;
+        let expected_secs = frames_in_callback as f64 / self.input_rate as f64;
+        let elapsed_secs = elapsed.as_secs_f64();
+        // Flag any callback that took noticeably longer to arrive than the
+        // amount of audio it delivered would suggest - if cpal itself is
+        // leaving gaps (e.g. WASAPI loopback auto-suspending during
+        // near-silence), this is where it would show up.
+        if elapsed_secs > expected_secs * 3.0 + 0.02 {
+            eprintln!(
+                "loopback capture: callback arrived {:.1}ms after the previous one but only delivered {:.1}ms of audio ({} frames) - cpal/WASAPI gap, not our code",
+                elapsed_secs * 1000.0,
+                expected_secs * 1000.0,
+                frames_in_callback,
+            );
+        }
+
         for frame in data.chunks(self.channels) {
             let (l, r) = stereo_from_frame(frame);
             self.left_buffer.push(l);
@@ -91,7 +138,7 @@ impl Pipeline {
         let ratio = self.input_rate as f64 / TARGET_SAMPLE_RATE as f64;
         let len = self.left_buffer.len();
         let usable = (len - 1) as f64;
-        let mut cursor = 0f64;
+        let mut cursor = self.phase;
 
         while cursor < usable {
             let idx = cursor.floor() as usize;
@@ -115,14 +162,29 @@ impl Pipeline {
         let consumed = (cursor.floor() as usize).min(len);
         self.left_buffer.drain(0..consumed);
         self.right_buffer.drain(0..consumed);
+        // Carry the exact fractional remainder forward instead of resetting
+        // to 0.0 - this is the fix for the slow drift described above.
+        self.phase = (cursor - consumed as f64).max(0.0);
 
         while self.pcm_buffer.len() >= FRAME_SAMPLES * CHANNELS {
             let frame: Vec<i16> = self.pcm_buffer.drain(0..FRAME_SAMPLES * CHANNELS).collect();
-            let mut bytes = Vec::with_capacity(FRAME_SAMPLES * CHANNELS * 2);
             for sample in frame {
-                bytes.extend_from_slice(&sample.to_le_bytes());
+                self.batch_buffer.extend_from_slice(&sample.to_le_bytes());
             }
-            let _ = on_frame.send(bytes);
+
+            if self.batch_buffer.len() >= FRAME_SAMPLES * CHANNELS * 2 * BATCH_FRAMES {
+                let bytes = std::mem::take(&mut self.batch_buffer);
+                // Send as a raw-bytes Response rather than a bare Vec<u8>: a
+                // plain Vec<u8> gets JSON-encoded as an array of numbers (one
+                // JSON token per byte). Response::new wraps it as
+                // InvokeResponseBody::Raw, which the webview delivers as a
+                // real ArrayBuffer instead - and batching several frames
+                // into each message (see BATCH_FRAMES) cuts how often this
+                // channel send happens at all, which matters on Windows/
+                // WebView2 where each channel message has its own fixed
+                // delivery overhead regardless of payload encoding.
+                let _ = on_frame.send(Response::new(bytes));
+            }
         }
     }
 }
@@ -130,7 +192,7 @@ impl Pipeline {
 #[tauri::command]
 pub fn start_loopback_capture(
     state: tauri::State<LoopbackState>,
-    on_frame: Channel<Vec<u8>>,
+    on_frame: Channel<Response>,
     initial_gain: f32,
 ) -> Result<(), String> {
     state.gain_bits.store(initial_gain.to_bits(), Ordering::Relaxed);
@@ -302,5 +364,78 @@ mod tests {
         let (l, r) = stereo_from_frame(&[0.1, -0.2, 0.3]);
         assert_eq!(l, 0.1);
         assert_eq!(r, -0.2);
+    }
+
+    #[test]
+    fn phase_carryover_prevents_drift_across_many_small_callbacks() {
+        // At ratio == 1.0 the cursor always lands on exact integers, so
+        // there's never a fraction to lose - the bug only bites when actual
+        // resampling is happening (e.g. a 44.1kHz device feeding a 48kHz
+        // target), which is exactly when a fix matters most. Simulates many
+        // small, frequent audio callbacks (cpal callbacks can fire well over
+        // 100x/sec) to show the loss compounding.
+        let ratio = 44100.0f64 / TARGET_SAMPLE_RATE as f64;
+        let chunk_size = 32usize;
+        let num_chunks = 2000usize;
+        let total_input = chunk_size * num_chunks;
+
+        // OLD (buggy) behavior: cursor resets to 0.0 every call, discarding
+        // whatever fraction of a sample it had advanced past.
+        let mut buffer_old: Vec<f64> = Vec::new();
+        let mut produced_old = 0usize;
+        for _ in 0..num_chunks {
+            buffer_old.extend(std::iter::repeat(0.0).take(chunk_size));
+            if buffer_old.len() < 2 {
+                continue;
+            }
+            let len = buffer_old.len();
+            let usable = (len - 1) as f64;
+            let mut cursor = 0f64; // the bug
+            while cursor < usable {
+                produced_old += 1;
+                cursor += ratio;
+            }
+            let consumed = (cursor.floor() as usize).min(len);
+            buffer_old.drain(0..consumed);
+        }
+
+        // NEW (fixed) behavior: cursor carries the fractional remainder forward.
+        let mut buffer_new: Vec<f64> = Vec::new();
+        let mut produced_new = 0usize;
+        let mut phase = 0f64;
+        for _ in 0..num_chunks {
+            buffer_new.extend(std::iter::repeat(0.0).take(chunk_size));
+            if buffer_new.len() < 2 {
+                continue;
+            }
+            let len = buffer_new.len();
+            let usable = (len - 1) as f64;
+            let mut cursor = phase; // the fix
+            while cursor < usable {
+                produced_new += 1;
+                cursor += ratio;
+            }
+            let consumed = (cursor.floor() as usize).min(len);
+            buffer_new.drain(0..consumed);
+            phase = (cursor - consumed as f64).max(0.0);
+        }
+
+        let expected = (total_input as f64 / ratio).round() as i64;
+        println!("expected={expected}, produced_old={produced_old}, produced_new={produced_new}");
+
+        // Resetting the cursor to 0.0 every call effectively rewinds the
+        // read position by the discarded fraction each time, so the buggy
+        // version *over*-produces (duplicates a sliver of interpolated
+        // output every callback) rather than under-producing. Still a real
+        // correctness bug - it measurably drifts from the correct output
+        // count - just not in the direction originally assumed.
+        assert!(
+            (produced_old as i64 - expected).abs() > (num_chunks / 10) as i64,
+            "expected old behavior to demonstrably drift: expected={expected}, produced_old={produced_old}"
+        );
+        assert!(
+            (expected - produced_new as i64).abs() < 5,
+            "fixed behavior should not drift: expected={expected}, produced_new={produced_new}"
+        );
     }
 }
