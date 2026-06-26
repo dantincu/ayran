@@ -6,7 +6,11 @@ import { invoke } from "@tauri-apps/api/core";
  * src-tauri/src/foreground_service.rs and the Kotlin service it calls into).
  * No-ops on non-Android targets.
  */
-export function startForegroundService(role: "hosting" | "listening"): Promise<void> {
+// "hosting-microphone" requests the Android foreground-service-type
+// "microphone", which the OS only allows once RECORD_AUDIO has actually been
+// granted - callers must only call this *after* mic capture has already
+// succeeded (proving the permission is granted), not before requesting it.
+export function startForegroundService(role: "hosting-microphone" | "hosting-test-tone" | "listening"): Promise<void> {
   return invoke("start_foreground_service", { role });
 }
 

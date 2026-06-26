@@ -6,6 +6,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required to start a foreground service with type "microphone" while
+         hosting from the mic - getUserMedia's own WebView permission prompt
+         is what actually grants this at runtime; this just declares it. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- WebView's getUserMedia(audio) requires both this and RECORD_AUDIO to
+         be held before it'll even start - confirmed via logcat
+         ("cr_media: Requires MODIFY_AUDIO_SETTINGS and RECORD_AUDIO") and
+         `dumpsys package` showing RECORD_AUDIO granted but this one entirely
+         absent. Unlike RECORD_AUDIO this is a "normal" permission - granted
+         automatically at install just by being declared, no runtime prompt. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <application
         android:icon="@mipmap/ic_launcher"

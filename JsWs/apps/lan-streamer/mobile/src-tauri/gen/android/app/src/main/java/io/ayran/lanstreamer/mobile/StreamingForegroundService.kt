@@ -32,8 +32,12 @@ class StreamingForegroundService : Service() {
 
         // Called from Rust via JNI (see mobile/src-tauri/src/foreground_service.rs)
         // rather than exposing a Tauri plugin for what's otherwise two one-line
-        // calls - role is "hosting" or "listening", used only to pick the
-        // notification text and the matching foregroundServiceType.
+        // calls - role is "hosting-microphone", "hosting-test-tone", or
+        // "listening", used to pick the notification text and the matching
+        // foregroundServiceType. The "microphone" FGS type specifically
+        // requires RECORD_AUDIO already granted, so it's only ever requested
+        // for the role that's actually capturing the mic - test-tone hosting
+        // doesn't touch the mic at all and shouldn't need that permission.
         @JvmStatic
         fun start(context: Context, role: String) {
             val intent = Intent(context, StreamingForegroundService::class.java)
@@ -77,7 +81,7 @@ class StreamingForegroundService : Service() {
     }
 
     private fun foregroundServiceTypeFor(role: String): Int =
-        if (role == "hosting") ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+        if (role == "hosting-microphone") ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
 
     private fun buildNotification(role: String): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -92,7 +96,7 @@ class StreamingForegroundService : Service() {
         val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)
         val pendingIntent = PendingIntent.getActivity(this, 0, openAppIntent, PendingIntent.FLAG_IMMUTABLE)
 
-        val text = if (role == "hosting") "Hosting an audio stream" else "Listening to an audio stream"
+        val text = if (role.startsWith("hosting")) "Hosting an audio stream" else "Listening to an audio stream"
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Ayran LAN Streamer")
             .setContentText(text)

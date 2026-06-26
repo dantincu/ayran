@@ -99,10 +99,15 @@ export function HostPanel({ session }: { session: Session }) {
         },
       });
       socketRef.current = socket;
-      void startForegroundService("hosting");
 
+      // Capture first, start the foreground service after: requesting the
+      // Android "microphone" foreground-service-type before RECORD_AUDIO is
+      // actually granted throws a SecurityException and crashes the app -
+      // captureStream() succeeding is what proves the mic permission (if
+      // this source needs it) has already been granted.
       const mediaStream = await captureStream(audioSource);
       mediaStreamRef.current = mediaStream;
+      void startForegroundService(audioSource === "microphone" ? "hosting-microphone" : "hosting-test-tone");
       captureRef.current = new AudioCapture(
         mediaStream,
         (frame) => {
@@ -119,6 +124,11 @@ export function HostPanel({ session }: { session: Session }) {
       // the count/source breakdown updates without waiting for the next poll.
       setTimeout(() => void refresh(), 500);
     } catch (err) {
+      // Diagnostic: the UI only shows err.message ("Permission denied"),
+      // which is ambiguous between several distinct getUserMedia failure
+      // modes (DOMException.name disambiguates: NotAllowedError vs
+      // NotFoundError vs NotReadableError vs SecurityException etc.).
+      console.error("[HostPanel] startHosting failed:", err, (err as { name?: string } | undefined)?.name);
       setError(err instanceof Error ? err.message : "Failed to start hosting");
       stopHosting();
     }
