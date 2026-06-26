@@ -1962,8 +1962,10 @@ name = "lan-streamer-mobile"
 version = "0.1.0"
 dependencies = [
  "android-native-keyring-store",
+ "jni",
  "keyring",
  "keyring-core",
+ "ndk-context",
  "serde",
  "serde_json",
  "tauri",

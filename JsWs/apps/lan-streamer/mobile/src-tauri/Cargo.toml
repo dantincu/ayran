@@ -27,4 +27,9 @@ keyring-core = "1.0.0"
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-native-keyring-store = "1.0.0"
+# Pinned to match the versions Tauri's own Android support already resolves
+# (see Cargo.lock) - the jni crate's types aren't ABI-compatible across major
+# versions, so this has to be the same one wry/tauri use internally.
+jni = "0.21"
+ndk-context = "0.1"
 

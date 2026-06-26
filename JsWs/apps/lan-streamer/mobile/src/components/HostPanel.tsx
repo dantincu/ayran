@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioCapture, captureStream, type AudioSource } from "../lib/audioCapture";
 import { activeHostsSummary, connectionStatusLabel } from "../lib/format";
+import { startForegroundService, stopForegroundService } from "../lib/foregroundService";
 import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
 import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
-import type { Session, StreamRecord } from "../lib/types";
+import type { Session, StreamMode, StreamRecord } from "../lib/types";
 
 const REFRESH_INTERVAL_MS = 4000;
 const GAIN_STORAGE_KEY = "lan-streamer:deviceGain";
@@ -18,6 +19,7 @@ function loadStoredGain(): number {
 export function HostPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
   const [newStreamName, setNewStreamName] = useState("");
+  const [newStreamMode, setNewStreamMode] = useState<StreamMode>("merged");
   const [error, setError] = useState<string>();
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
   const [hostingStreamId, setHostingStreamId] = useState<string>();
@@ -55,7 +57,7 @@ export function HostPanel({ session }: { session: Session }) {
     e.preventDefault();
     if (!newStreamName.trim()) return;
     try {
-      await api.createStream(session.apiBaseUrl, session.token, newStreamName.trim());
+      await api.createStream(session.apiBaseUrl, session.token, newStreamName.trim(), newStreamMode);
       setNewStreamName("");
       await refresh();
     } catch (err) {
@@ -78,11 +80,26 @@ export function HostPanel({ session }: { session: Session }) {
       // The connection and the capture pipeline are independent: a dropped
       // WebSocket reconnects with backoff in the background while capture
       // keeps running, rather than tearing down hosting on a network blip.
-      const socket = connectWithBackoff(
-        () => api.wsUrl(session.apiBaseUrl, "host", streamId, session.token, audioSource),
-        { onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }) },
-      );
+      const socket = connectWithBackoff(() => api.wsUrl(session.apiBaseUrl, "host", streamId, session.token, audioSource), {
+        onStatusChange: (status, attempt) => setConnectionStatus({ status, attempt }),
+        onMessage: (event) => {
+          // Simple streams only allow one active host at a time - the server
+          // sends this control message (as text, not a binary audio frame)
+          // when another device has just taken over this stream.
+          if (typeof event.data !== "string") return;
+          try {
+            const message = JSON.parse(event.data);
+            if (message.type === "superseded") {
+              setError("Another device started streaming on this stream, so this device stopped.");
+              stopHosting();
+            }
+          } catch {
+            // Not a JSON control message - ignore.
+          }
+        },
+      });
       socketRef.current = socket;
+      void startForegroundService("hosting");
 
       const mediaStream = await captureStream(audioSource);
       mediaStreamRef.current = mediaStream;
@@ -114,6 +131,7 @@ export function HostPanel({ session }: { session: Session }) {
     mediaStreamRef.current = undefined;
     socketRef.current?.close();
     socketRef.current = undefined;
+    void stopForegroundService();
     setHostingStreamId(undefined);
     setConnectionStatus(undefined);
     setPaused(false);
@@ -137,16 +155,28 @@ export function HostPanel({ session }: { session: Session }) {
 
   return (
     <div className="space-y-4">
-      <form onSubmit={handleCreate} className="flex gap-2">
-        <input
-          className="flex-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
-          placeholder="New stream name"
-          value={newStreamName}
-          onChange={(e) => setNewStreamName(e.target.value)}
-        />
-        <button className="rounded bg-blue-600 px-3 py-1 hover:bg-blue-500" type="submit">
-          Create
-        </button>
+      <form onSubmit={handleCreate} className="space-y-2">
+        <div className="flex gap-2">
+          <input
+            className="flex-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
+            placeholder="New stream name"
+            value={newStreamName}
+            onChange={(e) => setNewStreamName(e.target.value)}
+          />
+          <button className="rounded bg-blue-600 px-3 py-1 hover:bg-blue-500" type="submit">
+            Create
+          </button>
+        </div>
+        <div className="flex items-center gap-3 text-sm">
+          <label className="flex items-center gap-1">
+            <input type="radio" checked={newStreamMode === "merged"} onChange={() => setNewStreamMode("merged")} />
+            Merged (multiple devices mixed together)
+          </label>
+          <label className="flex items-center gap-1">
+            <input type="radio" checked={newStreamMode === "simple"} onChange={() => setNewStreamMode("simple")} />
+            Simple (one device forwarded directly, no mixing)
+          </label>
+        </div>
       </form>
 
       <div className="flex items-center gap-3 text-sm">
@@ -203,7 +233,12 @@ export function HostPanel({ session }: { session: Session }) {
           return (
             <li key={stream.id} className="flex items-center justify-between rounded border border-neutral-800 px-3 py-2">
               <div>
-                <p className="font-medium">{stream.name}</p>
+                <p className="font-medium">
+                  {stream.name}{" "}
+                  <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-xs font-normal text-neutral-400">
+                    {stream.mode === "simple" ? "Simple" : "Merged"}
+                  </span>
+                </p>
                 <p className="text-xs text-neutral-400">
                   {activeHostsSummary(stream.activeHosts)}
                   {isHosting && connectionStatus && connectionStatus.status !== "open" && (

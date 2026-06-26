@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
 import { AudioPlayback } from "../lib/audioPlayback";
 import { activeHostsSummary, connectionStatusLabel } from "../lib/format";
+import { startForegroundService, stopForegroundService } from "../lib/foregroundService";
 import { connectWithBackoff, type ConnectionStatus, type ReconnectingSocket } from "../lib/reconnectingSocket";
 import type { Session, StreamRecord } from "../lib/types";
 import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
@@ -98,6 +99,7 @@ export function ListenerPanel({ session }: { session: Session }) {
 
     socketRef.current = socket;
     playbackRef.current = playback;
+    void startForegroundService("listening");
     setListeningStreamId(streamId);
   }
 
@@ -106,6 +108,7 @@ export function ListenerPanel({ session }: { session: Session }) {
     socketRef.current = undefined;
     playbackRef.current?.stop();
     playbackRef.current = undefined;
+    void stopForegroundService();
     setListeningStreamId(undefined);
     setConnectionStatus(undefined);
   }

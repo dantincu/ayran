@@ -45,6 +45,11 @@ adb devices                              # confirm the device shows as "device",
 adb install --user 0 <path-to-apk>       # use -r instead of a fresh install to update in place
 ```
 
+Relative path to the apk:
+```
+mobile\src-tauri\gen\android\app\build\outputs\apk\universal\debug\app-universal-debug.apk
+```
+
 **Always pass `--user 0` explicitly.** Without it, a plain `adb install` can end up installing into *every* Android user profile on the device — including a Samsung "Dual Apps"/Dual Messenger profile if one exists (`adb shell pm list users` will show something like `UserInfo{95:DUAL_APP:...}` if so), which shows up as a confusing second "ghost" icon with a small badge in the app drawer. If that's already happened, removing it doesn't require reinstalling: `adb shell pm uninstall --user <id> io.ayran.lanstreamer.mobile` removes it from just that one profile.
 
 Toolchain note specific to this dev machine: if `tauri android build`/`dev` fails trying to invoke a broken Java install, the system's default Android Studio JBR can be missing core JRE files. Point `JAVA_HOME` at a working JDK for the command instead, e.g.:
@@ -97,6 +102,15 @@ Both the host and listener WebSocket connections (`desktop/`, `mobile/`) auto-re
   - The AES key itself is protected via an OS-native secure store (`api/src/secureStore.ts` dispatches by `process.platform`) before being written to `data/session-key.bin` — on Windows that's DPAPI (`secureStore.windows.ts`, shelling out to PowerShell's `[System.Security.Cryptography.ProtectedData]` rather than a native Node addon, so the API stays a single dependency-free `bundle.cjs`). This ties decryption to *this Windows user account on this machine* — copying both `data/` files to another machine or user doesn't let you decrypt them, unlike a plain key sitting unencrypted next to its ciphertext.
   - macOS/Linux aren't implemented yet — `secureStore.ts` throws a clear error naming the missing platform if you run the API there. Add `secureStore.darwin.ts` (Keychain, e.g. via the `security` CLI) or `secureStore.linux.ts` (libsecret, e.g. via `secret-tool`) following the same `protect`/`unprotect` shape as `secureStore.windows.ts`, then wire the case into `loadSecureStore()`.
 
+## Stream modes: merged vs simple
+
+Each stream is created as one of two modes (`StreamRecord.mode`, chosen at creation time in the "New stream" form, immutable after that):
+
+- **Merged** (the original/default behavior): any number of hosts can stream into it at once; `api/src/audio/mixer.ts` sums their frames on a 20ms tick.
+- **Simple**: exactly one host streams at a time, forwarded directly with no mixing tick at all (`forwardSimpleFrame` in `mixer.ts` runs synchronously off each incoming frame, not a `setInterval`) — lower latency and immune to the mixer-tick-timing class of issues merged streams can hit under host CPU contention. A second host starting up on the same simple stream immediately **supersedes** whichever one was streaming on it: the server sends the superseded host a `{"type":"superseded"}` text control message over its still-open host WebSocket and then closes it; that host's `HostPanel.tsx` (`desktop/`, `mobile/`) listens for this and stops itself with an explanatory error rather than silently going quiet. Simple streams still go through the same per-device volume cap (`forwardSimpleFrame` calls `getAccountSettings` exactly like the merged path) and the streaming device's own gain slider is unaffected (that's client-side, before either path).
+
+Deleting a stream (either mode) works the same way for both — any device authenticated to the owning Filen account can delete it, not just whoever created it (same account-scoped check as everything else).
+
 ## Volume safety: per-device limiter + per-device gain
 
 Two distinct, deliberately separate mechanisms:
@@ -118,6 +132,16 @@ Two upgrades from the original mono/linear-interpolation pipeline:
 - **Cubic (Catmull-Rom) resampling** replaces linear interpolation in `loopback.rs`'s native system-audio capture path (the only place this project does its own resampling — the browser's Web Audio API already resamples mic/test-tone input internally at high quality). Same O(1)-per-sample cost and no added latency (no look-ahead beyond the 1-sample-back/2-sample-forward neighbors already needed structurally), but meaningfully less aliasing/distortion than linear, especially for content with energy above a few kHz (i.e. music, not just voice). Verified with Rust unit tests (`cargo test --lib loopback`): the interpolation is exact at `t=0` and reproduces the original signal exactly (to float precision) when input and target sample rates match, which wouldn't be true if the math were wrong.
 
 `test-tone.wav` was regenerated as genuinely stereo (left: the original quiet/loud/quiet 440/523Hz pattern that drives the limiter test; right: the same envelope at half amplitude on different pitches, 330/392Hz) so it can also be used to audibly confirm L/R aren't collapsing to mono anywhere in the pipeline, not just to test the volume cap.
+
+## Background survival on Android (mobile)
+
+Android suspends or kills ordinary background app processes fairly aggressively (Doze, App Standby, per-app background execution limits) - hosting or listening would otherwise stop within seconds of turning the screen off or switching apps. `mobile/src-tauri/gen/android/app/src/main/java/io/ayran/lanstreamer/mobile/StreamingForegroundService.kt` is a native foreground service (the same mechanism music/calling apps use) that's started when hosting/listening begins and stopped when it ends:
+
+- Shows an ongoing notification ("Hosting an audio stream" / "Listening to an audio stream") - this is an Android platform requirement for any foreground service, not something this app can opt out of. Tapping it reopens the app.
+- Declares `foregroundServiceType="mediaPlayback|microphone"` in `AndroidManifest.xml` (required on Android 14+, matched to whichever role is actually active) and holds a partial wake lock for as long as it's running, so the CPU doesn't fully sleep and stall the WebView's audio/WebSocket work.
+- `mobile/src-tauri/src/foreground_service.rs` is the Rust↔Kotlin bridge: two Tauri commands (`start_foreground_service`/`stop_foreground_service`) call the service's static `start`/`stop` methods directly via JNI (using the `jni`/`ndk-context` crate versions already pinned by Tauri's own Android support - see the comment in `Cargo.toml`), rather than a full Tauri plugin for what's otherwise two one-line calls. Wired into `HostPanel.tsx`/`ListenerPanel.tsx` via `mobile/src/lib/foregroundService.ts`.
+- `POST_NOTIFICATIONS` (required at runtime on Android 13+) is requested once from `MainActivity.onCreate` - a best-effort ask; if denied, the foreground service still keeps running and exempts the app from background limits, Android just can't show the notification.
+- Desktop-only feature: `desktop/`'s equivalent files don't exist - desktop apps aren't subject to the same OS-level background suspension Android applies.
 
 ## Client-side session storage (desktop/mobile)
 

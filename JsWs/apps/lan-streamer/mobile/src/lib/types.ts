@@ -11,9 +11,18 @@ export interface ActiveHost {
   audioSource: HostAudioSource;
 }
 
+/**
+ * "merged": any number of hosts can stream into it at once, mixed together.
+ * "simple": exactly one host streams at a time, forwarded directly (no
+ * mixing) - a second host starting up immediately supersedes whichever one
+ * was previously streaming on it.
+ */
+export type StreamMode = "merged" | "simple";
+
 export interface StreamRecord {
   id: string;
   name: string;
+  mode: StreamMode;
   ownerAccountId: number;
   createdAt: number;
   activeHosts: ActiveHost[];

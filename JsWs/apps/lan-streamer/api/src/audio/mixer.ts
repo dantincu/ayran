@@ -49,13 +49,6 @@ interface StreamMixState {
   // corruption, ws.send() provably does copy synchronously - so reusing it
   // across ticks too is just as safe as reusing the accumulator.
   output: Buffer;
-  // Diagnostics: counts actual ws.send() calls to compare against what the
-  // listener device reports receiving over the same kind of window. If
-  // these counts match the expected ~50/sec but the listener still sees
-  // fewer, the loss is downstream of this process (network transit) rather
-  // than anything in the mixer/host pipeline.
-  sendCount: number;
-  sendWindowStart: number;
 }
 
 const streams = new Map<string, StreamMixState>();
@@ -71,8 +64,6 @@ function ensureStream(streamId: string): StreamMixState {
     lastTickAt: Date.now(),
     accumulator: new Int32Array(FRAME_SAMPLES * CHANNELS),
     output: Buffer.alloc(BYTES_PER_FRAME),
-    sendCount: 0,
-    sendWindowStart: Date.now(),
   };
   streams.set(streamId, state);
   return state;
@@ -114,6 +105,68 @@ function accumulateLimited(frame: Buffer, ceilingAmplitude: number, conn: HostCo
     accumulator[i * CHANNELS] += Math.round(left * conn.limiterGain);
     accumulator[i * CHANNELS + 1] += Math.round(right * conn.limiterGain);
   }
+}
+
+interface SimpleStreamState {
+  listeners: Set<WebSocket>;
+  /** same envelope-follower limiter as accumulateLimited, but writing
+   * directly into `output` instead of summing into an accumulator - a
+   * simple stream only ever has one active source, so there's nothing to
+   * mix and no clamping risk from multiple sources overlapping. */
+  limiterGain: number;
+  output: Buffer;
+}
+
+const simpleStreams = new Map<string, SimpleStreamState>();
+
+function ensureSimpleStream(streamId: string): SimpleStreamState {
+  let state = simpleStreams.get(streamId);
+  if (state) return state;
+  state = { listeners: new Set(), limiterGain: 1, output: Buffer.alloc(BYTES_PER_FRAME) };
+  simpleStreams.set(streamId, state);
+  return state;
+}
+
+function maybeTeardownSimple(streamId: string): void {
+  const state = simpleStreams.get(streamId);
+  if (state && state.listeners.size === 0) simpleStreams.delete(streamId);
+}
+
+/** Forwards one frame from the currently-active host straight to a simple
+ * stream's listeners, applying the same account-wide volume cap as merged
+ * streams but with no mixing/buffering tick involved - whatever the host
+ * sends goes out immediately. */
+export function forwardSimpleFrame(streamId: string, accountId: number, frame: Buffer): void {
+  const state = simpleStreams.get(streamId);
+  if (!state || state.listeners.size === 0) return;
+
+  const { maxDeviceAmplitude } = getAccountSettings(accountId);
+  const ceiling = maxDeviceAmplitude * 32767;
+  for (let i = 0; i < FRAME_SAMPLES; i++) {
+    const left = frame.readInt16LE(i * CHANNELS * 2);
+    const right = frame.readInt16LE((i * CHANNELS + 1) * 2);
+    const magnitude = Math.max(Math.abs(left), Math.abs(right));
+    const targetGain = magnitude > ceiling ? ceiling / magnitude : 1;
+    const coeff = targetGain < state.limiterGain ? LIMITER_ATTACK_COEFF : LIMITER_RELEASE_COEFF;
+    state.limiterGain = state.limiterGain * coeff + targetGain * (1 - coeff);
+    state.output.writeInt16LE(Math.round(left * state.limiterGain), i * CHANNELS * 2);
+    state.output.writeInt16LE(Math.round(right * state.limiterGain), (i * CHANNELS + 1) * 2);
+  }
+
+  for (const ws of state.listeners) {
+    if (ws.readyState === ws.OPEN) ws.send(state.output);
+  }
+}
+
+export function registerSimpleListener(streamId: string, ws: WebSocket): void {
+  ensureSimpleStream(streamId).listeners.add(ws);
+}
+
+export function unregisterSimpleListener(streamId: string, ws: WebSocket): void {
+  const state = simpleStreams.get(streamId);
+  if (!state) return;
+  state.listeners.delete(ws);
+  maybeTeardownSimple(streamId);
 }
 
 function tick(streamId: string): void {
@@ -164,20 +217,7 @@ function tick(streamId: string): void {
   }
 
   for (const ws of state.listeners) {
-    if (ws.readyState === ws.OPEN) {
-      ws.send(mixed);
-      state.sendCount += 1;
-    }
-  }
-
-  const sendWindowElapsed = now - state.sendWindowStart;
-  if (sendWindowElapsed >= 2000) {
-    const expectedSends = Math.round((sendWindowElapsed / TICK_MS) * state.listeners.size);
-    console.log(
-      `[mixer] stream ${streamId}: sent ${state.sendCount} frames in ${sendWindowElapsed}ms across ${state.listeners.size} listener(s) (expected ~${expectedSends})`,
-    );
-    state.sendCount = 0;
-    state.sendWindowStart = now;
+    if (ws.readyState === ws.OPEN) ws.send(mixed);
   }
 }
 

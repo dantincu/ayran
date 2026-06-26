@@ -1,4 +1,4 @@
-import type { AccountSettings, FilenAccount, HostAudioSource, StreamRecord } from "./types";
+import type { AccountSettings, FilenAccount, HostAudioSource, StreamMode, StreamRecord } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -50,8 +50,8 @@ export function listStreams(apiBaseUrl: string, token: string): Promise<StreamRe
   return request(apiBaseUrl, "/streams", { token });
 }
 
-export function createStream(apiBaseUrl: string, token: string, name: string): Promise<StreamRecord> {
-  return request(apiBaseUrl, "/streams", { method: "POST", token, body: JSON.stringify({ name }) });
+export function createStream(apiBaseUrl: string, token: string, name: string, mode: StreamMode): Promise<StreamRecord> {
+  return request(apiBaseUrl, "/streams", { method: "POST", token, body: JSON.stringify({ name, mode }) });
 }
 
 export function deleteStream(apiBaseUrl: string, token: string, id: string): Promise<void> {

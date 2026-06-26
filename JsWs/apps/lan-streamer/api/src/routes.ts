@@ -42,12 +42,16 @@ router.get("/streams", requireAuth, (req: AuthedRequest, res) => {
 });
 
 router.post("/streams", requireAuth, (req: AuthedRequest, res) => {
-  const { name } = req.body ?? {};
+  const { name, mode } = req.body ?? {};
   if (typeof name !== "string" || name.trim().length === 0) {
     res.status(400).json({ error: "name is required" });
     return;
   }
-  res.status(201).json(createStream(name.trim(), req.account!.userId));
+  if (mode !== "merged" && mode !== "simple") {
+    res.status(400).json({ error: "mode must be 'merged' or 'simple'" });
+    return;
+  }
+  res.status(201).json(createStream(name.trim(), req.account!.userId, mode));
 });
 
 router.delete("/streams/:id", requireAuth, (req: AuthedRequest, res) => {

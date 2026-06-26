@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { DEFAULT_MAX_DEVICE_AMPLITUDE } from "./config.js";
 import { secureStore } from "./secureStore.js";
-import type { AccountSettings, HostAudioSource, Session, StreamRecord } from "./types.js";
+import type { AccountSettings, HostAudioSource, Session, StreamMode, StreamRecord } from "./types.js";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const STREAMS_FILE = path.join(DATA_DIR, "streams.json");
@@ -42,6 +42,9 @@ export async function loadStreams(): Promise<void> {
       // also protects against loading data written under an older schema).
       record.activeHosts = [];
       record.pausedHostAccountIds = [];
+      // mode didn't exist before simple streams were added - anything
+      // persisted under that older schema was always mixing/merging.
+      record.mode ??= "merged";
       streams.set(record.id, record);
     }
   } catch (err) {
@@ -57,10 +60,11 @@ export function getStream(id: string): StreamRecord | undefined {
   return streams.get(id);
 }
 
-export function createStream(name: string, ownerAccountId: number): StreamRecord {
+export function createStream(name: string, ownerAccountId: number, mode: StreamMode): StreamRecord {
   const record: StreamRecord = {
     id: randomUUID(),
     name,
+    mode,
     ownerAccountId,
     createdAt: Date.now(),
     activeHosts: [],
