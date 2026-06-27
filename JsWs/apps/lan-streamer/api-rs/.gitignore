@@ -1,0 +1,4 @@
+data
+certs
+target/debug
+target/release
