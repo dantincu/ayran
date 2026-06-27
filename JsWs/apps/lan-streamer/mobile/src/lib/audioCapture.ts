@@ -6,26 +6,7 @@ export type AudioSource = "microphone" | "system" | "test-tone";
 
 const TEST_TONE_URL = "/test-tone.wav";
 
-// Bundled test signal for verifying the pipeline (and the API's account-wide
-// limiter) without needing a microphone, speakers, or a closed audio loop:
-// quiet -> sudden loud -> quiet, looped (see public/test-tone.wav). Decodes
-// once into an AudioBuffer and loops it through a MediaStreamDestination so
-// it can flow through the exact same AudioCapture path as a real device.
-async function captureTestToneStream(): Promise<MediaStream> {
-  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-  const response = await fetch(TEST_TONE_URL);
-  const arrayBuffer = await response.arrayBuffer();
-  const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
-  const source = ctx.createBufferSource();
-  source.buffer = audioBuffer;
-  source.loop = true;
-  const destination = ctx.createMediaStreamDestination();
-  source.connect(destination);
-  source.start();
-  return destination.stream;
-}
-
-export async function captureStream(source: AudioSource): Promise<MediaStream> {
+export async function captureStream(source: AudioSource): Promise<MediaStream | "test-tone"> {
   if (source === "microphone") {
     return navigator.mediaDevices.getUserMedia({
       // Most mic hardware is mono; requesting stereo as a preference (not a
@@ -37,7 +18,9 @@ export async function captureStream(source: AudioSource): Promise<MediaStream> {
   }
 
   if (source === "test-tone") {
-    return captureTestToneStream();
+    // No MediaStream here at all (see AudioCapture below for why) - this is
+    // just a marker the caller passes straight through to AudioCapture.
+    return "test-tone";
   }
 
   // System/speaker loopback: capture audio while sharing the screen.
@@ -52,16 +35,16 @@ export async function captureStream(source: AudioSource): Promise<MediaStream> {
 
 export class AudioCapture {
   private ctx: AudioContext;
-  private sourceNode: MediaStreamAudioSourceNode;
+  private sourceNode: MediaStreamAudioSourceNode | undefined;
+  private testToneSource: AudioBufferSourceNode | undefined;
   private gainNode: GainNode;
   private processor: ScriptProcessorNode;
   private pending: number[] = [];
   private onFrame: (frame: Int16Array) => void;
 
-  constructor(stream: MediaStream, onFrame: (frame: Int16Array) => void, initialGain = 1) {
+  constructor(stream: MediaStream | "test-tone", onFrame: (frame: Int16Array) => void, initialGain = 1) {
     this.onFrame = onFrame;
     this.ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-    this.sourceNode = this.ctx.createMediaStreamSource(stream);
     // Lets the device lower (never raise) its own contribution before
     // sending - independent of the API's account-wide safety cap, which
     // only ever pulls a stream *down* if it's too loud, never boosts it.
@@ -74,7 +57,6 @@ export class AudioCapture {
     // on how many channels the source actually has.
     this.processor = this.ctx.createScriptProcessor(1024, CHANNELS, CHANNELS);
     this.processor.onaudioprocess = (event) => this.handleAudioProcess(event);
-    this.sourceNode.connect(this.gainNode);
     this.gainNode.connect(this.processor);
     // ScriptProcessorNode only fires onaudioprocess while connected to a
     // destination; route through a silent gain node so capture doesn't echo.
@@ -82,6 +64,34 @@ export class AudioCapture {
     silentSink.gain.value = 0;
     this.processor.connect(silentSink);
     silentSink.connect(this.ctx.destination);
+
+    if (stream === "test-tone") {
+      // Decoded and looped directly in *this* capture context, not a
+      // separate one bridged via MediaStreamDestination/Source - two
+      // independent AudioContexts each have their own real-time clock, and
+      // bridging them through an actual MediaStream lets those clocks drift
+      // against each other (confirmed: the raw test-tone.wav file itself
+      // plays back perfectly cleanly, so the distortion was being
+      // introduced by this capture path, not present in the source audio).
+      // Decoding into the same context that will go on to read it back
+      // eliminates that drift entirely - it's a single clock end to end.
+      void this.connectTestTone();
+    } else {
+      this.sourceNode = this.ctx.createMediaStreamSource(stream);
+      this.sourceNode.connect(this.gainNode);
+    }
+  }
+
+  private async connectTestTone(): Promise<void> {
+    const response = await fetch(TEST_TONE_URL);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await this.ctx.decodeAudioData(arrayBuffer);
+    const source = this.ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.loop = true;
+    source.connect(this.gainNode);
+    source.start();
+    this.testToneSource = source;
   }
 
   setGain(value: number): void {
@@ -112,7 +122,8 @@ export class AudioCapture {
 
   stop(): void {
     this.processor.disconnect();
-    this.sourceNode.disconnect();
+    this.sourceNode?.disconnect();
+    this.testToneSource?.stop();
     void this.ctx.close();
   }
 }

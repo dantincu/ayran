@@ -34,6 +34,16 @@ const STEADY_TARGET_SECONDS = 0.2;
 // 1%, same order of magnitude as NTP/WebRTC-style corrections), not as a
 // disguise for actual loss.
 const MAX_RATE_ADJUST = 0.03;
+// The buffer level naturally oscillates by a few percent around the target
+// under perfectly healthy conditions (confirmed: ~190-210ms around a 200ms
+// target, with 0% measured frame loss) - without a deadband, the
+// correction below reacts to *every* one of those normal wobbles, applying
+// a small but never-zero, continuously-varying rate change. That's audible
+// as a constant pitch wobble, especially on a sustained tone, even though
+// nothing is actually wrong. Deviations within this band are just jitter,
+// not drift, and get no correction at all; only larger, sustained
+// deviations beyond it engage the (still small) MAX_RATE_ADJUST.
+const ERROR_DEADBAND = 0.15;
 
 class PlaybackProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -129,7 +139,10 @@ class PlaybackProcessor extends AudioWorkletProcessor {
     // Recomputed once per render quantum (every ~2.7ms), not per-sample -
     // the correction only needs to track slow drift, not react instantly.
     const error = (this.availableFrames - this.steadyTargetFrames) / this.steadyTargetFrames;
-    const rate = 1 + Math.max(-MAX_RATE_ADJUST, Math.min(MAX_RATE_ADJUST, error * 0.5));
+    let deadbandedError = 0;
+    if (error > ERROR_DEADBAND) deadbandedError = error - ERROR_DEADBAND;
+    else if (error < -ERROR_DEADBAND) deadbandedError = error + ERROR_DEADBAND;
+    const rate = 1 + Math.max(-MAX_RATE_ADJUST, Math.min(MAX_RATE_ADJUST, deadbandedError * 0.5));
 
     for (let i = 0; i < frames; i++) {
       if (this.availableFrames < 2) {

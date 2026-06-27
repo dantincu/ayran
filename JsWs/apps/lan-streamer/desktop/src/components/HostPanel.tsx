@@ -121,7 +121,10 @@ export function HostPanel({ session }: { session: Session }) {
       } else {
         usingNativeLoopbackRef.current = false;
         const mediaStream = await captureStream(audioSource);
-        mediaStreamRef.current = mediaStream;
+        // "test-tone" is just a marker passed straight through to
+        // AudioCapture (which generates that audio internally) - there's no
+        // real MediaStream/tracks to stop for it.
+        mediaStreamRef.current = mediaStream === "test-tone" ? undefined : mediaStream;
         captureRef.current = new AudioCapture(
           mediaStream,
           (frame) => {

@@ -3,6 +3,7 @@
 See [CLAUDE.md](./CLAUDE.md) for the product spec. This is a v1 end-to-end skeleton:
 
 - `api/` — Node.js + TypeScript API (Express + `ws`). HTTPS-only; serves whatever cert/key is at `certs/dev-cert.pem`/`dev-key.pem` (auto-generates a self-signed one there if missing, but the deployed instance uses a real Let's Encrypt cert — see below). Filen.io login via `@filen/sdk` issues an opaque session token; streams are persisted to `api/data/streams.json`, scoped per Filen account. Multi-host audio is mixed by summing 20ms 48kHz mono PCM frames and rebroadcast to listeners over WebSocket.
+- `api-rs/` — Rust reimplementation of `api/` (axum + tokio), full feature parity, byte-compatible session encryption format — see "Deploying the API (Rust)" below. This is the actual live deployment now.
 - `desktop/` — Tauri 2 + React 19 desktop client (`io.ayran.lanstreamer.desktop`, dev port 1420). Used as either a streaming host (microphone, or system/speaker-loopback capture via a native `cpal` Rust backend — see below) or a listener (one merged stream at a time).
 - `mobile/` — Same feature set as `desktop/`, packaged for Android/iOS (`io.ayran.lanstreamer.mobile`, dev port 1421). Source is a duplicate of `desktop/`'s, not shared, matching the pattern used in the other Ayran Tauri apps. System-audio loopback hosting is desktop-only (see below) — mobile only offers microphone.
 
@@ -28,7 +29,28 @@ Notes:
 - Copy just `api/dist/bundle.cjs` (plus a `package.json` isn't even needed) to wherever you're running it; `certs/` and `data/streams.json` are created relative to the process's working directory on first run, so launch it from a consistent directory you want that state to live in.
 - This is **not** wired up as an OS service (no systemd unit / NSSM / launchd config) — it's just a plain Node process you start manually or via whatever process manager you prefer. Say if you want one of those set up.
 
+## Deploying the API (Rust)
+
+`api-rs/` is a from-scratch Rust reimplementation of `api/` (axum + tokio, full feature parity — Filen auth, sessions, streams CRUD, account settings, and all three mixer modes), built to compare against possible Node-side causes for the audio timing issues elsewhere in this doc (it wasn't the cause - the same issues reproduce identically under both, see "Pitch artifact root causes" below). It's now the actual live deployment.
+
+```
+cd api-rs && cargo build --release
+```
+
+Produces a single self-contained binary at `api-rs/target/release/lan-streamer-api.exe` — no `node_modules`-equivalent runtime dependency, just the one file. Copy it (plus `certs/dev-cert.pem`/`dev-key.pem` and an empty `data/` dir alongside it) to wherever you're running it from - same working-directory-relative convention as the Node version, just with its own separate `certs/`/`data/` (not shared with the Node deployment's). Deployed at `C:\Users\victo\AppData\Roaming\Ayran\Apps\Bin\lan-streamer\api-rs\bins\lan-streamer-api.exe`, run from the `api-rs/` parent directory so `./certs` and `./data` resolve correctly.
+
+**Session encryption is byte-compatible with the Node version's `data/sessions.enc` format** (AES-256-GCM, `iv(12) + authTag(16) + ciphertext` - RustCrypto's AEAD convention appends the tag at the end instead, so `store.rs` explicitly reorders bytes on the way in and out to match Node's layout) - verified via a cross-language round trip (encrypt in Node, decrypt in Rust). The DPAPI-protected session key file is identical either way (same PowerShell-shelling approach). This means either deployment can read the other's `data/sessions.enc` if pointed at the same directory, though the current deployment deliberately uses separate `data/` dirs.
+
+**It does not generate its own TLS certificate** (unlike the Node version's self-signed fallback) - `tls.rs` just loads whatever real cert is already at `certs/dev-cert.pem`/`dev-key.pem` and errors clearly if missing, since a self-signed cert was never going to be used here anyway (see "TLS certificate" below).
+
+Deploy/manage scripts, mirroring the Node ones, live in `f:\T\turmerik\Scripts\Deploy\For-Cmder\ayran-lan-streamer\api-rs\`:
+- `run-ayran-lan-streamer.bat` — runs `bins\lan-streamer-api.exe` at High OS priority (same reasoning as the Node version's run script).
+- `stop-ayran-lan-streamer.bat` — kills whatever's listening on port 9443 (works for either deployment, since only one ever runs at a time).
+- `renew-ayran-lan-streamer-cert.sh`/`.bat` — installs the renewed cert to `api-rs/certs/` specifically and restarts `lan-streamer-api.exe` (not `node`). The "Ayran LAN Streamer - Cert Renewal" scheduled task points here now, since `api-rs` is the live deployment.
+
 ## Deploying to Android
+
+Debug build (Gradle auto-signs with a generated debug key — fine for testing, not for distributing):
 
 ```
 cd mobile
@@ -36,18 +58,28 @@ npm install
 npm run tauri android build -- --target aarch64 --debug
 ```
 
-Produces an installable universal APK at `mobile/src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk` (and an `.aab` alongside it, for Play Store-style distribution — not used here). `--target aarch64` matches the vast majority of real phones; drop it to build all ABIs if you need to support x86 emulators too (slower build).
+```
+mobile\src-tauri\gen\android\app\build\outputs\apk\universal\debug\app-universal-debug.apk
+```
+
+Release build (drop `--debug`) — requires the signing config below to already exist, otherwise Gradle produces an unsigned APK that Android refuses to install:
+
+```
+cd mobile
+npm run tauri android build -- --target aarch64
+```
+
+```
+mobile\src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release.apk
+```
+
+`--target aarch64` matches the vast majority of real phones; drop it to build all ABIs if you need to support x86 emulators too (slower build).
 
 Install over USB with the device's "USB debugging" developer option enabled:
 
 ```
 adb devices                              # confirm the device shows as "device", not "unauthorized"
-adb install --user 0 <path-to-apk>       # use -r instead of a fresh install to update in place
-```
-
-Relative path to the apk:
-```
-mobile\src-tauri\gen\android\app\build\outputs\apk\universal\debug\app-universal-debug.apk
+adb install -r --user 0 <path-to-apk>
 ```
 
 **Always pass `--user 0` explicitly.** Without it, a plain `adb install` can end up installing into *every* Android user profile on the device — including a Samsung "Dual Apps"/Dual Messenger profile if one exists (`adb shell pm list users` will show something like `UserInfo{95:DUAL_APP:...}` if so), which shows up as a confusing second "ghost" icon with a small badge in the app drawer. If that's already happened, removing it doesn't require reinstalling: `adb shell pm uninstall --user <id> io.ayran.lanstreamer.mobile` removes it from just that one profile.
@@ -59,6 +91,29 @@ JAVA_HOME="C:\Program Files\Android\Android Studio1\jbr" npm run tauri android b
 ```
 
 (Note the `Android Studio1` vs `Android Studio` — there were two installs on this machine, only one with a complete JBR.)
+
+### Release signing
+
+Release builds need a real signing config — unlike debug builds, Gradle won't auto-sign them, and an unsigned APK can't be installed at all. The keystore itself lives **outside the repo** (same reasoning as the API's TLS cert/key — see below): `C:\Users\victo\AppData\Roaming\Ayran\Keystores\ayran-lan-streamer-mobile.jks`, generated once via:
+
+```
+keytool -genkeypair -v -keystore <path>.jks -keyalg RSA -keysize 2048 -validity 10000 -alias ayran-lan-streamer-mobile
+```
+
+`mobile/src-tauri/gen/android/keystore.properties` (gitignored — see `gen/android/.gitignore`) points `build.gradle.kts`'s `release` signing config at it:
+
+```properties
+storeFile=C:/Users/victo/AppData/Roaming/Ayran/Keystores/ayran-lan-streamer-mobile.jks
+storePassword=...
+keyAlias=ayran-lan-streamer-mobile
+keyPassword=...
+```
+
+If that file is missing, `build.gradle.kts` just skips applying a signing config to the `release` build type (checked via `keystoreProperties.containsKey("storeFile")`), so a release build still runs but produces an unsigned, uninstallable APK rather than failing outright. Verify a built APK is actually signed correctly with `apksigner` (in `<Android SDK>/build-tools/<version>/`):
+
+```
+apksigner verify --print-certs <path-to-apk>
+```
 
 ## TLS certificate: real cert via DuckDNS + Let's Encrypt (DNS-01)
 
@@ -108,7 +163,14 @@ Each stream is created as one of three modes (`StreamRecord.mode`, chosen at cre
 
 - **Merged** (the original/default behavior): any number of hosts can stream into it at once; `api/src/audio/mixer.ts` sums their frames on a 20ms tick.
 - **Simple**: exactly one host streams at a time, forwarded directly with no mixing tick at all (`forwardSimpleFrame` in `mixer.ts` runs synchronously off each incoming frame, not a `setInterval`) — lower latency and immune to the mixer-tick-timing class of issues merged streams can hit under host CPU contention. Still goes through the same per-device volume cap (`forwardSimpleFrame` calls `getAccountSettings` exactly like the merged path).
-- **Raw**: same single-active-host/superseding behavior as Simple, but completely unprocessed end to end - `forwardRawFrame` skips the limiter and volume cap server-side, **and** `HostPanel.tsx` (`desktop/`, `mobile/`) locks the live capture gain at 1 instead of applying "This device's volume" (that slider is disabled with an explanatory tooltip while hosting a raw stream). Added because a "slightly lowered pitch" was still noticeable even on Simple streams; turned out that artifact is unrelated to either volume control (it's the listener-side adaptive playback rate correction compensating for real WiFi packet loss, a separate unresolved issue - see git history around `playback-worklet.js` for the investigation), so Raw doesn't actually fix the pitch issue, but it is a useful mode in its own right for anyone who wants bit-exact passthrough with zero processing on either end.
+- **Raw**: same single-active-host/superseding behavior as Simple, but completely unprocessed end to end - `forwardRawFrame` skips the limiter and volume cap server-side, **and** `HostPanel.tsx` (`desktop/`, `mobile/`) locks the live capture gain at 1 instead of applying "This device's volume" (that slider is disabled with an explanatory tooltip while hosting a raw stream). Added because a "slightly lowered pitch" was still noticeable even on Simple streams; turned out that artifact was unrelated to either volume control - see "Pitch artifact root causes" below for what it actually was. Still a useful mode in its own right for anyone who wants bit-exact passthrough with zero processing on either end.
+
+### Pitch artifact root causes (resolved)
+
+The "slightly lowered pitch" reported even on Simple/Raw streams, and even when hosting and listening on the *same* PC (ruling out network/WiFi entirely), turned out to be two separate, real bugs - found by trusting the diagnostics over assumptions: network/buffer diagnostics showed a perfectly healthy 0%-loss, stable ~200ms buffer the whole time, and the raw `test-tone.wav` file played back cleanly outside the app, which together ruled out everything network- and content-related and pointed at the capture and playback code itself.
+
+1. **Test-tone capture had its own clock-drift bug**: `captureTestToneStream()` (`audioCapture.ts`, `desktop/`+`mobile/`) used to decode/loop the tone in its own `AudioContext`, then bridge it into `AudioCapture`'s separate context via a real `MediaStreamDestination`/`MediaStreamSource`. Two independent contexts each have their own real-time clock, and bridging them through an actual `MediaStream` let those clocks drift against each other, corrupting the captured samples before they ever reached the network - explaining why audio sounded wrong despite every network-side diagnostic being clean. Fixed by decoding and looping the tone directly inside `AudioCapture`'s own single context (`connectTestTone()`) - one clock end to end, no bridge. This only affected the `test-tone` source; microphone/system capture were never affected by this specific bug.
+2. **The listener-side adaptive rate correction had no deadband** (`playback-worklet.js`, `desktop/`+`mobile/`): the buffer level naturally oscillates a few percent around its target under perfectly healthy conditions (confirmed ~190-210ms around a 200ms target, with 0% measured loss) - without a deadband, the correction reacted to *every* one of those normal wobbles, applying a small but never-zero, continuously-varying playback rate change. That's audible as a constant pitch wobble, especially on a sustained tone, even with nothing actually wrong. Fixed by adding `ERROR_DEADBAND` (15%): deviations within the band get no correction at all (rate stays exactly 1.0); only larger, sustained deviations beyond it still engage the (still small, ±3%) `MAX_RATE_ADJUST`.
 
 Simple and Raw share the same **single active host with superseding** behavior: a second host starting up immediately supersedes whichever one was streaming before it - the server sends the superseded host a `{"type":"superseded"}` text control message over its still-open host WebSocket and then closes it; that host's `HostPanel.tsx` listens for this and stops itself with an explanatory error rather than silently going quiet. `attachExclusiveHost` in `ws-handlers.ts` implements this once, shared by both modes (they only differ in which `forward` function gets called per frame).
 
@@ -135,6 +197,8 @@ Two upgrades from the original mono/linear-interpolation pipeline:
 - **Cubic (Catmull-Rom) resampling** replaces linear interpolation in `loopback.rs`'s native system-audio capture path (the only place this project does its own resampling — the browser's Web Audio API already resamples mic/test-tone input internally at high quality). Same O(1)-per-sample cost and no added latency (no look-ahead beyond the 1-sample-back/2-sample-forward neighbors already needed structurally), but meaningfully less aliasing/distortion than linear, especially for content with energy above a few kHz (i.e. music, not just voice). Verified with Rust unit tests (`cargo test --lib loopback`): the interpolation is exact at `t=0` and reproduces the original signal exactly (to float precision) when input and target sample rates match, which wouldn't be true if the math were wrong.
 
 `test-tone.wav` was regenerated as genuinely stereo (left: the original quiet/loud/quiet 440/523Hz pattern that drives the limiter test; right: the same envelope at half amplitude on different pitches, 330/392Hz) so it can also be used to audibly confirm L/R aren't collapsing to mono anywhere in the pipeline, not just to test the volume cap.
+
+**Test-tone capture used to introduce its own pitch distortion**, independent of the network/buffer issues elsewhere in this doc - confirmed by the network-side diagnostics showing a perfectly healthy buffer (0% loss, stable ~200ms level) while the audio was still audibly wrong, and by the raw `.wav` file playing back cleanly outside the app. The cause: `captureTestToneStream()` used to decode/loop the file in its *own* `AudioContext`, bridged into `AudioCapture`'s separate context via a real `MediaStreamDestination`/`MediaStreamSource` - two independent contexts each have their own real-time clock, and bridging them through an actual `MediaStream` let those clocks drift against each other, corrupting the captured samples before they ever reached the network. Fixed by decoding and looping the tone directly inside `AudioCapture`'s own single context (`connectTestTone()` in `audioCapture.ts`) - one clock end to end, no bridge.
 
 ## Background survival on Android (mobile)
 

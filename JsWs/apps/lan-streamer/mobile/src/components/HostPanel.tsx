@@ -115,7 +115,10 @@ export function HostPanel({ session }: { session: Session }) {
       // captureStream() succeeding is what proves the mic permission (if
       // this source needs it) has already been granted.
       const mediaStream = await captureStream(audioSource);
-      mediaStreamRef.current = mediaStream;
+      // "test-tone" is just a marker passed straight through to
+      // AudioCapture (which generates that audio internally) - there's no
+      // real MediaStream/tracks to stop for it.
+      mediaStreamRef.current = mediaStream === "test-tone" ? undefined : mediaStream;
       void startForegroundService(audioSource === "microphone" ? "hosting-microphone" : "hosting-test-tone");
       captureRef.current = new AudioCapture(
         mediaStream,
