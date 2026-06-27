@@ -23,10 +23,14 @@ export interface ActiveHost {
 /**
  * "merged": any number of hosts can stream into it at once, mixed together.
  * "simple": exactly one host streams at a time, forwarded directly (no
- * mixing) - a second host starting up immediately supersedes whichever one
- * was previously streaming on it.
+ * mixing, but still subject to the account's volume cap) - a second host
+ * starting up immediately supersedes whichever one was previously streaming
+ * on it.
+ * "raw": same single-active-host/superseding behavior as "simple", but
+ * completely unprocessed - no volume cap, no limiter, bytes forwarded
+ * exactly as received.
  */
-export type StreamMode = "merged" | "simple";
+export type StreamMode = "merged" | "simple" | "raw";
 
 export interface StreamRecord {
   id: string;

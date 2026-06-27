@@ -169,6 +169,47 @@ export function unregisterSimpleListener(streamId: string, ws: WebSocket): void 
   maybeTeardownSimple(streamId);
 }
 
+interface RawStreamState {
+  listeners: Set<WebSocket>;
+}
+
+const rawStreams = new Map<string, RawStreamState>();
+
+function ensureRawStream(streamId: string): RawStreamState {
+  let state = rawStreams.get(streamId);
+  if (state) return state;
+  state = { listeners: new Set() };
+  rawStreams.set(streamId, state);
+  return state;
+}
+
+function maybeTeardownRaw(streamId: string): void {
+  const state = rawStreams.get(streamId);
+  if (state && state.listeners.size === 0) rawStreams.delete(streamId);
+}
+
+/** Forwards a frame completely unprocessed - no volume cap, no limiter, not
+ * even a buffer copy. For anyone who wants bit-exact passthrough with none
+ * of the safety processing the other two modes apply. */
+export function forwardRawFrame(streamId: string, frame: Buffer): void {
+  const state = rawStreams.get(streamId);
+  if (!state || state.listeners.size === 0) return;
+  for (const ws of state.listeners) {
+    if (ws.readyState === ws.OPEN) ws.send(frame);
+  }
+}
+
+export function registerRawListener(streamId: string, ws: WebSocket): void {
+  ensureRawStream(streamId).listeners.add(ws);
+}
+
+export function unregisterRawListener(streamId: string, ws: WebSocket): void {
+  const state = rawStreams.get(streamId);
+  if (!state) return;
+  state.listeners.delete(ws);
+  maybeTeardownRaw(streamId);
+}
+
 function tick(streamId: string): void {
   const state = streams.get(streamId);
   if (!state) return;

@@ -10,6 +10,11 @@ import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
 const REFRESH_INTERVAL_MS = 4000;
 const EXPECTED_FRAME_INTERVAL_MS = 20;
 
+interface MultiListenSession {
+  socket: ReconnectingSocket;
+  playback: AudioPlayback;
+}
+
 export function ListenerPanel({ session }: { session: Session }) {
   const [streams, setStreams] = useState<StreamRecord[]>([]);
   const [listeningStreamId, setListeningStreamId] = useState<string>();
@@ -18,6 +23,22 @@ export function ListenerPanel({ session }: { session: Session }) {
 
   const socketRef = useRef<ReconnectingSocket | undefined>(undefined);
   const playbackRef = useRef<AudioPlayback | undefined>(undefined);
+
+  // Multi-listen ("mix locally") mode is a deliberately separate mechanism
+  // from the single-stream one above, only ever touched when the checkbox
+  // is checked - the existing single-stream state/functions are untouched
+  // so that unchecked behavior is exactly what it always was. "Mixing" here
+  // just means playing multiple independent streams at once, each through
+  // its own AudioPlayback/AudioContext - the OS/Web Audio output naturally
+  // sums everything routed to the same audio device, so no extra PCM-level
+  // mixing code is needed to get the audible result of multiple streams
+  // playing together.
+  const [multiListenEnabled, setMultiListenEnabled] = useState(false);
+  const [multiListeningIds, setMultiListeningIds] = useState<Set<string>>(new Set());
+  const [multiConnectionStatus, setMultiConnectionStatus] = useState<Map<string, { status: ConnectionStatus; attempt: number }>>(
+    new Map(),
+  );
+  const multiSessionsRef = useRef<Map<string, MultiListenSession>>(new Map());
 
   async function refresh() {
     try {
@@ -33,6 +54,7 @@ export function ListenerPanel({ session }: { session: Session }) {
     return () => {
       clearInterval(interval);
       stopListening();
+      stopAllMultiListening();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -113,14 +135,101 @@ export function ListenerPanel({ session }: { session: Session }) {
     setConnectionStatus(undefined);
   }
 
+  function startMultiListening(streamId: string) {
+    if (multiSessionsRef.current.has(streamId)) return;
+
+    const playback = new AudioPlayback();
+    const socket = connectWithBackoff(() => api.wsUrl(session.apiBaseUrl, "listen", streamId, session.token), {
+      onMessage: (event) => playback.enqueueFrame(event.data as ArrayBuffer),
+      onStatusChange: (status, attempt) => {
+        setMultiConnectionStatus((prev) => new Map(prev).set(streamId, { status, attempt }));
+      },
+    });
+
+    const wasEmpty = multiSessionsRef.current.size === 0;
+    multiSessionsRef.current.set(streamId, { socket, playback });
+    if (wasEmpty) void startForegroundService("listening");
+    setMultiListeningIds((prev) => new Set(prev).add(streamId));
+  }
+
+  function stopMultiListening(streamId: string) {
+    const sessionToStop = multiSessionsRef.current.get(streamId);
+    if (!sessionToStop) return;
+    sessionToStop.socket.close();
+    sessionToStop.playback.stop();
+    multiSessionsRef.current.delete(streamId);
+    if (multiSessionsRef.current.size === 0) void stopForegroundService();
+    setMultiListeningIds((prev) => {
+      const next = new Set(prev);
+      next.delete(streamId);
+      return next;
+    });
+    setMultiConnectionStatus((prev) => {
+      const next = new Map(prev);
+      next.delete(streamId);
+      return next;
+    });
+  }
+
+  function stopAllMultiListening() {
+    for (const streamId of [...multiSessionsRef.current.keys()]) stopMultiListening(streamId);
+  }
+
+  function handleMultiListenToggle(enabled: boolean) {
+    // Switching modes tears down whatever's active in the *other* mode -
+    // avoids ever having both a single-mode and a multi-mode session
+    // pointed at conflicting state at once.
+    if (enabled) stopListening();
+    else stopAllMultiListening();
+    setMultiListenEnabled(enabled);
+  }
+
   return (
     <div className="space-y-4">
       <MaxAmplitudeControl session={session} />
+
+      <label className="flex items-center gap-2 text-sm text-neutral-300">
+        <input type="checkbox" checked={multiListenEnabled} onChange={(e) => handleMultiListenToggle(e.target.checked)} />
+        Listen to multiple streams at once (mixed locally)
+      </label>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
 
       <ul className="space-y-2">
         {streams.map((stream) => {
+          if (multiListenEnabled) {
+            const isListening = multiListeningIds.has(stream.id);
+            const status = multiConnectionStatus.get(stream.id);
+            return (
+              <li key={stream.id} className="flex items-center justify-between rounded border border-neutral-800 px-3 py-2">
+                <div>
+                  <p className="font-medium">{stream.name}</p>
+                  <p className="text-xs text-neutral-400">
+                    {activeHostsSummary(stream.activeHosts)}
+                    {isListening && status && status.status !== "open" && (
+                      <span className="ml-2 text-amber-400">{connectionStatusLabel(status.status, status.attempt)}</span>
+                    )}
+                  </p>
+                </div>
+                {isListening ? (
+                  <button
+                    className="rounded bg-neutral-700 px-2 py-1 text-sm hover:bg-neutral-600"
+                    onClick={() => stopMultiListening(stream.id)}
+                  >
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    className="rounded bg-green-600 px-2 py-1 text-sm hover:bg-green-500"
+                    onClick={() => startMultiListening(stream.id)}
+                  >
+                    Listen
+                  </button>
+                )}
+              </li>
+            );
+          }
+
           const isListening = listeningStreamId === stream.id;
           return (
             <li key={stream.id} className="flex items-center justify-between rounded border border-neutral-800 px-3 py-2">

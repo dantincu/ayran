@@ -36,6 +36,8 @@ export function HostPanel({ session }: { session: Session }) {
   const usingNativeLoopbackRef = useRef(false);
   const pausedRef = useRef(false);
 
+  const isHostingRaw = hostingStreamId !== undefined && streams.find((s) => s.id === hostingStreamId)?.mode === "raw";
+
   async function refresh() {
     try {
       setStreams(await api.listStreams(session.apiBaseUrl, session.token));
@@ -81,6 +83,13 @@ export function HostPanel({ session }: { session: Session }) {
   async function startHosting(streamId: string) {
     setError(undefined);
     try {
+      // Raw streams bypass the device's own volume slider too, not just the
+      // account-wide cap - "forwarded raw" means the actual captured signal,
+      // unmodified by anything on either end, so this device's gain control
+      // simply doesn't apply while hosting one.
+      const isRaw = streams.find((s) => s.id === streamId)?.mode === "raw";
+      const effectiveGain = isRaw ? 1 : gain;
+
       // The connection and the capture pipeline are independent: a dropped
       // WebSocket reconnects with backoff in the background while capture
       // keeps running, rather than tearing down hosting on a network blip.
@@ -108,7 +117,7 @@ export function HostPanel({ session }: { session: Session }) {
         usingNativeLoopbackRef.current = true;
         await startNativeLoopback((frame) => {
           if (!pausedRef.current) socket.send(frame);
-        }, gain);
+        }, effectiveGain);
       } else {
         usingNativeLoopbackRef.current = false;
         const mediaStream = await captureStream(audioSource);
@@ -118,7 +127,7 @@ export function HostPanel({ session }: { session: Session }) {
           (frame) => {
             if (!pausedRef.current) socket.send(frame.buffer);
           },
-          gain,
+          effectiveGain,
         );
       }
 
@@ -164,6 +173,10 @@ export function HostPanel({ session }: { session: Session }) {
   function handleGainChange(next: number) {
     setGain(next);
     localStorage.setItem(GAIN_STORAGE_KEY, String(next));
+    // Raw hosting locks the live gain at 1 regardless of the slider (see
+    // startHosting) - the slider UI is disabled in that case, but guard here
+    // too rather than relying solely on the disabled attribute.
+    if (isHostingRaw) return;
     if (usingNativeLoopbackRef.current) void setNativeLoopbackGain(next);
     else captureRef.current?.setGain(next);
   }
@@ -190,6 +203,10 @@ export function HostPanel({ session }: { session: Session }) {
           <label className="flex items-center gap-1">
             <input type="radio" checked={newStreamMode === "simple"} onChange={() => setNewStreamMode("simple")} />
             Simple (one device forwarded directly, no mixing)
+          </label>
+          <label className="flex items-center gap-1" title="No mixing, and no volume cap or limiter either - bytes forwarded exactly as received">
+            <input type="radio" checked={newStreamMode === "raw"} onChange={() => setNewStreamMode("raw")} />
+            Raw (one device, unprocessed, no volume cap)
           </label>
         </div>
       </form>
@@ -230,16 +247,18 @@ export function HostPanel({ session }: { session: Session }) {
           <label htmlFor="device-gain" className="text-neutral-300">
             This device's volume
           </label>
-          <span className="tabular-nums text-neutral-400">{Math.round(gain * 100)}%</span>
+          <span className="tabular-nums text-neutral-400">{isHostingRaw ? "100% (raw)" : `${Math.round(gain * 100)}%`}</span>
         </div>
         <input
           id="device-gain"
           type="range"
           min={0}
           max={100}
-          value={Math.round(gain * 100)}
+          value={isHostingRaw ? 100 : Math.round(gain * 100)}
+          disabled={isHostingRaw}
+          title={isHostingRaw ? "Raw streams bypass this device's volume control - the signal is forwarded unmodified" : undefined}
           onChange={(e) => handleGainChange(Number(e.target.value) / 100)}
-          className="mt-1 w-full"
+          className="mt-1 w-full disabled:opacity-50"
         />
       </div>
 
@@ -256,7 +275,7 @@ export function HostPanel({ session }: { session: Session }) {
                 <p className="font-medium">
                   {stream.name}{" "}
                   <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-xs font-normal text-neutral-400">
-                    {stream.mode === "simple" ? "Simple" : "Merged"}
+                    {stream.mode === "simple" ? "Simple" : stream.mode === "raw" ? "Raw" : "Merged"}
                   </span>
                 </p>
                 <p className="text-xs text-neutral-400">

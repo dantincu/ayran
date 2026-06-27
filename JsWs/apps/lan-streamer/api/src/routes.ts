@@ -47,8 +47,8 @@ router.post("/streams", requireAuth, (req: AuthedRequest, res) => {
     res.status(400).json({ error: "name is required" });
     return;
   }
-  if (mode !== "merged" && mode !== "simple") {
-    res.status(400).json({ error: "mode must be 'merged' or 'simple'" });
+  if (mode !== "merged" && mode !== "simple" && mode !== "raw") {
+    res.status(400).json({ error: "mode must be 'merged', 'simple', or 'raw'" });
     return;
   }
   res.status(201).json(createStream(name.trim(), req.account!.userId, mode));

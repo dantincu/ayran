@@ -7,22 +7,27 @@ import { addActiveHost, getStream, removeActiveHost } from "../store.js";
 import type { HostAudioSource } from "../types.js";
 import {
   BYTES_PER_FRAME,
+  forwardRawFrame,
   forwardSimpleFrame,
   pushHostFrame,
   registerHost,
   registerListener,
+  registerRawListener,
   registerSimpleListener,
   unregisterHost,
   unregisterListener,
+  unregisterRawListener,
   unregisterSimpleListener,
 } from "./mixer.js";
 
 const wss = new WebSocketServer({ noServer: true });
 
-// Tracks which host connection is currently "live" on each simple stream -
-// a second host starting up supersedes whoever's currently in this map for
-// that streamId, rather than mixing with them.
+// Tracks which host connection is currently "live" on each simple/raw stream
+// - a second host starting up supersedes whoever's currently in the map for
+// that streamId, rather than mixing with them. Separate maps per mode since
+// "simple" and "raw" are otherwise-independent stream namespaces.
 const activeSimpleHosts = new Map<string, { connectionId: string; ws: WebSocket }>();
+const activeRawHosts = new Map<string, { connectionId: string; ws: WebSocket }>();
 
 function closeWith(socket: Duplex, code: number, reason: string): void {
   socket.end(`HTTP/1.1 ${code} ${reason}\r\n\r\n`);
@@ -56,18 +61,20 @@ export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
     const sourceParam = url.searchParams.get("source");
     const audioSource: HostAudioSource =
       sourceParam === "system" || sourceParam === "test-tone" ? sourceParam : "microphone";
-    wss.handleUpgrade(req, socket, head, (ws) =>
-      stream.mode === "simple"
-        ? attachSimpleHost(ws, streamId, account.userId, audioSource)
-        : attachHost(ws, streamId, account.userId, audioSource),
-    );
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (stream.mode === "simple") attachExclusiveHost(ws, streamId, account.userId, audioSource, activeSimpleHosts, forwardSimpleFrame);
+      else if (stream.mode === "raw") attachExclusiveHost(ws, streamId, account.userId, audioSource, activeRawHosts, (id, _accountId, frame) => forwardRawFrame(id, frame));
+      else attachHost(ws, streamId, account.userId, audioSource);
+    });
     return;
   }
 
   if (kind === "listen") {
-    wss.handleUpgrade(req, socket, head, (ws) =>
-      stream.mode === "simple" ? attachSimpleListener(ws, streamId) : attachListener(ws, streamId),
-    );
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      if (stream.mode === "simple") attachSimpleListener(ws, streamId);
+      else if (stream.mode === "raw") attachRawListener(ws, streamId);
+      else attachListener(ws, streamId);
+    });
     return;
   }
 
@@ -98,21 +105,33 @@ function attachListener(ws: WebSocket, streamId: string): void {
   ws.on("close", () => unregisterListener(streamId, ws));
 }
 
-function attachSimpleHost(ws: WebSocket, streamId: string, accountId: number, audioSource: HostAudioSource): void {
+// Shared by "simple" and "raw" modes: both allow exactly one active host at
+// a time, with a second host superseding whoever was streaming before it -
+// they only differ in what happens to each frame once it arrives (the
+// `forward` callback), passed in by the caller along with which mode's
+// active-host map to track this connection in.
+function attachExclusiveHost(
+  ws: WebSocket,
+  streamId: string,
+  accountId: number,
+  audioSource: HostAudioSource,
+  activeHosts: Map<string, { connectionId: string; ws: WebSocket }>,
+  forward: (streamId: string, accountId: number, frame: Buffer) => void,
+): void {
   const connectionId = randomUUID();
 
-  // A second host starting up on the same simple stream supersedes whoever
-  // was streaming on it - tell that previous connection why it's being cut
-  // off (rather than leaving it to guess from a plain close) and disconnect
-  // it, instead of letting two sources collide.
-  const previous = activeSimpleHosts.get(streamId);
+  // A second host starting up on the same stream supersedes whoever was
+  // streaming on it - tell that previous connection why it's being cut off
+  // (rather than leaving it to guess from a plain close) and disconnect it,
+  // instead of letting two sources collide.
+  const previous = activeHosts.get(streamId);
   if (previous && previous.connectionId !== connectionId) {
     if (previous.ws.readyState === previous.ws.OPEN) {
       previous.ws.send(JSON.stringify({ type: "superseded" }));
     }
     previous.ws.close();
   }
-  activeSimpleHosts.set(streamId, { connectionId, ws });
+  activeHosts.set(streamId, { connectionId, ws });
 
   addActiveHost(streamId, connectionId, accountId, audioSource);
 
@@ -120,15 +139,15 @@ function attachSimpleHost(ws: WebSocket, streamId: string, accountId: number, au
     if (!isBinary) return;
     // Ignore frames from a connection that's since been superseded but
     // hasn't finished closing yet - only the current active host forwards.
-    if (activeSimpleHosts.get(streamId)?.connectionId !== connectionId) return;
+    if (activeHosts.get(streamId)?.connectionId !== connectionId) return;
     const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
     if (frame.length !== BYTES_PER_FRAME) return;
-    forwardSimpleFrame(streamId, accountId, frame);
+    forward(streamId, accountId, frame);
   });
 
   ws.on("close", () => {
-    if (activeSimpleHosts.get(streamId)?.connectionId === connectionId) {
-      activeSimpleHosts.delete(streamId);
+    if (activeHosts.get(streamId)?.connectionId === connectionId) {
+      activeHosts.delete(streamId);
     }
     removeActiveHost(streamId, connectionId, accountId);
   });
@@ -137,4 +156,9 @@ function attachSimpleHost(ws: WebSocket, streamId: string, accountId: number, au
 function attachSimpleListener(ws: WebSocket, streamId: string): void {
   registerSimpleListener(streamId, ws);
   ws.on("close", () => unregisterSimpleListener(streamId, ws));
+}
+
+function attachRawListener(ws: WebSocket, streamId: string): void {
+  registerRawListener(streamId, ws);
+  ws.on("close", () => unregisterRawListener(streamId, ws));
 }
