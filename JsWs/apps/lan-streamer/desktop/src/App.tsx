@@ -7,11 +7,15 @@ import { ApiError } from "./lib/api";
 import { clearSession, loadSession, saveSession } from "./lib/sessionStore";
 import type { Session } from "./lib/types";
 
-type Role = "host" | "listener";
+// This used to be exclusive ("host" XOR "listener", never both) - now it's
+// just which panel is visually in front; both stay mounted and active under
+// the hood the whole time (see the main element below), so you can host one
+// stream and listen to another simultaneously.
+type View = "host" | "listener";
 
 export default function App() {
   const [session, setSession] = useState<Session>();
-  const [role, setRole] = useState<Role>();
+  const [view, setView] = useState<View>("host");
   const [restoring, setRestoring] = useState(true);
 
   useEffect(() => {
@@ -47,7 +51,7 @@ export default function App() {
     await api.logout(session!.apiBaseUrl, session!.token).catch(() => {});
     await clearSession().catch(() => {});
     setSession(undefined);
-    setRole(undefined);
+    setView("host");
   }
 
   if (restoring) {
@@ -68,14 +72,14 @@ export default function App() {
         <div className="flex items-center gap-2">
           <div className="flex rounded border border-neutral-700 text-sm">
             <button
-              className={`px-3 py-1 ${role === "host" ? "bg-blue-600" : "hover:bg-neutral-800"}`}
-              onClick={() => setRole("host")}
+              className={`px-3 py-1 ${view === "host" ? "bg-blue-600" : "hover:bg-neutral-800"}`}
+              onClick={() => setView("host")}
             >
               Host
             </button>
             <button
-              className={`px-3 py-1 ${role === "listener" ? "bg-blue-600" : "hover:bg-neutral-800"}`}
-              onClick={() => setRole("listener")}
+              className={`px-3 py-1 ${view === "listener" ? "bg-blue-600" : "hover:bg-neutral-800"}`}
+              onClick={() => setView("listener")}
             >
               Listen
             </button>
@@ -87,9 +91,15 @@ export default function App() {
       </header>
 
       <main className="p-6">
-        {role === "host" && <HostPanel session={session} />}
-        {role === "listener" && <ListenerPanel session={session} />}
-        {!role && <p className="text-neutral-400">Choose whether to host a stream or listen to one.</p>}
+        {/* Both panels stay mounted regardless of which tab is showing -
+            switching tabs only changes visibility (CSS), not whether
+            hosting/listening is actually running. */}
+        <div className={view === "host" ? "" : "hidden"}>
+          <HostPanel session={session} />
+        </div>
+        <div className={view === "listener" ? "" : "hidden"}>
+          <ListenerPanel session={session} />
+        </div>
       </main>
     </div>
   );

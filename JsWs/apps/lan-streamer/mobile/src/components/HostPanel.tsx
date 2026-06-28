@@ -119,7 +119,7 @@ export function HostPanel({ session }: { session: Session }) {
       // AudioCapture (which generates that audio internally) - there's no
       // real MediaStream/tracks to stop for it.
       mediaStreamRef.current = mediaStream === "test-tone" ? undefined : mediaStream;
-      void startForegroundService(audioSource === "microphone" ? "hosting-microphone" : "hosting-test-tone");
+      void startForegroundService("host", audioSource === "microphone" ? "hosting-microphone" : "hosting-test-tone");
       captureRef.current = new AudioCapture(
         mediaStream,
         (frame) => {
@@ -153,7 +153,7 @@ export function HostPanel({ session }: { session: Session }) {
     mediaStreamRef.current = undefined;
     socketRef.current?.close();
     socketRef.current = undefined;
-    void stopForegroundService();
+    void stopForegroundService("host");
     setHostingStreamId(undefined);
     setConnectionStatus(undefined);
     setPaused(false);

@@ -121,7 +121,7 @@ export function ListenerPanel({ session }: { session: Session }) {
 
     socketRef.current = socket;
     playbackRef.current = playback;
-    void startForegroundService("listening");
+    void startForegroundService("listen", "listening");
     setListeningStreamId(streamId);
   }
 
@@ -130,7 +130,7 @@ export function ListenerPanel({ session }: { session: Session }) {
     socketRef.current = undefined;
     playbackRef.current?.stop();
     playbackRef.current = undefined;
-    void stopForegroundService();
+    void stopForegroundService("listen");
     setListeningStreamId(undefined);
     setConnectionStatus(undefined);
   }
@@ -148,7 +148,7 @@ export function ListenerPanel({ session }: { session: Session }) {
 
     const wasEmpty = multiSessionsRef.current.size === 0;
     multiSessionsRef.current.set(streamId, { socket, playback });
-    if (wasEmpty) void startForegroundService("listening");
+    if (wasEmpty) void startForegroundService("listen", "listening");
     setMultiListeningIds((prev) => new Set(prev).add(streamId));
   }
 
@@ -158,7 +158,7 @@ export function ListenerPanel({ session }: { session: Session }) {
     sessionToStop.socket.close();
     sessionToStop.playback.stop();
     multiSessionsRef.current.delete(streamId);
-    if (multiSessionsRef.current.size === 0) void stopForegroundService();
+    if (multiSessionsRef.current.size === 0) void stopForegroundService("listen");
     setMultiListeningIds((prev) => {
       const next = new Set(prev);
       next.delete(streamId);

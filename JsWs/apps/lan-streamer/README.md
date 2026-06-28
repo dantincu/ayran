@@ -4,7 +4,7 @@ See [CLAUDE.md](./CLAUDE.md) for the product spec. This is a v1 end-to-end skele
 
 - `api/` — Node.js + TypeScript API (Express + `ws`). HTTPS-only; serves whatever cert/key is at `certs/dev-cert.pem`/`dev-key.pem` (auto-generates a self-signed one there if missing, but the deployed instance uses a real Let's Encrypt cert — see below). Filen.io login via `@filen/sdk` issues an opaque session token; streams are persisted to `api/data/streams.json`, scoped per Filen account. Multi-host audio is mixed by summing 20ms 48kHz mono PCM frames and rebroadcast to listeners over WebSocket.
 - `api-rs/` — Rust reimplementation of `api/` (axum + tokio), full feature parity, byte-compatible session encryption format — see "Deploying the API (Rust)" below. This is the actual live deployment now.
-- `desktop/` — Tauri 2 + React 19 desktop client (`io.ayran.lanstreamer.desktop`, dev port 1420). Used as either a streaming host (microphone, or system/speaker-loopback capture via a native `cpal` Rust backend — see below) or a listener (one merged stream at a time).
+- `desktop/` — Tauri 2 + React 19 desktop client (`io.ayran.lanstreamer.desktop`, dev port 1420). Can host (microphone, or system/speaker-loopback capture via a native `cpal` Rust backend — see below) and listen at the same time - `HostPanel`/`ListenerPanel` are both always mounted in `App.tsx`, the Host/Listen tabs just toggle which is visible, not which is active.
 - `mobile/` — Same feature set as `desktop/`, packaged for Android/iOS (`io.ayran.lanstreamer.mobile`, dev port 1421). Source is a duplicate of `desktop/`'s, not shared, matching the pattern used in the other Ayran Tauri apps. System-audio loopback hosting is desktop-only (see below) — mobile only offers microphone.
 
 ## Running
@@ -156,6 +156,12 @@ Both the host and listener WebSocket connections (`desktop/`, `mobile/`) auto-re
 - **Sessions survive API restarts**: tokens are persisted encrypted at rest (`data/sessions.enc`, AES-256-GCM). A restart no longer forces every client to log back in.
   - The AES key itself is protected via an OS-native secure store (`api/src/secureStore.ts` dispatches by `process.platform`) before being written to `data/session-key.bin` — on Windows that's DPAPI (`secureStore.windows.ts`, shelling out to PowerShell's `[System.Security.Cryptography.ProtectedData]` rather than a native Node addon, so the API stays a single dependency-free `bundle.cjs`). This ties decryption to *this Windows user account on this machine* — copying both `data/` files to another machine or user doesn't let you decrypt them, unlike a plain key sitting unencrypted next to its ciphertext.
   - macOS/Linux aren't implemented yet — `secureStore.ts` throws a clear error naming the missing platform if you run the API there. Add `secureStore.darwin.ts` (Keychain, e.g. via the `security` CLI) or `secureStore.linux.ts` (libsecret, e.g. via `secret-tool`) following the same `protect`/`unprotect` shape as `secureStore.windows.ts`, then wire the case into `loadSecureStore()`.
+
+## Hosting and listening at the same time
+
+The original spec said a device could be a host *or* a listener, never both. That constraint was relaxed: `App.tsx` (`desktop/`, `mobile/`) keeps both `HostPanel` and `ListenerPanel` mounted at all times once logged in - the "Host"/"Listen" tabs in the header only toggle which one is *visible* (a plain CSS `hidden` class), not which one is running. A device can host one stream and listen to a different one simultaneously; switching tabs back and forth doesn't interrupt either.
+
+On mobile, this meant the background-survival foreground service (see below) could no longer be a simple start/stop - `foregroundService.ts` reference-counts by caller (`"host"` vs `"listen"`), so stopping one doesn't tear down the other's background survival, and the service's notification reflects whichever role most needs it (mic-using foreground-service-type takes priority while active, since that's the one with an extra permission requirement).
 
 ## Stream modes: merged vs simple vs raw
 
