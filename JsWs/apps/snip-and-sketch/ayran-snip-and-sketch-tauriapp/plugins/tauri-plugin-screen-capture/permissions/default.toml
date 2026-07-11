@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows capturing a full-screen screenshot via Android MediaProjection."
+permissions = ["allow-capture"]
