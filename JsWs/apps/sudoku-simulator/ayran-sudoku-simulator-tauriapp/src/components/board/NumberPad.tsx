@@ -29,7 +29,7 @@ export function NumberPad() {
               if (pencilMode) togglePencilMark(selectedIndex, n);
               else setCellValue(selectedIndex, n);
             }}
-            className="aspect-square rounded-md border border-gray-300 bg-white text-xl font-semibold text-gray-800 shadow-sm active:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+            className="aspect-square rounded-md border border-gray-300 bg-white text-2xl font-bold text-gray-800 shadow-sm active:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {n}
           </button>
