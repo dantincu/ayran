@@ -1,11 +1,26 @@
+import { useMemo } from "react";
 import { useGame } from "../../state/GameContext";
 import { getPeers } from "../../lib/sudoku";
 import { SudokuCell } from "./SudokuCell";
 
 export function SudokuGrid() {
-  const { board, conflicts, selectedIndex, rejectedIndex, selectCell } = useGame();
+  const { board, conflicts, selectedIndex, rejectedIndex, rejectedValue, selectCell } = useGame();
 
-  const peerSet = selectedIndex != null ? new Set(getPeers(selectedIndex)) : null;
+  const selectedValue = selectedIndex != null ? board[selectedIndex].value : null;
+
+  const highlighted = useMemo(() => {
+    if (selectedIndex == null) return new Set<number>();
+    const set = new Set(getPeers(selectedIndex));
+    if (selectedValue != null) {
+      for (let i = 0; i < board.length; i++) {
+        if (board[i].value === selectedValue) {
+          set.add(i);
+          for (const peer of getPeers(i)) set.add(peer);
+        }
+      }
+    }
+    return set;
+  }, [board, selectedIndex, selectedValue]);
 
   return (
     <div className="grid aspect-square w-full max-w-[min(90vw,560px)] grid-cols-9 overflow-hidden rounded-md shadow-sm">
@@ -20,7 +35,8 @@ export function SudokuGrid() {
           isSelected={selectedIndex === index}
           isConflict={conflicts.has(index)}
           isRejected={rejectedIndex === index}
-          isPeer={peerSet?.has(index) ?? false}
+          rejectedValue={rejectedIndex === index ? rejectedValue : null}
+          isPeer={highlighted.has(index)}
           onSelect={selectCell}
         />
       ))}

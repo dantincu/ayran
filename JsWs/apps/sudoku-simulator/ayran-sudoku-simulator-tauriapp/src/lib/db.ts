@@ -23,6 +23,11 @@ export interface LiveStateRecord {
   lastInput: { row: number; col: number; value: number } | null;
 }
 
+export interface SettingRecord {
+  key: string;
+  value: unknown;
+}
+
 interface SudokuDB extends DBSchema {
   snapshots: {
     key: string;
@@ -37,10 +42,14 @@ interface SudokuDB extends DBSchema {
     key: string;
     value: LiveStateRecord;
   };
+  settings: {
+    key: string;
+    value: SettingRecord;
+  };
 }
 
 const DB_NAME = "ayran-sudoku";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<SudokuDB>> | null = null;
 
@@ -48,10 +57,19 @@ function getDb(): Promise<IDBPDatabase<SudokuDB>> {
   if (!dbPromise) {
     dbPromise = openDB<SudokuDB>(DB_NAME, DB_VERSION, {
       upgrade(db) {
-        const snapshots = db.createObjectStore("snapshots", { keyPath: "id" });
-        snapshots.createIndex("parentId", "parentId");
-        db.createObjectStore("customColors", { keyPath: "id" });
-        db.createObjectStore("liveState", { keyPath: "key" });
+        if (!db.objectStoreNames.contains("snapshots")) {
+          const snapshots = db.createObjectStore("snapshots", { keyPath: "id" });
+          snapshots.createIndex("parentId", "parentId");
+        }
+        if (!db.objectStoreNames.contains("customColors")) {
+          db.createObjectStore("customColors", { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains("liveState")) {
+          db.createObjectStore("liveState", { keyPath: "key" });
+        }
+        if (!db.objectStoreNames.contains("settings")) {
+          db.createObjectStore("settings", { keyPath: "key" });
+        }
       },
     });
   }
@@ -97,4 +115,15 @@ export async function getLiveState(): Promise<LiveStateRecord | undefined> {
 export async function putLiveState(state: LiveStateRecord): Promise<void> {
   const db = await getDb();
   await db.put("liveState", state);
+}
+
+export async function getSetting<T>(key: string): Promise<T | undefined> {
+  const db = await getDb();
+  const record = await db.get("settings", key);
+  return record?.value as T | undefined;
+}
+
+export async function putSetting(key: string, value: unknown): Promise<void> {
+  const db = await getDb();
+  await db.put("settings", { key, value });
 }

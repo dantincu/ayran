@@ -1,10 +1,20 @@
 import { useGame } from "../../state/GameContext";
 
 export function NumberPad() {
-  const { selectedIndex, setCellValue, clearCell, toggleCellDark, board } = useGame();
+  const {
+    selectedIndex,
+    setCellValue,
+    clearCell,
+    toggleCellDark,
+    board,
+    pencilMode,
+    togglePencilMode,
+    togglePencilMark,
+  } = useGame();
 
   const disabled = selectedIndex == null;
   const selectedCell = selectedIndex != null ? board[selectedIndex] : null;
+  const digitsDisabled = disabled || (pencilMode && selectedCell?.value != null);
 
   return (
     <div className="flex flex-col gap-2">
@@ -13,8 +23,12 @@ export function NumberPad() {
           <button
             key={n}
             type="button"
-            disabled={disabled}
-            onClick={() => selectedIndex != null && setCellValue(selectedIndex, n)}
+            disabled={digitsDisabled}
+            onClick={() => {
+              if (selectedIndex == null) return;
+              if (pencilMode) togglePencilMark(selectedIndex, n);
+              else setCellValue(selectedIndex, n);
+            }}
             className="aspect-square rounded-md border border-gray-300 bg-white text-lg font-medium text-gray-800 shadow-sm active:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
           >
             {n}
@@ -39,6 +53,17 @@ export function NumberPad() {
           {selectedCell?.isDark ? "Undo dark mode" : "Dark mode"}
         </button>
       </div>
+      <button
+        type="button"
+        onClick={togglePencilMode}
+        className={`w-full rounded-md border py-2 text-sm font-medium shadow-sm ${
+          pencilMode
+            ? "border-blue-400 bg-blue-50 text-blue-700"
+            : "border-gray-300 bg-white text-gray-700"
+        }`}
+      >
+        Pencil marks: {pencilMode ? "On" : "Off"}
+      </button>
     </div>
   );
 }

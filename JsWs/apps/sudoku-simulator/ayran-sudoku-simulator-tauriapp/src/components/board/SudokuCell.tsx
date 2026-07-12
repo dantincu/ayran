@@ -10,6 +10,7 @@ interface SudokuCellProps {
   isSelected: boolean;
   isConflict: boolean;
   isRejected: boolean;
+  rejectedValue: number | null;
   isPeer: boolean;
   onSelect: (index: number) => void;
 }
@@ -25,6 +26,7 @@ export function SudokuCell({
   isSelected,
   isConflict,
   isRejected,
+  rejectedValue,
   isPeer,
   onSelect,
 }: SudokuCellProps) {
@@ -63,7 +65,9 @@ export function SudokuCell({
       } ${isSelected && isDark ? "ring-2 ring-inset ring-blue-400" : ""}`}
       style={darkStyle}
     >
-      {hasPencilMarks ? (
+      {isRejected ? (
+        <span className="text-red-600">{rejectedValue}</span>
+      ) : hasPencilMarks ? (
         <span className="grid h-full w-full grid-cols-3 grid-rows-3 p-0.5 text-[8px] leading-none font-normal sm:text-[10px]">
           {PENCIL_DIGITS.map((digit) => (
             <span

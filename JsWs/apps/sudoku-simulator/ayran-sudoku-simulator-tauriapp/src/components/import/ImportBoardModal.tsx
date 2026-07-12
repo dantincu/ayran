@@ -13,7 +13,7 @@ function fileToDataUrl(file: File): Promise<string> {
 }
 
 export function ImportBoardModal() {
-  const { importBoard } = useGame();
+  const { board, importBoard } = useGame();
   const [open_, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,13 +45,16 @@ export function ImportBoardModal() {
 
   const conflicts = editableBoard ? findConflicts(editableBoard) : new Set<number>();
   const lowConfidence = new Set(result?.lowConfidenceIndices ?? []);
+  const boardIsBlank = board.every((cell) => cell.value == null);
 
   return (
     <>
       <button
         type="button"
+        disabled={!boardIsBlank}
+        title={boardIsBlank ? undefined : "Import is only available on a blank board"}
         onClick={() => setOpen(true)}
-        className="w-full rounded-md border border-gray-300 bg-white py-2 text-sm font-medium text-gray-700 shadow-sm"
+        className="w-full rounded-md border border-gray-300 bg-white py-2 text-sm font-medium text-gray-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
       >
         Import from screenshot
       </button>
@@ -87,6 +90,7 @@ export function ImportBoardModal() {
                 <p className="mb-2 text-xs text-gray-500">
                   Review the recognized digits. Cells outlined in amber had low OCR confidence;
                   cells in red conflict with another cell. Click a cell to correct it (0 clears).
+                  Confirming will save this as a new snapshot.
                 </p>
                 <div className="mb-4 grid grid-cols-9 overflow-hidden rounded border border-gray-400">
                   {editableBoard.map((cell, index) => {
@@ -104,7 +108,7 @@ export function ImportBoardModal() {
                           next[index].value = trimmed === "" ? null : Math.min(9, Math.max(1, Number(trimmed) || 0)) || null;
                           setEditableBoard(next);
                         }}
-                        className={`aspect-square border border-gray-200 text-sm font-medium ${
+                        className={`aspect-square border border-gray-200 text-lg font-semibold sm:text-xl ${
                           isConflict
                             ? "bg-red-100 text-red-700"
                             : isLow

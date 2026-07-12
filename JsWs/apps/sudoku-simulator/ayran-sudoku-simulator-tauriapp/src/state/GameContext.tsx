@@ -1,12 +1,23 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   addCustomColor as dbAddCustomColor,
   deleteCustomColor as dbDeleteCustomColor,
   deleteSnapshots,
   getLiveState,
+  getSetting,
   listCustomColors,
   listSnapshots,
   putLiveState,
+  putSetting,
   putSnapshot,
   type CustomColorRecord,
   type SnapshotRecord,
@@ -28,26 +39,34 @@ interface LastInput {
   value: number;
 }
 
+const SHOW_ALL_SNAPSHOT_PENCIL_DIGITS_KEY = "showAllSnapshotPencilDigits";
+
 interface GameContextValue {
   board: Board;
   conflicts: Set<number>;
   selectedIndex: number | null;
   rejectedIndex: number | null;
+  rejectedValue: number | null;
   currentSnapshotId: string | null;
   lastInput: LastInput | null;
   snapshots: SnapshotRecord[];
   customColors: CustomColorRecord[];
   loaded: boolean;
+  pencilMode: boolean;
+  togglePencilMode: () => void;
   selectCell: (index: number | null) => void;
   setCellValue: (index: number, value: number) => void;
   clearCell: (index: number) => void;
   toggleCellDark: (index: number) => void;
   setCellColor: (index: number, hex: string | null) => void;
+  togglePencilMark: (index: number, digit: number) => void;
   saveSnapshot: (name: string, labelColor: string | null) => Promise<void>;
   revertToSnapshot: (id: string) => Promise<void>;
   deleteSnapshot: (id: string) => Promise<void>;
   setSnapshotLabelColor: (id: string, hex: string | null) => Promise<void>;
   toggleSnapshotPencilMark: (snapshotId: string, cellIndex: number, digit: number) => void;
+  showAllSnapshotPencilDigits: boolean;
+  setShowAllSnapshotPencilDigits: (value: boolean) => void;
   importBoard: (board: Board) => Promise<void>;
   resetBoard: () => Promise<void>;
   addCustomColor: (hex: string) => Promise<void>;
@@ -61,18 +80,23 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const [board, setBoard] = useState<Board>(createEmptyBoard);
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [rejectedIndex, setRejectedIndex] = useState<number | null>(null);
+  const [rejectedValue, setRejectedValue] = useState<number | null>(null);
+  const rejectionTimeoutRef = useRef<number | null>(null);
   const [currentSnapshotId, setCurrentSnapshotId] = useState<string | null>(null);
   const [lastInput, setLastInput] = useState<LastInput | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotRecord[]>([]);
   const [customColors, setCustomColors] = useState<CustomColorRecord[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [pencilMode, setPencilMode] = useState(false);
+  const [showAllSnapshotPencilDigits, setShowAllSnapshotPencilDigitsState] = useState(false);
 
   useEffect(() => {
     (async () => {
-      const [live, snaps, colors] = await Promise.all([
+      const [live, snaps, colors, showAllPencilDigits] = await Promise.all([
         getLiveState(),
         listSnapshots(),
         listCustomColors(),
+        getSetting<boolean>(SHOW_ALL_SNAPSHOT_PENCIL_DIGITS_KEY),
       ]);
       if (live) {
         setBoard(live.board);
@@ -81,6 +105,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
       }
       setSnapshots(snaps);
       setCustomColors(colors);
+      if (showAllPencilDigits != null) setShowAllSnapshotPencilDigitsState(showAllPencilDigits);
       setLoaded(true);
     })();
   }, []);
@@ -99,18 +124,40 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
   const conflicts = useMemo(() => findConflicts(board), [board]);
 
-  const selectCell = useCallback((index: number | null) => {
-    setSelectedIndex(index);
+  const clearRejection = useCallback(() => {
+    if (rejectionTimeoutRef.current != null) {
+      window.clearTimeout(rejectionTimeoutRef.current);
+      rejectionTimeoutRef.current = null;
+    }
+    setRejectedIndex(null);
+    setRejectedValue(null);
   }, []);
+
+  useEffect(() => clearRejection, [clearRejection]);
+
+  const selectCell = useCallback(
+    (index: number | null) => {
+      setSelectedIndex(index);
+      clearRejection();
+    },
+    [clearRejection],
+  );
 
   const setCellValue = useCallback(
     (index: number, value: number) => {
       setBoard((prev) => {
         if (wouldConflict(prev, index, value)) {
+          if (rejectionTimeoutRef.current != null) window.clearTimeout(rejectionTimeoutRef.current);
           setRejectedIndex(index);
+          setRejectedValue(value);
+          rejectionTimeoutRef.current = window.setTimeout(() => {
+            setRejectedIndex(null);
+            setRejectedValue(null);
+            rejectionTimeoutRef.current = null;
+          }, 900);
           return prev;
         }
-        setRejectedIndex(null);
+        clearRejection();
         const next = cloneBoard(prev);
         next[index] = { ...next[index], value, pencilMarks: {} };
         const { row, col } = indexToRowCol(index);
@@ -120,11 +167,12 @@ export function GameProvider({ children }: { children: ReactNode }) {
         return next;
       });
     },
-    [currentSnapshotId, persistLive],
+    [clearRejection, currentSnapshotId, persistLive],
   );
 
   const clearCell = useCallback(
     (index: number) => {
+      clearRejection();
       setBoard((prev) => {
         const next = cloneBoard(prev);
         next[index] = { ...next[index], value: null };
@@ -132,7 +180,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         return next;
       });
     },
-    [currentSnapshotId, lastInput, persistLive],
+    [clearRejection, currentSnapshotId, lastInput, persistLive],
   );
 
   const toggleCellDark = useCallback(
@@ -152,6 +200,24 @@ export function GameProvider({ children }: { children: ReactNode }) {
       setBoard((prev) => {
         const next = cloneBoard(prev);
         next[index] = { ...next[index], bgColor: hex };
+        persistLive(next, currentSnapshotId, lastInput);
+        return next;
+      });
+    },
+    [currentSnapshotId, lastInput, persistLive],
+  );
+
+  const togglePencilMode = useCallback(() => {
+    setPencilMode((v) => !v);
+  }, []);
+
+  /** Live-board pencil marks, fully independent of any saved snapshot's pencil marks. */
+  const togglePencilMark = useCallback(
+    (index: number, digit: number) => {
+      setBoard((prev) => {
+        if (prev[index].value != null) return prev;
+        const next = cloneBoard(prev);
+        next[index] = { ...next[index], pencilMarks: cyclePencilMark(next[index].pencilMarks, digit) };
         persistLive(next, currentSnapshotId, lastInput);
         return next;
       });
@@ -259,15 +325,35 @@ export function GameProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /**
+   * Imports a freshly-recognized board (only allowed while the board is blank — enforced by the
+   * caller) and immediately saves it as a root snapshot, so the imported state is never lost.
+   */
+  const setShowAllSnapshotPencilDigits = useCallback((value: boolean) => {
+    setShowAllSnapshotPencilDigitsState(value);
+    void putSetting(SHOW_ALL_SNAPSHOT_PENCIL_DIGITS_KEY, value);
+  }, []);
+
   const importBoard = useCallback(
     async (newBoard: Board) => {
+      const record: SnapshotRecord = {
+        id: crypto.randomUUID(),
+        parentId: null,
+        name: "Imported from screenshot",
+        board: cloneBoard(newBoard),
+        labelColor: null,
+        createdAt: Date.now(),
+      };
+      await putSnapshot(record);
+      setSnapshots((prev) => [...prev, record]);
       setBoard(newBoard);
-      setCurrentSnapshotId(null);
+      setCurrentSnapshotId(record.id);
       setLastInput(null);
       setSelectedIndex(null);
-      persistLive(newBoard, null, null);
+      clearRejection();
+      persistLive(newBoard, record.id, null);
     },
-    [persistLive],
+    [clearRejection, persistLive],
   );
 
   const addCustomColor = useCallback(async (hex: string) => {
@@ -286,21 +372,27 @@ export function GameProvider({ children }: { children: ReactNode }) {
     conflicts,
     selectedIndex,
     rejectedIndex,
+    rejectedValue,
     currentSnapshotId,
     lastInput,
     snapshots,
     customColors,
     loaded,
+    pencilMode,
+    togglePencilMode,
     selectCell,
     setCellValue,
     clearCell,
     toggleCellDark,
     setCellColor,
+    togglePencilMark,
     saveSnapshot,
     revertToSnapshot,
     deleteSnapshot,
     setSnapshotLabelColor,
     toggleSnapshotPencilMark,
+    showAllSnapshotPencilDigits,
+    setShowAllSnapshotPencilDigits,
     importBoard,
     resetBoard,
     addCustomColor,
