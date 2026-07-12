@@ -6,4 +6,6 @@ Next, here are some features our app will offer during game play. At any point t
 
 Regarding theming: the app should only come with light mode. Dark mode will only be supported for individual cells (that is the user can turn any cell to dark mode). For dark mode cells the user can also change their background colors (let's have some predefined colors and give the user the possibility to define, save, and delete custom colors). The dark mode and background colors for individual cells should be saved as part of any snapshot.
 
+Let's also implement a pencil feature: for every unfilled cell the user should be able to add or remove any digit displayed in its appropriate position inside the cell. Also, let's make each such pencil digit have either regular color (could be it) or red color (could not be it). And when saving a board snapshot, the pencil digits and their colors should also be saved, and when applying a saved snapshot, they should likewise be restored (with digits added afterward removed too).
+
 Finally, state of the app should be persisted on indexedDb.

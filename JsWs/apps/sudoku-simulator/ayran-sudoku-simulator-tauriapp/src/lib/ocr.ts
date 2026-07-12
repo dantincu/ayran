@@ -90,7 +90,7 @@ export async function recognizeBoardFromImage(imageSrc: string): Promise<OcrResu
         const digit = text.match(/[1-9]/)?.[0];
         const value = digit ? Number(digit) : null;
 
-        board[index] = { value, isDark: false, bgColor: null };
+        board[index] = { value, isDark: false, bgColor: null, pencilMarks: {} };
         cellResults[index] = { value, confidence };
         if (value != null && confidence < LOW_CONFIDENCE_THRESHOLD) {
           lowConfidenceIndices.push(index);

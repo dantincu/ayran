@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { SnapshotTreeNode } from "../../lib/snapshotTree";
 import { useGame } from "../../state/GameContext";
 import { LABEL_COLORS } from "../../lib/colors";
+import { SnapshotPencilButton } from "./SnapshotPencilButton";
 
 interface SnapshotNodeProps {
   node: SnapshotTreeNode;
@@ -37,6 +38,7 @@ export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodePro
           {isCurrent && <span className="ml-1 text-xs font-normal text-blue-500">(current)</span>}
         </span>
 
+        <SnapshotPencilButton snapshotId={node.id} snapshotName={node.name} />
         <button
           type="button"
           onClick={() => revertToSnapshot(node.id)}

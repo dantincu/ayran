@@ -14,6 +14,7 @@ import {
 import {
   cloneBoard,
   createEmptyBoard,
+  cyclePencilMark,
   findConflicts,
   indexToRowCol,
   wouldConflict,
@@ -46,6 +47,7 @@ interface GameContextValue {
   revertToSnapshot: (id: string) => Promise<void>;
   deleteSnapshot: (id: string) => Promise<void>;
   setSnapshotLabelColor: (id: string, hex: string | null) => Promise<void>;
+  toggleSnapshotPencilMark: (snapshotId: string, cellIndex: number, digit: number) => void;
   importBoard: (board: Board) => Promise<void>;
   resetBoard: () => Promise<void>;
   addCustomColor: (hex: string) => Promise<void>;
@@ -110,7 +112,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
         }
         setRejectedIndex(null);
         const next = cloneBoard(prev);
-        next[index] = { ...next[index], value };
+        next[index] = { ...next[index], value, pencilMarks: {} };
         const { row, col } = indexToRowCol(index);
         const nextLastInput = { row, col, value };
         setLastInput(nextLastInput);
@@ -234,6 +236,29 @@ export function GameProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  /**
+   * Edits a saved snapshot's pencil marks directly, in place — independent of the live
+   * board/currentSnapshotId. Committed digits and dark-mode styling stay immutable; this is
+   * the one mutable facet of an otherwise-immutable snapshot.
+   */
+  const toggleSnapshotPencilMark = useCallback(
+    (snapshotId: string, cellIndex: number, digit: number) => {
+      setSnapshots((prev) => {
+        const snapshot = prev.find((s) => s.id === snapshotId);
+        if (!snapshot || snapshot.board[cellIndex].value != null) return prev;
+        const nextBoard = cloneBoard(snapshot.board);
+        nextBoard[cellIndex] = {
+          ...nextBoard[cellIndex],
+          pencilMarks: cyclePencilMark(nextBoard[cellIndex].pencilMarks, digit),
+        };
+        const updated: SnapshotRecord = { ...snapshot, board: nextBoard };
+        void putSnapshot(updated);
+        return prev.map((s) => (s.id === snapshotId ? updated : s));
+      });
+    },
+    [],
+  );
+
   const importBoard = useCallback(
     async (newBoard: Board) => {
       setBoard(newBoard);
@@ -275,6 +300,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     revertToSnapshot,
     deleteSnapshot,
     setSnapshotLabelColor,
+    toggleSnapshotPencilMark,
     importBoard,
     resetBoard,
     addCustomColor,

@@ -1,11 +1,12 @@
 import { contrastTextColor } from "../../lib/colors";
-import { indexToRowCol } from "../../lib/sudoku";
+import { indexToRowCol, type PencilMarks } from "../../lib/sudoku";
 
 interface SudokuCellProps {
   index: number;
   value: number | null;
   isDark: boolean;
   bgColor: string | null;
+  pencilMarks: PencilMarks;
   isSelected: boolean;
   isConflict: boolean;
   isRejected: boolean;
@@ -13,11 +14,14 @@ interface SudokuCellProps {
   onSelect: (index: number) => void;
 }
 
+const PENCIL_DIGITS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+
 export function SudokuCell({
   index,
   value,
   isDark,
   bgColor,
+  pencilMarks,
   isSelected,
   isConflict,
   isRejected,
@@ -46,6 +50,10 @@ export function SudokuCell({
     else if (isPeer) bgClass = "bg-cell-peer";
   }
 
+  const pencilNormalColor = isDark ? contrastTextColor(bgColor ?? "#334155") : "#4b5563";
+  const pencilRedColor = isDark ? "#fca5a5" : "#dc2626";
+  const hasPencilMarks = value == null && Object.keys(pencilMarks).length > 0;
+
   return (
     <button
       type="button"
@@ -55,9 +63,23 @@ export function SudokuCell({
       } ${isSelected && isDark ? "ring-2 ring-inset ring-blue-400" : ""}`}
       style={darkStyle}
     >
-      <span className={!isDark && isConflict ? "text-cell-conflict-text" : undefined}>
-        {value ?? ""}
-      </span>
+      {hasPencilMarks ? (
+        <span className="grid h-full w-full grid-cols-3 grid-rows-3 p-0.5 text-[8px] leading-none font-normal sm:text-[10px]">
+          {PENCIL_DIGITS.map((digit) => (
+            <span
+              key={digit}
+              className="flex items-center justify-center"
+              style={{ color: pencilMarks[digit] === "red" ? pencilRedColor : pencilNormalColor }}
+            >
+              {pencilMarks[digit] ? digit : ""}
+            </span>
+          ))}
+        </span>
+      ) : (
+        <span className={!isDark && isConflict ? "text-cell-conflict-text" : undefined}>
+          {value ?? ""}
+        </span>
+      )}
     </button>
   );
 }

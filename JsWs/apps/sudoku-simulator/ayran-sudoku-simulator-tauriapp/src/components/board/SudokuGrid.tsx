@@ -16,6 +16,7 @@ export function SudokuGrid() {
           value={cell.value}
           isDark={cell.isDark}
           bgColor={cell.bgColor}
+          pencilMarks={cell.pencilMarks}
           isSelected={selectedIndex === index}
           isConflict={conflicts.has(index)}
           isRejected={rejectedIndex === index}

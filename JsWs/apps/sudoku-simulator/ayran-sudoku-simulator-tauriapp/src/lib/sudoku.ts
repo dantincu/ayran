@@ -1,16 +1,20 @@
 export const BOARD_SIZE = 9;
 export const CELL_COUNT = BOARD_SIZE * BOARD_SIZE;
 
+export type PencilMarkColor = "normal" | "red";
+export type PencilMarks = Partial<Record<number, PencilMarkColor>>;
+
 export interface CellState {
   value: number | null;
   isDark: boolean;
   bgColor: string | null;
+  pencilMarks: PencilMarks;
 }
 
 export type Board = CellState[];
 
 export function createEmptyCell(): CellState {
-  return { value: null, isDark: false, bgColor: null };
+  return { value: null, isDark: false, bgColor: null, pencilMarks: {} };
 }
 
 export function createEmptyBoard(): Board {
@@ -18,7 +22,17 @@ export function createEmptyBoard(): Board {
 }
 
 export function cloneBoard(board: Board): Board {
-  return board.map((cell) => ({ ...cell }));
+  return board.map((cell) => ({ ...cell, pencilMarks: { ...cell.pencilMarks } }));
+}
+
+/** Cycles a cell's pencil mark for `digit`: absent -> normal -> red -> absent. */
+export function cyclePencilMark(marks: PencilMarks, digit: number): PencilMarks {
+  const next = { ...marks };
+  const current = next[digit];
+  if (current === undefined) next[digit] = "normal";
+  else if (current === "normal") next[digit] = "red";
+  else delete next[digit];
+  return next;
 }
 
 export function indexToRowCol(index: number): { row: number; col: number } {
