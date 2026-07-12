@@ -79,3 +79,54 @@ To confirm a built APK is actually signed:
 ```bash
 apksigner verify --print-certs src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release.apk
 ```
+
+## Installing
+
+### Desktop — MSI
+
+```powershell
+msiexec /i "src-tauri\target\release\bundle\msi\Ayran Snip and Sketch_0.1.1_x64_en-US.msi"
+```
+
+Useful flags:
+- Silent install: add `/quiet` (or `/qn`)
+- With a log file: add `/quiet /l*v install.log`
+- Uninstall: `msiexec /x "...\Ayran Snip and Sketch_0.1.1_x64_en-US.msi"`
+
+`msiexec` needs admin rights for machine-wide installs.
+
+### Desktop — NSIS setup.exe
+
+```powershell
+& "src-tauri\target\release\bundle\nsis\Ayran Snip and Sketch_0.1.1_x64-setup.exe"
+```
+
+(The `&` call operator is only needed in PowerShell because the path has spaces.)
+
+Useful flags:
+- Silent install: `/S`
+- Silent install to a custom directory: `/S /D=C:\Custom\Install\Path` (`/D=` must be the last argument and unquoted)
+
+Both installers are unsigned, so Windows SmartScreen will show an "unknown publisher" warning on first run — click "More info" → "Run anyway". A paid Authenticode code-signing certificate (`bundle.windows.certificateThumbprint` in `tauri.conf.json`) would remove this.
+
+### Android
+
+Requires `adb` (Android SDK platform-tools) and a phone with **USB debugging** enabled (Settings → About phone → tap "Build number" 7 times → Developer Options → enable "USB debugging"), connected via USB or [wireless ADB](https://developer.android.com/tools/adb#wireless).
+
+```bash
+adb devices
+```
+
+Confirm the phone shows up (accept the "Allow USB debugging?" prompt on the phone if it appears), then install:
+
+```bash
+adb install -r "src-tauri\gen\android\app\build\outputs\apk\universal\debug\app-universal-debug.apk"
+# or the release build:
+adb install -r "src-tauri\gen\android\app\build\outputs\apk\universal\release\app-universal-release.apk"
+```
+
+`-r` reinstalls/replaces if already present, preserving app data. If you hit `INSTALL_FAILED_UPDATE_INCOMPATIBLE` (mixing debug- and release-signed installs of the same package), uninstall first:
+
+```bash
+adb uninstall io.ayran.snipandsketch
+```
