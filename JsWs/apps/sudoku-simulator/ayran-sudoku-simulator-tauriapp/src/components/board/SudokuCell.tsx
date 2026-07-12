@@ -60,7 +60,7 @@ export function SudokuCell({
     <button
       type="button"
       onClick={() => onSelect(index)}
-      className={`relative flex aspect-square w-full items-center justify-center text-lg font-medium transition-colors sm:text-2xl ${borderClasses} ${bgClass} ${
+      className={`relative flex aspect-square w-full items-center justify-center text-2xl font-semibold transition-colors sm:text-3xl ${borderClasses} ${bgClass} ${
         isRejected ? "animate-pulse ring-2 ring-inset ring-red-500" : ""
       } ${isSelected && isDark ? "ring-2 ring-inset ring-blue-400" : ""}`}
       style={darkStyle}
@@ -68,7 +68,7 @@ export function SudokuCell({
       {isRejected ? (
         <span className="text-red-600">{rejectedValue}</span>
       ) : hasPencilMarks ? (
-        <span className="grid h-full w-full grid-cols-3 grid-rows-3 p-0.5 text-[8px] leading-none font-normal sm:text-[10px]">
+        <span className="grid h-full w-full grid-cols-3 grid-rows-3 p-px text-[10px] leading-none font-bold sm:text-xs">
           {PENCIL_DIGITS.map((digit) => (
             <span
               key={digit}

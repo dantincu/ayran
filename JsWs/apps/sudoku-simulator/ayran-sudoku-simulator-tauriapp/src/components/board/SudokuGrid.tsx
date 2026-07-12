@@ -23,7 +23,7 @@ export function SudokuGrid() {
   }, [board, selectedIndex, selectedValue]);
 
   return (
-    <div className="grid aspect-square w-full max-w-[min(90vw,560px)] grid-cols-9 overflow-hidden rounded-md shadow-sm">
+    <div className="grid aspect-square w-full max-w-[min(96vw,560px)] grid-cols-9 overflow-hidden rounded-md shadow-sm">
       {board.map((cell, index) => (
         <SudokuCell
           key={index}

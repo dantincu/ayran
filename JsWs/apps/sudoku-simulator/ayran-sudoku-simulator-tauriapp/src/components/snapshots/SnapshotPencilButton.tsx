@@ -75,7 +75,7 @@ export function SnapshotPencilButton({ snapshotId, snapshotName }: SnapshotPenci
                     type="button"
                     disabled={filled}
                     onClick={() => setSelectedIndex(index)}
-                    className={`relative flex aspect-square items-center justify-center text-sm font-medium disabled:cursor-not-allowed ${borderClasses} ${
+                    className={`relative flex aspect-square items-center justify-center text-base font-semibold disabled:cursor-not-allowed ${borderClasses} ${
                       filled
                         ? "bg-gray-50 text-gray-400"
                         : isSelected
@@ -86,7 +86,7 @@ export function SnapshotPencilButton({ snapshotId, snapshotName }: SnapshotPenci
                     {filled ? (
                       cell.value
                     ) : hasMarks || showAllSnapshotPencilDigits ? (
-                      <span className="grid h-full w-full grid-cols-3 grid-rows-3 p-0.5 text-[8px] leading-none font-normal">
+                      <span className="grid h-full w-full grid-cols-3 grid-rows-3 p-px text-[10px] leading-none font-bold">
                         {DIGITS.map((digit) => {
                           const state = cell.pencilMarks[digit];
                           const visible = state != null || showAllSnapshotPencilDigits;
@@ -119,7 +119,7 @@ export function SnapshotPencilButton({ snapshotId, snapshotName }: SnapshotPenci
                     type="button"
                     disabled={selectedIndex == null || selectedCell?.value != null}
                     onClick={() => selectedIndex != null && toggleSnapshotPencilMark(snapshotId, selectedIndex, digit)}
-                    className="aspect-square rounded border border-gray-300 bg-white text-sm font-medium shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+                    className="aspect-square rounded border border-gray-300 bg-white text-base font-semibold shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
                     style={{ color: state === "red" ? "#dc2626" : state === "normal" ? "#111827" : "#9ca3af" }}
                   >
                     {digit}
