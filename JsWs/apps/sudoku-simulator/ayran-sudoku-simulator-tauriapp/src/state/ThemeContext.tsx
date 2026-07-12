@@ -17,14 +17,22 @@ export const DEFAULT_THEME: ThemeRecord = {
   background: "#f8fafc",
   foreground: "#1e293b",
   accent: "#2563eb",
+  boardBackground: "#ffffff",
+  selectedCellBackground: "#dbeafe",
+  peerCellBackground: "#eff6ff",
   createdAt: 0,
 };
 
-export interface NewThemeInput {
-  name: string;
-  background: string;
-  foreground: string;
-  accent: string;
+export type NewThemeInput = Omit<ThemeRecord, "id" | "createdAt">;
+
+/** Fills in board-color fields for themes saved before they existed. */
+function normalizeTheme(theme: ThemeRecord): ThemeRecord {
+  return {
+    ...theme,
+    boardBackground: theme.boardBackground ?? DEFAULT_THEME.boardBackground,
+    selectedCellBackground: theme.selectedCellBackground ?? DEFAULT_THEME.selectedCellBackground,
+    peerCellBackground: theme.peerCellBackground ?? DEFAULT_THEME.peerCellBackground,
+  };
 }
 
 interface ThemeContextValue {
@@ -50,7 +58,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         listThemes(),
         getSetting<string>(ACTIVE_THEME_SETTING_KEY),
       ]);
-      setCustomThemes(themes);
+      setCustomThemes(themes.map(normalizeTheme));
       if (storedActiveId) setActiveThemeId(storedActiveId);
       setLoaded(true);
     })();
@@ -68,6 +76,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.style.setProperty("--theme-fg", activeTheme.foreground);
     root.style.setProperty("--theme-accent", activeTheme.accent);
     root.style.setProperty("--theme-accent-fg", contrastTextColor(activeTheme.accent));
+    root.style.setProperty("--theme-board-bg", activeTheme.boardBackground);
+    root.style.setProperty("--theme-selected-bg", activeTheme.selectedCellBackground);
+    root.style.setProperty("--theme-peer-bg", activeTheme.peerCellBackground);
   }, [activeTheme]);
 
   const setActiveTheme = useCallback((id: string) => {
@@ -77,13 +88,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const saveTheme = useCallback(
     (input: NewThemeInput, id?: string) => {
-      if (!meetsMinimumContrast(input.foreground, input.background)) return false;
+      const fg = input.foreground;
+      const backgroundsOk =
+        meetsMinimumContrast(fg, input.background) &&
+        meetsMinimumContrast(fg, input.boardBackground) &&
+        meetsMinimumContrast(fg, input.selectedCellBackground) &&
+        meetsMinimumContrast(fg, input.peerCellBackground);
+      if (!backgroundsOk) return false;
+
       const record: ThemeRecord = {
         id: id ?? crypto.randomUUID(),
         name: input.name.trim() || "Custom theme",
         background: input.background,
         foreground: input.foreground,
         accent: input.accent,
+        boardBackground: input.boardBackground,
+        selectedCellBackground: input.selectedCellBackground,
+        peerCellBackground: input.peerCellBackground,
         createdAt: id ? (customThemes.find((t) => t.id === id)?.createdAt ?? Date.now()) : Date.now(),
       };
       void putTheme(record);

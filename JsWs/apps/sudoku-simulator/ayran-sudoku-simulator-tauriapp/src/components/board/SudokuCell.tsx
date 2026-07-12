@@ -45,11 +45,11 @@ export function SudokuCell({
     ? { backgroundColor: bgColor ?? "#334155", color: contrastTextColor(bgColor ?? "#334155") }
     : undefined;
 
-  let bgClass = "bg-white";
+  let bgClass = "bg-[var(--theme-board-bg)]";
   if (!isDark) {
     if (isConflict) bgClass = "bg-cell-conflict";
-    else if (isSelected) bgClass = "bg-cell-selected";
-    else if (isPeer) bgClass = "bg-cell-peer";
+    else if (isSelected) bgClass = "bg-[var(--theme-selected-bg)]";
+    else if (isPeer) bgClass = "bg-[var(--theme-peer-bg)]";
   }
 
   const pencilNormalColor = isDark ? contrastTextColor(bgColor ?? "#334155") : "#4b5563";

@@ -1,8 +1,6 @@
 @import "tailwindcss";
 
 @theme {
-  --color-cell-selected: #dbeafe;
-  --color-cell-peer: #eff6ff;
   --color-cell-conflict: #fee2e2;
   --color-cell-conflict-text: #b91c1c;
 }
@@ -12,6 +10,9 @@
   --theme-fg: #1e293b;
   --theme-accent: #2563eb;
   --theme-accent-fg: #f9fafb;
+  --theme-board-bg: #ffffff;
+  --theme-selected-bg: #dbeafe;
+  --theme-peer-bg: #eff6ff;
 }
 
 html,

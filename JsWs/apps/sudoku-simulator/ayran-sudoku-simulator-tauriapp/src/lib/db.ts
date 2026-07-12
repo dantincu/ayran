@@ -34,6 +34,9 @@ export interface ThemeRecord {
   background: string;
   foreground: string;
   accent: string;
+  boardBackground: string;
+  selectedCellBackground: string;
+  peerCellBackground: string;
   createdAt: number;
 }
 
@@ -157,4 +160,17 @@ export async function putTheme(theme: ThemeRecord): Promise<void> {
 export async function deleteTheme(id: string): Promise<void> {
   const db = await getDb();
   await db.delete("themes", id);
+}
+
+/** Deletes the entire database (all snapshots, colors, themes, settings, live state). */
+export async function clearAllData(): Promise<void> {
+  const db = await getDb();
+  db.close();
+  dbPromise = null;
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => resolve();
+  });
 }

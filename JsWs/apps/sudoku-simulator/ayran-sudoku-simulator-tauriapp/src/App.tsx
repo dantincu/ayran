@@ -8,8 +8,9 @@ import { SaveSnapshotModal } from "./components/snapshots/SaveSnapshotModal";
 import { SnapshotTree } from "./components/snapshots/SnapshotTree";
 import { ImportBoardModal } from "./components/import/ImportBoardModal";
 import { ThemeSettings } from "./components/theme/ThemeSettings";
+import { SettingsPanel } from "./components/settings/SettingsPanel";
 
-type View = "board" | "snapshots" | "theme";
+type View = "board" | "snapshots" | "theme" | "settings";
 
 function AppShell() {
   const { loaded, resetBoard } = useGame();
@@ -45,6 +46,13 @@ function AppShell() {
           >
             Theme
           </button>
+          <button
+            type="button"
+            onClick={() => setView("settings")}
+            className={`rounded px-3 py-1.5 text-sm font-medium ${view === "settings" ? "bg-white shadow-sm" : "text-gray-500"}`}
+          >
+            Settings
+          </button>
         </nav>
       </header>
 
@@ -75,6 +83,8 @@ function AppShell() {
       {view === "snapshots" && <SnapshotTree />}
 
       {view === "theme" && <ThemeSettings />}
+
+      {view === "settings" && <SettingsPanel />}
     </div>
   );
 }
