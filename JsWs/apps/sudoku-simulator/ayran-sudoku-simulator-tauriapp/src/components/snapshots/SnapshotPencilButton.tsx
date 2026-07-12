@@ -75,7 +75,7 @@ export function SnapshotPencilButton({ snapshotId, snapshotName }: SnapshotPenci
                     type="button"
                     disabled={filled}
                     onClick={() => setSelectedIndex(index)}
-                    className={`relative flex aspect-square items-center justify-center text-lg font-bold disabled:cursor-not-allowed ${borderClasses} ${
+                    className={`relative flex aspect-square items-center justify-center text-2xl font-bold disabled:cursor-not-allowed ${borderClasses} ${
                       filled
                         ? "bg-gray-50 text-gray-400"
                         : isSelected
