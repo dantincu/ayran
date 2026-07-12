@@ -12,7 +12,6 @@
     "dialog:default",
     "fs:default",
     "fs:allow-write",
-    "fs:allow-write-file",
-    "screen-capture:default"
+    "fs:allow-write-file"
   ]
 }

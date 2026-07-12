@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "android",
+  "description": "Android-only capabilities (native screen capture plugin)",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": [
+    "screen-capture:default"
+  ]
+}
