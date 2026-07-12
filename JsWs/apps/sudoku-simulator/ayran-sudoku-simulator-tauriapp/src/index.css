@@ -7,6 +7,13 @@
   --color-cell-conflict-text: #b91c1c;
 }
 
+:root {
+  --theme-bg: #f8fafc;
+  --theme-fg: #1e293b;
+  --theme-accent: #2563eb;
+  --theme-accent-fg: #f9fafb;
+}
+
 html,
 body,
 #root {
@@ -15,4 +22,6 @@ body,
 
 body {
   margin: 0;
+  background-color: var(--theme-bg);
+  color: var(--theme-fg);
 }

@@ -17,7 +17,7 @@ export function SaveSnapshotModal() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="w-full rounded-md bg-blue-600 py-2 text-sm font-semibold text-white shadow-sm"
+        className="w-full rounded-md bg-[var(--theme-accent)] py-2 text-sm font-semibold text-[var(--theme-accent-fg)] shadow-sm"
       >
         Save snapshot
       </button>
@@ -68,7 +68,7 @@ export function SaveSnapshotModal() {
                   await saveSnapshot(name, labelColor);
                   setOpen(false);
                 }}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white"
+                className="rounded-md bg-[var(--theme-accent)] px-3 py-1.5 text-sm font-semibold text-[var(--theme-accent-fg)]"
               >
                 Save
               </button>

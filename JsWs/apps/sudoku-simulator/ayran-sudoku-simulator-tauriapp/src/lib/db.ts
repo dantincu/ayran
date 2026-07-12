@@ -28,6 +28,15 @@ export interface SettingRecord {
   value: unknown;
 }
 
+export interface ThemeRecord {
+  id: string;
+  name: string;
+  background: string;
+  foreground: string;
+  accent: string;
+  createdAt: number;
+}
+
 interface SudokuDB extends DBSchema {
   snapshots: {
     key: string;
@@ -46,10 +55,14 @@ interface SudokuDB extends DBSchema {
     key: string;
     value: SettingRecord;
   };
+  themes: {
+    key: string;
+    value: ThemeRecord;
+  };
 }
 
 const DB_NAME = "ayran-sudoku";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<SudokuDB>> | null = null;
 
@@ -69,6 +82,9 @@ function getDb(): Promise<IDBPDatabase<SudokuDB>> {
         }
         if (!db.objectStoreNames.contains("settings")) {
           db.createObjectStore("settings", { keyPath: "key" });
+        }
+        if (!db.objectStoreNames.contains("themes")) {
+          db.createObjectStore("themes", { keyPath: "id" });
         }
       },
     });
@@ -126,4 +142,19 @@ export async function getSetting<T>(key: string): Promise<T | undefined> {
 export async function putSetting(key: string, value: unknown): Promise<void> {
   const db = await getDb();
   await db.put("settings", { key, value });
+}
+
+export async function listThemes(): Promise<ThemeRecord[]> {
+  const db = await getDb();
+  return db.getAll("themes");
+}
+
+export async function putTheme(theme: ThemeRecord): Promise<void> {
+  const db = await getDb();
+  await db.put("themes", theme);
+}
+
+export async function deleteTheme(id: string): Promise<void> {
+  const db = await getDb();
+  await db.delete("themes", id);
 }

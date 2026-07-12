@@ -77,7 +77,7 @@ export function ImportBoardModal() {
                   type="button"
                   disabled={busy}
                   onClick={() => fileInputRef.current?.click()}
-                  className="w-full rounded-md bg-blue-600 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  className="w-full rounded-md bg-[var(--theme-accent)] py-2 text-sm font-semibold text-[var(--theme-accent-fg)] disabled:opacity-60"
                 >
                   {busy ? "Recognizing…" : "Choose cropped board image…"}
                 </button>
@@ -149,7 +149,7 @@ export function ImportBoardModal() {
                         reset();
                         setOpen(false);
                       }}
-                      className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-40"
+                      className="rounded-md bg-[var(--theme-accent)] px-3 py-1.5 text-sm font-semibold text-[var(--theme-accent-fg)] disabled:opacity-40"
                     >
                       Import
                     </button>

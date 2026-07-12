@@ -1,13 +1,15 @@
 import { useState } from "react";
 import { GameProvider, useGame } from "./state/GameContext";
+import { ThemeProvider } from "./state/ThemeContext";
 import { SudokuGrid } from "./components/board/SudokuGrid";
 import { NumberPad } from "./components/board/NumberPad";
 import { CellStyleModal } from "./components/board/CellStyleModal";
 import { SaveSnapshotModal } from "./components/snapshots/SaveSnapshotModal";
 import { SnapshotTree } from "./components/snapshots/SnapshotTree";
 import { ImportBoardModal } from "./components/import/ImportBoardModal";
+import { ThemeSettings } from "./components/theme/ThemeSettings";
 
-type View = "board" | "snapshots";
+type View = "board" | "snapshots" | "theme";
 
 function AppShell() {
   const { loaded, resetBoard } = useGame();
@@ -18,9 +20,9 @@ function AppShell() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 p-4">
+    <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 bg-[var(--theme-bg)] p-4 text-[var(--theme-fg)]">
       <header className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-gray-800">Ayran Sudoku Simulator</h1>
+        <h1 className="text-lg font-bold">Ayran Sudoku Simulator</h1>
         <nav className="flex gap-1 rounded-md bg-gray-100 p-1">
           <button
             type="button"
@@ -36,10 +38,17 @@ function AppShell() {
           >
             Snapshots
           </button>
+          <button
+            type="button"
+            onClick={() => setView("theme")}
+            className={`rounded px-3 py-1.5 text-sm font-medium ${view === "theme" ? "bg-white shadow-sm" : "text-gray-500"}`}
+          >
+            Theme
+          </button>
         </nav>
       </header>
 
-      {view === "board" ? (
+      {view === "board" && (
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-center">
           <SudokuGrid />
           <div className="flex w-full max-w-xs flex-col gap-3">
@@ -61,18 +70,22 @@ function AppShell() {
             </button>
           </div>
         </div>
-      ) : (
-        <SnapshotTree />
       )}
+
+      {view === "snapshots" && <SnapshotTree />}
+
+      {view === "theme" && <ThemeSettings />}
     </div>
   );
 }
 
 function App() {
   return (
-    <GameProvider>
-      <AppShell />
-    </GameProvider>
+    <ThemeProvider>
+      <GameProvider>
+        <AppShell />
+      </GameProvider>
+    </ThemeProvider>
   );
 }
 
