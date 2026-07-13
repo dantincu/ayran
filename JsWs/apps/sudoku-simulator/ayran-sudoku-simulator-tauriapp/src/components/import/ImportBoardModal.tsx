@@ -46,6 +46,7 @@ export function ImportBoardModal() {
   const conflicts = editableBoard ? findConflicts(editableBoard) : new Set<number>();
   const lowConfidence = new Set(result?.lowConfidenceIndices ?? []);
   const boardIsBlank = board.every((cell) => cell.value == null);
+  const filledCount = editableBoard ? editableBoard.filter((cell) => cell.value != null).length : 0;
 
   return (
     <>
@@ -91,6 +92,9 @@ export function ImportBoardModal() {
                   Review the recognized digits. Cells outlined in amber had low OCR confidence;
                   cells in red conflict with another cell. Click a cell to correct it (0 clears).
                   Confirming will save this as a new snapshot.
+                </p>
+                <p className="mb-2 text-sm font-medium text-gray-700">
+                  {filledCount} / 81 cells filled
                 </p>
                 <div className="mb-4 grid grid-cols-9 overflow-hidden rounded border border-gray-400">
                   {editableBoard.map((cell, index) => {

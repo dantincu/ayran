@@ -87,3 +87,35 @@ export function findConflicts(board: Board): Set<number> {
   }
   return conflicts;
 }
+
+const BOX_CELLS: number[][] = Array.from({ length: 9 }, () => []);
+for (let i = 0; i < CELL_COUNT; i++) {
+  const { row, col } = indexToRowCol(i);
+  BOX_CELLS[boxIndexOf(row, col)].push(i);
+}
+
+export type DigitStatus = "normal" | "complete" | "impossible";
+
+/**
+ * For each digit 1-9: "complete" if all 9 instances are already placed, "impossible" if it can
+ * never reach 9 (some 3x3 box neither has it nor has any empty cell left that could take it
+ * without conflicting a peer — a dead end caused by how other digits were placed), else "normal".
+ * Recomputed from scratch every call, so it's always correct regardless of which digit changed —
+ * placing/clearing one digit can invalidate a completely different digit.
+ */
+export function computeDigitStatuses(board: Board): Record<number, DigitStatus> {
+  const statuses = {} as Record<number, DigitStatus>;
+  for (let digit = 1; digit <= 9; digit++) {
+    const count = board.reduce((n, cell) => n + (cell.value === digit ? 1 : 0), 0);
+    if (count >= 9) {
+      statuses[digit] = "complete";
+      continue;
+    }
+    const isDead = BOX_CELLS.some((cells) => {
+      if (cells.some((i) => board[i].value === digit)) return false;
+      return !cells.some((i) => board[i].value == null && !wouldConflict(board, i, digit));
+    });
+    statuses[digit] = isDead ? "impossible" : "normal";
+  }
+  return statuses;
+}

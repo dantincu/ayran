@@ -24,12 +24,14 @@ import {
 } from "../lib/db";
 import {
   cloneBoard,
+  computeDigitStatuses,
   createEmptyBoard,
   cyclePencilMark,
   findConflicts,
   indexToRowCol,
   wouldConflict,
   type Board,
+  type DigitStatus,
 } from "../lib/sudoku";
 import { getAncestorChain, getDescendantIds } from "../lib/snapshotTree";
 
@@ -44,6 +46,7 @@ const SHOW_ALL_SNAPSHOT_PENCIL_DIGITS_KEY = "showAllSnapshotPencilDigits";
 interface GameContextValue {
   board: Board;
   conflicts: Set<number>;
+  digitStatuses: Record<number, DigitStatus>;
   selectedIndex: number | null;
   rejectedIndex: number | null;
   rejectedValue: number | null;
@@ -123,6 +126,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   );
 
   const conflicts = useMemo(() => findConflicts(board), [board]);
+  const digitStatuses = useMemo(() => computeDigitStatuses(board), [board]);
 
   const clearRejection = useCallback(() => {
     if (rejectionTimeoutRef.current != null) {
@@ -370,6 +374,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
   const value: GameContextValue = {
     board,
     conflicts,
+    digitStatuses,
     selectedIndex,
     rejectedIndex,
     rejectedValue,
