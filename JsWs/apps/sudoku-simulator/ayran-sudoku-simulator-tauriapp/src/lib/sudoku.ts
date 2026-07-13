@@ -94,6 +94,28 @@ for (let i = 0; i < CELL_COUNT; i++) {
   BOX_CELLS[boxIndexOf(row, col)].push(i);
 }
 
+const ROW_CELLS: number[][] = Array.from({ length: 9 }, (_, row) =>
+  Array.from({ length: 9 }, (_, col) => rowColToIndex(row, col)),
+);
+const COL_CELLS: number[][] = Array.from({ length: 9 }, (_, col) =>
+  Array.from({ length: 9 }, (_, row) => rowColToIndex(row, col)),
+);
+const ALL_UNITS: number[][] = [...ROW_CELLS, ...COL_CELLS, ...BOX_CELLS];
+
+/**
+ * Empty cells that are the *only* remaining valid spot for `digit` within some row, column, or
+ * box that doesn't have it yet — a "hidden single": logically forced, not just legal.
+ */
+export function findForcedCellsForDigit(board: Board, digit: number): Set<number> {
+  const forced = new Set<number>();
+  for (const unit of ALL_UNITS) {
+    if (unit.some((i) => board[i].value === digit)) continue;
+    const candidates = unit.filter((i) => board[i].value == null && !wouldConflict(board, i, digit));
+    if (candidates.length === 1) forced.add(candidates[0]);
+  }
+  return forced;
+}
+
 export type DigitStatus = "normal" | "complete" | "impossible";
 
 /**

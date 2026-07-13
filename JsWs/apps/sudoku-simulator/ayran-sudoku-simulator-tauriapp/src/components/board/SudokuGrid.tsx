@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useGame } from "../../state/GameContext";
-import { getPeers } from "../../lib/sudoku";
+import { findForcedCellsForDigit, getPeers } from "../../lib/sudoku";
 import { SudokuCell } from "./SudokuCell";
 
 export function SudokuGrid() {
@@ -22,6 +22,11 @@ export function SudokuGrid() {
     return set;
   }, [board, selectedIndex, selectedValue]);
 
+  const forcedCells = useMemo(() => {
+    if (selectedValue == null) return new Set<number>();
+    return findForcedCellsForDigit(board, selectedValue);
+  }, [board, selectedValue]);
+
   return (
     <div className="grid aspect-square w-full max-w-[min(96vw,560px)] grid-cols-9 grid-rows-[repeat(9,minmax(0,1fr))] overflow-hidden rounded-md shadow-sm">
       {board.map((cell, index) => (
@@ -37,6 +42,7 @@ export function SudokuGrid() {
           isRejected={rejectedIndex === index}
           rejectedValue={rejectedIndex === index ? rejectedValue : null}
           isPeer={highlighted.has(index)}
+          isForced={forcedCells.has(index)}
           onSelect={selectCell}
         />
       ))}

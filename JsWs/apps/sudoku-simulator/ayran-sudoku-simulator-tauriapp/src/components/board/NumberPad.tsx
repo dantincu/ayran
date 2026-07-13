@@ -17,6 +17,7 @@ export function NumberPad() {
     pencilMode,
     togglePencilMode,
     togglePencilMark,
+    jumpToNextIncompleteDigit,
   } = useGame();
 
   const disabled = selectedIndex == null;
@@ -24,6 +25,7 @@ export function NumberPad() {
   const digitsDisabled = disabled || (pencilMode && selectedCell?.value != null);
   const hasComplete = Object.values(digitStatuses).includes("complete");
   const hasImpossible = Object.values(digitStatuses).includes("impossible");
+  const jumpDisabled = disabled || selectedCell?.value == null;
 
   return (
     <div className="flex flex-col gap-2">
@@ -63,6 +65,15 @@ export function NumberPad() {
             </button>
           );
         })}
+        <button
+          type="button"
+          disabled={jumpDisabled}
+          onClick={jumpToNextIncompleteDigit}
+          title="Jump to the first cell of the next incomplete digit"
+          className="aspect-square rounded-md border border-gray-300 bg-white text-xl font-bold text-gray-600 shadow-sm active:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          →
+        </button>
       </div>
       {(hasComplete || hasImpossible) && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500">

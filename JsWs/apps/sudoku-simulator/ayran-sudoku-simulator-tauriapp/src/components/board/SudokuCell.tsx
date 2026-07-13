@@ -12,6 +12,7 @@ interface SudokuCellProps {
   isRejected: boolean;
   rejectedValue: number | null;
   isPeer: boolean;
+  isForced: boolean;
   onSelect: (index: number) => void;
 }
 
@@ -28,6 +29,7 @@ export function SudokuCell({
   isRejected,
   rejectedValue,
   isPeer,
+  isForced,
   onSelect,
 }: SudokuCellProps) {
   const { row, col } = indexToRowCol(index);
@@ -48,6 +50,7 @@ export function SudokuCell({
   let bgClass = "bg-[var(--theme-board-bg)]";
   if (!isDark) {
     if (isConflict) bgClass = "bg-cell-conflict";
+    else if (isForced) bgClass = "bg-violet-100";
     else if (isSelected) bgClass = "bg-[var(--theme-selected-bg)]";
     else if (isPeer) bgClass = "bg-[var(--theme-peer-bg)]";
   }
@@ -62,7 +65,9 @@ export function SudokuCell({
       onClick={() => onSelect(index)}
       className={`relative flex aspect-square w-full min-w-0 min-h-0 items-center justify-center overflow-hidden text-3xl font-bold transition-colors sm:text-4xl ${borderClasses} ${bgClass} ${
         isRejected ? "animate-pulse ring-2 ring-inset ring-red-500" : ""
-      } ${isSelected && isDark ? "ring-2 ring-inset ring-blue-400" : ""}`}
+      } ${isSelected && isDark ? "ring-2 ring-inset ring-blue-400" : ""} ${
+        isForced && !isRejected ? "ring-1 ring-inset ring-violet-400" : ""
+      }`}
       style={darkStyle}
     >
       {isRejected ? (

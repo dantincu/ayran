@@ -63,6 +63,7 @@ interface GameContextValue {
   toggleCellDark: (index: number) => void;
   setCellColor: (index: number, hex: string | null) => void;
   togglePencilMark: (index: number, digit: number) => void;
+  jumpToNextIncompleteDigit: () => void;
   saveSnapshot: (name: string, labelColor: string | null) => Promise<void>;
   revertToSnapshot: (id: string) => Promise<void>;
   deleteSnapshot: (id: string) => Promise<void>;
@@ -229,6 +230,30 @@ export function GameProvider({ children }: { children: ReactNode }) {
     [currentSnapshotId, lastInput, persistLive],
   );
 
+  /**
+   * Takes the selected cell's digit, increments it (wrapping 9 -> 1) until landing on a digit
+   * that isn't "complete" yet, then selects the first cell (top-left, row-major) holding that
+   * digit. A no-op if the selected cell is empty, if every digit is complete, or if the target
+   * digit happens to have no cells on the board yet.
+   */
+  const jumpToNextIncompleteDigit = useCallback(() => {
+    if (selectedIndex == null) return;
+    const currentValue = board[selectedIndex].value;
+    if (currentValue == null) return;
+
+    let candidate = currentValue;
+    for (let step = 0; step < 9; step++) {
+      candidate = candidate === 9 ? 1 : candidate + 1;
+      if (digitStatuses[candidate] === "complete") continue;
+      const targetIndex = board.findIndex((cell) => cell.value === candidate);
+      if (targetIndex !== -1) {
+        setSelectedIndex(targetIndex);
+        clearRejection();
+      }
+      return;
+    }
+  }, [board, clearRejection, digitStatuses, selectedIndex]);
+
   const defaultSnapshotName = useCallback(() => {
     if (!lastInput) return "New snapshot";
     return `R${lastInput.row + 1}C${lastInput.col + 1}=${lastInput.value}`;
@@ -391,6 +416,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
     toggleCellDark,
     setCellColor,
     togglePencilMark,
+    jumpToNextIncompleteDigit,
     saveSnapshot,
     revertToSnapshot,
     deleteSnapshot,
