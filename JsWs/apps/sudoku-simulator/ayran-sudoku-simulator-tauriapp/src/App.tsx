@@ -17,14 +17,14 @@ function AppShell() {
   const [view, setView] = useState<View>("board");
 
   if (!loaded) {
-    return <div className="flex h-screen items-center justify-center text-gray-500">Loading…</div>;
+    return <div className="flex min-h-dvh items-center justify-center text-gray-500">Loading…</div>;
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 bg-[var(--theme-bg)] p-4 text-[var(--theme-fg)]">
-      <header className="flex items-center justify-between">
+    <div className="mx-auto flex min-h-dvh max-w-3xl flex-col gap-4 bg-[var(--theme-bg)] p-4 text-[var(--theme-fg)]">
+      <header className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="text-lg font-bold">Ayran Sudoku Simulator</h1>
-        <nav className="flex gap-1 rounded-md bg-gray-100 p-1">
+        <nav className="flex flex-wrap gap-1 rounded-md bg-gray-100 p-1">
           <button
             type="button"
             onClick={() => setView("board")}

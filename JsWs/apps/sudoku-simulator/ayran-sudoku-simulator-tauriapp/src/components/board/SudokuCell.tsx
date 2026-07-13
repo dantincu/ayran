@@ -60,7 +60,7 @@ export function SudokuCell({
     <button
       type="button"
       onClick={() => onSelect(index)}
-      className={`relative flex aspect-square w-full items-center justify-center text-3xl font-bold transition-colors sm:text-4xl ${borderClasses} ${bgClass} ${
+      className={`relative flex aspect-square w-full min-w-0 min-h-0 items-center justify-center overflow-hidden text-3xl font-bold transition-colors sm:text-4xl ${borderClasses} ${bgClass} ${
         isRejected ? "animate-pulse ring-2 ring-inset ring-red-500" : ""
       } ${isSelected && isDark ? "ring-2 ring-inset ring-blue-400" : ""}`}
       style={darkStyle}
