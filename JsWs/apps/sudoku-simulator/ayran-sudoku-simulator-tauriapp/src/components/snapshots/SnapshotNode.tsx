@@ -10,6 +10,9 @@ interface SnapshotNodeProps {
   depth: number;
 }
 
+const INDENT = 20;
+const CIRCLE_CENTER = 7; // half of the h-3.5/w-3.5 (14px) label circle
+
 export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodeProps) {
   const { revertToSnapshot, deleteSnapshot, setSnapshotLabelColor } = useGame();
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -18,10 +21,16 @@ export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodePro
   return (
     <div>
       <div
-        className="flex items-center gap-2 py-1"
-        style={{ paddingLeft: `${depth * 20}px` }}
+        className="relative flex min-w-0 items-center gap-2 py-1"
+        style={{ paddingLeft: `${depth * INDENT}px` }}
       >
-        {depth > 0 && <span className="text-gray-300">└─</span>}
+        {depth > 0 && (
+          <span
+            aria-hidden="true"
+            className="absolute h-1.5 w-1.5 -translate-y-1/2 rounded-full bg-gray-400"
+            style={{ left: `${(depth - 1) * INDENT + CIRCLE_CENTER - 3}px`, top: "50%" }}
+          />
+        )}
 
         <button
           type="button"
@@ -32,7 +41,7 @@ export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodePro
         />
 
         <span
-          className={`flex-1 truncate text-sm ${isCurrent ? "font-semibold text-blue-700" : "text-gray-800"}`}
+          className={`min-w-0 flex-1 truncate text-sm ${isCurrent ? "font-semibold text-blue-700" : "text-gray-800"}`}
         >
           {node.name}
           {isCurrent && <span className="ml-1 text-xs font-normal text-blue-500">(current)</span>}
@@ -42,9 +51,11 @@ export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodePro
         <button
           type="button"
           onClick={() => revertToSnapshot(node.id)}
-          className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50"
+          title="Revert to this snapshot"
+          aria-label="Revert to this snapshot"
+          className="shrink-0 rounded border border-gray-300 px-1.5 py-0.5 text-sm leading-none text-gray-700 hover:bg-gray-50"
         >
-          Revert
+          ↺
         </button>
         <button
           type="button"
@@ -53,16 +64,18 @@ export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodePro
               deleteSnapshot(node.id);
             }
           }}
-          className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
+          title="Delete this snapshot"
+          aria-label="Delete this snapshot"
+          className="shrink-0 rounded border border-red-300 px-1.5 py-0.5 text-sm leading-none text-red-600 hover:bg-red-50"
         >
-          Delete
+          🗑
         </button>
       </div>
 
       {pickerOpen && (
         <div
           className="mb-1 flex flex-wrap gap-1.5"
-          style={{ paddingLeft: `${depth * 20 + 22}px` }}
+          style={{ paddingLeft: `${depth * INDENT + 22}px` }}
         >
           <button
             type="button"
@@ -89,14 +102,23 @@ export function SnapshotNode({ node, currentSnapshotId, depth }: SnapshotNodePro
         </div>
       )}
 
-      {node.children.map((child) => (
-        <SnapshotNode
-          key={child.id}
-          node={child}
-          currentSnapshotId={currentSnapshotId}
-          depth={depth + 1}
-        />
-      ))}
+      {node.children.length > 0 && (
+        <div className="relative">
+          <div
+            aria-hidden="true"
+            className="absolute bottom-0 top-0 border-l-2 border-gray-300"
+            style={{ left: `${depth * INDENT + CIRCLE_CENTER}px` }}
+          />
+          {node.children.map((child) => (
+            <SnapshotNode
+              key={child.id}
+              node={child}
+              currentSnapshotId={currentSnapshotId}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

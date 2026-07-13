@@ -116,6 +116,22 @@ export function findForcedCellsForDigit(board: Board, digit: number): Set<number
   return forced;
 }
 
+/**
+ * All hidden-single deductions currently on the board, across every digit — cellIndex -> digit.
+ * If two digits somehow both claim the same cell (an inconsistent/contradictory board state,
+ * since this app doesn't guarantee a solvable puzzle), the lower digit wins and the other is
+ * left for the user to resolve manually.
+ */
+export function findAllForcedCells(board: Board): Map<number, number> {
+  const assignments = new Map<number, number>();
+  for (let digit = 1; digit <= 9; digit++) {
+    for (const index of findForcedCellsForDigit(board, digit)) {
+      if (!assignments.has(index)) assignments.set(index, digit);
+    }
+  }
+  return assignments;
+}
+
 export type DigitStatus = "normal" | "complete" | "impossible";
 
 /**

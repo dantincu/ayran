@@ -32,9 +32,11 @@ export function SnapshotPencilButton({ snapshotId, snapshotName }: SnapshotPenci
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="rounded border border-gray-300 px-2 py-0.5 text-xs text-gray-700 hover:bg-gray-50"
+        title="Edit pencil marks"
+        aria-label="Edit pencil marks"
+        className="shrink-0 rounded border border-gray-300 px-1.5 py-0.5 text-sm leading-none text-gray-700 hover:bg-gray-50"
       >
-        Pencils
+        ✏
       </button>
 
       {open && snapshot && (

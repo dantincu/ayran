@@ -27,6 +27,7 @@ import {
   computeDigitStatuses,
   createEmptyBoard,
   cyclePencilMark,
+  findAllForcedCells,
   findConflicts,
   indexToRowCol,
   wouldConflict,
@@ -47,6 +48,8 @@ interface GameContextValue {
   board: Board;
   conflicts: Set<number>;
   digitStatuses: Record<number, DigitStatus>;
+  forcedCellCount: number;
+  fillForcedCells: () => void;
   selectedIndex: number | null;
   rejectedIndex: number | null;
   rejectedValue: number | null;
@@ -128,6 +131,7 @@ export function GameProvider({ children }: { children: ReactNode }) {
 
   const conflicts = useMemo(() => findConflicts(board), [board]);
   const digitStatuses = useMemo(() => computeDigitStatuses(board), [board]);
+  const forcedCellCount = useMemo(() => findAllForcedCells(board).size, [board]);
 
   const clearRejection = useCallback(() => {
     if (rejectionTimeoutRef.current != null) {
@@ -253,6 +257,23 @@ export function GameProvider({ children }: { children: ReactNode }) {
       return;
     }
   }, [board, clearRejection, digitStatuses, selectedIndex]);
+
+  /**
+   * Fills every currently-detectable hidden-single cell in one batch. Filling can create new
+   * hidden singles, so clicking again after a fill will pick up the next wave.
+   */
+  const fillForcedCells = useCallback(() => {
+    setBoard((prev) => {
+      const assignments = findAllForcedCells(prev);
+      if (assignments.size === 0) return prev;
+      const next = cloneBoard(prev);
+      for (const [index, digit] of assignments) {
+        next[index] = { ...next[index], value: digit, pencilMarks: {} };
+      }
+      persistLive(next, currentSnapshotId, lastInput);
+      return next;
+    });
+  }, [currentSnapshotId, lastInput, persistLive]);
 
   const defaultSnapshotName = useCallback(() => {
     if (!lastInput) return "New snapshot";
@@ -400,6 +421,8 @@ export function GameProvider({ children }: { children: ReactNode }) {
     board,
     conflicts,
     digitStatuses,
+    forcedCellCount,
+    fillForcedCells,
     selectedIndex,
     rejectedIndex,
     rejectedValue,

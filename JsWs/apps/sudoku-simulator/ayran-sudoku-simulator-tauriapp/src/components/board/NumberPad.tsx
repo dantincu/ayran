@@ -18,6 +18,8 @@ export function NumberPad() {
     togglePencilMode,
     togglePencilMark,
     jumpToNextIncompleteDigit,
+    forcedCellCount,
+    fillForcedCells,
   } = useGame();
 
   const disabled = selectedIndex == null;
@@ -91,6 +93,15 @@ export function NumberPad() {
           )}
         </div>
       )}
+      <button
+        type="button"
+        disabled={forcedCellCount === 0}
+        onClick={fillForcedCells}
+        title="Fill every cell that's the only remaining spot for its digit"
+        className="w-full rounded-md border border-violet-300 bg-violet-50 py-2 text-sm font-semibold text-violet-700 shadow-sm disabled:cursor-not-allowed disabled:opacity-40"
+      >
+        Fill forced cells{forcedCellCount > 0 ? ` (${forcedCellCount})` : ""}
+      </button>
       <div className="flex gap-2">
         <button
           type="button"
