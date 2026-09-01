@@ -6,7 +6,8 @@ internal static class WindowEnumerator
 {
     /// <summary>
     /// Enumerates the windows that would show a taskbar button - the same filtering
-    /// heuristic used by Alt-Tab style window switchers - and numbers them 1..N.
+    /// heuristic used by Alt-Tab style window switchers. Unordered; callers that need
+    /// taskbar-matching order and grouping should run this through TaskbarIconGrouper.
     /// </summary>
     public static List<TaskbarWindowInfo> GetTaskbarWindows(nint excludeHandle = 0)
     {
@@ -21,33 +22,17 @@ internal static class WindowEnumerator
             return true;
         }, 0);
 
-        var unordered = new List<TaskbarWindowInfo>(handles.Count);
+        var result = new List<TaskbarWindowInfo>(handles.Count);
         foreach (var hWnd in handles)
         {
             var title = GetWindowTitle(hWnd);
             NativeMethods.GetWindowThreadProcessId(hWnd, out var processId);
 
-            unordered.Add(new TaskbarWindowInfo
+            result.Add(new TaskbarWindowInfo
             {
-                Number = 0, // assigned below, once the final order is known
                 Handle = hWnd,
                 Title = title,
                 Icon = IconExtractor.GetIconFor(hWnd, processId),
-            });
-        }
-
-        var ordered = TaskbarOrderProvider.OrderByTaskbarPosition(unordered);
-
-        var result = new List<TaskbarWindowInfo>(ordered.Count);
-        var number = 1;
-        foreach (var w in ordered)
-        {
-            result.Add(new TaskbarWindowInfo
-            {
-                Number = number++,
-                Handle = w.Handle,
-                Title = w.Title,
-                Icon = w.Icon,
             });
         }
 

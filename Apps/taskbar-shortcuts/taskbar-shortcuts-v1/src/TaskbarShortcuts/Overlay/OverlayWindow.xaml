@@ -27,7 +27,7 @@
         </Border.Effect>
         <StackPanel>
             <Border Background="#2A2A2A" CornerRadius="8,8,0,0" Padding="16,10">
-                <TextBlock Text="Type a number and press Enter"
+                <TextBlock Text="Type a number and press Enter (add a letter for grouped windows)"
                            Foreground="#CCCCCC"
                            FontSize="13" />
             </Border>
@@ -51,17 +51,20 @@
                                             <DataTrigger Binding="{Binding IsHighlighted}" Value="True">
                                                 <Setter Property="Background" Value="#3F5FA0D0" />
                                             </DataTrigger>
+                                            <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                                                <Setter Property="Opacity" Value="0.55" />
+                                            </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
                                 </Border.Style>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="36" />
+                                        <ColumnDefinition Width="46" />
                                         <ColumnDefinition Width="24" />
                                         <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
                                     <TextBlock Grid.Column="0"
-                                               Text="{Binding Number}"
+                                               Text="{Binding SelectorCode}"
                                                Foreground="#3FCF7F"
                                                FontWeight="Bold"
                                                FontSize="16"

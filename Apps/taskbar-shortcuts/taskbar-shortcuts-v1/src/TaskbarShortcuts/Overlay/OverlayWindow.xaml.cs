@@ -11,7 +11,8 @@ internal partial class OverlayWindow : Window
     private const double ListHeightReserve = 160; // header + buffer row + borders/padding
 
     private readonly List<WindowRowViewModel> _rows = new();
-    private string _buffer = string.Empty;
+    private string _digits = string.Empty;
+    private string _letters = string.Empty;
     private bool _closed;
 
     public OverlayWindow()
@@ -27,7 +28,28 @@ internal partial class OverlayWindow : Window
     {
         var selfHandle = new WindowInteropHelper(this).Handle;
         var windows = WindowEnumerator.GetTaskbarWindows(selfHandle);
-        _rows.AddRange(windows.Select(w => new WindowRowViewModel(w)));
+        var groups = TaskbarIconGrouper.BuildGroups(windows);
+
+        foreach (var group in groups)
+        {
+            if (group.Windows.Count == 0)
+            {
+                _rows.Add(WindowRowViewModel.ForPlaceholder(group));
+            }
+            else if (group.Windows.Count == 1)
+            {
+                _rows.Add(WindowRowViewModel.ForWindow(group.Number, letter: null, group.Windows[0]));
+            }
+            else
+            {
+                for (var i = 0; i < group.Windows.Count; i++)
+                {
+                    var letters = SelectorCode.IndexToLetters(i + 1);
+                    _rows.Add(WindowRowViewModel.ForWindow(group.Number, letters, group.Windows[i]));
+                }
+            }
+        }
+
         WindowsList.ItemsSource = _rows;
 
         ListScroller.MaxHeight = Math.Max(100, SystemParameters.WorkArea.Height - TopMargin - ListHeightReserve);
@@ -61,23 +83,35 @@ internal partial class OverlayWindow : Window
 
         if (e.Key == Key.Enter || e.Key == Key.Return)
         {
-            TryActivateBuffered();
+            TrySelectBuffered();
             e.Handled = true;
             return;
         }
 
         if (e.Key == Key.Back)
         {
-            if (_buffer.Length > 0) _buffer = _buffer[..^1];
+            if (_letters.Length > 0) _letters = _letters[..^1];
+            else if (_digits.Length > 0) _digits = _digits[..^1];
             UpdateHighlight();
             e.Handled = true;
             return;
         }
 
+        // Digits open the icon number; once a letter has been typed, the number is closed.
         var digit = KeyToDigit(e.Key);
-        if (digit >= 0)
+        if (digit >= 0 && _letters.Length == 0)
         {
-            _buffer += digit.ToString();
+            _digits += digit.ToString();
+            UpdateHighlight();
+            e.Handled = true;
+            return;
+        }
+
+        // Letters disambiguate a window within a grouped icon; need a number typed first.
+        var letter = KeyToLetter(e.Key);
+        if (letter is not null && _digits.Length > 0)
+        {
+            _letters += letter.Value;
             UpdateHighlight();
             e.Handled = true;
         }
@@ -90,37 +124,48 @@ internal partial class OverlayWindow : Window
         _ => -1,
     };
 
+    private static char? KeyToLetter(Key key)
+        => key is >= Key.A and <= Key.Z ? (char)('a' + (key - Key.A)) : null;
+
     private void UpdateHighlight()
     {
-        BufferText.Text = _buffer;
-        var target = ParseBuffer();
+        BufferText.Text = _digits + _letters;
+        var number = ParseNumber();
         foreach (var row in _rows)
         {
-            row.IsHighlighted = target.HasValue && row.Number == target.Value;
+            row.IsHighlighted = number.HasValue && row.Number == number.Value
+                && (_letters.Length == 0 || string.Equals(row.Letter, _letters, StringComparison.Ordinal));
         }
     }
 
-    private int? ParseBuffer()
-        => int.TryParse(_buffer, out var value) ? value : null;
+    private int? ParseNumber()
+        => int.TryParse(_digits, out var value) ? value : null;
 
-    private void TryActivateBuffered()
+    private void TrySelectBuffered()
     {
-        var target = ParseBuffer();
-        if (target is null) return;
+        var number = ParseNumber();
+        if (number is null) return;
 
-        var row = _rows.FirstOrDefault(r => r.Number == target.Value);
+        var row = FindRow(number.Value, _letters);
         if (row is null) return;
 
         CloseOverlay();
-        WindowActivator.Activate(row.Handle);
+        row.Select();
     }
+
+    /// <summary>Finds the row for a number + optional letters. With no letters, resolves to
+    /// the group's only row (single window or placeholder) or the group's first window.</summary>
+    private WindowRowViewModel? FindRow(int number, string letters)
+        => letters.Length > 0
+            ? _rows.FirstOrDefault(r => r.Number == number && r.Letter == letters)
+            : _rows.FirstOrDefault(r => r.Number == number && (r.Letter is null || r.Letter == "a"));
 
     private void Row_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         if (sender is not FrameworkElement { DataContext: WindowRowViewModel row }) return;
 
         CloseOverlay();
-        WindowActivator.Activate(row.Handle);
+        row.Select();
     }
 
     private void CloseOverlay()
