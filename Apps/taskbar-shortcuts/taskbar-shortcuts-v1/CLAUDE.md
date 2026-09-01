@@ -1,0 +1,3 @@
+# Taskbar Shortcuts
+
+Let's create a way to reach the icons from the taskbar in windows 11 using the keyboard. Currently I can easily access the first 10 icons from the left by pressing the WIN key and a digit key at the same time. I would like to achieve a similar result for all icons in the task bar by opening a popup that lists all the icons from the taskbar, assigns autoincremented number to each of them, and let's me type a number and when pressing enter, it opens the corresponding icon from the taskbar (not by launching a new window, but by bringing in view the window that has already been open on that tab - just like when I press WIN key and a digit at the same time)
