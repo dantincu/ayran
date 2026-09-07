@@ -48,6 +48,26 @@ Deploy/manage scripts, mirroring the Node ones, live in `f:\T\turmerik\Scripts\D
 - `stop-ayran-lan-streamer.bat` — kills whatever's listening on port 9443 (works for either deployment, since only one ever runs at a time).
 - `renew-ayran-lan-streamer-cert.sh`/`.bat` — installs the renewed cert to `api-rs/certs/` specifically and restarts `lan-streamer-api.exe` (not `node`). The "Ayran LAN Streamer - Cert Renewal" scheduled task points here now, since `api-rs` is the live deployment.
 
+## Installing the desktop app
+
+```
+cd desktop
+npm install
+npm run tauri build
+```
+
+`bundle.targets` is `"all"` in `desktop/src-tauri/tauri.conf.json`, so this produces every installer format the host OS supports, under `desktop/src-tauri/target/release/bundle/`:
+
+- **Windows**: `msi/Ayran LAN Streamer_0.1.0_x64_en-US.msi` and `nsis/Ayran LAN Streamer_0.1.0_x64-setup.exe` — either one installs normally via its standard installer UI (Start Menu shortcut, uninstall entry in "Apps & features", etc.).
+- **macOS**: `dmg/Ayran LAN Streamer_0.1.0_aarch64.dmg` (or `_x64.dmg` on Intel) — mount it and drag the `.app` to `Applications`, same as any other Mac app.
+- **Linux**: `deb/`, `appimage/`, and `rpm/` (only if `rpmbuild` is installed) — install with the distro's usual package manager, or just run the `AppImage` directly.
+
+There's no code-signing cert configured for any platform, so the OS will flag the installer as unrecognized on first run — click through it same as any other unsigned app (Windows SmartScreen: "More info" → "Run anyway"; macOS Gatekeeper: right-click the `.app` → "Open" instead of double-clicking).
+
+`DEFAULT_API_BASE_URL` (`desktop/src/lib/config.ts`) is compiled into the build, so make sure it points at the right API host *before* running `tauri build` — it currently defaults to the deployed instance (`https://ayran-lan-streamer.duckdns.org:9443`, see "TLS certificate" below). Whatever a user later types into the login screen's API URL field overrides this and persists in `localStorage` from then on, same caveat as the mobile app (see "Caveat" under "TLS certificate" below).
+
+You only need `npm run tauri dev` (see "Running" above) for local development — `tauri build` is just for producing a distributable installer.
+
 ## Deploying to Android
 
 Debug build (Gradle auto-signs with a generated debug key — fine for testing, not for distributing):
