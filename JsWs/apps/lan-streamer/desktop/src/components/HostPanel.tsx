@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as api from "../lib/api";
-import { AudioCapture, captureStream, type AudioSource } from "../lib/audioCapture";
+import { AudioCapture, captureStream, listMicrophones, type AudioSource } from "../lib/audioCapture";
 import { activeHostsSummary, connectionStatusLabel } from "../lib/format";
 import { MaxAmplitudeControl } from "./MaxAmplitudeControl";
 import { setNativeLoopbackGain, startNativeLoopback, stopNativeLoopback } from "../lib/nativeLoopback";
@@ -9,6 +9,7 @@ import type { Session, StreamMode, StreamRecord } from "../lib/types";
 
 const REFRESH_INTERVAL_MS = 4000;
 const GAIN_STORAGE_KEY = "lan-streamer:deviceGain";
+const MIC_DEVICE_STORAGE_KEY = "lan-streamer:micDeviceId";
 
 function loadStoredGain(): number {
   const raw = localStorage.getItem(GAIN_STORAGE_KEY);
@@ -22,6 +23,8 @@ export function HostPanel({ session }: { session: Session }) {
   const [newStreamMode, setNewStreamMode] = useState<StreamMode>("merged");
   const [error, setError] = useState<string>();
   const [audioSource, setAudioSource] = useState<AudioSource>("microphone");
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+  const [micDeviceId, setMicDeviceId] = useState(() => localStorage.getItem(MIC_DEVICE_STORAGE_KEY) ?? "");
   const [hostingStreamId, setHostingStreamId] = useState<string>();
   const [paused, setPaused] = useState(false);
   // Persisted per-device, not per-account: this is "how loud THIS device's
@@ -58,6 +61,36 @@ export function HostPanel({ session }: { session: Session }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    async function refreshMicDevices() {
+      try {
+        let devices = await listMicrophones();
+        // Device labels are blank until mic permission has been granted at
+        // least once for this origin - prime it with a throwaway request
+        // (immediately stopped) so the dropdown can show real device names
+        // instead of empty strings.
+        if (devices.length > 0 && devices.every((d) => !d.label)) {
+          const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+          probe.getTracks().forEach((t) => t.stop());
+          devices = await listMicrophones();
+        }
+        setMicDevices(devices);
+      } catch {
+        // No mic permission yet / no input devices - leave the list empty,
+        // startHosting's own getUserMedia call will surface any real error.
+      }
+    }
+
+    void refreshMicDevices();
+    navigator.mediaDevices.addEventListener("devicechange", refreshMicDevices);
+    return () => navigator.mediaDevices.removeEventListener("devicechange", refreshMicDevices);
+  }, []);
+
+  function handleMicDeviceChange(id: string) {
+    setMicDeviceId(id);
+    localStorage.setItem(MIC_DEVICE_STORAGE_KEY, id);
+  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -120,7 +153,12 @@ export function HostPanel({ session }: { session: Session }) {
         }, effectiveGain);
       } else {
         usingNativeLoopbackRef.current = false;
-        const mediaStream = await captureStream(audioSource);
+        // Only pass a deviceId if it's still present - a stored id whose
+        // device has since been unplugged would otherwise make getUserMedia
+        // throw OverconstrainedError instead of falling back to the default.
+        const selectedMicId =
+          audioSource === "microphone" && micDevices.some((d) => d.deviceId === micDeviceId) ? micDeviceId : undefined;
+        const mediaStream = await captureStream(audioSource, selectedMicId);
         // "test-tone" is just a marker passed straight through to
         // AudioCapture (which generates that audio internally) - there's no
         // real MediaStream/tracks to stop for it.
@@ -244,6 +282,28 @@ export function HostPanel({ session }: { session: Session }) {
           App's test sound
         </label>
       </div>
+
+      {audioSource === "microphone" && (
+        <div className="flex items-center gap-2 text-sm">
+          <label htmlFor="mic-device" className="text-neutral-300">
+            Microphone:
+          </label>
+          <select
+            id="mic-device"
+            className="flex-1 rounded border border-neutral-700 bg-neutral-800 px-2 py-1"
+            value={micDeviceId}
+            disabled={!!hostingStreamId}
+            onChange={(e) => handleMicDeviceChange(e.target.value)}
+          >
+            <option value="">Default (system input device)</option>
+            {micDevices.map((d) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {d.label || `Microphone (${d.deviceId.slice(0, 8)})`}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="rounded border border-neutral-800 px-3 py-2 text-sm">
         <div className="flex items-center justify-between gap-3">

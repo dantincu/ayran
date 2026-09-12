@@ -6,14 +6,25 @@ export type AudioSource = "microphone" | "system" | "test-tone";
 
 const TEST_TONE_URL = "/test-tone.wav";
 
-export async function captureStream(source: AudioSource): Promise<MediaStream | "test-tone"> {
+export async function listMicrophones(): Promise<MediaDeviceInfo[]> {
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((d) => d.kind === "audioinput");
+}
+
+export async function captureStream(source: AudioSource, deviceId?: string): Promise<MediaStream | "test-tone"> {
   if (source === "microphone") {
     return navigator.mediaDevices.getUserMedia({
       // Most mic hardware is mono; requesting stereo as a preference (not a
       // hard requirement) lets genuinely stereo input mics through while
       // still working on mono ones - AudioCapture below up-mixes mono to
       // stereo either way, so callers don't need to care which happened.
-      audio: { channelCount: { ideal: CHANNELS }, sampleRate: SAMPLE_RATE, echoCancellation: false, noiseSuppression: false },
+      audio: {
+        channelCount: { ideal: CHANNELS },
+        sampleRate: SAMPLE_RATE,
+        echoCancellation: false,
+        noiseSuppression: false,
+        ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      },
     });
   }
 
