@@ -1,0 +1,42 @@
+.app-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: calc(56px + env(safe-area-inset-top, 0px));
+  padding: env(safe-area-inset-top, 0px) calc(12px + env(safe-area-inset-right, 0px)) 0
+    calc(12px + env(safe-area-inset-left, 0px));
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.app-header-left,
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 0;
+}
+
+.app-header-right {
+  justify-content: flex-end;
+}
+
+.app-header-center {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.app-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+  padding-left: 4px;
+}

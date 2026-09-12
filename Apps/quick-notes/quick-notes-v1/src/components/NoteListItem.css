@@ -1,0 +1,68 @@
+.note-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.note-item:hover {
+  background: var(--hover);
+}
+
+.note-item-selected {
+  background: var(--selected);
+}
+
+.note-item-checkbox {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--surface);
+}
+
+.note-item-checkbox.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.note-item-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.note-item-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-item-untitled {
+  font-style: italic;
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.note-item-snippet {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

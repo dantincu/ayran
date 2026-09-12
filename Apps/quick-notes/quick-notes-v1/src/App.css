@@ -1,0 +1,13 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--surface);
+}
+
+.app-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}

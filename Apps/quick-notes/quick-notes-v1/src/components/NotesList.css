@@ -1,0 +1,12 @@
+.notes-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.notes-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 24px;
+}

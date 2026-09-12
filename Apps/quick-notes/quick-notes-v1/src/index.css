@@ -1,0 +1,97 @@
+:root {
+  --bg: #f4f3f6;
+  --surface: #ffffff;
+  --text: #1c1a22;
+  --text-muted: #75717d;
+  --border: #e5e4e9;
+  --border-strong: #c9c6d1;
+  --hover: #f0eef4;
+  --selected: #efe6ff;
+  --accent: #7c3aed;
+
+  color-scheme: light dark;
+  font: 15px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161b;
+    --surface: #1f1e24;
+    --text: #f0eef4;
+    --text-muted: #a29da9;
+    --border: #322f39;
+    --border-strong: #46424f;
+    --hover: #29272f;
+    --selected: #362a4d;
+    --accent: #a78bfa;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  height: 100vh;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.icon-button:hover {
+  background: var(--hover);
+}
+
+.icon-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+.icon-button-active {
+  background: var(--selected);
+  color: var(--accent);
+}
+
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 22px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primary-button:hover {
+  opacity: 0.92;
+}
