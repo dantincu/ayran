@@ -97,6 +97,34 @@ internal partial class OverlayWindow : Window
             return;
         }
 
+        if (e.Key == Key.Up)
+        {
+            ListScroller.LineUp();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Down)
+        {
+            ListScroller.LineDown();
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.PageUp || e.Key == Key.Left)
+        {
+            ScrollByHalfViewport(-1);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.PageDown || e.Key == Key.Right)
+        {
+            ScrollByHalfViewport(1);
+            e.Handled = true;
+            return;
+        }
+
         // Digits open the icon number; once a letter has been typed, the number is closed.
         var digit = KeyToDigit(e.Key);
         if (digit >= 0 && _letters.Length == 0)
@@ -126,6 +154,9 @@ internal partial class OverlayWindow : Window
 
     private static char? KeyToLetter(Key key)
         => key is >= Key.A and <= Key.Z ? (char)('a' + (key - Key.A)) : null;
+
+    private void ScrollByHalfViewport(int direction)
+        => ListScroller.ScrollToVerticalOffset(ListScroller.VerticalOffset + direction * ListScroller.ViewportHeight / 2);
 
     private void UpdateHighlight()
     {
