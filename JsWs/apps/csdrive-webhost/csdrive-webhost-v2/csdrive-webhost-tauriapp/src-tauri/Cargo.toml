@@ -1,0 +1,11 @@
+[package]
+name = "csdrive-webhost-tauriapp"
+version = "0.1.0"
+description = "CsDrive WebHost - serves a user-provided index.html as the app UI"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
