@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import LabelChip from './LabelChip';
 import type { Note } from '../types';
 import './NoteListItem.css';
 
@@ -70,6 +71,13 @@ export default function NoteListItem({
           <span className="note-item-title">{note.title}</span>
         ) : (
           <span className="note-item-title note-item-untitled">untitled note</span>
+        )}
+        {note.labels.length > 0 && (
+          <span className="note-item-labels">
+            {note.labels.map((label) => (
+              <LabelChip key={label.id} label={label} />
+            ))}
+          </span>
         )}
         {snippet && <span className="note-item-snippet">{snippet}</span>}
       </span>

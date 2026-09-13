@@ -59,6 +59,13 @@
   color: var(--text-muted);
 }
 
+.note-item-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0;
+}
+
 .note-item-snippet {
   font-size: 13px;
   color: var(--text-muted);

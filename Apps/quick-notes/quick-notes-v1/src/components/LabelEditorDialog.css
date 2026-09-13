@@ -1,0 +1,47 @@
+.label-editor-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+
+.label-editor-row {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.label-editor-row:last-child {
+  border-bottom: none;
+}
+
+.label-editor-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.label-editor-swatch {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.label-editor-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.label-editor-row .color-picker {
+  margin-top: 8px;
+}
+
+.label-editor-add {
+  width: 100%;
+}

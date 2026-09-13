@@ -1,0 +1,101 @@
+.stylesheet-editor {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.stylesheet-editor-name {
+  flex: 0 0 auto;
+  padding: 12px calc(16px + env(safe-area-inset-right, 0px)) 12px calc(16px + env(safe-area-inset-left, 0px));
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  outline: none;
+}
+
+.stylesheet-editor-name::placeholder {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.stylesheet-editor-code-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--surface);
+}
+
+.stylesheet-editor-backdrop,
+.stylesheet-editor-textarea {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border: none;
+  padding: 16px calc(16px + env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px))
+    calc(16px + env(safe-area-inset-left, 0px));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  tab-size: 2;
+  box-sizing: border-box;
+}
+
+.stylesheet-editor-backdrop {
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--text);
+}
+
+.stylesheet-editor-textarea {
+  width: 100%;
+  height: 100%;
+  outline: none;
+  resize: none;
+  overflow: auto;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text);
+}
+
+.stylesheet-editor-textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.stylesheet-editor-backdrop .hljs-comment {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.stylesheet-editor-backdrop .hljs-selector-class,
+.stylesheet-editor-backdrop .hljs-selector-id,
+.stylesheet-editor-backdrop .hljs-selector-tag,
+.stylesheet-editor-backdrop .hljs-selector-pseudo {
+  color: var(--code-title);
+}
+
+.stylesheet-editor-backdrop .hljs-attribute {
+  color: var(--code-keyword);
+}
+
+.stylesheet-editor-backdrop .hljs-string {
+  color: var(--code-string);
+}
+
+.stylesheet-editor-backdrop .hljs-number {
+  color: var(--code-number);
+}
+
+.stylesheet-editor-backdrop .hljs-meta {
+  color: var(--code-tag);
+}
+
+.stylesheet-editor-backdrop .hljs-built_in,
+.stylesheet-editor-backdrop .hljs-keyword {
+  color: var(--code-builtin);
+}

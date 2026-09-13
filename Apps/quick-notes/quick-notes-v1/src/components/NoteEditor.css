@@ -10,72 +10,23 @@
   min-height: 0;
 }
 
-.note-editor-textarea {
+.note-editor-code-wrap {
+  position: relative;
   flex: 1 1 auto;
-  width: 100%;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: 20px calc(20px + env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px))
-    calc(20px + env(safe-area-inset-left, 0px));
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
-  font-size: 14.5px;
-  line-height: 1.6;
+  min-height: 0;
   background: var(--surface);
-  color: var(--text);
 }
 
-.note-editor-preview {
+/* Light-DOM host for the preview's shadow root - box layout only. The content
+   inside the shadow root (see ShadowScope) reuses the ".note-editor-preview"
+   class name for its own wrapper so default/custom stylesheet selectors like
+   ".note-editor-preview h1" keep working unchanged on both sides. */
+.note-editor-preview-host {
   flex: 1 1 auto;
   padding: 20px calc(24px + env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px))
     calc(24px + env(safe-area-inset-left, 0px));
   overflow-wrap: break-word;
   line-height: 1.6;
-}
-
-.note-editor-preview-empty {
-  color: var(--text-muted);
-  font-style: italic;
-}
-
-.note-editor-preview :first-child {
-  margin-top: 0;
-}
-
-.note-editor-preview pre {
-  background: var(--hover);
-  padding: 12px 14px;
-  border-radius: 8px;
-  overflow-x: auto;
-}
-
-.note-editor-preview code {
-  background: var(--hover);
-  padding: 0.1em 0.35em;
-  border-radius: 4px;
-  font-size: 0.9em;
-}
-
-.note-editor-preview pre code {
-  background: none;
-  padding: 0;
-}
-
-.note-editor-preview blockquote {
-  margin: 0;
-  padding: 2px 14px;
-  border-left: 3px solid var(--border-strong);
-  color: var(--text-muted);
-}
-
-.note-editor-preview table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-.note-editor-preview th,
-.note-editor-preview td {
-  border: 1px solid var(--border);
-  padding: 6px 10px;
-  text-align: left;
+  background: var(--surface);
+  color: var(--text);
 }
