@@ -9,6 +9,32 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 const USER_PROTOCOL: &str = "csuser";
 const ACTION_SCHEME: &str = "csuser-action";
+const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
+
+#[tauri::command]
+fn keychain_set_secret(key: String, value: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    entry.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn keychain_get_secret(key: String) -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.get_password() {
+        Ok(value) => Ok(Some(value)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn keychain_delete_secret(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
 
 fn content_type_for(path: &Path) -> &'static str {
     match path
@@ -125,6 +151,14 @@ fn open_in_text_editor(path: &Path) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_sql::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            keychain_set_secret,
+            keychain_get_secret,
+            keychain_delete_secret
+        ])
         .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
             let user_dir = ctx
                 .app_handle()

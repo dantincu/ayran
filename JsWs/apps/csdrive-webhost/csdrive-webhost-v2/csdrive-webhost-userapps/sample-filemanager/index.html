@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CsDrive Sample File Manager</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      function csdriveShowFatal(message) {
+        var el = document.createElement('pre')
+        el.style.cssText =
+          'position:fixed;inset:0;margin:0;padding:16px;background:#3f1d1d;color:#fca5a5;font-size:13px;white-space:pre-wrap;overflow:auto;z-index:99999;'
+        el.textContent = message
+        document.body.appendChild(el)
+      }
+      window.addEventListener('error', function (e) {
+        csdriveShowFatal('Uncaught error: ' + e.message + '\n' + (e.error && e.error.stack ? e.error.stack : ''))
+      })
+      window.addEventListener('unhandledrejection', function (e) {
+        var reason = e.reason
+        csdriveShowFatal(
+          'Unhandled promise rejection: ' + (reason && reason.message ? reason.message : reason) + '\n' + (reason && reason.stack ? reason.stack : ''),
+        )
+      })
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,362 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #6b7280;
+  --border: #e2e8f0;
+  --accent: #2563eb;
+  --accent-fg: #ffffff;
+  --panel-bg: #f8fafc;
+  --error-bg: #fee2e2;
+  --error-fg: #991b1b;
+  --status-bg: #dcfce7;
+  --status-fg: #166534;
+  --row-hover: #f1f5f9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --fg: #e5e7eb;
+    --muted: #9ca3af;
+    --border: #30343c;
+    --accent: #3b82f6;
+    --accent-fg: #0b0d10;
+    --panel-bg: #1c1f26;
+    --error-bg: #3f1d1d;
+    --error-fg: #fca5a5;
+    --status-bg: #14301f;
+    --status-fg: #86efac;
+    --row-hover: #20242c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  margin: 0;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.tab-nav {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+
+.tab-button {
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+
+.tab-button.active {
+  background: var(--bg);
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.tab-content {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--row-hover);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  color: var(--fg);
+  cursor: pointer;
+  text-align: left;
+}
+
+.link-button:hover {
+  color: var(--accent);
+  background: none;
+}
+
+.link-button.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.entry-name {
+  font-size: 14px;
+}
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.crumb-sep {
+  color: var(--muted);
+  margin: 0 2px;
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.error-banner {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.status-banner {
+  background: var(--status-bg);
+  color: var(--status-fg);
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.file-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.file-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.file-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.file-table tr:hover td {
+  background: var(--row-hover);
+}
+
+.row-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.row-actions button {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.editor-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+.editor-panel {
+  background: var(--bg);
+  border-radius: 8px;
+  width: min(900px, 90vw);
+  height: min(600px, 85vh);
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  gap: 12px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+}
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.editor-header div {
+  display: flex;
+  gap: 8px;
+}
+
+.editor-panel textarea {
+  flex: 1;
+  resize: none;
+  font-family: 'Cascadia Code', Consolas, monospace;
+  line-height: 1.5;
+}
+
+.db-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.new-db-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sqlite-body {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+  min-height: 0;
+}
+
+.sqlite-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding-right: 12px;
+  overflow: auto;
+}
+
+.table-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sqlite-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.sql-runner {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.sql-runner textarea {
+  flex: 1;
+  font-family: 'Cascadia Code', Consolas, monospace;
+}
+
+.result-grid-wrapper {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.result-grid {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+}
+
+.result-grid th,
+.result-grid td {
+  border-bottom: 1px solid var(--border);
+  padding: 4px 10px;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.result-grid th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-bg);
+}
+
+.filen-account-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.add-account-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: var(--panel-bg);
+  border-radius: 8px;
+}

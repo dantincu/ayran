@@ -8,4 +8,8 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+keyring = "4.2.0"
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2.7.3"
+tauri-plugin-fs = "2.5.2"
+tauri-plugin-sql = { version = "2.4.1", features = ["sqlite"] }
