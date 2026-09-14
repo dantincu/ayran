@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Tab init demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; line-height: 1.5; padding: 0 1rem; }
+  button { font: inherit; padding: 0.4em 0.9em; cursor: pointer; }
+  pre { background: #f1f1f1; padding: 0.75em; border-radius: 6px; overflow: auto; }
+  .entry { border: 1px solid #ddd; border-radius: 6px; padding: 0.5em 0.8em; margin: 0.5em 0; }
+</style>
+</head>
+<body>
+<h1>Tab init demo</h1>
+<p>
+  Every click below calls the backend's <code>init_window_tab</code> command with a
+  different <code>resourceId</code>/<code>title</code>, simulating a real app opening
+  another document/view as a new tab in this same window. The window is identified
+  implicitly (this window's own Tauri label) — nothing about it is passed explicitly.
+</p>
+<p>
+  <button id="open-tab">Open another tab</button>
+</p>
+<div id="log"></div>
+
+<script>
+  let counter = 1
+
+  async function openTab() {
+    const n = counter++
+    const resp = await window.__TAURI__.core.invoke('init_window_tab', {
+      relativePath: 'tab-demo.html',
+      appVersion: 1,
+      resourceId: `demo-resource-${n}`,
+      title: `Demo tab ${n}`,
+      resourceType: 'demo-doc',
+    })
+
+    const el = document.createElement('div')
+    el.className = 'entry'
+    el.innerHTML = `<strong>Demo tab ${n}</strong><pre>${JSON.stringify(resp, null, 2)}</pre>`
+    document.getElementById('log').prepend(el)
+  }
+
+  document.getElementById('open-tab').addEventListener('click', () => {
+    openTab().catch((e) => {
+      const el = document.createElement('div')
+      el.className = 'entry'
+      el.textContent = `Error: ${e}`
+      document.getElementById('log').prepend(el)
+    })
+  })
+
+  // Register one tab automatically on load, like a real app would on startup.
+  openTab().catch((e) => {
+    const el = document.createElement('div')
+    el.className = 'entry'
+    el.textContent = `Error: ${e}`
+    document.getElementById('log').prepend(el)
+  })
+</script>
+</body>
+</html>

@@ -4,21 +4,27 @@
  * Naming convention: every user app under csdrive-webhost-userapps/ runs from the
  * same `csuser://localhost` origin, so IndexedDB databases and Web Storage keys are
  * shared browser-wide across all of them unless namespaced. Any database or key an
- * app creates for its own persistence must be prefixed with `[<app-folder-name>]` —
- * for this app, `[admin-app]`. See csdrive-webhost-v2/CLAUDE.md for the full rule. */
+ * app creates for its own persistence must be prefixed with `[<html-file-relative-path>]`
+ * — the path this page was served from (e.g. `[index.html]`), taken from
+ * `location.pathname` rather than a hardcoded app name, so the same app keeps its
+ * state separate when deployed at more than one location. See
+ * csdrive-webhost-v2/CLAUDE.md for the full rule. */
 
-const APP_PREFIX = '[admin-app]'
+const APP_PREFIX = `[${location.pathname.replace(/^\//, '')}]`
 
 const DB_NAME = `${APP_PREFIX}app-state`
 const STORE_NAME = 'kv'
 
-/** Superseded by the prefixed name above; deleted once on first use so it doesn't
- * linger unnamespaced. Safe to remove this once it's rolled out everywhere. */
-const OLD_UNPREFIXED_DB_NAME = 'csdrive-admin-app-state'
-try {
-  indexedDB.deleteDatabase(OLD_UNPREFIXED_DB_NAME)
-} catch {
-  // ignore — best-effort cleanup only
+/** Superseded by the path-based prefix above; deleted once on first use so it
+ * doesn't linger under its old name. Safe to remove this once it's rolled out
+ * everywhere. */
+const OLD_DB_NAMES = ['csdrive-admin-app-state', '[admin-app]app-state']
+for (const name of OLD_DB_NAMES) {
+  try {
+    indexedDB.deleteDatabase(name)
+  } catch {
+    // ignore — best-effort cleanup only
+  }
 }
 
 function openAppStateDb(): Promise<IDBDatabase> {
