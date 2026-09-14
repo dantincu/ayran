@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -8,19 +8,23 @@ import Header from './Header';
 import ShadowScope from './ShadowScope';
 import StylesheetPickerDialog from './StylesheetPickerDialog';
 import LabelEditorDialog from './LabelEditorDialog';
+import EditorSettingsDialog from './EditorSettingsDialog';
 import { createId, putNote, putTemplate } from '../db/notesDb';
 import { deriveTitle } from '../utils/markdownTitle';
 import { computeWholeParagraphsSelection } from '../utils/snapSelect';
 import { computeMarkdownHighlightRanges } from '../utils/markdownEditorHighlight';
+import { renderWithWhitespaceHighlight } from '../utils/whitespaceHighlight';
 import { isEffectivelyEmpty } from '../utils/newNoteTemplate';
-import type { Note, NoteTemplate, Stylesheet } from '../types';
+import { sendProcessTextOut, type ProcessTextPayload } from '../utils/androidProcessText';
+import type { EditorSettings, Note, NoteTemplate, Stylesheet } from '../types';
 import './NoteEditor.css';
 
 const AUTOSAVE_DELAY_MS = 500;
 
 // Always-on mechanical CSS for the two shadow-scoped content areas. Never
 // toggleable and never visible to custom stylesheets - see ShadowScope.
-const EDITOR_SHELL_CSS = `
+function buildEditorShellCss(wrapText: boolean): string {
+  return `
 *, *::before, *::after { box-sizing: border-box; }
 
 .note-editor-highlight-backdrop,
@@ -34,9 +38,8 @@ const EDITOR_SHELL_CSS = `
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 14.5px;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  overflow-wrap: break-word;
+  white-space: ${wrapText ? 'pre-wrap' : 'pre'};
+  ${wrapText ? 'word-wrap: break-word;\n  overflow-wrap: break-word;' : ''}
   tab-size: 2;
 }
 
@@ -60,7 +63,44 @@ const EDITOR_SHELL_CSS = `
 .note-editor-textarea::placeholder {
   color: var(--text-muted);
 }
+
+/* Whitespace highlighting - only ever rendered when the setting is on, see
+   renderWithWhitespaceHighlight(). Tab/newline symbols use ::before with
+   absolute positioning so they never add width and desync backdrop/textarea. */
+.ws-space,
+.ws-tab {
+  background: var(--ws-bg);
+  border-radius: 2px;
+}
+
+.ws-tab,
+.ws-newline {
+  position: relative;
+}
+
+.ws-tab::before,
+.ws-newline::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  color: var(--ws-symbol);
+  font-size: 0.85em;
+  line-height: inherit;
+  pointer-events: none;
+}
+
+.ws-tab::before {
+  content: '→';
+}
+
+.ws-newline::before {
+  content: '¶';
+  background: var(--ws-bg);
+  border-radius: 2px;
+  padding: 0 1px;
+}
 `;
+}
 
 const PREVIEW_SHELL_CSS = `
 *, *::before, *::after { box-sizing: border-box; }
@@ -94,23 +134,25 @@ const previewSchema = {
   tagNames: [...(defaultSchema.tagNames ?? []), 'mark', 'sub', 'sup', 'kbd', 'u', 'ins', 'abbr', 'details', 'summary'],
 };
 
-function renderHighlightedMarkdown(content: string): ReactNode[] {
+function renderHighlightedMarkdown(content: string, highlightWhitespace: boolean): ReactNode[] {
   const ranges = computeMarkdownHighlightRanges(content);
   const nodes: ReactNode[] = [];
   let cursor = 0;
+  const withWs = (text: string, key: string) =>
+    highlightWhitespace ? renderWithWhitespaceHighlight(text, key) : text;
   ranges.forEach((r, i) => {
     const start = Math.max(r.start, cursor);
-    if (start > cursor) nodes.push(content.slice(cursor, start));
+    if (start > cursor) nodes.push(withWs(content.slice(cursor, start), `gap-${i}`));
     if (r.end > start) {
       nodes.push(
         <span key={i} className={r.className}>
-          {content.slice(start, r.end)}
+          {withWs(content.slice(start, r.end), `r-${i}`)}
         </span>,
       );
     }
     cursor = Math.max(cursor, r.end);
   });
-  if (cursor < content.length) nodes.push(content.slice(cursor));
+  if (cursor < content.length) nodes.push(withWs(content.slice(cursor), 'tail'));
   return nodes;
 }
 
@@ -122,6 +164,10 @@ interface NoteEditorProps {
   onDiscardEmpty: (id: string) => void;
   onDelete: (id: string) => void;
   onBack: () => void;
+  processText: ProcessTextPayload | null;
+  onProcessTextOutSent: () => void;
+  editorSettings: EditorSettings;
+  onChangeEditorSettings: (settings: EditorSettings) => void;
 }
 
 export default function NoteEditor({
@@ -132,6 +178,10 @@ export default function NoteEditor({
   onDiscardEmpty,
   onDelete,
   onBack,
+  processText,
+  onProcessTextOutSent,
+  editorSettings,
+  onChangeEditorSettings,
 }: NoteEditorProps) {
   const [content, setContent] = useState(note.content);
   const [previewing, setPreviewing] = useState(false);
@@ -139,12 +189,14 @@ export default function NoteEditor({
   const [canRedo, setCanRedo] = useState(false);
   const [stylesheetPickerOpen, setStylesheetPickerOpen] = useState(false);
   const [labelEditorOpen, setLabelEditorOpen] = useState(false);
+  const [editorSettingsOpen, setEditorSettingsOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const backdropRef = useRef<HTMLPreElement>(null);
   const selectionRef = useRef({ start: note.content.length, end: note.content.length });
   const lastPersistedRef = useRef(note);
   const undoStackRef = useRef<string[]>([]);
   const redoStackRef = useRef<string[]>([]);
+  const pendingCaretRef = useRef<number | null>(null);
 
   const persist = useCallback(
     (text: string) => {
@@ -214,6 +266,18 @@ export default function NoteEditor({
     ta.setSelectionRange(end, end);
   }, []);
 
+  // Restores the caret after a content change that was made programmatically
+  // (process-text import) rather than by direct typing - by the time this runs
+  // the textarea's DOM value already reflects the new content.
+  useLayoutEffect(() => {
+    const ta = textareaRef.current;
+    const caret = pendingCaretRef.current;
+    if (ta && caret !== null) {
+      ta.setSelectionRange(caret, caret);
+      pendingCaretRef.current = null;
+    }
+  }, [content]);
+
   const handleContentChange = (value: string) => {
     setContent(value);
     if (value !== lastPersistedRef.current.content) setCanUndo(true);
@@ -266,7 +330,11 @@ export default function NoteEditor({
     onBack();
   };
 
-  const highlightedContent = useMemo(() => renderHighlightedMarkdown(content), [content]);
+  const highlightedContent = useMemo(
+    () => renderHighlightedMarkdown(content, editorSettings.highlightWhitespace),
+    [content, editorSettings.highlightWhitespace],
+  );
+  const editorShellCss = useMemo(() => buildEditorShellCss(editorSettings.wrapText), [editorSettings.wrapText]);
   const editorCss = useMemo(
     () => resolveStylesheetCss(note.editorStylesheetIds, stylesheets),
     [note.editorStylesheetIds, stylesheets],
@@ -296,6 +364,27 @@ export default function NoteEditor({
     selectionRef.current = result;
   };
 
+  const handleProcessTextIn = () => {
+    if (!processText || previewing) return;
+    const { start, end } = selectionRef.current;
+    const next = content.slice(0, start) + processText.text + content.slice(end);
+    const caret = start + processText.text.length;
+    selectionRef.current = { start: caret, end: caret };
+    pendingCaretRef.current = caret;
+    handleContentChange(next);
+    textareaRef.current?.focus();
+  };
+
+  const handleProcessTextOut = () => {
+    if (!processText || processText.readonly || previewing) return;
+    const { start, end } = selectionRef.current;
+    if (start === end) return;
+    const selected = content.slice(start, end);
+    flushPendingSave();
+    sendProcessTextOut(selected);
+    onProcessTextOutSent();
+  };
+
   return (
     <div className="note-editor">
       <Header
@@ -307,7 +396,11 @@ export default function NoteEditor({
         onSnapWholeParagraphs={handleSnapWholeParagraphs}
         onOpenStylesheets={() => setStylesheetPickerOpen(true)}
         onOpenLabels={() => setLabelEditorOpen(true)}
+        onOpenEditorSettings={() => setEditorSettingsOpen(true)}
         onDeleteNote={() => onDelete(note.id)}
+        processText={processText}
+        onProcessTextIn={handleProcessTextIn}
+        onProcessTextOut={handleProcessTextOut}
         onUndo={handleUndo}
         canUndo={canUndo}
         onRedo={handleRedo}
@@ -330,7 +423,7 @@ export default function NoteEditor({
             </div>
           </ShadowScope>
         ) : (
-          <ShadowScope hostClassName="note-editor-code-wrap" shellCss={EDITOR_SHELL_CSS} contentCss={editorCss}>
+          <ShadowScope hostClassName="note-editor-code-wrap" shellCss={editorShellCss} contentCss={editorCss}>
             <pre className="note-editor-highlight-backdrop" ref={backdropRef} aria-hidden="true">
               {content ? highlightedContent : ''}
               {'\n'}
@@ -368,6 +461,13 @@ export default function NoteEditor({
           labels={note.labels}
           onChange={handleChangeLabels}
           onClose={() => setLabelEditorOpen(false)}
+        />
+      )}
+      {editorSettingsOpen && (
+        <EditorSettingsDialog
+          settings={editorSettings}
+          onChange={onChangeEditorSettings}
+          onClose={() => setEditorSettingsOpen(false)}
         />
       )}
     </div>

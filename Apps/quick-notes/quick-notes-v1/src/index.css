@@ -19,6 +19,9 @@
   --label-default-bg: #efe6ff;
   --label-default-fg: #4c1d95;
 
+  --ws-bg: rgba(124, 58, 237, 0.14);
+  --ws-symbol: #7c3aed;
+
   color-scheme: light dark;
   font: 15px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
@@ -50,6 +53,9 @@
 
     --label-default-bg: #362a4d;
     --label-default-fg: #e9d8fd;
+
+    --ws-bg: rgba(167, 139, 250, 0.22);
+    --ws-symbol: #a78bfa;
   }
 }
 

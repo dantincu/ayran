@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Header from './components/Header';
 import NotesList from './components/NotesList';
 import NoteEditor from './components/NoteEditor';
@@ -14,11 +14,14 @@ import {
   getAllNotes,
   getAllStylesheets,
   getAllTemplates,
+  getEditorSettings,
+  putEditorSettings,
   putStylesheet,
 } from './db/notesDb';
 import { DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS } from './db/defaultStylesheets';
 import { NEW_NOTE_TEMPLATE } from './utils/newNoteTemplate';
-import type { Note, NoteTemplate, Stylesheet } from './types';
+import { pullPendingProcessText, subscribeProcessTextIn, type ProcessTextPayload } from './utils/androidProcessText';
+import type { EditorSettings, Note, NoteTemplate, Stylesheet } from './types';
 import './App.css';
 
 type View =
@@ -35,12 +38,23 @@ export default function App() {
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [processText, setProcessText] = useState<ProcessTextPayload | null>(null);
+  const [editorSettings, setEditorSettings] = useState<EditorSettings>({
+    wrapText: true,
+    highlightWhitespace: false,
+  });
 
   useEffect(() => {
     void getAllNotes().then(setNotes);
     void getAllStylesheets().then(setStylesheets);
     void getAllTemplates().then(setTemplates);
+    void getEditorSettings().then(setEditorSettings);
   }, []);
+
+  const handleChangeEditorSettings = (settings: EditorSettings) => {
+    setEditorSettings(settings);
+    void putEditorSettings(settings);
+  };
 
   const createNoteWithStylesheets = (editorStylesheetIds: string[], previewStylesheetIds: string[]) => {
     const now = Date.now();
@@ -57,6 +71,38 @@ export default function App() {
     setNotes((prev) => [note, ...(prev ?? [])]);
     setView({ kind: 'editor', noteId: note.id });
   };
+
+  // A cold-start PROCESS_TEXT intent (the app opened via another app's text-selection
+  // menu) is picked up once on mount; a warm-start one (app already running) arrives
+  // as a pushed event instead - see src-tauri MainActivity's process-text bridge.
+  // Both defer creating a note until the initial getAllNotes() load has landed, since
+  // that load's setNotes() otherwise clobbers a note created while it's still pending.
+  const notesRef = useRef(notes);
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
+  const pulledProcessTextRef = useRef(false);
+  useEffect(() => {
+    if (notes === null || pulledProcessTextRef.current) return;
+    pulledProcessTextRef.current = true;
+    const pending = pullPendingProcessText();
+    if (pending) {
+      setProcessText(pending);
+      createNoteWithStylesheets(DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS);
+    }
+  }, [notes]);
+
+  useEffect(
+    () =>
+      subscribeProcessTextIn((payload) => {
+        setProcessText(payload);
+        if (notesRef.current !== null) {
+          createNoteWithStylesheets(DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS);
+        }
+      }),
+    [],
+  );
 
   const handleNewNote = () => {
     createNoteWithStylesheets(DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS);
@@ -216,6 +262,10 @@ export default function App() {
           onDiscardEmpty={handleDiscardEmptyNote}
           onDelete={handleDeleteNote}
           onBack={() => setView({ kind: 'list' })}
+          processText={processText}
+          onProcessTextOutSent={() => setProcessText(null)}
+          editorSettings={editorSettings}
+          onChangeEditorSettings={handleChangeEditorSettings}
         />
       </div>
     );

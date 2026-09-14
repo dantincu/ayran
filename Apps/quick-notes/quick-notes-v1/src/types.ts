@@ -38,3 +38,9 @@ export interface NoteTemplate {
   previewStylesheetIds: string[];
   createdAt: number;
 }
+
+/** Global (not per-note) preferences for the raw-markdown editor. */
+export interface EditorSettings {
+  wrapText: boolean;
+  highlightWhitespace: boolean;
+}

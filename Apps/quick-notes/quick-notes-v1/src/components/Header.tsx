@@ -1,4 +1,5 @@
 import OptionsMenu from './OptionsMenu';
+import type { ProcessTextPayload } from '../utils/androidProcessText';
 import './Header.css';
 
 interface ListHeaderProps {
@@ -21,6 +22,7 @@ interface EditorHeaderProps {
   onTogglePreview: () => void;
   onOptionsOpen: () => void;
   onSnapWholeParagraphs: () => void;
+  onOpenEditorSettings: () => void;
   onOpenStylesheets: () => void;
   onOpenLabels: () => void;
   onDeleteNote: () => void;
@@ -28,6 +30,9 @@ interface EditorHeaderProps {
   canUndo: boolean;
   onRedo: () => void;
   canRedo: boolean;
+  processText: ProcessTextPayload | null;
+  onProcessTextIn: () => void;
+  onProcessTextOut: () => void;
 }
 
 interface StylesheetsListHeaderProps {
@@ -127,6 +132,30 @@ export default function Header(props: HeaderProps) {
             >
               <EyeIcon />
             </button>
+            {props.processText && (
+              <>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Text in"
+                  title="Bring in text selected in the other app"
+                  disabled={props.previewing}
+                  onClick={props.onProcessTextIn}
+                >
+                  <TextInIcon />
+                </button>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Text out"
+                  title="Send this selection back to the other app"
+                  disabled={props.previewing || props.processText.readonly}
+                  onClick={props.onProcessTextOut}
+                >
+                  <TextOutIcon />
+                </button>
+              </>
+            )}
             <OptionsMenu
               onOpen={props.onOptionsOpen}
               entries={[
@@ -142,6 +171,7 @@ export default function Header(props: HeaderProps) {
                     },
                   ],
                 },
+                { type: 'item', label: 'Editor settings…', onSelect: props.onOpenEditorSettings },
                 { type: 'item', label: 'Stylesheets…', onSelect: props.onOpenStylesheets },
                 { type: 'item', label: 'Labels…', onSelect: props.onOpenLabels },
                 { type: 'item', label: 'Delete note', onSelect: props.onDeleteNote, danger: true },
@@ -226,6 +256,24 @@ function SaveIcon() {
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M5 13l4 4L19 7" />
+    </svg>
+  );
+}
+
+function TextInIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12h13M12 7l5 5-5 5" />
+      <path d="M21 5v14" />
+    </svg>
+  );
+}
+
+function TextOutIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 12H8M12 7l-5 5 5 5" />
+      <path d="M3 5v14" />
     </svg>
   );
 }

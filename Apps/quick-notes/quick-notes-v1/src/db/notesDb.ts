@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { Note, Stylesheet, NoteTemplate } from '../types';
+import type { Note, Stylesheet, NoteTemplate, EditorSettings } from '../types';
 import { DEFAULT_STYLESHEETS, DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS } from './defaultStylesheets';
 
 interface QuickNotesDb extends DBSchema {
@@ -18,10 +18,16 @@ interface QuickNotesDb extends DBSchema {
     value: NoteTemplate;
     indexes: { createdAt: number };
   };
+  settings: {
+    key: string;
+    value: EditorSettings & { id: string };
+  };
 }
 
 const DB_NAME = 'ayran-quick-notes';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
+const EDITOR_SETTINGS_ID = 'editor';
+const DEFAULT_EDITOR_SETTINGS: EditorSettings = { wrapText: true, highlightWhitespace: false };
 
 let dbPromise: Promise<IDBPDatabase<QuickNotesDb>> | null = null;
 
@@ -56,6 +62,9 @@ function getDb(): Promise<IDBPDatabase<QuickNotesDb>> {
             });
             cursor = await cursor.continue();
           }
+        }
+        if (oldVersion < 3) {
+          db.createObjectStore('settings', { keyPath: 'id' });
         }
       },
     }).then(async (db) => {
@@ -135,6 +144,17 @@ export async function putTemplate(template: NoteTemplate): Promise<void> {
 export async function deleteTemplate(id: string): Promise<void> {
   const db = await getDb();
   await db.delete('templates', id);
+}
+
+export async function getEditorSettings(): Promise<EditorSettings> {
+  const db = await getDb();
+  const stored = await db.get('settings', EDITOR_SETTINGS_ID);
+  return stored ? { wrapText: stored.wrapText, highlightWhitespace: stored.highlightWhitespace } : DEFAULT_EDITOR_SETTINGS;
+}
+
+export async function putEditorSettings(settings: EditorSettings): Promise<void> {
+  const db = await getDb();
+  await db.put('settings', { id: EDITOR_SETTINGS_ID, ...settings });
 }
 
 export function createId(): string {
