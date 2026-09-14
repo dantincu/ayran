@@ -1,5 +1,8 @@
+import type { ReactNode } from 'react';
 import OptionsMenu from './OptionsMenu';
 import type { ProcessTextPayload } from '../utils/androidProcessText';
+import { useHoldRepeat } from '../utils/useHoldRepeat';
+import type { ListSettings } from '../types';
 import './Header.css';
 
 interface ListHeaderProps {
@@ -13,6 +16,10 @@ interface ListHeaderProps {
   onDeleteSelected: () => void;
   onManageStylesheets: () => void;
   onNewNoteFromTemplate: () => void;
+  orderMode: ListSettings['orderMode'];
+  onToggleOrderMode: () => void;
+  onMoveSelectedUp: () => void;
+  onMoveSelectedDown: () => void;
 }
 
 interface EditorHeaderProps {
@@ -79,6 +86,11 @@ export default function Header(props: HeaderProps) {
               entries={[
                 { type: 'item', label: 'Note from template', onSelect: props.onNewNoteFromTemplate },
                 { type: 'item', label: 'Manage stylesheets', onSelect: props.onManageStylesheets },
+                {
+                  type: 'item',
+                  label: props.orderMode === 'custom' ? 'Use default order' : 'Use custom order',
+                  onSelect: props.onToggleOrderMode,
+                },
                 { type: 'item', label: 'Select all notes', onSelect: props.onSelectAll },
               ]}
             />
@@ -87,6 +99,16 @@ export default function Header(props: HeaderProps) {
 
         {props.mode === 'list' && props.selectionMode && (
           <>
+            {props.orderMode === 'custom' && props.selectedCount > 0 && (
+              <>
+                <MoveButton label="Move up" onFire={props.onMoveSelectedUp}>
+                  <ArrowUpIcon />
+                </MoveButton>
+                <MoveButton label="Move down" onFire={props.onMoveSelectedDown}>
+                  <ArrowDownIcon />
+                </MoveButton>
+              </>
+            )}
             {props.selectedCount > 0 && (
               <button
                 type="button"
@@ -202,6 +224,26 @@ export default function Header(props: HeaderProps) {
   );
 }
 
+function MoveButton({ label, onFire, children }: { label: string; onFire: () => void; children: ReactNode }) {
+  const { start, stop } = useHoldRepeat(onFire);
+  return (
+    <button
+      type="button"
+      className="icon-button"
+      aria-label={label}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        start();
+      }}
+      onPointerUp={stop}
+      onPointerLeave={stop}
+      onPointerCancel={stop}
+    >
+      {children}
+    </button>
+  );
+}
+
 function PlusIcon() {
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
@@ -274,6 +316,22 @@ function TextOutIcon() {
     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M21 12H8M12 7l-5 5 5 5" />
       <path d="M3 5v14" />
+    </svg>
+  );
+}
+
+function ArrowUpIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 19V5M6 11l6-6 6 6" />
+    </svg>
+  );
+}
+
+function ArrowDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 5v14M6 13l6 6 6-6" />
     </svg>
   );
 }

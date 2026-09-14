@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Header from './components/Header';
 import NotesList from './components/NotesList';
 import NoteEditor from './components/NoteEditor';
@@ -15,13 +15,17 @@ import {
   getAllStylesheets,
   getAllTemplates,
   getEditorSettings,
+  getListSettings,
   putEditorSettings,
+  putListSettings,
+  putNote,
   putStylesheet,
 } from './db/notesDb';
 import { DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS } from './db/defaultStylesheets';
 import { NEW_NOTE_TEMPLATE } from './utils/newNoteTemplate';
 import { pullPendingProcessText, subscribeProcessTextIn, type ProcessTextPayload } from './utils/androidProcessText';
-import type { EditorSettings, Note, NoteTemplate, Stylesheet } from './types';
+import { sortByCustomOrder, sortByDefaultOrder, moveSelectedBy1 } from './utils/noteOrder';
+import type { EditorSettings, ListSettings, Note, NoteTemplate, Stylesheet } from './types';
 import './App.css';
 
 type View =
@@ -43,33 +47,75 @@ export default function App() {
     wrapText: true,
     highlightWhitespace: false,
   });
+  const [listSettings, setListSettings] = useState<ListSettings>({ orderMode: 'default' });
 
   useEffect(() => {
     void getAllNotes().then(setNotes);
     void getAllStylesheets().then(setStylesheets);
     void getAllTemplates().then(setTemplates);
     void getEditorSettings().then(setEditorSettings);
+    void getListSettings().then(setListSettings);
   }, []);
+
+  const displayNotes = useMemo(
+    () => (listSettings.orderMode === 'custom' ? sortByCustomOrder(notes ?? []) : sortByDefaultOrder(notes ?? [])),
+    [notes, listSettings.orderMode],
+  );
 
   const handleChangeEditorSettings = (settings: EditorSettings) => {
     setEditorSettings(settings);
     void putEditorSettings(settings);
   };
 
+  const handleToggleOrderMode = () => {
+    const next: ListSettings = { orderMode: listSettings.orderMode === 'custom' ? 'default' : 'custom' };
+    setListSettings(next);
+    void putListSettings(next);
+  };
+
+  const applyReorder = (newOrderedIds: string[]) => {
+    setNotes((prev) => {
+      if (!prev) return prev;
+      const byId = new Map(prev.map((n) => [n.id, n]));
+      const updated: Note[] = [];
+      newOrderedIds.forEach((id, i) => {
+        const existing = byId.get(id);
+        if (existing && existing.order !== i) updated.push({ ...existing, order: i });
+      });
+      if (updated.length === 0) return prev;
+      void Promise.all(updated.map((n) => putNote(n)));
+      const updatedById = new Map(updated.map((n) => [n.id, n]));
+      return prev.map((n) => updatedById.get(n.id) ?? n);
+    });
+  };
+
+  const handleMoveSelected = (direction: -1 | 1) => {
+    if (selectedIds.size === 0) return;
+    applyReorder(moveSelectedBy1(displayNotes.map((n) => n.id), selectedIds, direction));
+  };
+
   const createNoteWithStylesheets = (editorStylesheetIds: string[], previewStylesheetIds: string[]) => {
     const now = Date.now();
-    const note: Note = {
-      id: createNoteId(),
-      title: '',
-      content: NEW_NOTE_TEMPLATE,
-      createdAt: now,
-      updatedAt: now,
-      labels: [],
-      editorStylesheetIds,
-      previewStylesheetIds,
-    };
-    setNotes((prev) => [note, ...(prev ?? [])]);
-    setView({ kind: 'editor', noteId: note.id });
+    const id = createNoteId();
+    // Reads the previous notes via the setState updater (not the outer `notes`
+    // closure) so this stays correct even when called from an effect whose
+    // closure captured an older `notes` value (e.g. the process-text subscription).
+    setNotes((prev) => {
+      const minOrder = prev && prev.length > 0 ? Math.min(...prev.map((n) => n.order)) : 0;
+      const note: Note = {
+        id,
+        title: '',
+        content: NEW_NOTE_TEMPLATE,
+        createdAt: now,
+        updatedAt: now,
+        labels: [],
+        editorStylesheetIds,
+        previewStylesheetIds,
+        order: minOrder - 1,
+      };
+      return [note, ...(prev ?? [])];
+    });
+    setView({ kind: 'editor', noteId: id });
   };
 
   // A cold-start PROCESS_TEXT intent (the app opened via another app's text-selection
@@ -284,16 +330,22 @@ export default function App() {
         onDeleteSelected={handleDeleteSelected}
         onManageStylesheets={() => setView({ kind: 'stylesheets' })}
         onNewNoteFromTemplate={handleNewNoteFromTemplate}
+        orderMode={listSettings.orderMode}
+        onToggleOrderMode={handleToggleOrderMode}
+        onMoveSelectedUp={() => handleMoveSelected(-1)}
+        onMoveSelectedDown={() => handleMoveSelected(1)}
       />
       <main className="app-scroll">
         <NotesList
-          notes={notes}
+          notes={displayNotes}
+          orderMode={listSettings.orderMode}
           selectionMode={selectionMode}
           selectedIds={selectedIds}
           onOpenNote={(id) => setView({ kind: 'editor', noteId: id })}
           onToggleSelect={handleToggleSelect}
           onLongPressNote={handleLongPressNote}
           onCreateFirst={handleNewNote}
+          onReorder={applyReorder}
         />
       </main>
       {templatePickerOpen && (

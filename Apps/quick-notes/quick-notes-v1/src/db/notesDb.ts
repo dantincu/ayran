@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { Note, Stylesheet, NoteTemplate, EditorSettings } from '../types';
+import type { Note, Stylesheet, NoteTemplate, EditorSettings, ListSettings } from '../types';
 import { DEFAULT_STYLESHEETS, DEFAULT_EDITOR_STYLESHEET_IDS, DEFAULT_PREVIEW_STYLESHEET_IDS } from './defaultStylesheets';
 
 interface QuickNotesDb extends DBSchema {
@@ -18,16 +18,20 @@ interface QuickNotesDb extends DBSchema {
     value: NoteTemplate;
     indexes: { createdAt: number };
   };
+  // Small single-doc-per-id key/value store - each id holds a differently-shaped
+  // settings blob (EditorSettings, ListSettings, ...), so the value type stays generic.
   settings: {
     key: string;
-    value: EditorSettings & { id: string };
+    value: { id: string } & Record<string, unknown>;
   };
 }
 
 const DB_NAME = 'ayran-quick-notes';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const EDITOR_SETTINGS_ID = 'editor';
 const DEFAULT_EDITOR_SETTINGS: EditorSettings = { wrapText: true, highlightWhitespace: false };
+const LIST_SETTINGS_ID = 'list';
+const DEFAULT_LIST_SETTINGS: ListSettings = { orderMode: 'default' };
 
 let dbPromise: Promise<IDBPDatabase<QuickNotesDb>> | null = null;
 
@@ -65,6 +69,14 @@ function getDb(): Promise<IDBPDatabase<QuickNotesDb>> {
         }
         if (oldVersion < 3) {
           db.createObjectStore('settings', { keyPath: 'id' });
+        }
+        if (oldVersion < 4) {
+          // Custom order stems from the default order (last created first) the
+          // first time it's used - backfill it now so it's ready whenever that is.
+          const notesStore = transaction.objectStore('notes');
+          const all = await notesStore.getAll();
+          const sorted = [...all].sort((a, b) => b.createdAt - a.createdAt);
+          await Promise.all(sorted.map((note, i) => notesStore.put({ ...note, order: note.order ?? i })));
         }
       },
     }).then(async (db) => {
@@ -149,12 +161,25 @@ export async function deleteTemplate(id: string): Promise<void> {
 export async function getEditorSettings(): Promise<EditorSettings> {
   const db = await getDb();
   const stored = await db.get('settings', EDITOR_SETTINGS_ID);
-  return stored ? { wrapText: stored.wrapText, highlightWhitespace: stored.highlightWhitespace } : DEFAULT_EDITOR_SETTINGS;
+  return stored
+    ? { wrapText: stored.wrapText as boolean, highlightWhitespace: stored.highlightWhitespace as boolean }
+    : DEFAULT_EDITOR_SETTINGS;
 }
 
 export async function putEditorSettings(settings: EditorSettings): Promise<void> {
   const db = await getDb();
   await db.put('settings', { id: EDITOR_SETTINGS_ID, ...settings });
+}
+
+export async function getListSettings(): Promise<ListSettings> {
+  const db = await getDb();
+  const stored = await db.get('settings', LIST_SETTINGS_ID);
+  return stored ? { orderMode: stored.orderMode as ListSettings['orderMode'] } : DEFAULT_LIST_SETTINGS;
+}
+
+export async function putListSettings(settings: ListSettings): Promise<void> {
+  const db = await getDb();
+  await db.put('settings', { id: LIST_SETTINGS_ID, ...settings });
 }
 
 export function createId(): string {

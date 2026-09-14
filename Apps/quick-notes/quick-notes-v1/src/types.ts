@@ -19,6 +19,8 @@ export interface Note {
   editorStylesheetIds: string[];
   /** IDs of Stylesheet records applied to this note's rendered preview. */
   previewStylesheetIds: string[];
+  /** Position in the user's custom note order (lower sorts first). Only consulted when ListSettings.orderMode is 'custom'. */
+  order: number;
 }
 
 export interface Stylesheet {
@@ -43,4 +45,10 @@ export interface NoteTemplate {
 export interface EditorSettings {
   wrapText: boolean;
   highlightWhitespace: boolean;
+}
+
+/** Global preferences for the notes list. */
+export interface ListSettings {
+  /** 'default' = last created first. 'custom' = user-arranged via drag/arrows, see Note.order. */
+  orderMode: 'default' | 'custom';
 }

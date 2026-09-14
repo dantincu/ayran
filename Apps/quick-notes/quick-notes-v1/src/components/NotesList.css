@@ -3,6 +3,17 @@
   flex-direction: column;
 }
 
+.notes-list-drop-indicator {
+  position: fixed;
+  left: 0;
+  right: 0;
+  height: 3px;
+  margin-top: -1.5px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 50;
+}
+
 .notes-empty-state {
   display: flex;
   align-items: center;
