@@ -158,6 +158,21 @@ export async function createStore(
   })
 }
 
+/** Clears localStorage, sessionStorage, and every IndexedDB database for this
+ * origin in one shot — including this app's own persisted UI state. */
+export async function wipeAllBrowserStorage(): Promise<void> {
+  window.localStorage.clear()
+  window.sessionStorage.clear()
+  const dbs = await listDatabases()
+  await Promise.all(
+    dbs.map((d) =>
+      deleteDatabase(d.name).catch((e) => {
+        throw new Error(`${d.name}: ${e instanceof Error ? e.message : String(e)}`)
+      }),
+    ),
+  )
+}
+
 export async function deleteStore(dbName: string, storeName: string): Promise<void> {
   const probe = await openDb(dbName)
   const currentVersion = probe.version

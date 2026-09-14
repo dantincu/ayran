@@ -90,11 +90,7 @@ fn current_millis() -> i64 {
 
 /// Rejects paths that escape the user folder or don't point at an existing .html/.htm file.
 fn validate_relative_html_path(app: &AppHandle, relative_path: &str) -> Result<(), String> {
-    let user_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join("user");
+    let user_dir = crate::data_location::effective_data_dir(app)?.join("user");
     let candidate = user_dir.join(relative_path);
 
     let canonical_user_dir = user_dir.canonicalize().map_err(|e| e.to_string())?;

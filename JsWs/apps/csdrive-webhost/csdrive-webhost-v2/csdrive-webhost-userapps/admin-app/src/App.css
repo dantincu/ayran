@@ -251,6 +251,12 @@ select {
   font-size: 13px;
 }
 
+.path {
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .error-banner {
   background: var(--error-bg);
   color: var(--error-fg);

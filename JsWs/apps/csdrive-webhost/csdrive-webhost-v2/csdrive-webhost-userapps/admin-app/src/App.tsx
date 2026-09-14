@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import { AppWindow, Cloud, Database, Folder, HardDrive, type LucideIcon } from 'lucide-react'
+import { AppWindow, Cloud, Database, Folder, HardDrive, Settings, type LucideIcon } from 'lucide-react'
 import WindowsTab from './components/WindowsTab'
 import FilesTab from './components/FilesTab'
 import FilenTab from './components/FilenTab'
 import SqliteTab from './components/SqliteTab'
 import StorageTab from './components/StorageTab'
+import SettingsTab from './components/SettingsTab'
 import { getAppState, setAppState } from './lib/appState'
 
-type Tab = 'windows' | 'files' | 'filen' | 'sqlite' | 'storage'
+type Tab = 'windows' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
 
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'windows', label: 'Windows', icon: AppWindow },
@@ -16,6 +17,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'filen', label: 'Filen.io', icon: Cloud },
   { id: 'sqlite', label: 'SQLite', icon: Database },
   { id: 'storage', label: 'Storage', icon: HardDrive },
+  { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
 const DEFAULT_TAB: Tab = 'windows'
@@ -68,6 +70,7 @@ export default function App() {
         {tab === 'filen' && <FilenTab />}
         {tab === 'sqlite' && <SqliteTab />}
         {tab === 'storage' && <StorageTab />}
+        {tab === 'settings' && <SettingsTab />}
       </main>
     </div>
   )

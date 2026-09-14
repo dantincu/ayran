@@ -13,6 +13,7 @@ import {
   listRecords,
   listStores,
   putRecord,
+  wipeAllBrowserStorage,
   type IdbInfo,
   type StoreInfo,
   type StoreRecord,
@@ -460,9 +461,41 @@ function IndexedDbPanel() {
 
 export default function StorageTab() {
   const [sub, setSub] = useState<SubTab>('local')
+  const [wipeKey, setWipeKey] = useState(0)
+  const [wipeError, setWipeError] = useState<string | null>(null)
+  const [wiping, setWiping] = useState(false)
+
+  async function handleWipeAll() {
+    if (
+      !window.confirm(
+        'Wipe ALL browser storage for this app — local storage, session storage, and every IndexedDB database (including this app’s own saved tab/folder state)?\n\nThis cannot be undone.',
+      )
+    ) {
+      return
+    }
+    setWipeError(null)
+    setWiping(true)
+    try {
+      await wipeAllBrowserStorage()
+      setWipeKey((k) => k + 1)
+    } catch (e) {
+      setWipeError(String(e))
+    } finally {
+      setWiping(false)
+    }
+  }
 
   return (
     <div className="tab-panel">
+      <div className="toolbar">
+        <strong>Browser storage</strong>
+        <div className="toolbar-actions">
+          <IconButton icon={Trash2} label="Wipe all browser storage" variant="danger" onClick={handleWipeAll} disabled={wiping} />
+        </div>
+      </div>
+
+      {wipeError && <div className="error-banner">{wipeError}</div>}
+
       <nav className="tab-nav sub-nav">
         <button className={`tab-button ${sub === 'local' ? 'active' : ''}`} onClick={() => setSub('local')} title="Local Storage">
           <HardDrive size={18} strokeWidth={2} aria-hidden="true" />
@@ -477,7 +510,7 @@ export default function StorageTab() {
           <span>IndexedDB</span>
         </button>
       </nav>
-      <div className="tab-content">
+      <div className="tab-content" key={wipeKey}>
         {sub === 'local' && <WebStoragePanel storage={window.localStorage} label="Local Storage" />}
         {sub === 'session' && <WebStoragePanel storage={window.sessionStorage} label="Session Storage" />}
         {sub === 'indexeddb' && <IndexedDbPanel />}

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod data_location;
 mod secondary_windows;
 
 use std::path::{Path, PathBuf};
@@ -171,12 +172,14 @@ fn main() {
             secondary_windows::focus_secondary_window,
             secondary_windows::add_window_tag,
             secondary_windows::remove_window_tag,
+            data_location::get_data_folder_info,
+            data_location::pick_and_set_custom_data_folder,
+            data_location::reset_data_folder_to_default,
+            data_location::clear_custom_data_folder_contents,
+            data_location::delete_app_data,
         ])
         .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
-            let user_dir = ctx
-                .app_handle()
-                .path()
-                .app_data_dir()
+            let user_dir = data_location::effective_data_dir(ctx.app_handle())
                 .expect("failed to resolve app data dir")
                 .join("user");
 
@@ -200,7 +203,7 @@ fn main() {
             }
         })
         .setup(|app| {
-            let app_data_dir = app.path().app_data_dir()?;
+            let app_data_dir = data_location::effective_data_dir(app.handle())?;
             let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&app_data_dir))?;
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
 
@@ -211,6 +214,10 @@ fn main() {
                 std::fs::create_dir_all(&user_dir)?;
                 std::fs::write(&index_path, sample_index_html(&user_dir))?;
             }
+
+            // The custom data folder (if any) lives outside the default app-data dir
+            // that fs:allow-appdata-* scopes cover, so extend the runtime scope to it.
+            let _ = tauri_plugin_fs::FsExt::fs_scope(app).allow_directory(&user_dir, true);
 
             let index_path_for_editor = index_path.clone();
             let user_dir_for_folder = user_dir.clone();
