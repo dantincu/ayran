@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, ChevronDown, ChevronRight, FilePlus, Pause, PauseCircle, Play, RefreshCw, Tag, X, XCircle } from 'lucide-react'
+import { Check, CheckCheck, ChevronDown, ChevronRight, Copy, FilePlus, Fingerprint, Pause, PauseCircle, Play, RefreshCw, Tag, X, XCircle } from 'lucide-react'
 import IconButton from './IconButton'
+import Modal from './Modal'
 import { getAppState, setAppState } from '../lib/appState'
 import {
   addSecondaryWindowEntry,
@@ -123,12 +124,76 @@ function TagBadge({ tag, onRemove }: { tag: TagRecord; onRemove: () => void }) {
   )
 }
 
+/** Synchronous, no permission prompt involved — the reliable path in a desktop
+ * webview. Tried first so a slow/hanging clipboard permission negotiation (seen with
+ * the async Clipboard API when the window lacks OS focus) never leaves the button
+ * stuck waiting. */
+function copyViaExecCommand(text: string): boolean {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const ok = document.execCommand('copy')
+  document.body.removeChild(textarea)
+  return ok
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  if (copyViaExecCommand(text)) return
+  await navigator.clipboard.writeText(text)
+}
+
+function WindowDetailsModal({ record, onClose }: { record: SecondaryWindowRecord; onClose: () => void }) {
+  const [copied, setCopied] = useState(false)
+
+  async function handleCopy() {
+    await copyToClipboard(record.guid)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <Modal title="Window details" onClose={onClose}>
+      <div>
+        <div className="modal-field-label">Created</div>
+        <div>{formatDateTime(record.createdAt)}</div>
+      </div>
+
+      <div>
+        <div className="modal-field-label">Tags</div>
+        {record.tags.length === 0 ? (
+          <div className="muted">No tags.</div>
+        ) : (
+          <div className="window-item-tags" style={{ padding: 0 }}>
+            {record.tags.map((tag) => (
+              <span key={tag.id} className="tag-badge" style={{ color: tag.fgColor, background: tag.bgColor }}>
+                {tag.text}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <div className="modal-field-label">GUID</div>
+        <div className="modal-guid-row">
+          <span className="window-item-guid">{record.guid}</span>
+          <IconButton icon={copied ? CheckCheck : Copy} label="Copy GUID" onClick={handleCopy} />
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 export default function WindowsTab() {
   const [records, setRecords] = useState<SecondaryWindowRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [addingTagFor, setAddingTagFor] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [detailsFor, setDetailsFor] = useState<SecondaryWindowRecord | null>(null)
 
   useEffect(() => {
     getAppState<Record<string, boolean>>(COLLAPSED_GROUPS_KEY).then((saved) => setCollapsed(saved ?? {}))
@@ -240,6 +305,7 @@ export default function WindowsTab() {
   }
 
   const groups = groupByPath(records)
+  const liveDetailsFor = detailsFor ? records.find((r) => r.guid === detailsFor.guid) ?? null : null
 
   return (
     <div className="tab-panel">
@@ -296,11 +362,11 @@ export default function WindowsTab() {
                   <div className="window-item-row">
                     <button className="link-button window-item-main" onClick={() => handleRowClick(record)}>
                       <span className={`status-dot ${record.isOpen ? 'status-open' : 'status-suspended'}`} />
-                      <span className="window-item-guid">{record.guid}</span>
                       <span className="muted window-item-date">{formatDateTime(record.createdAt)}</span>
                       <span className="muted window-item-state">{record.isOpen ? 'Open' : 'Suspended'}</span>
                     </button>
                     <div className="row-actions">
+                      <IconButton icon={Fingerprint} label="Details" onClick={() => setDetailsFor(record)} />
                       {record.isOpen ? (
                         <>
                           <IconButton icon={Pause} label="Suspend" onClick={() => handleSuspend(record.guid)} />
@@ -339,6 +405,8 @@ export default function WindowsTab() {
           </div>
         ))}
       </div>
+
+      {liveDetailsFor && <WindowDetailsModal record={liveDetailsFor} onClose={() => setDetailsFor(null)} />}
     </div>
   )
 }
