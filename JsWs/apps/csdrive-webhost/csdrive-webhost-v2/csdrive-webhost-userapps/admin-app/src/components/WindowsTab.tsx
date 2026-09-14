@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, FilePlus, Pause, PauseCircle, Play, RefreshCw, Tag, X, XCircle } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, FilePlus, Pause, PauseCircle, Play, RefreshCw, Tag, X, XCircle } from 'lucide-react'
 import IconButton from './IconButton'
+import { getAppState, setAppState } from '../lib/appState'
 import {
   addSecondaryWindowEntry,
   addWindowTag,
@@ -45,6 +46,8 @@ function groupByPath(records: SecondaryWindowRecord[]): Group[] {
 function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString()
 }
+
+const COLLAPSED_GROUPS_KEY = 'windowsTab.collapsedGroups'
 
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
@@ -125,6 +128,19 @@ export default function WindowsTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [addingTagFor, setAddingTagFor] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    getAppState<Record<string, boolean>>(COLLAPSED_GROUPS_KEY).then((saved) => setCollapsed(saved ?? {}))
+  }, [])
+
+  function toggleGroup(relativePath: string) {
+    setCollapsed((prev) => {
+      const next = { ...prev, [relativePath]: !prev[relativePath] }
+      setAppState(COLLAPSED_GROUPS_KEY, next)
+      return next
+    })
+  }
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -249,7 +265,20 @@ export default function WindowsTab() {
         {groups.map((group) => (
           <div key={group.relativePath} className="window-group">
             <div className="window-group-header">
-              <span className="window-group-path">{group.relativePath}</span>
+              <button
+                className="group-toggle"
+                onClick={() => toggleGroup(group.relativePath)}
+                title={collapsed[group.relativePath] ? 'Expand' : 'Collapse'}
+                aria-label={collapsed[group.relativePath] ? 'Expand' : 'Collapse'}
+              >
+                {collapsed[group.relativePath] ? (
+                  <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
+                ) : (
+                  <ChevronDown size={16} strokeWidth={2} aria-hidden="true" />
+                )}
+                <span className="window-group-path">{group.relativePath}</span>
+                <span className="muted window-group-count">({group.windows.length})</span>
+              </button>
               <div className="toolbar-actions">
                 <IconButton
                   icon={FilePlus}
@@ -260,6 +289,7 @@ export default function WindowsTab() {
                 <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(group.relativePath)} />
               </div>
             </div>
+            {!collapsed[group.relativePath] && (
             <ul className="window-list">
               {group.windows.map((record) => (
                 <li key={record.guid} className={`window-item ${record.isOpen ? 'open' : 'suspended'}`}>
@@ -305,6 +335,7 @@ export default function WindowsTab() {
                 </li>
               ))}
             </ul>
+            )}
           </div>
         ))}
       </div>

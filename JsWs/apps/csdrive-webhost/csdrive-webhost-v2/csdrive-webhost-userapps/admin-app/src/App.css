@@ -473,6 +473,33 @@ select {
   word-break: break-all;
 }
 
+.group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 2px;
+  color: var(--fg);
+  cursor: pointer;
+  min-width: 0;
+  text-align: left;
+}
+
+.group-toggle:hover {
+  background: none;
+  color: var(--accent);
+}
+
+.group-toggle svg {
+  flex-shrink: 0;
+}
+
+.window-group-count {
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .window-list {
   list-style: none;
   margin: 0;

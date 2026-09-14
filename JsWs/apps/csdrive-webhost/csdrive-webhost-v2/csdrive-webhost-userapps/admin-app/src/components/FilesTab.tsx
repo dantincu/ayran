@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import {
@@ -19,6 +19,7 @@ import {
   ClipboardPaste,
 } from 'lucide-react'
 import IconButton from './IconButton'
+import { getAppState, setAppState } from '../lib/appState'
 import { joinRelative } from '../lib/localFs'
 import {
   copyRootPath,
@@ -73,6 +74,13 @@ function isSameOrWithin(ancestor: string, candidate: string): boolean {
   return candidate === ancestor || candidate.startsWith(`${ancestor}/`)
 }
 
+const LOCATION_KEY = 'filesTab.location'
+
+interface SavedLocation {
+  rootId: string
+  path: string
+}
+
 export default function FilesTab() {
   const [roots, setRoots] = useState<FileRoot[]>([])
   const [activeRootId, setActiveRootId] = useState<string>(USER_ROOT_ID)
@@ -84,15 +92,37 @@ export default function FilesTab() {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
+  const [hydrated, setHydrated] = useState(false)
 
   useEffect(() => {
-    getUserRoot().then((root) => setRoots([root]))
+    ;(async () => {
+      // Resolve both before touching state, so the root and the restored path land
+      // in the same render — otherwise an intermediate render with the root but not
+      // yet the restored path would kick off a wasted (and potentially racy) fetch.
+      const root = await getUserRoot()
+      const saved = await getAppState<SavedLocation>(LOCATION_KEY)
+      setRoots([root])
+      if (saved && saved.rootId === USER_ROOT_ID && typeof saved.path === 'string') {
+        setPath(saved.path)
+      }
+      setHydrated(true)
+    })()
   }, [])
+
+  useEffect(() => {
+    if (!hydrated) return
+    setAppState<SavedLocation>(LOCATION_KEY, { rootId: activeRootId, path })
+  }, [hydrated, activeRootId, path])
 
   const activeRoot = roots.find((r) => r.id === activeRootId)
 
+  // Guards against out-of-order responses: if the folder changes again before an
+  // in-flight listing resolves, the stale response must not overwrite the newer one.
+  const latestRequestRef = useRef(0)
+
   const refresh = useCallback(async () => {
     if (!activeRoot) return
+    const requestId = ++latestRequestRef.current
     setLoading(true)
     setError(null)
     try {
@@ -108,11 +138,12 @@ export default function FilesTab() {
           }
         }),
       )
+      if (requestId !== latestRequestRef.current) return
       setEntries(withSizes)
     } catch (e) {
-      setError(String(e))
+      if (requestId === latestRequestRef.current) setError(String(e))
     } finally {
-      setLoading(false)
+      if (requestId === latestRequestRef.current) setLoading(false)
     }
   }, [activeRoot, path])
 
