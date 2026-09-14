@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Settings</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Settings</h1>
+<p class="lead">
+  Opening a settings section shows its name in bold+italic together on the first
+  line (a style combo the other demos here don't use), and a plain-text description
+  on the second.
+</p>
+<ul id="sections"></ul>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const sections = [
+    { name: 'Account', description: 'Profile, password, and connected devices.' },
+    { name: 'Privacy', description: 'Control what data is shared and with whom.' },
+    { name: 'Notifications', description: 'Choose when and how you get notified.' },
+  ]
+
+  const list = document.getElementById('sections')
+  for (const s of sections) {
+    const li = document.createElement('li')
+    li.innerHTML = '<span>' + s.name + '</span><button>Open</button>'
+    li.querySelector('button').addEventListener('click', async () => {
+      const resp = await TabLib.openTab({ section: s.name.toLowerCase() })
+      await TabLib.updateTab(
+        resp.tabGuid,
+        [TabLib.span(s.name, { bold: true, italic: true })],
+        [TabLib.span(s.description)],
+      )
+    })
+    list.appendChild(li)
+  }
+</script>
+</body>
+</html>

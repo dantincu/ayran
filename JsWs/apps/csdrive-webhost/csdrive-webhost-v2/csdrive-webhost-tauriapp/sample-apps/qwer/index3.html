@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Inbox</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Inbox</h1>
+<p class="lead">
+  Opening a conversation shows the contact's name and unread count (bold) on the
+  first line, and a preview of their last message (italic) on the second.
+</p>
+<ul id="contacts"></ul>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const contacts = [
+    { name: 'Ada', unread: 3, last: 'Can you review the PR when you get a chance?' },
+    { name: 'Grace', unread: 0, last: 'Sounds good, see you then!' },
+    { name: 'Alan', unread: 12, last: 'Sent you the updated spec.' },
+  ]
+
+  const list = document.getElementById('contacts')
+  for (const c of contacts) {
+    const li = document.createElement('li')
+    li.innerHTML =
+      '<span><strong>' + c.name + '</strong>' + (c.unread ? ' <span class="muted">(' + c.unread + ' unread)</span>' : '') + '</span>' +
+      '<button>Open</button>'
+    li.querySelector('button').addEventListener('click', async () => {
+      const resp = await TabLib.openTab({ contact: c.name.toLowerCase() })
+      await TabLib.updateTab(
+        resp.tabGuid,
+        [TabLib.span(c.name, { bold: true }), TabLib.span(c.unread ? c.unread + ' unread' : 'read')],
+        [TabLib.span(c.last, { italic: true })],
+      )
+    })
+    list.appendChild(li)
+  }
+</script>
+</body>
+</html>

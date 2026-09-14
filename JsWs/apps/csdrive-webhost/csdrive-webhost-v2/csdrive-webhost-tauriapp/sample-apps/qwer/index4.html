@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Dashboard</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Dashboard</h1>
+<p class="lead">
+  Each widget you open keeps refreshing its own tab's label every couple of seconds
+  — useful for tabs that show live status rather than a name fixed at creation time.
+</p>
+<ul id="widgets"></ul>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const widgets = [
+    { name: 'CPU', unit: '%' },
+    { name: 'Memory', unit: '%' },
+    { name: 'Disk', unit: 'GB free' },
+    { name: 'Network', unit: 'Mbps' },
+  ]
+
+  const list = document.getElementById('widgets')
+  for (const w of widgets) {
+    const li = document.createElement('li')
+    li.innerHTML = '<span>' + w.name + '</span><button>Open live tile</button>'
+    li.querySelector('button').addEventListener('click', async () => {
+      const resp = await TabLib.openTab({ widget: w.name.toLowerCase() })
+      const refresh = () => {
+        const value = Math.round(Math.random() * 100)
+        TabLib.updateTab(
+          resp.tabGuid,
+          [TabLib.span(w.name, { bold: true }), TabLib.span(value + ' ' + w.unit)],
+          [TabLib.span('live', { italic: true, bold: true }), TabLib.span(new Date().toLocaleTimeString())],
+        )
+      }
+      refresh()
+      setInterval(refresh, 2000)
+    })
+    list.appendChild(li)
+  }
+</script>
+</body>
+</html>

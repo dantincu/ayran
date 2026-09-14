@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Files</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Files</h1>
+<p class="lead">
+  Opening a file registers it as a tab whose label shows the file name (bold) and
+  size (regular) on the first line, and the full path (italic) on the second — that
+  second line is exactly the <code>resourceId</code> the backend handed back.
+</p>
+<ul id="files"></ul>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const files = [
+    { path: 'reports/2026/summary.pdf', size: '184 KB' },
+    { path: 'reports/2026/budget.xlsx', size: '52 KB' },
+    { path: 'images/logo.png', size: '12 KB' },
+    { path: 'notes.txt', size: '2 KB' },
+  ]
+
+  const list = document.getElementById('files')
+  for (const file of files) {
+    const li = document.createElement('li')
+    li.innerHTML = '<span>' + file.path + ' <span class="muted">(' + file.size + ')</span></span><button>Open</button>'
+    li.querySelector('button').addEventListener('click', async () => {
+      const resp = await TabLib.openTab({ file: file.path })
+      await TabLib.updateTab(
+        resp.tabGuid,
+        [TabLib.span(file.path.split('/').pop(), { bold: true }), TabLib.span(file.size)],
+        [TabLib.span(resp.resourceId, { italic: true })],
+      )
+    })
+    list.appendChild(li)
+  }
+</script>
+</body>
+</html>

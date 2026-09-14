@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Tasks</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Tasks</h1>
+<p class="lead">
+  Opening a task shows its title and priority (bold) on the first line, and its
+  assignee (italic) on the second.
+</p>
+<ul id="tasks"></ul>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const tasks = [
+    { id: 101, title: 'Fix login bug', priority: 'High', assignee: 'Ada' },
+    { id: 102, title: 'Write release notes', priority: 'Low', assignee: 'Grace' },
+    { id: 103, title: 'Review PR #42', priority: 'Medium', assignee: 'Alan' },
+  ]
+
+  const list = document.getElementById('tasks')
+  for (const t of tasks) {
+    const li = document.createElement('li')
+    li.innerHTML = '<span>#' + t.id + ' ' + t.title + ' <span class="muted">(' + t.priority + ')</span></span><button>Open</button>'
+    li.querySelector('button').addEventListener('click', async () => {
+      const resp = await TabLib.openTab({ task: t.id })
+      await TabLib.updateTab(
+        resp.tabGuid,
+        [TabLib.span(t.title, { bold: true }), TabLib.span(t.priority, { bold: true })],
+        [TabLib.span(t.assignee, { italic: true })],
+      )
+    })
+    list.appendChild(li)
+  }
+</script>
+</body>
+</html>

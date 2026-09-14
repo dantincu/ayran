@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Log viewer</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Log viewer</h1>
+<p class="lead">
+  This page opens a single tab on load and keeps appending fake log lines to it,
+  updating that same tab's label every second with the running line count and the
+  latest line — a long-lived tab whose label keeps changing, rather than a fresh tab
+  per resource like the other demos here.
+</p>
+<button id="toggle">Pause</button>
+<pre id="log" style="background:#f1f1f1;padding:0.75em;border-radius:6px;max-height:16rem;overflow:auto"></pre>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const levels = ['INFO', 'WARN', 'ERROR', 'DEBUG']
+  const messages = [
+    'request completed',
+    'cache miss',
+    'retrying connection',
+    'user session started',
+    'background job finished',
+  ]
+
+  let lineCount = 0
+  let running = true
+  let tabGuid = null
+  const logEl = document.getElementById('log')
+
+  function line() {
+    const level = levels[Math.floor(Math.random() * levels.length)]
+    const message = messages[Math.floor(Math.random() * messages.length)]
+    return '[' + level + '] ' + message
+  }
+
+  async function tick() {
+    if (!running) return
+    lineCount++
+    const text = line()
+    logEl.textContent = text + '\n' + logEl.textContent
+    if (tabGuid) {
+      TabLib.updateTab(
+        tabGuid,
+        [TabLib.span('Log viewer', { bold: true }), TabLib.span(lineCount + ' lines')],
+        [TabLib.span(text, { italic: true })],
+      )
+    }
+  }
+
+  TabLib.openTab({ stream: 'main' }).then((resp) => {
+    tabGuid = resp.tabGuid
+    tick()
+  })
+
+  setInterval(tick, 1500)
+
+  document.getElementById('toggle').addEventListener('click', (e) => {
+    running = !running
+    e.target.textContent = running ? 'Pause' : 'Resume'
+  })
+</script>
+</body>
+</html>

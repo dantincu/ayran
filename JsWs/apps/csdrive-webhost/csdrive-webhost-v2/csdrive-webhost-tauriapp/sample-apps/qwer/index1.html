@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Notes</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Notes</h1>
+<p class="lead">
+  Each note you open becomes its own tab. Keep typing — the tab's label updates live
+  as you type (title = first line, word count = second line), showing that a tab can
+  be re-labeled any number of times after it was created, not just once.
+</p>
+<button id="new-note">New note</button>
+<div id="notes"></div>
+
+<script src="_tab-lib.js"></script>
+<script>
+  let counter = 0
+
+  function addNote() {
+    const id = ++counter
+    const wrap = document.createElement('div')
+    wrap.className = 'card'
+    wrap.innerHTML =
+      '<div class="status">note-' + id + ' — tab: <span class="resource-id">opening…</span></div>' +
+      '<textarea rows="3" style="width:100%" placeholder="Start typing…"></textarea>'
+    document.getElementById('notes').prepend(wrap)
+
+    const textarea = wrap.querySelector('textarea')
+    const resourceIdEl = wrap.querySelector('.resource-id')
+    let tabGuid = null
+
+    TabLib.openTab({ note: id }).then((resp) => {
+      tabGuid = resp.tabGuid
+      resourceIdEl.textContent = resp.resourceId
+      relabel()
+    })
+
+    let debounceTimer
+    textarea.addEventListener('input', () => {
+      clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(relabel, 300)
+    })
+
+    function relabel() {
+      if (!tabGuid) return
+      const text = textarea.value.trim()
+      const title = text.split('\n')[0].slice(0, 24) || ('Note ' + id)
+      const words = text ? text.split(/\s+/).length : 0
+      TabLib.updateTab(
+        tabGuid,
+        [TabLib.span(title, { bold: true })],
+        [TabLib.span(words + (words === 1 ? ' word' : ' words'), { italic: true })],
+      )
+    }
+  }
+
+  document.getElementById('new-note').addEventListener('click', addNote)
+  addNote()
+</script>
+</body>
+</html>
