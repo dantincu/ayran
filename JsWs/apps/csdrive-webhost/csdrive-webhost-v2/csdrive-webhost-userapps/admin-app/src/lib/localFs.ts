@@ -97,4 +97,36 @@ export function joinRelative(...segments: string[]): string {
     .join('/')
 }
 
+/** Recursively copies a file or folder to a new location within the user folder. */
+export async function copyUserPath(fromRelative: string, toRelative: string): Promise<void> {
+  const info = await statUserPath(fromRelative)
+  if (info.isDirectory) {
+    await mkdirUser(toRelative)
+    const children = await listUserDir(fromRelative)
+    for (const child of children) {
+      await copyUserPath(joinRelative(fromRelative, child.name), joinRelative(toRelative, child.name))
+    }
+  } else {
+    const data = await readUserFile(fromRelative)
+    await writeUserFile(toRelative, data)
+  }
+}
+
+/** Appends " (2)", " (3)", etc. to `name` until it no longer collides with something in `dirRelative`. */
+export async function uniqueUserName(dirRelative: string, name: string): Promise<string> {
+  if (!(await userPathExists(joinRelative(dirRelative, name)))) return name
+
+  const dotIndex = name.lastIndexOf('.')
+  const stem = dotIndex > 0 ? name.slice(0, dotIndex) : name
+  const ext = dotIndex > 0 ? name.slice(dotIndex) : ''
+
+  let counter = 2
+  let candidate = `${stem} (${counter})${ext}`
+  while (await userPathExists(joinRelative(dirRelative, candidate))) {
+    counter++
+    candidate = `${stem} (${counter})${ext}`
+  }
+  return candidate
+}
+
 export type { DirEntry, FileInfo }

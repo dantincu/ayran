@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capabilities granted to the main window, which loads the user-provided frontend.",
-  "windows": ["main"],
+  "windows": ["*"],
   "permissions": [
     "core:default",
     "fs:allow-appdata-read-recursive",
@@ -13,6 +13,16 @@
     "sql:allow-execute",
     "allow-keychain-set-secret",
     "allow-keychain-get-secret",
-    "allow-keychain-delete-secret"
+    "allow-keychain-delete-secret",
+    "allow-list-secondary-windows",
+    "allow-open-new-secondary-window",
+    "allow-reopen-secondary-window",
+    "allow-close-secondary-window",
+    "allow-suspend-secondary-window",
+    "allow-close-all-secondary-windows",
+    "allow-suspend-all-secondary-windows",
+    "allow-focus-secondary-window",
+    "allow-add-window-tag",
+    "allow-remove-window-tag"
   ]
 }

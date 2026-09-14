@@ -770,11 +770,14 @@ name = "csdrive-webhost-tauriapp"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "serde",
+ "sqlx",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
  "tauri-plugin-sql",
+ "uuid",
 ]
 
 [[package]]

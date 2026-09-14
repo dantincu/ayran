@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import {
+  copyUserPath,
   type DirEntry,
   joinRelative,
   listUserDir,
@@ -11,18 +12,15 @@ import {
   removeUserPath,
   renameUserPath,
   statUserPath,
+  uniqueUserName,
+  userPathExists,
   writeUserFile,
   writeUserTextFile,
 } from '../lib/localFs'
+import { openNewSecondaryWindow } from '../lib/secondaryWindows'
 
-const TEXT_EXTENSIONS = new Set([
-  'txt', 'md', 'json', 'html', 'htm', 'css', 'js', 'jsx', 'ts', 'tsx',
-  'csv', 'xml', 'yml', 'yaml', 'log', 'ini', 'conf', 'sh', 'py', 'toml',
-])
-
-function extOf(name: string): string {
-  const i = name.lastIndexOf('.')
-  return i === -1 ? '' : name.slice(i + 1).toLowerCase()
+function isHtmlFile(name: string): boolean {
+  return /\.html?$/i.test(name)
 }
 
 function formatBytes(bytes: number): string {
@@ -41,6 +39,17 @@ interface EntryRow extends DirEntry {
   size?: number
 }
 
+interface ClipboardItem {
+  mode: 'copy' | 'cut'
+  sourcePath: string
+  name: string
+  isDirectory: boolean
+}
+
+function isSameOrWithin(ancestor: string, candidate: string): boolean {
+  return candidate === ancestor || candidate.startsWith(`${ancestor}/`)
+}
+
 export default function FilesTab() {
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<EntryRow[]>([])
@@ -49,6 +58,7 @@ export default function FilesTab() {
   const [editing, setEditing] = useState<{ path: string; content: string; dirty: boolean } | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -86,13 +96,11 @@ export default function FilesTab() {
       setPath(rel)
       return
     }
-    if (TEXT_EXTENSIONS.has(extOf(entry.name))) {
-      try {
-        const content = await readUserTextFile(rel)
-        setEditing({ path: rel, content, dirty: false })
-      } catch (e) {
-        setError(String(e))
-      }
+    try {
+      const content = await readUserTextFile(rel)
+      setEditing({ path: rel, content, dirty: false })
+    } catch (e) {
+      setError(String(e))
     }
   }
 
@@ -113,6 +121,23 @@ export default function FilesTab() {
     try {
       await mkdirUser(joinRelative(path, name))
       await refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function createFile() {
+    const name = window.prompt('New file name:', 'untitled.txt')
+    if (!name) return
+    try {
+      const rel = joinRelative(path, name)
+      if (await userPathExists(rel)) {
+        setError(`"${name}" already exists.`)
+        return
+      }
+      await writeUserTextFile(rel, '')
+      await refresh()
+      setEditing({ path: rel, content: '', dirty: false })
     } catch (e) {
       setError(String(e))
     }
@@ -145,6 +170,43 @@ export default function FilesTab() {
     }
   }
 
+  function copyEntry(entry: EntryRow) {
+    setClipboard({ mode: 'copy', sourcePath: joinRelative(path, entry.name), name: entry.name, isDirectory: entry.isDirectory })
+  }
+
+  function cutEntry(entry: EntryRow) {
+    setClipboard({ mode: 'cut', sourcePath: joinRelative(path, entry.name), name: entry.name, isDirectory: entry.isDirectory })
+  }
+
+  async function paste() {
+    if (!clipboard) return
+    setError(null)
+    try {
+      if (clipboard.isDirectory && isSameOrWithin(clipboard.sourcePath, path)) {
+        throw new Error('Cannot move or copy a folder into itself or one of its subfolders.')
+      }
+
+      if (clipboard.mode === 'cut') {
+        const destPath = joinRelative(path, clipboard.name)
+        if (destPath === clipboard.sourcePath) {
+          setClipboard(null)
+          return
+        }
+        const destName = (await userPathExists(destPath)) ? await uniqueUserName(path, clipboard.name) : clipboard.name
+        await renameUserPath(clipboard.sourcePath, joinRelative(path, destName))
+        setClipboard(null)
+      } else {
+        const destName = (await userPathExists(joinRelative(path, clipboard.name)))
+          ? await uniqueUserName(path, clipboard.name)
+          : clipboard.name
+        await copyUserPath(clipboard.sourcePath, joinRelative(path, destName))
+      }
+      await refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function uploadFiles() {
     try {
       const selected = await openDialog({ multiple: true })
@@ -155,6 +217,14 @@ export default function FilesTab() {
         await writeUserFile(joinRelative(path, name), data)
       }
       if (paths.length) await refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function openAsWebApp(entry: EntryRow) {
+    try {
+      await openNewSecondaryWindow(joinRelative(path, entry.name))
     } catch (e) {
       setError(String(e))
     }
@@ -188,8 +258,14 @@ export default function FilesTab() {
           })}
         </div>
         <div className="toolbar-actions">
+          <button onClick={createFile}>New file</button>
           <button onClick={createFolder}>New folder</button>
           <button onClick={uploadFiles}>Upload…</button>
+          {clipboard && (
+            <button onClick={paste} title={clipboard.sourcePath}>
+              Paste "{clipboard.name}"
+            </button>
+          )}
           <button onClick={refresh}>Refresh</button>
         </div>
       </div>
@@ -236,7 +312,12 @@ export default function FilesTab() {
                 </td>
                 <td className="muted">{!entry.isDirectory && entry.size != null ? formatBytes(entry.size) : ''}</td>
                 <td className="row-actions">
+                  {!entry.isDirectory && isHtmlFile(entry.name) && (
+                    <button onClick={() => openAsWebApp(entry)}>Open as web app</button>
+                  )}
                   {!entry.isDirectory && <button onClick={() => downloadEntry(entry)}>Export</button>}
+                  <button onClick={() => copyEntry(entry)}>Copy</button>
+                  <button onClick={() => cutEntry(entry)}>Cut</button>
                   <button onClick={() => startRename(entry)}>Rename</button>
                   <button onClick={() => deleteEntry(entry)}>Delete</button>
                 </td>

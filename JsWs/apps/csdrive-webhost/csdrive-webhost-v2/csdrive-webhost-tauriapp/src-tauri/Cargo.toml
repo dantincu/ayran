@@ -9,7 +9,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 keyring = "4.2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+sqlx = { version = "=0.8.6", features = ["sqlite", "runtime-tokio"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-fs = "2.5.2"
 tauri-plugin-sql = { version = "2.4.1", features = ["sqlite"] }
+uuid = { version = "1.26.1", features = ["v4"] }

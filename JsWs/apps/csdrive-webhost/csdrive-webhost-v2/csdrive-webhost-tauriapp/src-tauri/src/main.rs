@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod secondary_windows;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -157,7 +159,17 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             keychain_set_secret,
             keychain_get_secret,
-            keychain_delete_secret
+            keychain_delete_secret,
+            secondary_windows::list_secondary_windows,
+            secondary_windows::open_new_secondary_window,
+            secondary_windows::reopen_secondary_window,
+            secondary_windows::close_secondary_window,
+            secondary_windows::suspend_secondary_window,
+            secondary_windows::close_all_secondary_windows,
+            secondary_windows::suspend_all_secondary_windows,
+            secondary_windows::focus_secondary_window,
+            secondary_windows::add_window_tag,
+            secondary_windows::remove_window_tag,
         ])
         .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
             let user_dir = ctx
@@ -187,7 +199,11 @@ fn main() {
             }
         })
         .setup(|app| {
-            let user_dir = app.path().app_data_dir()?.join("user");
+            let app_data_dir = app.path().app_data_dir()?;
+            let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&app_data_dir))?;
+            app.manage(secondary_windows::SecondaryWindowsState::new(pool));
+
+            let user_dir = app_data_dir.join("user");
             let index_path = user_dir.join("index.html");
 
             if !index_path.exists() {
