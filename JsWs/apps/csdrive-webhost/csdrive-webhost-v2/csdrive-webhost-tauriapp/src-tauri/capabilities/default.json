@@ -16,6 +16,7 @@
     "allow-keychain-delete-secret",
     "allow-list-secondary-windows",
     "allow-open-new-secondary-window",
+    "allow-add-secondary-window-entry",
     "allow-reopen-secondary-window",
     "allow-close-secondary-window",
     "allow-suspend-secondary-window",

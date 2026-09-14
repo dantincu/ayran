@@ -6,6 +6,7 @@ fn main() {
             "keychain_delete_secret",
             "list_secondary_windows",
             "open_new_secondary_window",
+            "add_secondary_window_entry",
             "reopen_secondary_window",
             "close_secondary_window",
             "suspend_secondary_window",

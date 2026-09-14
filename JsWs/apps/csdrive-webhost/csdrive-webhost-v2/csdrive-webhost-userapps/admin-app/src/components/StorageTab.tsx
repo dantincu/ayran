@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Clock, Database as DatabaseIcon, HardDrive, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
+import IconButton from './IconButton'
 import {
   clearStore,
   createDatabase,
@@ -83,10 +85,8 @@ function WebStoragePanel({ storage, label }: { storage: Storage; label: string }
       <div className="toolbar">
         <strong>{label}</strong>
         <div className="toolbar-actions">
-          <button onClick={clearAll} disabled={rows.length === 0}>
-            Clear all
-          </button>
-          <button onClick={refresh}>Refresh</button>
+          <IconButton icon={Trash2} label="Clear all" variant="danger" onClick={clearAll} disabled={rows.length === 0} />
+          <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
         </div>
       </div>
 
@@ -130,7 +130,7 @@ function WebStoragePanel({ storage, label }: { storage: Storage; label: string }
                 )}
               </td>
               <td className="row-actions">
-                <button onClick={() => removeItem(row.key)}>Delete</button>
+                <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => removeItem(row.key)} />
               </td>
             </tr>
           ))}
@@ -140,7 +140,7 @@ function WebStoragePanel({ storage, label }: { storage: Storage; label: string }
       <div className="new-db-row">
         <input placeholder="key" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
         <input placeholder="value" value={newValue} onChange={(e) => setNewValue(e.target.value)} />
-        <button onClick={addItem}>Add</button>
+        <IconButton icon={Plus} label="Add" onClick={addItem} />
       </div>
     </div>
   )
@@ -312,7 +312,7 @@ function IndexedDbPanel() {
       <div className="toolbar">
         <strong>IndexedDB</strong>
         <div className="toolbar-actions">
-          <button onClick={refreshDatabases}>Refresh</button>
+          <IconButton icon={RefreshCw} label="Refresh" onClick={refreshDatabases} />
         </div>
       </div>
 
@@ -328,18 +328,16 @@ function IndexedDbPanel() {
                   className={`link-button ${selectedDb === d.name ? 'active' : ''}`}
                   onClick={() => openDatabase(d.name)}
                 >
-                  🗄️ {d.name}
+                  <DatabaseIcon size={14} strokeWidth={2} aria-hidden="true" /> {d.name}
                 </button>
-                <button onClick={() => handleDeleteDatabase(d.name)} title="Delete database">
-                  ✕
-                </button>
+                <IconButton icon={X} label="Delete database" variant="danger" onClick={() => handleDeleteDatabase(d.name)} />
               </li>
             ))}
             {databases.length === 0 && <li className="muted">No databases yet.</li>}
           </ul>
           <div className="new-db-row">
             <input placeholder="new-database" value={newDbName} onChange={(e) => setNewDbName(e.target.value)} />
-            <button onClick={handleCreateDatabase}>Create</button>
+            <IconButton icon={Plus} label="Create" onClick={handleCreateDatabase} />
           </div>
 
           {selectedDb && (
@@ -354,11 +352,9 @@ function IndexedDbPanel() {
                       className={`link-button ${selectedStore === s ? 'active' : ''}`}
                       onClick={() => openStore(s)}
                     >
-                      ▦ {s}
+                      <DatabaseIcon size={14} strokeWidth={2} aria-hidden="true" /> {s}
                     </button>
-                    <button onClick={() => handleDeleteStore(s)} title="Delete store">
-                      ✕
-                    </button>
+                    <IconButton icon={X} label="Delete store" variant="danger" onClick={() => handleDeleteStore(s)} />
                   </li>
                 ))}
                 {stores.length === 0 && <li className="muted">No object stores yet.</li>}
@@ -381,7 +377,7 @@ function IndexedDbPanel() {
                 />
                 Auto-increment key
               </label>
-              <button onClick={handleCreateStore}>Create store</button>
+              <IconButton icon={Plus} label="Create store" onClick={handleCreateStore} />
             </>
           )}
         </div>
@@ -392,10 +388,14 @@ function IndexedDbPanel() {
               <div className="toolbar">
                 <strong>{selectedStore}</strong>
                 <div className="toolbar-actions">
-                  <button onClick={handleClearStore} disabled={records.length === 0}>
-                    Clear all
-                  </button>
-                  <button onClick={refreshRecords}>Refresh</button>
+                  <IconButton
+                    icon={Trash2}
+                    label="Clear all"
+                    variant="danger"
+                    onClick={handleClearStore}
+                    disabled={records.length === 0}
+                  />
+                  <IconButton icon={RefreshCw} label="Refresh" onClick={refreshRecords} />
                 </div>
               </div>
 
@@ -421,7 +421,7 @@ function IndexedDbPanel() {
                         <td>{String(r.key)}</td>
                         <td>{JSON.stringify(r.value)}</td>
                         <td>
-                          <button onClick={() => handleDeleteRecord(r.key)}>Delete</button>
+                          <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => handleDeleteRecord(r.key)} />
                         </td>
                       </tr>
                     ))}
@@ -446,7 +446,7 @@ function IndexedDbPanel() {
                   onChange={(e) => setRecordValue(e.target.value)}
                   rows={2}
                 />
-                <button onClick={handleAddRecord}>Put record</button>
+                <IconButton icon={Save} label="Put record" onClick={handleAddRecord} />
               </div>
             </>
           ) : (
@@ -464,14 +464,17 @@ export default function StorageTab() {
   return (
     <div className="tab-panel">
       <nav className="tab-nav sub-nav">
-        <button className={`tab-button ${sub === 'local' ? 'active' : ''}`} onClick={() => setSub('local')}>
-          Local Storage
+        <button className={`tab-button ${sub === 'local' ? 'active' : ''}`} onClick={() => setSub('local')} title="Local Storage">
+          <HardDrive size={18} strokeWidth={2} aria-hidden="true" />
+          <span>Local</span>
         </button>
-        <button className={`tab-button ${sub === 'session' ? 'active' : ''}`} onClick={() => setSub('session')}>
-          Session Storage
+        <button className={`tab-button ${sub === 'session' ? 'active' : ''}`} onClick={() => setSub('session')} title="Session Storage">
+          <Clock size={18} strokeWidth={2} aria-hidden="true" />
+          <span>Session</span>
         </button>
-        <button className={`tab-button ${sub === 'indexeddb' ? 'active' : ''}`} onClick={() => setSub('indexeddb')}>
-          IndexedDB
+        <button className={`tab-button ${sub === 'indexeddb' ? 'active' : ''}`} onClick={() => setSub('indexeddb')} title="IndexedDB">
+          <DatabaseIcon size={18} strokeWidth={2} aria-hidden="true" />
+          <span>IndexedDB</span>
         </button>
       </nav>
       <div className="tab-content">

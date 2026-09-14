@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import Database from '@tauri-apps/plugin-sql'
+import { Database as DatabaseIcon, Eye, Play, Plus, RefreshCw, Table2, X } from 'lucide-react'
+import IconButton from './IconButton'
 import { joinRelative, listUserDir, userAbsolutePath } from '../lib/localFs'
 
 const DB_EXTENSIONS = new Set(['db', 'sqlite', 'sqlite3', 'db3'])
@@ -157,7 +159,7 @@ export default function SqliteTab() {
         <div className="toolbar">
           <strong>SQLite databases in your user folder</strong>
           <div className="toolbar-actions">
-            <button onClick={scan}>{scanning ? 'Scanning…' : 'Rescan'}</button>
+            <IconButton icon={RefreshCw} label={scanning ? 'Scanning…' : 'Rescan'} onClick={scan} disabled={scanning} />
           </div>
         </div>
         {error && <div className="error-banner">{error}</div>}
@@ -166,7 +168,7 @@ export default function SqliteTab() {
           {dbFiles.map((rel) => (
             <li key={rel}>
               <button className="link-button" onClick={() => openDatabase(rel)}>
-                🗄️ {rel}
+                <DatabaseIcon size={14} strokeWidth={2} aria-hidden="true" /> {rel}
               </button>
             </li>
           ))}
@@ -178,7 +180,7 @@ export default function SqliteTab() {
             onChange={(e) => setNewDbName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && createDatabase()}
           />
-          <button onClick={createDatabase}>Create new database</button>
+          <IconButton icon={Plus} label="Create new database" onClick={createDatabase} />
         </div>
       </div>
     )
@@ -189,8 +191,8 @@ export default function SqliteTab() {
       <div className="toolbar">
         <strong>{selectedRel}</strong>
         <div className="toolbar-actions">
-          <button onClick={() => refreshTables(db)}>Refresh schema</button>
-          <button onClick={closeDatabase}>Close</button>
+          <IconButton icon={RefreshCw} label="Refresh schema" onClick={() => refreshTables(db)} />
+          <IconButton icon={X} label="Close" onClick={closeDatabase} />
         </div>
       </div>
 
@@ -204,7 +206,12 @@ export default function SqliteTab() {
                   className={`link-button ${activeTable === t.name ? 'active' : ''}`}
                   onClick={() => viewTable(t.name)}
                 >
-                  {t.type === 'view' ? '👁' : '▦'} {t.name}
+                  {t.type === 'view' ? (
+                    <Eye size={14} strokeWidth={2} aria-hidden="true" />
+                  ) : (
+                    <Table2 size={14} strokeWidth={2} aria-hidden="true" />
+                  )}{' '}
+                  {t.name}
                 </button>
               </li>
             ))}
@@ -220,7 +227,7 @@ export default function SqliteTab() {
               onChange={(e) => setSqlText(e.target.value)}
               rows={3}
             />
-            <button onClick={runSql}>Run SQL</button>
+            <IconButton icon={Play} label="Run SQL" onClick={runSql} />
           </div>
 
           {error && <div className="error-banner">{error}</div>}

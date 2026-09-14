@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { Buffer } from 'buffer'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
+import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
+import IconButton from './IconButton'
 import {
   addAccount,
   type FilenAccountMeta,
@@ -225,12 +227,12 @@ export default function FilenTab() {
               ))}
             </select>
           )}
-          {activeId && (
-            <button onClick={handleRemove}>Disconnect</button>
-          )}
-          <button onClick={() => setShowAddForm((v) => !v)}>
-            {showAddForm ? 'Cancel' : 'Add account'}
-          </button>
+          {activeId && <IconButton icon={LogOut} label="Disconnect" onClick={handleRemove} />}
+          <IconButton
+            icon={showAddForm ? X : UserPlus}
+            label={showAddForm ? 'Cancel' : 'Add account'}
+            onClick={() => setShowAddForm((v) => !v)}
+          />
         </div>
       </div>
 
@@ -282,16 +284,22 @@ export default function FilenTab() {
                   <span key={i}>
                     {i > 0 && <span className="crumb-sep">/</span>}
                     <button className="link-button" onClick={() => setPath(target)}>
-                      {i === 0 ? '☁ root' : seg}
+                      {i === 0 ? (
+                        <>
+                          <Cloud size={14} strokeWidth={2} aria-hidden="true" /> root
+                        </>
+                      ) : (
+                        seg
+                      )}
                     </button>
                   </span>
                 )
               })}
             </div>
             <div className="toolbar-actions">
-              <button onClick={createFolder}>New folder</button>
-              <button onClick={uploadFromComputer}>Upload from computer…</button>
-              <button onClick={() => refreshDir(sdk, path)}>Refresh</button>
+              <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
+              <IconButton icon={Upload} label="Upload from computer…" onClick={uploadFromComputer} />
+              <IconButton icon={RefreshCw} label="Refresh" onClick={() => refreshDir(sdk, path)} />
             </div>
           </div>
 
@@ -318,18 +326,23 @@ export default function FilenTab() {
                   <tr key={entry.name}>
                     <td>
                       <button className="link-button entry-name" onClick={() => openEntry(entry)}>
-                        {entry.isDirectory ? '📁' : '📄'} {entry.name}
+                        {entry.isDirectory ? (
+                          <Folder size={15} strokeWidth={2} aria-hidden="true" />
+                        ) : (
+                          <File size={15} strokeWidth={2} aria-hidden="true" />
+                        )}
+                        {entry.name}
                       </button>
                     </td>
                     <td className="row-actions">
                       {!entry.isDirectory && (
                         <>
-                          <button onClick={() => downloadToComputer(entry)}>Export…</button>
-                          <button onClick={() => saveToUserFolder(entry)}>Save to user folder</button>
+                          <IconButton icon={Download} label="Export…" onClick={() => downloadToComputer(entry)} />
+                          <IconButton icon={Save} label="Save to user folder" onClick={() => saveToUserFolder(entry)} />
                         </>
                       )}
-                      <button onClick={() => renameEntry(entry)}>Rename</button>
-                      <button onClick={() => deleteEntry(entry)}>Delete</button>
+                      <IconButton icon={Pencil} label="Rename" onClick={() => renameEntry(entry)} />
+                      <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => deleteEntry(entry)} />
                     </td>
                   </tr>
                 ))}

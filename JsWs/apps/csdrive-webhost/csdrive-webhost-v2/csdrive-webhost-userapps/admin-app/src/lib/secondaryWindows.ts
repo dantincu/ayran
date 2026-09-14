@@ -27,6 +27,11 @@ export async function openNewSecondaryWindow(relativePath: string): Promise<Seco
   return invoke<SecondaryWindowRecord>('open_new_secondary_window', { relativePath })
 }
 
+/** Registers a new entry in a group without opening a window for it — open it later with reopenSecondaryWindow. */
+export async function addSecondaryWindowEntry(relativePath: string): Promise<SecondaryWindowRecord> {
+  return invoke<SecondaryWindowRecord>('add_secondary_window_entry', { relativePath })
+}
+
 export async function reopenSecondaryWindow(guid: string, relativePath: string): Promise<void> {
   await invoke('reopen_secondary_window', { guid, relativePath })
 }

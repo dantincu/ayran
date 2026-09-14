@@ -334,6 +334,38 @@ pub async fn open_new_secondary_window(
     })
 }
 
+/// Registers a new entry in an existing (or new) group without opening a window for
+/// it — the user can open it later via `reopen_secondary_window`.
+#[tauri::command]
+pub async fn add_secondary_window_entry(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    relative_path: String,
+) -> Result<SecondaryWindowRecord, String> {
+    validate_relative_html_path(&app, &relative_path)?;
+
+    let guid = uuid::Uuid::new_v4().to_string();
+    let created_at = current_millis();
+
+    sqlx::query("INSERT INTO secondary_windows (guid, relative_path, created_at) VALUES (?1, ?2, ?3)")
+        .bind(&guid)
+        .bind(&relative_path)
+        .bind(created_at)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(EVENT_CHANGED, ());
+
+    Ok(SecondaryWindowRecord {
+        guid,
+        relative_path,
+        created_at,
+        is_open: false,
+        tags: Vec::new(),
+    })
+}
+
 #[tauri::command]
 pub async fn reopen_secondary_window(
     app: AppHandle,

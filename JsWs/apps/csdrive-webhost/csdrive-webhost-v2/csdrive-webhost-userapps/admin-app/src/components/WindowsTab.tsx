@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Check, FilePlus, Pause, PauseCircle, Play, RefreshCw, Tag, X, XCircle } from 'lucide-react'
+import IconButton from './IconButton'
 import {
+  addSecondaryWindowEntry,
   addWindowTag,
   closeAllSecondaryWindows,
   closeSecondaryWindow,
@@ -99,10 +102,8 @@ function AddTagForm({
         {text.trim() || 'preview'}
       </span>
       <div className="toolbar-actions">
-        <button disabled={!text.trim()} onClick={() => onAdd(text.trim(), fgColor, bgColor)}>
-          Add
-        </button>
-        <button onClick={onCancel}>Cancel</button>
+        <IconButton icon={Check} label="Add tag" disabled={!text.trim()} onClick={() => onAdd(text.trim(), fgColor, bgColor)} />
+        <IconButton icon={X} label="Cancel" onClick={onCancel} />
       </div>
     </div>
   )
@@ -112,8 +113,8 @@ function TagBadge({ tag, onRemove }: { tag: TagRecord; onRemove: () => void }) {
   return (
     <span className="tag-badge" style={{ color: tag.fgColor, background: tag.bgColor }}>
       {tag.text}
-      <button className="tag-remove" onClick={onRemove} title="Remove tag">
-        ×
+      <button className="tag-remove" onClick={onRemove} title="Remove tag" aria-label="Remove tag">
+        <X size={11} strokeWidth={2.5} aria-hidden="true" />
       </button>
     </span>
   )
@@ -197,6 +198,14 @@ export default function WindowsTab() {
     }
   }
 
+  async function handleAddEntry(relativePath: string) {
+    try {
+      await addSecondaryWindowEntry(relativePath)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleAddTag(guid: string, text: string, fgColor: string, bgColor: string) {
     try {
       await addWindowTag(guid, text, fgColor, bgColor)
@@ -221,13 +230,9 @@ export default function WindowsTab() {
       <div className="toolbar">
         <strong>Secondary windows</strong>
         <div className="toolbar-actions">
-          <button onClick={() => handleSuspendAll()} disabled={records.length === 0}>
-            Suspend all
-          </button>
-          <button onClick={() => handleCloseAll()} disabled={records.length === 0}>
-            Close all
-          </button>
-          <button onClick={refresh}>Refresh</button>
+          <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
+          <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
+          <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
         </div>
       </div>
 
@@ -246,8 +251,13 @@ export default function WindowsTab() {
             <div className="window-group-header">
               <span className="window-group-path">{group.relativePath}</span>
               <div className="toolbar-actions">
-                <button onClick={() => handleSuspendAll(group.relativePath)}>Suspend all</button>
-                <button onClick={() => handleCloseAll(group.relativePath)}>Close all</button>
+                <IconButton
+                  icon={FilePlus}
+                  label="Add a new entry without opening it"
+                  onClick={() => handleAddEntry(group.relativePath)}
+                />
+                <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(group.relativePath)} />
+                <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(group.relativePath)} />
               </div>
             </div>
             <ul className="window-list">
@@ -263,11 +273,11 @@ export default function WindowsTab() {
                     <div className="row-actions">
                       {record.isOpen ? (
                         <>
-                          <button onClick={() => handleSuspend(record.guid)}>Suspend</button>
-                          <button onClick={() => handleClose(record.guid)}>Close</button>
+                          <IconButton icon={Pause} label="Suspend" onClick={() => handleSuspend(record.guid)} />
+                          <IconButton icon={X} label="Close" variant="danger" onClick={() => handleClose(record.guid)} />
                         </>
                       ) : (
-                        <button onClick={() => handleReopen(record)}>Reopen</button>
+                        <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(record)} />
                       )}
                     </div>
                   </div>
@@ -282,8 +292,13 @@ export default function WindowsTab() {
                         onCancel={() => setAddingTagFor(null)}
                       />
                     ) : (
-                      <button className="add-tag-button" onClick={() => setAddingTagFor(record.guid)}>
-                        + tag
+                      <button
+                        className="add-tag-button"
+                        onClick={() => setAddingTagFor(record.guid)}
+                        title="Add tag"
+                        aria-label="Add tag"
+                      >
+                        <Tag size={12} strokeWidth={2} aria-hidden="true" />
                       </button>
                     )}
                   </div>

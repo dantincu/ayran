@@ -2,21 +2,43 @@ import { useCallback, useEffect, useState } from 'react'
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import {
-  copyUserPath,
+  Copy,
+  Download,
+  ExternalLink,
+  File,
+  FilePlus,
+  Folder,
+  FolderPlus,
+  Pencil,
+  RefreshCw,
+  Save,
+  Scissors,
+  Trash2,
+  Upload,
+  X,
+  ClipboardPaste,
+} from 'lucide-react'
+import IconButton from './IconButton'
+import { joinRelative } from '../lib/localFs'
+import {
+  copyRootPath,
   type DirEntry,
-  joinRelative,
-  listUserDir,
-  mkdirUser,
-  readUserFile,
-  readUserTextFile,
-  removeUserPath,
-  renameUserPath,
-  statUserPath,
-  uniqueUserName,
-  userPathExists,
-  writeUserFile,
-  writeUserTextFile,
-} from '../lib/localFs'
+  type FileRoot,
+  getUserRoot,
+  listRootDir,
+  mkdirRoot,
+  pickNewRoot,
+  readRootFile,
+  readRootTextFile,
+  removeRootPath,
+  renameRootPath,
+  rootPathExists,
+  statRootPath,
+  uniqueRootName,
+  USER_ROOT_ID,
+  writeRootFile,
+  writeRootTextFile,
+} from '../lib/fileRoots'
 import { openNewSecondaryWindow } from '../lib/secondaryWindows'
 
 function isHtmlFile(name: string): boolean {
@@ -40,6 +62,7 @@ interface EntryRow extends DirEntry {
 }
 
 interface ClipboardItem {
+  rootId: string
   mode: 'copy' | 'cut'
   sourcePath: string
   name: string
@@ -51,6 +74,8 @@ function isSameOrWithin(ancestor: string, candidate: string): boolean {
 }
 
 export default function FilesTab() {
+  const [roots, setRoots] = useState<FileRoot[]>([])
+  const [activeRootId, setActiveRootId] = useState<string>(USER_ROOT_ID)
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<EntryRow[]>([])
   const [loading, setLoading] = useState(false)
@@ -60,16 +85,23 @@ export default function FilesTab() {
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
 
+  useEffect(() => {
+    getUserRoot().then((root) => setRoots([root]))
+  }, [])
+
+  const activeRoot = roots.find((r) => r.id === activeRootId)
+
   const refresh = useCallback(async () => {
+    if (!activeRoot) return
     setLoading(true)
     setError(null)
     try {
-      const list = await listUserDir(path)
+      const list = await listRootDir(activeRoot, path)
       const withSizes = await Promise.all(
         list.map(async (e) => {
           if (e.isDirectory) return { ...e }
           try {
-            const info = await statUserPath(joinRelative(path, e.name))
+            const info = await statRootPath(activeRoot, joinRelative(path, e.name))
             return { ...e, size: info.size }
           } catch {
             return { ...e }
@@ -82,7 +114,7 @@ export default function FilesTab() {
     } finally {
       setLoading(false)
     }
-  }, [path])
+  }, [activeRoot, path])
 
   useEffect(() => {
     refresh()
@@ -90,14 +122,36 @@ export default function FilesTab() {
 
   const breadcrumbs = ['', ...path.split('/').filter(Boolean)]
 
+  function switchRoot(id: string) {
+    setActiveRootId(id)
+    setPath('')
+  }
+
+  async function addRoot() {
+    try {
+      const root = await pickNewRoot()
+      if (!root) return
+      setRoots((prev) => (prev.some((r) => r.id === root.id) ? prev : [...prev, root]))
+      switchRoot(root.id)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  function removeRoot(id: string) {
+    setRoots((prev) => prev.filter((r) => r.id !== id))
+    if (activeRootId === id) switchRoot(USER_ROOT_ID)
+  }
+
   async function openEntry(entry: EntryRow) {
+    if (!activeRoot) return
     const rel = joinRelative(path, entry.name)
     if (entry.isDirectory) {
       setPath(rel)
       return
     }
     try {
-      const content = await readUserTextFile(rel)
+      const content = await readRootTextFile(activeRoot, rel)
       setEditing({ path: rel, content, dirty: false })
     } catch (e) {
       setError(String(e))
@@ -105,9 +159,9 @@ export default function FilesTab() {
   }
 
   async function saveEditing() {
-    if (!editing) return
+    if (!editing || !activeRoot) return
     try {
-      await writeUserTextFile(editing.path, editing.content)
+      await writeRootTextFile(activeRoot, editing.path, editing.content)
       setEditing({ ...editing, dirty: false })
       await refresh()
     } catch (e) {
@@ -116,10 +170,11 @@ export default function FilesTab() {
   }
 
   async function createFolder() {
+    if (!activeRoot) return
     const name = window.prompt('New folder name:')
     if (!name) return
     try {
-      await mkdirUser(joinRelative(path, name))
+      await mkdirRoot(activeRoot, joinRelative(path, name))
       await refresh()
     } catch (e) {
       setError(String(e))
@@ -127,15 +182,16 @@ export default function FilesTab() {
   }
 
   async function createFile() {
+    if (!activeRoot) return
     const name = window.prompt('New file name:', 'untitled.txt')
     if (!name) return
     try {
       const rel = joinRelative(path, name)
-      if (await userPathExists(rel)) {
+      if (await rootPathExists(activeRoot, rel)) {
         setError(`"${name}" already exists.`)
         return
       }
-      await writeUserTextFile(rel, '')
+      await writeRootTextFile(activeRoot, rel, '')
       await refresh()
       setEditing({ path: rel, content: '', dirty: false })
     } catch (e) {
@@ -144,9 +200,10 @@ export default function FilesTab() {
   }
 
   async function deleteEntry(entry: EntryRow) {
+    if (!activeRoot) return
     if (!window.confirm(`Delete "${entry.name}"? This cannot be undone.`)) return
     try {
-      await removeUserPath(joinRelative(path, entry.name), entry.isDirectory)
+      await removeRootPath(activeRoot, joinRelative(path, entry.name), entry.isDirectory)
       await refresh()
     } catch (e) {
       setError(String(e))
@@ -159,11 +216,12 @@ export default function FilesTab() {
   }
 
   async function commitRename(oldName: string) {
+    if (!activeRoot) return
     const newName = renameValue.trim()
     setRenaming(null)
     if (!newName || newName === oldName) return
     try {
-      await renameUserPath(joinRelative(path, oldName), joinRelative(path, newName))
+      await renameRootPath(activeRoot, joinRelative(path, oldName), joinRelative(path, newName))
       await refresh()
     } catch (e) {
       setError(String(e))
@@ -171,17 +229,34 @@ export default function FilesTab() {
   }
 
   function copyEntry(entry: EntryRow) {
-    setClipboard({ mode: 'copy', sourcePath: joinRelative(path, entry.name), name: entry.name, isDirectory: entry.isDirectory })
+    if (!activeRoot) return
+    setClipboard({
+      rootId: activeRoot.id,
+      mode: 'copy',
+      sourcePath: joinRelative(path, entry.name),
+      name: entry.name,
+      isDirectory: entry.isDirectory,
+    })
   }
 
   function cutEntry(entry: EntryRow) {
-    setClipboard({ mode: 'cut', sourcePath: joinRelative(path, entry.name), name: entry.name, isDirectory: entry.isDirectory })
+    if (!activeRoot) return
+    setClipboard({
+      rootId: activeRoot.id,
+      mode: 'cut',
+      sourcePath: joinRelative(path, entry.name),
+      name: entry.name,
+      isDirectory: entry.isDirectory,
+    })
   }
 
   async function paste() {
-    if (!clipboard) return
+    if (!clipboard || !activeRoot) return
     setError(null)
     try {
+      if (clipboard.rootId !== activeRoot.id) {
+        throw new Error('Copying or moving files between different root folders is not supported yet.')
+      }
       if (clipboard.isDirectory && isSameOrWithin(clipboard.sourcePath, path)) {
         throw new Error('Cannot move or copy a folder into itself or one of its subfolders.')
       }
@@ -192,14 +267,16 @@ export default function FilesTab() {
           setClipboard(null)
           return
         }
-        const destName = (await userPathExists(destPath)) ? await uniqueUserName(path, clipboard.name) : clipboard.name
-        await renameUserPath(clipboard.sourcePath, joinRelative(path, destName))
+        const destName = (await rootPathExists(activeRoot, destPath))
+          ? await uniqueRootName(activeRoot, path, clipboard.name)
+          : clipboard.name
+        await renameRootPath(activeRoot, clipboard.sourcePath, joinRelative(path, destName))
         setClipboard(null)
       } else {
-        const destName = (await userPathExists(joinRelative(path, clipboard.name)))
-          ? await uniqueUserName(path, clipboard.name)
+        const destName = (await rootPathExists(activeRoot, joinRelative(path, clipboard.name)))
+          ? await uniqueRootName(activeRoot, path, clipboard.name)
           : clipboard.name
-        await copyUserPath(clipboard.sourcePath, joinRelative(path, destName))
+        await copyRootPath(activeRoot, clipboard.sourcePath, joinRelative(path, destName))
       }
       await refresh()
     } catch (e) {
@@ -208,13 +285,14 @@ export default function FilesTab() {
   }
 
   async function uploadFiles() {
+    if (!activeRoot) return
     try {
       const selected = await openDialog({ multiple: true })
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
       for (const absPath of paths) {
         const name = absPath.split(/[\\/]/).pop() ?? 'file'
         const data = await readAbsoluteFile(absPath)
-        await writeUserFile(joinRelative(path, name), data)
+        await writeRootFile(activeRoot, joinRelative(path, name), data)
       }
       if (paths.length) await refresh()
     } catch (e) {
@@ -231,10 +309,11 @@ export default function FilesTab() {
   }
 
   async function downloadEntry(entry: EntryRow) {
+    if (!activeRoot) return
     try {
       const dest = await saveDialog({ defaultPath: entry.name })
       if (!dest) return
-      const data = await readUserFile(joinRelative(path, entry.name))
+      const data = await readRootFile(activeRoot, joinRelative(path, entry.name))
       await writeAbsoluteFile(dest, data)
     } catch (e) {
       setError(String(e))
@@ -243,6 +322,22 @@ export default function FilesTab() {
 
   return (
     <div className="tab-panel files-tab">
+      <div className="root-switcher">
+        {roots.map((root) => (
+          <span key={root.id} className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
+            <button className="link-button" onClick={() => switchRoot(root.id)} title={root.absolutePath}>
+              <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
+            </button>
+            {root.id !== USER_ROOT_ID && (
+              <button className="root-pill-remove" onClick={() => removeRoot(root.id)} title="Stop browsing this folder">
+                <X size={12} strokeWidth={2} aria-hidden="true" />
+              </button>
+            )}
+          </span>
+        ))}
+        <IconButton icon={FolderPlus} label="Add root folder…" onClick={addRoot} />
+      </div>
+
       <div className="toolbar">
         <div className="breadcrumbs">
           {breadcrumbs.map((seg, i) => {
@@ -251,22 +346,20 @@ export default function FilesTab() {
               <span key={i}>
                 {i > 0 && <span className="crumb-sep">/</span>}
                 <button className="link-button" onClick={() => setPath(target)}>
-                  {i === 0 ? 'user' : seg}
+                  {i === 0 ? (activeRoot?.label ?? '') : seg}
                 </button>
               </span>
             )
           })}
         </div>
         <div className="toolbar-actions">
-          <button onClick={createFile}>New file</button>
-          <button onClick={createFolder}>New folder</button>
-          <button onClick={uploadFiles}>Upload…</button>
+          <IconButton icon={FilePlus} label="New file" onClick={createFile} />
+          <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
+          <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
           {clipboard && (
-            <button onClick={paste} title={clipboard.sourcePath}>
-              Paste "{clipboard.name}"
-            </button>
+            <IconButton icon={ClipboardPaste} label={`Paste "${clipboard.name}"`} onClick={paste} />
           )}
-          <button onClick={refresh}>Refresh</button>
+          <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
         </div>
       </div>
 
@@ -306,20 +399,25 @@ export default function FilesTab() {
                     />
                   ) : (
                     <button className="link-button entry-name" onClick={() => openEntry(entry)}>
-                      {entry.isDirectory ? '📁' : '📄'} {entry.name}
+                      {entry.isDirectory ? (
+                        <Folder size={15} strokeWidth={2} aria-hidden="true" />
+                      ) : (
+                        <File size={15} strokeWidth={2} aria-hidden="true" />
+                      )}
+                      {entry.name}
                     </button>
                   )}
                 </td>
                 <td className="muted">{!entry.isDirectory && entry.size != null ? formatBytes(entry.size) : ''}</td>
                 <td className="row-actions">
-                  {!entry.isDirectory && isHtmlFile(entry.name) && (
-                    <button onClick={() => openAsWebApp(entry)}>Open as web app</button>
+                  {!entry.isDirectory && activeRootId === USER_ROOT_ID && isHtmlFile(entry.name) && (
+                    <IconButton icon={ExternalLink} label="Open as web app" onClick={() => openAsWebApp(entry)} />
                   )}
-                  {!entry.isDirectory && <button onClick={() => downloadEntry(entry)}>Export</button>}
-                  <button onClick={() => copyEntry(entry)}>Copy</button>
-                  <button onClick={() => cutEntry(entry)}>Cut</button>
-                  <button onClick={() => startRename(entry)}>Rename</button>
-                  <button onClick={() => deleteEntry(entry)}>Delete</button>
+                  {!entry.isDirectory && <IconButton icon={Download} label="Export" onClick={() => downloadEntry(entry)} />}
+                  <IconButton icon={Copy} label="Copy" onClick={() => copyEntry(entry)} />
+                  <IconButton icon={Scissors} label="Cut" onClick={() => cutEntry(entry)} />
+                  <IconButton icon={Pencil} label="Rename" onClick={() => startRename(entry)} />
+                  <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => deleteEntry(entry)} />
                 </td>
               </tr>
             ))}
@@ -333,10 +431,8 @@ export default function FilesTab() {
             <div className="editor-header">
               <strong>{editing.path}</strong>
               <div>
-                <button onClick={saveEditing} disabled={!editing.dirty}>
-                  Save
-                </button>
-                <button onClick={() => setEditing(null)}>Close</button>
+                <IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />
+                <IconButton icon={X} label="Close" onClick={() => setEditing(null)} />
               </div>
             </div>
             <textarea

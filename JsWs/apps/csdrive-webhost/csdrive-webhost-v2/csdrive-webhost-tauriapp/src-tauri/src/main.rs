@@ -162,6 +162,7 @@ fn main() {
             keychain_delete_secret,
             secondary_windows::list_secondary_windows,
             secondary_windows::open_new_secondary_window,
+            secondary_windows::add_secondary_window_entry,
             secondary_windows::reopen_secondary_window,
             secondary_windows::close_secondary_window,
             secondary_windows::suspend_secondary_window,
