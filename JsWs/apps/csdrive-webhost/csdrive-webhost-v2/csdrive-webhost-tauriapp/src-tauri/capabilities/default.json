@@ -26,6 +26,7 @@
     "allow-add-window-tag",
     "allow-remove-window-tag",
     "allow-init-window-tab",
+    "allow-update-tab-resource",
     "allow-create-tab-group",
     "allow-move-tab-to-group",
     "allow-get-data-folder-info",

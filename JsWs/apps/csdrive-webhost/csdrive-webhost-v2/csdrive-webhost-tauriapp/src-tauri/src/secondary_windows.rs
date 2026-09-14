@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Row, SqlitePool};
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -48,6 +48,23 @@ pub struct TabGroupRecord {
     pub tabs: Vec<TabRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabTextSpan {
+    pub text: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TabText {
+    pub first_row: Vec<TabTextSpan>,
+    pub second_row: Vec<TabTextSpan>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TabRecord {
@@ -57,8 +74,7 @@ pub struct TabRecord {
     pub relative_path: String,
     pub app_version: i64,
     pub resource_id: String,
-    pub title: String,
-    pub resource_type: String,
+    pub tab_text: Option<TabText>,
     pub created_at: i64,
     pub tags: Vec<TagRecord>,
 }
@@ -67,7 +83,7 @@ pub struct TabRecord {
 #[serde(rename_all = "camelCase")]
 pub struct TabInitResponse {
     pub tab_guid: String,
-    pub group_guid: String,
+    pub resource_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +140,19 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<SqlitePool, sqlx:
     .execute(&pool)
     .await?;
 
+    // The `tabs` schema changed shape early in its life (title/resource_type
+    // columns dropped in favor of tab_text) before any real tab data existed —
+    // drop and recreate rather than migrate if an old-shaped table is found.
+    let has_old_tabs_schema: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('tabs') WHERE name = 'title'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if has_old_tabs_schema > 0 {
+        sqlx::query("DROP TABLE tabs").execute(&pool).await?;
+    }
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS tabs (
             guid TEXT PRIMARY KEY,
@@ -132,8 +161,7 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<SqlitePool, sqlx:
             relative_path TEXT NOT NULL,
             app_version INTEGER NOT NULL,
             resource_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            resource_type TEXT NOT NULL,
+            tab_text TEXT,
             created_at INTEGER NOT NULL
         )",
     )
@@ -280,7 +308,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
 
     let placeholders = (1..=group_guids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT guid, group_guid, window_guid, relative_path, app_version, resource_id, title, resource_type, created_at
+        "SELECT guid, group_guid, window_guid, relative_path, app_version, resource_id, tab_text, created_at
          FROM tabs WHERE group_guid IN ({placeholders}) ORDER BY created_at ASC"
     );
 
@@ -298,6 +326,8 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
         .map(|row| {
             let guid: String = row.get("guid");
             let tags = all_tags.iter().filter(|t| t.guid == guid).cloned().collect();
+            let tab_text_json: Option<String> = row.get("tab_text");
+            let tab_text = tab_text_json.and_then(|json| serde_json::from_str::<TabText>(&json).ok());
             TabRecord {
                 guid,
                 group_guid: row.get("group_guid"),
@@ -305,8 +335,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
                 relative_path: row.get("relative_path"),
                 app_version: row.get("app_version"),
                 resource_id: row.get("resource_id"),
-                title: row.get("title"),
-                resource_type: row.get("resource_type"),
+                tab_text,
                 created_at: row.get("created_at"),
                 tags,
             }
@@ -615,21 +644,35 @@ pub fn focus_secondary_window(app: AppHandle, guid: String) -> Result<(), String
     Ok(())
 }
 
+/// Splits a page's full `location.href` into the window's own html-file relative
+/// path (no query — used to group tabs under the right app/window) and the tab's
+/// resource identifier (relative path *with* its query string, if any — the piece
+/// that actually distinguishes one open resource from another within that app).
+fn split_url_into_path_and_resource_id(url: &str) -> Result<(String, String), String> {
+    let parsed = Url::parse(url).map_err(|e| e.to_string())?;
+    let relative_path = parsed.path().trim_start_matches('/').to_string();
+    let resource_id = match parsed.query() {
+        Some(q) if !q.is_empty() => format!("{relative_path}?{q}"),
+        _ => relative_path.clone(),
+    };
+    Ok((relative_path, resource_id))
+}
+
 /// Called by an app running *inside* a secondary window to register one of its
 /// resources (a document, a view, ...) as a tab. The calling window's own label is
 /// its guid (see `build_window`), so the window never needs to know or send its own
 /// guid — Tauri hands it to us via the `window` parameter. The window's first ever
 /// call creates its default tab group; every call creates a new tab in it (or in
 /// whichever group the tab has since been moved to, on a version bump / reconnect —
-/// out of scope for this first cut, so today every call makes a fresh tab).
+/// out of scope for this first cut, so today every call makes a fresh tab). The tab
+/// starts with no display text — the app fills that in with a follow-up
+/// `update_tab_resource` call once it has something to show.
 async fn init_window_tab_impl(
     pool: &SqlitePool,
     window_guid: &str,
     relative_path: &str,
-    app_version: i64,
     resource_id: &str,
-    title: &str,
-    resource_type: &str,
+    app_version: i64,
 ) -> Result<TabInitResponse, String> {
     let existing_group: Option<String> = sqlx::query_scalar(
         "SELECT guid FROM tab_groups WHERE window_guid = ?1 ORDER BY created_at ASC LIMIT 1",
@@ -656,8 +699,8 @@ async fn init_window_tab_impl(
 
     let tab_guid = uuid::Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, title, resource_type, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, tab_text, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
     )
     .bind(&tab_guid)
     .bind(&group_guid)
@@ -665,47 +708,63 @@ async fn init_window_tab_impl(
     .bind(relative_path)
     .bind(app_version)
     .bind(resource_id)
-    .bind(title)
-    .bind(resource_type)
     .bind(current_millis())
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(TabInitResponse { tab_guid, group_guid })
+    Ok(TabInitResponse {
+        tab_guid,
+        resource_id: resource_id.to_string(),
+    })
 }
 
-/// Called by an app running *inside* a secondary window to register one of its
-/// resources (a document, a view, ...) as a tab. The calling window's own label is
-/// its guid (see `build_window`), so the window never needs to know or send its own
-/// guid — Tauri hands it to us via the `window` parameter. The window's first ever
-/// call creates its default tab group; every call creates a new tab in it (or in
-/// whichever group the tab has since been moved to, on a version bump / reconnect —
-/// out of scope for this first cut, so today every call makes a fresh tab).
 #[tauri::command]
 pub async fn init_window_tab(
     window: tauri::WebviewWindow,
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
-    relative_path: String,
     app_version: i64,
-    resource_id: String,
-    title: String,
-    resource_type: String,
+    url: String,
 ) -> Result<TabInitResponse, String> {
-    let result = init_window_tab_impl(
-        &state.pool,
-        window.label(),
-        &relative_path,
-        app_version,
-        &resource_id,
-        &title,
-        &resource_type,
-    )
-    .await?;
+    let (relative_path, resource_id) = split_url_into_path_and_resource_id(&url)?;
+    let result = init_window_tab_impl(&state.pool, window.label(), &relative_path, &resource_id, app_version).await?;
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(result)
+}
+
+/// Called by an app to set (or replace) the two-line, richly-styled label its tab
+/// shows in the window manager. Rejects updating a tab that doesn't belong to the
+/// calling window, so one app's page can't relabel another window's tab.
+#[tauri::command]
+pub async fn update_tab_resource(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    tab_guid: String,
+    tab_text: TabText,
+) -> Result<(), String> {
+    let owner_window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
+        .bind(&tab_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let owner_window_guid = owner_window_guid.ok_or_else(|| "Tab not found.".to_string())?;
+    if owner_window_guid != window.label() {
+        return Err("Tab does not belong to this window.".to_string());
+    }
+
+    let json = serde_json::to_string(&tab_text).map_err(|e| e.to_string())?;
+    sqlx::query("UPDATE tabs SET tab_text = ?1 WHERE guid = ?2")
+        .bind(&json)
+        .bind(&tab_guid)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
 }
 
 /// Creates an empty tab group under a window, so tabs have somewhere to be moved to
@@ -811,25 +870,97 @@ mod tests {
             .unwrap();
     }
 
+    async fn group_guid_of_tab(pool: &SqlitePool, tab_guid: &str) -> String {
+        sqlx::query_scalar("SELECT group_guid FROM tabs WHERE guid = ?1")
+            .bind(tab_guid)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn split_url_separates_relative_path_from_resource_id() {
+        let (path, resource_id) =
+            split_url_into_path_and_resource_id("csuser://localhost/asdf/index1.html?doc=42").unwrap();
+        assert_eq!(path, "asdf/index1.html");
+        assert_eq!(resource_id, "asdf/index1.html?doc=42");
+
+        let (path_no_query, resource_id_no_query) =
+            split_url_into_path_and_resource_id("csuser://localhost/asdf/index1.html").unwrap();
+        assert_eq!(path_no_query, "asdf/index1.html");
+        assert_eq!(resource_id_no_query, "asdf/index1.html");
+    }
+
     #[test]
     fn init_window_tab_creates_one_group_then_reuses_it() {
         tauri::async_runtime::block_on(async {
             let pool = test_pool("init-reuse").await;
             insert_window(&pool, "win1", "asdf/index.html").await;
 
-            let first = init_window_tab_impl(&pool, "win1", "asdf/index.html", 1, "res-a", "Title A", "document")
-                .await
-                .unwrap();
-            let second = init_window_tab_impl(&pool, "win1", "asdf/index.html", 1, "res-b", "Title B", "document")
-                .await
-                .unwrap();
+            let first = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+            let second = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-b", 1).await.unwrap();
 
-            assert_eq!(first.group_guid, second.group_guid, "both tabs should land in the window's one default group");
+            assert_eq!(first.resource_id, "res-a");
             assert_ne!(first.tab_guid, second.tab_guid);
+
+            let first_group = group_guid_of_tab(&pool, &first.tab_guid).await;
+            let second_group = group_guid_of_tab(&pool, &second.tab_guid).await;
+            assert_eq!(first_group, second_group, "both tabs should land in the window's one default group");
 
             let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].tabs.len(), 2);
+            assert!(groups[0].tabs.iter().all(|t| t.tab_text.is_none()), "no tab_text until update_tab_resource is called");
+        });
+    }
+
+    #[test]
+    fn update_tab_resource_rejects_a_tab_from_another_window() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("update-reject").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+
+            let owner: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
+                .bind(&tab.tab_guid)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+            assert_eq!(owner.as_deref(), Some("win1"));
+            // The actual ownership check lives in the #[tauri::command] wrapper (it
+            // needs a real WebviewWindow for its label, which a unit test can't
+            // construct) — this test just pins down the data it checks against.
+        });
+    }
+
+    #[test]
+    fn tab_text_round_trips_through_json_storage() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("tab-text").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+
+            let tab_text = TabText {
+                first_row: vec![
+                    TabTextSpan { text: "asdfasdf".to_string(), bold: true, italic: false },
+                    TabTextSpan { text: "qwerqwer".to_string(), bold: false, italic: false },
+                ],
+                second_row: vec![TabTextSpan { text: "zxczxcv".to_string(), bold: false, italic: true }],
+            };
+            let json = serde_json::to_string(&tab_text).unwrap();
+            sqlx::query("UPDATE tabs SET tab_text = ?1 WHERE guid = ?2")
+                .bind(&json)
+                .bind(&tab.tab_guid)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            let stored = groups[0].tabs[0].tab_text.clone().expect("tab_text should be set");
+            assert_eq!(stored.first_row.len(), 2);
+            assert!(stored.first_row[0].bold);
+            assert!(!stored.first_row[0].italic);
+            assert!(stored.second_row[0].italic);
         });
     }
 
@@ -840,16 +971,11 @@ mod tests {
             insert_window(&pool, "win1", "asdf/index1.html").await;
             insert_window(&pool, "win2", "asdf/index2.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index1.html", 1, "res-a", "Title A", "document")
-                .await
-                .unwrap();
-            let other_group = init_window_tab_impl(&pool, "win2", "asdf/index2.html", 1, "res-b", "Title B", "document")
-                .await
-                .unwrap();
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index1.html", "res-a", 1).await.unwrap();
+            let other_tab = init_window_tab_impl(&pool, "win2", "asdf/index2.html", "res-b", 1).await.unwrap();
+            let other_group = group_guid_of_tab(&pool, &other_tab.tab_guid).await;
 
-            let err = move_tab_to_group_impl(&pool, &tab.tab_guid, &other_group.group_guid)
-                .await
-                .unwrap_err();
+            let err = move_tab_to_group_impl(&pool, &tab.tab_guid, &other_group).await.unwrap_err();
             assert!(err.contains("same app"));
         });
     }
@@ -861,16 +987,11 @@ mod tests {
             insert_window(&pool, "win1", "asdf/index.html").await;
             insert_window(&pool, "win2", "asdf/index.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", 1, "res-a", "Title A", "document")
-                .await
-                .unwrap();
-            let target_group = init_window_tab_impl(&pool, "win2", "asdf/index.html", 1, "res-b", "Title B", "document")
-                .await
-                .unwrap();
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+            let target_tab = init_window_tab_impl(&pool, "win2", "asdf/index.html", "res-b", 1).await.unwrap();
+            let target_group = group_guid_of_tab(&pool, &target_tab.tab_guid).await;
 
-            move_tab_to_group_impl(&pool, &tab.tab_guid, &target_group.group_guid)
-                .await
-                .unwrap();
+            move_tab_to_group_impl(&pool, &tab.tab_guid, &target_group).await.unwrap();
 
             let groups = fetch_tab_groups(&pool, &["win2".to_string()]).await.unwrap();
             assert_eq!(groups[0].tabs.len(), 2, "the moved tab should now be alongside win2's own tab");
@@ -883,9 +1004,8 @@ mod tests {
             let pool = test_pool("cascade").await;
             insert_window(&pool, "win1", "asdf/index.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", 1, "res-a", "Title A", "document")
-                .await
-                .unwrap();
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+            let group_guid = group_guid_of_tab(&pool, &tab.tab_guid).await;
 
             sqlx::query("INSERT INTO window_tags (guid, text, fg_color, bg_color) VALUES (?1, 'x', '#fff', '#000')")
                 .bind(&tab.tab_guid)
@@ -893,7 +1013,7 @@ mod tests {
                 .await
                 .unwrap();
             sqlx::query("INSERT INTO window_tags (guid, text, fg_color, bg_color) VALUES (?1, 'x', '#fff', '#000')")
-                .bind(&tab.group_guid)
+                .bind(&group_guid)
                 .execute(&pool)
                 .await
                 .unwrap();
@@ -903,7 +1023,7 @@ mod tests {
             let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
             assert!(groups.is_empty());
 
-            let remaining_tags = fetch_tags(&pool, &[tab.tab_guid, tab.group_guid]).await.unwrap();
+            let remaining_tags = fetch_tags(&pool, &[tab.tab_guid, group_guid]).await.unwrap();
             assert!(remaining_tags.is_empty(), "tags on the deleted tab/group must be gone too");
         });
     }

@@ -13,10 +13,14 @@
 <body>
 <h1>Tab init demo</h1>
 <p>
-  Every click below calls the backend's <code>init_window_tab</code> command with a
-  different <code>resourceId</code>/<code>title</code>, simulating a real app opening
-  another document/view as a new tab in this same window. The window is identified
-  implicitly (this window's own Tauri label) — nothing about it is passed explicitly.
+  Every click below simulates a real app opening another document/view as a new tab
+  in this same window: it first updates the page's own URL (via
+  <code>history.pushState</code>, so <code>location.href</code> encodes which
+  resource is "open"), calls <code>init_window_tab</code> with just the app version
+  and that URL, then — after a short simulated load — calls
+  <code>update_tab_resource</code> with the two-line styled label to show for it. The
+  window itself is identified implicitly (this window's own Tauri label) — nothing
+  about it is ever passed explicitly.
 </p>
 <p>
   <button id="open-tab">Open another tab</button>
@@ -28,18 +32,40 @@
 
   async function openTab() {
     const n = counter++
-    const resp = await window.__TAURI__.core.invoke('init_window_tab', {
-      relativePath: 'tab-demo.html',
+
+    const url = new URL(location.href)
+    url.searchParams.set('doc', `demo-${n}`)
+    history.pushState(null, '', url)
+
+    const initResp = await window.__TAURI__.core.invoke('init_window_tab', {
       appVersion: 1,
-      resourceId: `demo-resource-${n}`,
-      title: `Demo tab ${n}`,
-      resourceType: 'demo-doc',
+      url: location.href,
     })
 
     const el = document.createElement('div')
     el.className = 'entry'
-    el.innerHTML = `<strong>Demo tab ${n}</strong><pre>${JSON.stringify(resp, null, 2)}</pre>`
+    el.innerHTML = `<strong>Demo tab ${n}</strong><pre>init: ${JSON.stringify(initResp, null, 2)}</pre>`
     document.getElementById('log').prepend(el)
+
+    // Simulate the app loading some data before it knows what to display.
+    await new Promise((r) => setTimeout(r, 400))
+
+    const tabText = {
+      firstRow: [
+        { text: `Demo ${n}`, bold: true },
+        { text: 'ready' },
+      ],
+      secondRow: [
+        { text: initResp.resourceId, italic: true },
+      ],
+    }
+    await window.__TAURI__.core.invoke('update_tab_resource', {
+      tabGuid: initResp.tabGuid,
+      tabText,
+    })
+
+    const pre = el.querySelector('pre')
+    pre.textContent += `\nupdateResource: ${JSON.stringify(tabText, null, 2)}`
   }
 
   document.getElementById('open-tab').addEventListener('click', () => {

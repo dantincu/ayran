@@ -41,6 +41,7 @@ import {
   type SecondaryWindowRecord,
   type TabGroupRecord,
   type TabRecord,
+  type TabTextSpan,
   type TagRecord,
 } from '../lib/secondaryWindows'
 
@@ -361,6 +362,21 @@ function MoveTabModal({
   )
 }
 
+function TabTextRow({ spans, className }: { spans: TabTextSpan[]; className: string }) {
+  return (
+    <div className={className}>
+      {spans.map((span, i) => (
+        <span key={i}>
+          {i > 0 && <span className="tab-text-bullet">•</span>}
+          <span style={{ fontWeight: span.bold ? 700 : 400, fontStyle: span.italic ? 'italic' : 'normal' }}>
+            {span.text}
+          </span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function TabRow({
   tab,
   onAddTag,
@@ -376,8 +392,14 @@ function TabRow({
     <div className="tab-row">
       <div className="tab-row-header">
         <div className="tab-row-title-block">
-          <div className="tab-row-title">{tab.title}</div>
-          <div className="muted tab-row-type">{tab.resourceType}</div>
+          {tab.tabText ? (
+            <>
+              <TabTextRow spans={tab.tabText.firstRow} className="tab-row-title" />
+              <TabTextRow spans={tab.tabText.secondRow} className="tab-row-subtitle" />
+            </>
+          ) : (
+            <div className="muted tab-row-title">{tab.resourceId}</div>
+          )}
         </div>
         <div className="row-actions">
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />

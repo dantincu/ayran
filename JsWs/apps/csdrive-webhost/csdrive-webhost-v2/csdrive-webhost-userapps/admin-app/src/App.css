@@ -893,12 +893,18 @@ select {
 
 .tab-row-title {
   font-size: 12px;
-  font-weight: 600;
   word-break: break-word;
 }
 
-.tab-row-type {
+.tab-row-subtitle {
   font-size: 11px;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.tab-text-bullet {
+  color: var(--accent);
+  margin: 0 5px;
 }
 
 .move-tab-list {

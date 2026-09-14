@@ -173,6 +173,7 @@ fn main() {
             secondary_windows::add_window_tag,
             secondary_windows::remove_window_tag,
             secondary_windows::init_window_tab,
+            secondary_windows::update_tab_resource,
             secondary_windows::create_tab_group,
             secondary_windows::move_tab_to_group,
             data_location::get_data_folder_info,

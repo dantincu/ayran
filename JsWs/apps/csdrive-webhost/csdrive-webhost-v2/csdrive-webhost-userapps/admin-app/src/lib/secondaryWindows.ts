@@ -9,6 +9,17 @@ export interface TagRecord {
   bgColor: string
 }
 
+export interface TabTextSpan {
+  text: string
+  bold?: boolean
+  italic?: boolean
+}
+
+export interface TabText {
+  firstRow: TabTextSpan[]
+  secondRow: TabTextSpan[]
+}
+
 export interface TabRecord {
   guid: string
   groupGuid: string
@@ -16,8 +27,7 @@ export interface TabRecord {
   relativePath: string
   appVersion: number
   resourceId: string
-  title: string
-  resourceType: string
+  tabText: TabText | null
   createdAt: number
   tags: TagRecord[]
 }
@@ -41,7 +51,7 @@ export interface SecondaryWindowRecord {
 
 export interface TabInitResponse {
   tabGuid: string
-  groupGuid: string
+  resourceId: string
 }
 
 const EVENT_CHANGED = 'secondary-windows-changed'
@@ -102,21 +112,17 @@ export async function removeWindowTag(id: number): Promise<void> {
 
 /** Called by an app running inside a secondary window to register one of its
  * resources as a tab. The window is identified implicitly (its own Tauri window
- * label), never sent explicitly — see `secondary_windows::init_window_tab` in Rust. */
-export async function initWindowTab(
-  relativePath: string,
-  appVersion: number,
-  resourceId: string,
-  title: string,
-  resourceType: string,
-): Promise<TabInitResponse> {
-  return invoke<TabInitResponse>('init_window_tab', {
-    relativePath,
-    appVersion,
-    resourceId,
-    title,
-    resourceType,
-  })
+ * label), never sent explicitly — see `secondary_windows::init_window_tab` in Rust.
+ * `url` is expected to be the page's own `location.href`; the backend splits it into
+ * the window's html-file relative path and a resource id (relative path + query). */
+export async function initWindowTab(appVersion: number, url: string): Promise<TabInitResponse> {
+  return invoke<TabInitResponse>('init_window_tab', { appVersion, url })
+}
+
+/** Sets (or replaces) the two-line, styled label a tab shows in the window manager.
+ * Only the window that owns the tab may update it. */
+export async function updateTabResource(tabGuid: string, tabText: TabText): Promise<void> {
+  await invoke('update_tab_resource', { tabGuid, tabText })
 }
 
 /** Creates an empty tab group under a window, so tabs have somewhere to move to. */

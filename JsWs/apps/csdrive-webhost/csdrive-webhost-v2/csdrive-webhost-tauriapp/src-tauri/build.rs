@@ -16,6 +16,7 @@ fn main() {
             "add_window_tag",
             "remove_window_tag",
             "init_window_tab",
+            "update_tab_resource",
             "create_tab_group",
             "move_tab_to_group",
             "get_data_folder_info",
