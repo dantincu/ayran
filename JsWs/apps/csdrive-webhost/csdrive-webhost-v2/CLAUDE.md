@@ -7,3 +7,14 @@ Now let's go inside folder csdrive-webhost-userapps/admin-app and there create a
 ## App state storage: data.db, not browser storage
 
 An app's own UI-state persistence (active tab, last-browsed folder, collapsed groups, ...) belongs in the app-owned `data.db` (see the generic `app_state` table in `secondary_windows`'s crate — `get_app_state`/`set_app_state`), *not* IndexedDB or Web Storage. Reason: the data folder can be relocated (see the Settings tab / `data_location`) precisely so testing can switch between profiles, but browser storage lives in the fixed WebView2 profile rather than wherever the data folder currently points — so it never actually switched with the rest of the app's data. Rows are namespaced by an `appId` — the relative path (from the `user` folder) of the html file the page was served from, read from `location.pathname` rather than a hardcoded name, e.g. `index.html` for the admin-app — so the same app keeps separate state when copied to more than one location on disk, and multiple apps sharing this one database never collide. This applies to every app in `csdrive-webhost-userapps/`, present and future; the admin-app's own `src/lib/appState.ts` is the reference implementation. It does not apply to browser storage a user explicitly creates through a generic inspection tool (e.g. admin-app's Storage tab) — those are arbitrary by design and named by the user, not the app, and have nothing to do with an app's own settings. If an app used browser storage for this before switching to `data.db`, it's fine to just abandon the old IndexedDB database/keys rather than migrate their contents, unless they hold data too valuable to lose.
+
+## Seeding demo data for the Windows tab
+
+`csdrive-webhost-tauriapp/src-tauri/examples/seed_demo_data.rs` populates the real `data.db` with demo data for the 9 sample apps in `user/qwer/` (`index1.html`-`index9.html`), for stress-testing the Windows tab's nested windows/tab-groups/tabs UI at scale. To run it after a reset (or any time):
+
+```
+cd csdrive-webhost-tauriapp/src-tauri
+cargo run --example seed_demo_data
+```
+
+It requires `data.db` to already exist and `user/qwer/index1.html`..`index9.html` to already be deployed (run the app once, and copy `sample-apps/qwer/` into the real `user/qwer/` folder, before running the script). It finds the real data folder itself the same way the app does, including a relocated custom data folder. Layout it creates: one `secondary_windows` entry per app, except `index1.html` which gets 10; the first of those 10 windows gets 10 `tab_groups`; the first of those groups gets 100 `tabs`. Safe to re-run — every row it creates is tagged `seeded:qwer-demo-data`, and each run starts by deleting only rows carrying that tag before recreating them, so it never touches any other window/tab/tag you created yourself.

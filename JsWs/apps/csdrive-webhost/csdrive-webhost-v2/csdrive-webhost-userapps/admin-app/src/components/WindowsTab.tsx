@@ -1,21 +1,21 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import {
   ArrowRightLeft,
   ArrowUpDown,
   Check,
   CheckCheck,
-  ChevronDown,
-  ChevronRight,
+  ClipboardPaste,
   Copy,
+  ExternalLink,
   FilePlus,
   Fingerprint,
   FolderPlus,
-  ListOrdered,
   Pause,
   PauseCircle,
   Play,
   Plus,
   RefreshCw,
+  Scissors,
   Tag,
   X,
   XCircle,
@@ -49,6 +49,9 @@ const PRESET_COLORS = [
   '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
   '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff', '#000000', '#6b7280',
 ]
+
+type View = 'apps' | 'windows' | 'groups' | 'tabs'
+const VIEW_DEPTH: Record<View, number> = { apps: 0, windows: 1, groups: 2, tabs: 3 }
 
 interface Group {
   relativePath: string
@@ -94,13 +97,11 @@ function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString()
 }
 
-const COLLAPSED_GROUPS_KEY = 'windowsTab.collapsedGroups'
 const USE_CUSTOM_ORDER_KEY = 'windowsTab.useCustomOrder'
 const GROUP_ORDER_KEY = 'windowsTab.groupOrder'
 const ITEM_ORDER_KEY = 'windowsTab.itemOrder'
 const TAB_GROUP_ORDER_KEY = 'windowsTab.tabGroupOrder'
 const TAB_ORDER_KEY = 'windowsTab.tabOrder'
-const COLLAPSED_TAB_GROUPS_KEY = 'windowsTab.collapsedTabGroups'
 
 function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
   return (
@@ -254,40 +255,6 @@ function WindowDetailsModal({ record, onClose }: { record: SecondaryWindowRecord
   )
 }
 
-function ReorderGroupsModal({
-  groups,
-  onConfirm,
-  onClose,
-}: {
-  groups: Group[]
-  onConfirm: (order: string[]) => void
-  onClose: () => void
-}) {
-  const [order, setOrder] = useState<Group[]>(groups)
-
-  return (
-    <Modal title="Reorder groups" onClose={onClose}>
-      <ReorderList
-        items={order}
-        getId={(g) => g.relativePath}
-        renderItem={(g) => <span className="window-group-path">{g.relativePath}</span>}
-        onChange={setOrder}
-      />
-      <div className="toolbar-actions" style={{ justifyContent: 'flex-end' }}>
-        <IconButton
-          icon={Check}
-          label="Confirm order"
-          onClick={() => {
-            onConfirm(order.map((g) => g.relativePath))
-            onClose()
-          }}
-        />
-        <IconButton icon={X} label="Cancel" onClick={onClose} />
-      </div>
-    </Modal>
-  )
-}
-
 function AddGroupRow({ onAdd }: { onAdd: (relativePath: string) => Promise<boolean> }) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
@@ -307,14 +274,14 @@ function AddGroupRow({ onAdd }: { onAdd: (relativePath: string) => Promise<boole
   return (
     <div className="add-group-row">
       <input
-        placeholder="Type or paste a relative path (e.g. asdf/index.html) to add a new group…"
+        placeholder="Type or paste a relative path (e.g. asdf/index.html) to add a new window entry…"
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') submit()
         }}
       />
-      <IconButton icon={FolderPlus} label="Add group" onClick={submit} disabled={!value.trim() || busy} />
+      <IconButton icon={FolderPlus} label="Add entry" onClick={submit} disabled={!value.trim() || busy} />
     </div>
   )
 }
@@ -379,17 +346,21 @@ function TabTextRow({ spans, className }: { spans: TabTextSpan[]; className: str
 
 function TabRow({
   tab,
+  cut,
   onAddTag,
   onRemoveTag,
   onMove,
+  onCut,
 }: {
   tab: TabRecord
+  cut: boolean
   onAddTag: () => void
   onRemoveTag: (id: number) => void
   onMove: () => void
+  onCut: () => void
 }) {
   return (
-    <div className="tab-row">
+    <div className={`window-item tab-row ${cut ? 'tab-row-cut' : ''}`}>
       <div className="tab-row-header">
         {tab.icon && <span className="tab-row-icon" dangerouslySetInnerHTML={{ __html: tab.icon }} />}
         <div className="tab-row-title-block">
@@ -404,6 +375,7 @@ function TabRow({
         </div>
         <div className="row-actions">
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
+          <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
         </div>
       </div>
       <div className="window-item-tags">
@@ -416,67 +388,47 @@ function TabRow({
   )
 }
 
-function TabGroupBlock({
-  group,
-  collapsed,
-  onToggleCollapse,
-  orderedTabs,
-  onReorderTabs,
-  onAddGroupTag,
-  onRemoveGroupTag,
-  onAddTabTag,
-  onRemoveTabTag,
-  onMoveTab,
+/** The list area shared by all four drill-down levels: either a plain browsable
+ * list, or (toggled via the level's own "Sort" button) a drag/arrow-reorderable
+ * list showing a simplified label per item. */
+function LevelPanel<T>({
+  items,
+  getId,
+  renderRow,
+  renderReorderLabel,
+  reordering,
+  onDoneReordering,
+  onReorder,
+  emptyMessage,
 }: {
-  group: TabGroupRecord
-  collapsed: boolean
-  onToggleCollapse: () => void
-  orderedTabs: TabRecord[]
-  onReorderTabs: (tabs: TabRecord[]) => void
-  onAddGroupTag: () => void
-  onRemoveGroupTag: (id: number) => void
-  onAddTabTag: (tabGuid: string) => void
-  onRemoveTabTag: (id: number) => void
-  onMoveTab: (tab: TabRecord) => void
+  items: T[]
+  getId: (item: T) => string
+  renderRow: (item: T) => ReactNode
+  renderReorderLabel: (item: T) => ReactNode
+  reordering: boolean
+  onDoneReordering: () => void
+  onReorder: (items: T[]) => void
+  emptyMessage: string
 }) {
-  return (
-    <div className="tab-group">
-      <div className="tab-group-header">
-        <button
-          className="group-toggle"
-          onClick={onToggleCollapse}
-          title={collapsed ? 'Expand' : 'Collapse'}
-          aria-label={collapsed ? 'Expand' : 'Collapse'}
-        >
-          {collapsed ? (
-            <ChevronRight size={14} strokeWidth={2} aria-hidden="true" />
-          ) : (
-            <ChevronDown size={14} strokeWidth={2} aria-hidden="true" />
-          )}
-          <span className="muted">Tab group</span>
-          <span className="muted window-group-count">({group.tabs.length})</span>
-        </button>
-        <div className="window-item-tags" style={{ padding: 0 }}>
-          {group.tags.map((tag) => (
-            <TagBadge key={tag.id} tag={tag} onRemove={() => onRemoveGroupTag(tag.id)} />
-          ))}
-          <AddTagButton onClick={onAddGroupTag} />
+  if (reordering) {
+    return (
+      <div className="reorder-panel">
+        <ReorderList items={items} getId={getId} renderItem={renderReorderLabel} onChange={onReorder} />
+        <div className="toolbar-actions" style={{ justifyContent: 'flex-end' }}>
+          <IconButton icon={Check} label="Done reordering" onClick={onDoneReordering} />
         </div>
       </div>
-      {!collapsed &&
-        (group.tabs.length === 0 ? (
-          <div className="muted tab-group-empty">No tabs yet.</div>
-        ) : (
-          <ReorderList
-            items={orderedTabs}
-            getId={(t) => t.guid}
-            renderItem={(t) => (
-              <TabRow tab={t} onAddTag={() => onAddTabTag(t.guid)} onRemoveTag={onRemoveTabTag} onMove={() => onMoveTab(t)} />
-            )}
-            onChange={onReorderTabs}
-          />
-        ))}
-    </div>
+    )
+  }
+  if (items.length === 0) {
+    return <div className="muted">{emptyMessage}</div>
+  }
+  return (
+    <ul className="window-list">
+      {items.map((item) => (
+        <li key={getId(item)}>{renderRow(item)}</li>
+      ))}
+    </ul>
   )
 }
 
@@ -484,49 +436,56 @@ export default function WindowsTab() {
   const [records, setRecords] = useState<SecondaryWindowRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const [view, setView] = useState<View>('apps')
+  const [currentApp, setCurrentApp] = useState<string | null>(null)
+  const [currentWindowGuid, setCurrentWindowGuid] = useState<string | null>(null)
+  const [currentGroupGuid, setCurrentGroupGuid] = useState<string | null>(null)
+  const [reordering, setReordering] = useState(false)
+
   const [addingTagFor, setAddingTagFor] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [detailsFor, setDetailsFor] = useState<SecondaryWindowRecord | null>(null)
+  const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
+  const [cutTab, setCutTab] = useState<TabRecord | null>(null)
+
   const [useCustomOrder, setUseCustomOrderState] = useState(false)
   const [groupOrder, setGroupOrderState] = useState<string[]>([])
   const [itemOrder, setItemOrderState] = useState<Record<string, string[]>>({})
-  const [reorderGroupsOpen, setReorderGroupsOpen] = useState(false)
-  const [reorderItemsFor, setReorderItemsFor] = useState<string | null>(null)
   const [tabGroupOrder, setTabGroupOrderState] = useState<Record<string, string[]>>({})
   const [tabOrder, setTabOrderState] = useState<Record<string, string[]>>({})
-  const [collapsedTabGroups, setCollapsedTabGroups] = useState<Record<string, boolean>>({})
-  const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
 
   useEffect(() => {
-    getAppState<Record<string, boolean>>(COLLAPSED_GROUPS_KEY).then((saved) => setCollapsed(saved ?? {}))
     getAppState<boolean>(USE_CUSTOM_ORDER_KEY).then((saved) => setUseCustomOrderState(saved ?? false))
     getAppState<string[]>(GROUP_ORDER_KEY).then((saved) => setGroupOrderState(saved ?? []))
     getAppState<Record<string, string[]>>(ITEM_ORDER_KEY).then((saved) => setItemOrderState(saved ?? {}))
     getAppState<Record<string, string[]>>(TAB_GROUP_ORDER_KEY).then((saved) => setTabGroupOrderState(saved ?? {}))
     getAppState<Record<string, string[]>>(TAB_ORDER_KEY).then((saved) => setTabOrderState(saved ?? {}))
-    getAppState<Record<string, boolean>>(COLLAPSED_TAB_GROUPS_KEY).then((saved) => setCollapsedTabGroups(saved ?? {}))
   }, [])
 
-  function toggleGroup(relativePath: string) {
-    setCollapsed((prev) => {
-      const next = { ...prev, [relativePath]: !prev[relativePath] }
-      setAppState(COLLAPSED_GROUPS_KEY, next)
-      return next
-    })
+  function navigate(next: View) {
+    setView(next)
+    setReordering(false)
   }
 
-  function toggleTabGroupCollapse(groupGuid: string) {
-    setCollapsedTabGroups((prev) => {
-      const next = { ...prev, [groupGuid]: !prev[groupGuid] }
-      setAppState(COLLAPSED_TAB_GROUPS_KEY, next)
-      return next
-    })
+  function openApp(relativePath: string) {
+    setCurrentApp(relativePath)
+    navigate('windows')
+  }
+
+  function openWindow(guid: string) {
+    setCurrentWindowGuid(guid)
+    navigate('groups')
+  }
+
+  function openGroup(guid: string) {
+    setCurrentGroupGuid(guid)
+    navigate('tabs')
   }
 
   function setUseCustomOrder(value: boolean) {
     setUseCustomOrderState(value)
     setAppState(USE_CUSTOM_ORDER_KEY, value)
-    if (!value) setReorderItemsFor(null)
+    if (!value) setReordering(false)
   }
 
   function saveGroupOrder(order: string[]) {
@@ -578,18 +537,6 @@ export default function WindowsTab() {
     }
   }, [refresh])
 
-  async function handleRowClick(record: SecondaryWindowRecord) {
-    try {
-      if (record.isOpen) {
-        await focusSecondaryWindow(record.guid)
-      } else {
-        await reopenSecondaryWindow(record.guid, record.relativePath)
-      }
-    } catch (e) {
-      setError(String(e))
-    }
-  }
-
   async function handleClose(guid: string) {
     try {
       await closeSecondaryWindow(guid)
@@ -601,6 +548,14 @@ export default function WindowsTab() {
   async function handleSuspend(guid: string) {
     try {
       await suspendSecondaryWindow(guid)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function handleFocus(guid: string) {
+    try {
+      await focusSecondaryWindow(guid)
     } catch (e) {
       setError(String(e))
     }
@@ -676,11 +631,59 @@ export default function WindowsTab() {
     }
   }
 
-  let groups = applyOrder(groupByPath(records), (g) => g.relativePath, useCustomOrder, groupOrder)
-  groups = groups.map((g) => ({
-    ...g,
-    windows: applyOrder(g.windows, (w) => w.guid, useCustomOrder, itemOrder[g.relativePath]),
-  }))
+  async function handlePasteTab() {
+    if (!cutTab || !currentGroup) return
+    if (cutTab.groupGuid === currentGroup.guid) {
+      setCutTab(null)
+      return
+    }
+    try {
+      await moveTabToGroup(cutTab.guid, currentGroup.guid)
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setCutTab(null)
+    }
+  }
+
+  const apps = applyOrder(groupByPath(records), (g) => g.relativePath, useCustomOrder, groupOrder)
+  const currentAppGroup = currentApp ? apps.find((g) => g.relativePath === currentApp) ?? null : null
+  const windowsOfCurrentApp = currentAppGroup
+    ? applyOrder(currentAppGroup.windows, (w) => w.guid, useCustomOrder, itemOrder[currentApp!])
+    : []
+  const currentWindow = currentAppGroup?.windows.find((w) => w.guid === currentWindowGuid) ?? null
+  const groupsOfCurrentWindow = currentWindow
+    ? applyOrder(currentWindow.tabGroups, (g) => g.guid, true, tabGroupOrder[currentWindow.guid])
+    : []
+  const currentGroup = currentWindow?.tabGroups.find((g) => g.guid === currentGroupGuid) ?? null
+  const tabsOfCurrentGroup = currentGroup ? applyOrder(currentGroup.tabs, (t) => t.guid, true, tabOrder[currentGroup.guid]) : []
+
+  // If whatever the user last drilled into has since vanished (window closed,
+  // etc.), fall back to the deepest level that's still valid instead of showing
+  // a blank/broken screen.
+  useEffect(() => {
+    if (view === 'apps') return
+    if (!currentAppGroup) {
+      setView('apps')
+      setCurrentApp(null)
+      setCurrentWindowGuid(null)
+      setCurrentGroupGuid(null)
+      return
+    }
+    if (view === 'windows') return
+    if (!currentWindow) {
+      setView('windows')
+      setCurrentWindowGuid(null)
+      setCurrentGroupGuid(null)
+      return
+    }
+    if (view === 'groups') return
+    if (!currentGroup) {
+      setView('groups')
+      setCurrentGroupGuid(null)
+    }
+  }, [records, view, currentAppGroup, currentWindow, currentGroup])
+
   const liveDetailsFor = detailsFor ? records.find((r) => r.guid === detailsFor.guid) ?? null : null
   const moveCandidates: MoveCandidate[] = movingTab
     ? records
@@ -689,173 +692,277 @@ export default function WindowsTab() {
         .filter((c) => c.group.guid !== movingTab.groupGuid)
     : []
 
+  const depth = VIEW_DEPTH[view]
+  const canPaste = !!(cutTab && currentGroup && cutTab.relativePath === currentApp && cutTab.groupGuid !== currentGroup.guid)
+
   return (
     <div className="tab-panel">
       <div className="toolbar">
-        <strong>Secondary windows</strong>
+        <div className="breadcrumbs">
+          <span>
+            <button className={`link-button ${view === 'apps' ? 'active' : ''}`} onClick={() => navigate('apps')}>
+              Apps
+            </button>
+          </span>
+          {depth >= 1 && currentApp && (
+            <span>
+              <span className="crumb-sep">/</span>
+              <button className={`link-button ${view === 'windows' ? 'active' : ''}`} onClick={() => navigate('windows')}>
+                {currentApp}
+              </button>
+            </span>
+          )}
+          {depth >= 2 && currentWindow && (
+            <span>
+              <span className="crumb-sep">/</span>
+              <button className={`link-button ${view === 'groups' ? 'active' : ''}`} onClick={() => navigate('groups')}>
+                Window · {formatDateTime(currentWindow.createdAt)}
+              </button>
+            </span>
+          )}
+          {depth >= 3 && currentGroup && (
+            <span>
+              <span className="crumb-sep">/</span>
+              <button className={`link-button ${view === 'tabs' ? 'active' : ''}`} onClick={() => navigate('tabs')}>
+                Tab group · {formatDateTime(currentGroup.createdAt)}
+              </button>
+            </span>
+          )}
+        </div>
         <div className="toolbar-actions">
-          <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
-          <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
           <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
         </div>
       </div>
 
-      <div className="toolbar">
-        <label className="custom-order-toggle">
-          <input
-            type="checkbox"
-            checked={useCustomOrder}
-            onChange={(e) => setUseCustomOrder(e.target.checked)}
-          />
-          Use custom order
-        </label>
-        <div className="toolbar-actions">
-          <IconButton
-            icon={ListOrdered}
-            label="Reorder groups…"
-            onClick={() => setReorderGroupsOpen(true)}
-            disabled={!useCustomOrder || groups.length < 2}
-          />
-        </div>
-      </div>
-
-      <AddGroupRow onAdd={handleAddEntry} />
-
       {error && <div className="error-banner">{error}</div>}
       {loading && <div className="muted">Loading…</div>}
 
-      {!loading && groups.length === 0 && (
-        <div className="muted">
-          No web apps open yet. Open an .html file from the Files tab as a web app to see it here.
-        </div>
-      )}
+      {view === 'apps' && (
+        <>
+          <div className="toolbar">
+            <strong>Web apps</strong>
+            <div className="toolbar-actions">
+              <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
+              <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
+            </div>
+          </div>
+          <div className="toolbar">
+            <label className="custom-order-toggle">
+              <input type="checkbox" checked={useCustomOrder} onChange={(e) => setUseCustomOrder(e.target.checked)} />
+              Use custom order
+            </label>
+            <div className="toolbar-actions">
+              <IconButton
+                icon={ArrowUpDown}
+                label={reordering ? 'Stop sorting' : 'Sort'}
+                variant={reordering ? 'danger' : 'default'}
+                onClick={() => setReordering((v) => !v)}
+                disabled={!useCustomOrder || (!reordering && apps.length < 2)}
+              />
+            </div>
+          </div>
 
-      <div className="window-groups">
-        {groups.map((group) => {
-          const isReorderingItems = reorderItemsFor === group.relativePath
-          return (
-            <div key={group.relativePath} className="window-group">
-              <div className="window-group-header">
-                <button
-                  className="group-toggle"
-                  onClick={() => toggleGroup(group.relativePath)}
-                  title={collapsed[group.relativePath] ? 'Expand' : 'Collapse'}
-                  aria-label={collapsed[group.relativePath] ? 'Expand' : 'Collapse'}
-                >
-                  {collapsed[group.relativePath] ? (
-                    <ChevronRight size={16} strokeWidth={2} aria-hidden="true" />
-                  ) : (
-                    <ChevronDown size={16} strokeWidth={2} aria-hidden="true" />
-                  )}
-                  <span className="window-group-path">{group.relativePath}</span>
-                  <span className="muted window-group-count">({group.windows.length})</span>
-                </button>
-                <div className="toolbar-actions">
-                  {useCustomOrder && (
-                    <IconButton
-                      icon={ArrowUpDown}
-                      label={isReorderingItems ? 'Stop reordering items' : 'Reorder items'}
-                      variant={isReorderingItems ? 'danger' : 'default'}
-                      onClick={() => setReorderItemsFor(isReorderingItems ? null : group.relativePath)}
-                      disabled={group.windows.length < 2 && !isReorderingItems}
-                    />
-                  )}
-                  <IconButton
-                    icon={FilePlus}
-                    label="Add a new entry without opening it"
-                    onClick={() => handleAddEntry(group.relativePath)}
-                  />
-                  <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(group.relativePath)} />
-                  <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(group.relativePath)} />
-                </div>
-              </div>
-              {isReorderingItems ? (
-                <div className="reorder-panel">
-                  <ReorderList
-                    items={group.windows}
-                    getId={(w) => w.guid}
-                    renderItem={(w) => (
-                      <span className="reorder-window-item">
-                        <span className={`status-dot ${w.isOpen ? 'status-open' : 'status-suspended'}`} />
-                        <span className="muted">{formatDateTime(w.createdAt)}</span>
-                        <span className="muted">{w.isOpen ? 'Open' : 'Suspended'}</span>
+          <AddGroupRow onAdd={handleAddEntry} />
+
+          <div className="window-group">
+            <LevelPanel
+              items={apps}
+              getId={(g) => g.relativePath}
+              reordering={reordering}
+              onDoneReordering={() => setReordering(false)}
+              onReorder={(newApps) => saveGroupOrder(newApps.map((g) => g.relativePath))}
+              emptyMessage="No web apps open yet. Open an .html file from the Files tab as a web app to see it here."
+              renderReorderLabel={(g) => (
+                <span>
+                  <span className="window-group-path">{g.relativePath}</span>{' '}
+                  <span className="muted">
+                    ({g.windows.length} window{g.windows.length === 1 ? '' : 's'})
+                  </span>
+                </span>
+              )}
+              renderRow={(g) => (
+                <div className={`window-item ${g.relativePath === currentApp ? 'recently-visited' : ''}`}>
+                  <div className="window-item-row">
+                    <button className="link-button window-item-main" onClick={() => openApp(g.relativePath)}>
+                      <span className="window-group-path">{g.relativePath}</span>
+                      <span className="muted window-item-state">
+                        {g.windows.length} window{g.windows.length === 1 ? '' : 's'}
                       </span>
-                    )}
-                    onChange={(newOrder) => saveItemOrder(group.relativePath, newOrder.map((w) => w.guid))}
-                  />
-                  <div className="toolbar-actions" style={{ justifyContent: 'flex-end' }}>
-                    <IconButton icon={Check} label="Done reordering" onClick={() => setReorderItemsFor(null)} />
+                    </button>
+                    <div className="row-actions">
+                      <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(g.relativePath)} />
+                      <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(g.relativePath)} />
+                      <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(g.relativePath)} />
+                    </div>
                   </div>
                 </div>
-              ) : (
-                !collapsed[group.relativePath] && (
-                  <ul className="window-list">
-                    {group.windows.map((record) => (
-                      <li key={record.guid} className={`window-item ${record.isOpen ? 'open' : 'suspended'}`}>
-                        <div className="window-item-row">
-                          <button className="link-button window-item-main" onClick={() => handleRowClick(record)}>
-                            <span className={`status-dot ${record.isOpen ? 'status-open' : 'status-suspended'}`} />
-                            <span className="muted window-item-date">{formatDateTime(record.createdAt)}</span>
-                            <span className="muted window-item-state">{record.isOpen ? 'Open' : 'Suspended'}</span>
-                          </button>
-                          <div className="row-actions">
-                            <IconButton icon={Fingerprint} label="Details" onClick={() => setDetailsFor(record)} />
-                            {record.isOpen ? (
-                              <>
-                                <IconButton icon={Pause} label="Suspend" onClick={() => handleSuspend(record.guid)} />
-                                <IconButton icon={X} label="Close" variant="danger" onClick={() => handleClose(record.guid)} />
-                              </>
-                            ) : (
-                              <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(record)} />
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="window-item-tags">
-                          {record.tags.map((tag) => (
-                            <TagBadge key={tag.id} tag={tag} onRemove={() => handleRemoveTag(tag.id)} />
-                          ))}
-                          <AddTagButton onClick={() => setAddingTagFor(record.guid)} />
-                        </div>
-
-                        <div className="tab-groups-section">
-                          <div className="tab-groups-header">
-                            <span className="muted">Tabs</span>
-                            <IconButton icon={Plus} label="New tab group" onClick={() => handleCreateTabGroup(record.guid)} />
-                          </div>
-                          {record.tabGroups.length === 0 ? (
-                            <div className="muted">No tab groups yet.</div>
-                          ) : (
-                            <ReorderList
-                              items={applyOrder(record.tabGroups, (g) => g.guid, true, tabGroupOrder[record.guid])}
-                              getId={(g) => g.guid}
-                              renderItem={(g) => (
-                                <TabGroupBlock
-                                  group={g}
-                                  collapsed={!!collapsedTabGroups[g.guid]}
-                                  onToggleCollapse={() => toggleTabGroupCollapse(g.guid)}
-                                  orderedTabs={applyOrder(g.tabs, (t) => t.guid, true, tabOrder[g.guid])}
-                                  onReorderTabs={(newTabs) => saveTabOrder(g.guid, newTabs.map((t) => t.guid))}
-                                  onAddGroupTag={() => setAddingTagFor(g.guid)}
-                                  onRemoveGroupTag={handleRemoveTag}
-                                  onAddTabTag={(tabGuid) => setAddingTagFor(tabGuid)}
-                                  onRemoveTabTag={handleRemoveTag}
-                                  onMoveTab={(tab) => setMovingTab(tab)}
-                                />
-                              )}
-                              onChange={(newGroups) => saveTabGroupOrder(record.guid, newGroups.map((g) => g.guid))}
-                            />
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )
               )}
+            />
+          </div>
+        </>
+      )}
+
+      {view === 'windows' && currentAppGroup && (
+        <>
+          <div className="toolbar">
+            <label className="custom-order-toggle">
+              <input type="checkbox" checked={useCustomOrder} onChange={(e) => setUseCustomOrder(e.target.checked)} />
+              Use custom order
+            </label>
+            <div className="toolbar-actions">
+              <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(currentApp!)} />
+              <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(currentApp!)} />
+              <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(currentApp!)} />
+              <IconButton
+                icon={ArrowUpDown}
+                label={reordering ? 'Stop sorting' : 'Sort'}
+                variant={reordering ? 'danger' : 'default'}
+                onClick={() => setReordering((v) => !v)}
+                disabled={!useCustomOrder || (!reordering && windowsOfCurrentApp.length < 2)}
+              />
             </div>
-          )
-        })}
-      </div>
+          </div>
+
+          <div className="window-group">
+            <LevelPanel
+              items={windowsOfCurrentApp}
+              getId={(w) => w.guid}
+              reordering={reordering}
+              onDoneReordering={() => setReordering(false)}
+              onReorder={(newWindows) => saveItemOrder(currentApp!, newWindows.map((w) => w.guid))}
+              emptyMessage="No windows for this app yet."
+              renderReorderLabel={(w) => (
+                <span className="reorder-window-item">
+                  <span className={`status-dot ${w.isOpen ? 'status-open' : 'status-suspended'}`} />
+                  <span className="muted">{formatDateTime(w.createdAt)}</span>
+                  <span className="muted">{w.isOpen ? 'Open' : 'Suspended'}</span>
+                </span>
+              )}
+              renderRow={(w) => (
+                <div className={`window-item ${w.isOpen ? 'open' : 'suspended'} ${w.guid === currentWindowGuid ? 'recently-visited' : ''}`}>
+                  <div className="window-item-row">
+                    <button className="link-button window-item-main" onClick={() => openWindow(w.guid)}>
+                      <span className={`status-dot ${w.isOpen ? 'status-open' : 'status-suspended'}`} />
+                      <span className="muted window-item-date">{formatDateTime(w.createdAt)}</span>
+                      <span className="muted window-item-state">{w.isOpen ? 'Open' : 'Suspended'}</span>
+                    </button>
+                    <div className="row-actions">
+                      <IconButton icon={Fingerprint} label="Details" onClick={() => setDetailsFor(w)} />
+                      {w.isOpen ? (
+                        <>
+                          <IconButton icon={ExternalLink} label="Focus" onClick={() => handleFocus(w.guid)} />
+                          <IconButton icon={Pause} label="Suspend" onClick={() => handleSuspend(w.guid)} />
+                          <IconButton icon={X} label="Close" variant="danger" onClick={() => handleClose(w.guid)} />
+                        </>
+                      ) : (
+                        <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(w)} />
+                      )}
+                    </div>
+                  </div>
+                  <div className="window-item-tags">
+                    {w.tags.map((tag) => (
+                      <TagBadge key={tag.id} tag={tag} onRemove={() => handleRemoveTag(tag.id)} />
+                    ))}
+                    <AddTagButton onClick={() => setAddingTagFor(w.guid)} />
+                  </div>
+                </div>
+              )}
+            />
+          </div>
+        </>
+      )}
+
+      {view === 'groups' && currentWindow && (
+        <>
+          <div className="toolbar">
+            <span className="muted">Tab groups</span>
+            <div className="toolbar-actions">
+              <IconButton icon={Plus} label="New tab group" onClick={() => handleCreateTabGroup(currentWindow.guid)} />
+              <IconButton
+                icon={ArrowUpDown}
+                label={reordering ? 'Stop sorting' : 'Sort'}
+                variant={reordering ? 'danger' : 'default'}
+                onClick={() => setReordering((v) => !v)}
+                disabled={!reordering && groupsOfCurrentWindow.length < 2}
+              />
+            </div>
+          </div>
+
+          <div className="window-group">
+            <LevelPanel
+              items={groupsOfCurrentWindow}
+              getId={(g) => g.guid}
+              reordering={reordering}
+              onDoneReordering={() => setReordering(false)}
+              onReorder={(newGroups) => saveTabGroupOrder(currentWindow.guid, newGroups.map((g) => g.guid))}
+              emptyMessage="No tab groups yet."
+              renderReorderLabel={(g) => (
+                <span className="muted">
+                  Tab group · {formatDateTime(g.createdAt)} ({g.tabs.length} tab{g.tabs.length === 1 ? '' : 's'})
+                </span>
+              )}
+              renderRow={(g) => (
+                <div className={`window-item ${g.guid === currentGroupGuid ? 'recently-visited' : ''}`}>
+                  <div className="window-item-row">
+                    <button className="link-button window-item-main" onClick={() => openGroup(g.guid)}>
+                      <span className="muted window-item-date">Tab group · {formatDateTime(g.createdAt)}</span>
+                      <span className="muted window-item-state">
+                        {g.tabs.length} tab{g.tabs.length === 1 ? '' : 's'}
+                      </span>
+                    </button>
+                  </div>
+                  <div className="window-item-tags">
+                    {g.tags.map((tag) => (
+                      <TagBadge key={tag.id} tag={tag} onRemove={() => handleRemoveTag(tag.id)} />
+                    ))}
+                    <AddTagButton onClick={() => setAddingTagFor(g.guid)} />
+                  </div>
+                </div>
+              )}
+            />
+          </div>
+        </>
+      )}
+
+      {view === 'tabs' && currentGroup && (
+        <>
+          <div className="toolbar">
+            <span className="muted">Tabs</span>
+            <div className="toolbar-actions">
+              {canPaste && <IconButton icon={ClipboardPaste} label="Paste tab into this group" onClick={handlePasteTab} />}
+              <IconButton
+                icon={ArrowUpDown}
+                label={reordering ? 'Stop sorting' : 'Sort'}
+                variant={reordering ? 'danger' : 'default'}
+                onClick={() => setReordering((v) => !v)}
+                disabled={!reordering && tabsOfCurrentGroup.length < 2}
+              />
+            </div>
+          </div>
+
+          <div className="window-group">
+            <LevelPanel
+              items={tabsOfCurrentGroup}
+              getId={(t) => t.guid}
+              reordering={reordering}
+              onDoneReordering={() => setReordering(false)}
+              onReorder={(newTabs) => saveTabOrder(currentGroup.guid, newTabs.map((t) => t.guid))}
+              emptyMessage="No tabs yet."
+              renderReorderLabel={(t) => <span>{t.tabText ? t.tabText.firstRow.map((s) => s.text).join(' ') : t.resourceId}</span>}
+              renderRow={(t) => (
+                <TabRow
+                  tab={t}
+                  cut={cutTab?.guid === t.guid}
+                  onAddTag={() => setAddingTagFor(t.guid)}
+                  onRemoveTag={handleRemoveTag}
+                  onMove={() => setMovingTab(t)}
+                  onCut={() => setCutTab(t)}
+                />
+              )}
+            />
+          </div>
+        </>
+      )}
 
       {liveDetailsFor && <WindowDetailsModal record={liveDetailsFor} onClose={() => setDetailsFor(null)} />}
 
@@ -863,14 +970,6 @@ export default function WindowsTab() {
         <AddTagModal
           onAdd={(text, fg, bg) => handleAddTag(addingTagFor, text, fg, bg)}
           onClose={() => setAddingTagFor(null)}
-        />
-      )}
-
-      {reorderGroupsOpen && (
-        <ReorderGroupsModal
-          groups={groups}
-          onConfirm={saveGroupOrder}
-          onClose={() => setReorderGroupsOpen(false)}
         />
       )}
 

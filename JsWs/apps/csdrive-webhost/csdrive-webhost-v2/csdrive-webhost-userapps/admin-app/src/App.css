@@ -557,6 +557,14 @@ select {
   border-bottom: none;
 }
 
+.window-item.recently-visited {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.tab-row-cut {
+  opacity: 0.5;
+}
+
 .window-item-main {
   display: flex;
   align-items: center;
