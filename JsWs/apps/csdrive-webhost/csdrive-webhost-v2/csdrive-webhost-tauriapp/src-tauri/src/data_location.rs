@@ -175,6 +175,27 @@ pub fn reset_data_folder_to_default(app: AppHandle) -> Result<(), String> {
     write_custom_dir(&default_dir, None)
 }
 
+/// Retries `op` a few times with a short, increasing delay before giving up.
+/// Even after every connection pool and window this app itself controls is
+/// confirmed closed, Windows can still hold a just-released file open for a brief
+/// moment longer (antivirus/indexer scans, deferred handle cleanup) — a single
+/// immediate `remove_file`/`remove_dir_all` attempt right after that can lose that
+/// race and fail with "used by another process" even though nothing is genuinely
+/// still using the file.
+fn remove_with_retry<F: Fn() -> std::io::Result<()>>(op: F) -> std::io::Result<()> {
+    let mut last_err = None;
+    for attempt in 0..5u32 {
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                last_err = Some(e);
+                std::thread::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1)));
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
 /// Deletes every entry directly inside `dir` (files and subfolders alike), leaving
 /// `dir` itself in place. `exclude`, if given, names one entry (matched after
 /// canonicalization) to leave untouched. Best-effort: keeps going after a failed
@@ -201,11 +222,13 @@ fn clear_directory_contents(dir: &Path, exclude: Option<&Path>) -> Result<(), St
             }
         }
 
-        let result = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
+        let result = remove_with_retry(|| {
+            if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            }
+        });
         if let Err(e) = result {
             errors.push(format!("{}: {e}", path.display()));
         }
@@ -220,23 +243,55 @@ fn clear_directory_contents(dir: &Path, exclude: Option<&Path>) -> Result<(), St
 
 /// Deletes everything inside the custom data folder (if one is set), without
 /// touching the folder entry itself or the default app-data folder.
+///
+/// Before touching anything, this closes every handle this app itself could be
+/// holding into that folder — on Windows, deleting a file that's still open fails
+/// with "used by another process" (os error 32) — in the order the caller can't
+/// get wrong even if it tried: every open secondary window first (closing one can
+/// itself trigger tab/database activity, so windows must be gone before anything
+/// downstream is touched), then the shared `data.db` connection pool. The frontend
+/// is responsible for closing any `tauri-plugin-sql` connections onto files under
+/// `user/` and wiping browser storage before calling this — Rust code can't reach
+/// into another plugin's private connection registry, only invoke() from JS can.
+/// Restarts the app afterward so it comes back with a fresh pool over the (now
+/// empty) folder instead of continuing to run with a closed one.
 #[tauri::command]
-pub fn clear_custom_data_folder_contents(app: AppHandle) -> Result<(), String> {
+pub async fn clear_custom_data_folder_contents(
+    app: AppHandle,
+    windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
+    db_state: tauri::State<'_, crate::app_state::AppDbState>,
+) -> Result<(), String> {
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir =
         read_custom_dir(&default_dir).ok_or_else(|| "No custom data folder is set.".to_string())?;
-    clear_directory_contents(&custom_dir, None)
+
+    crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
+    db_state.pool.close().await;
+
+    clear_directory_contents(&custom_dir, None)?;
+    app.restart();
 }
 
 /// Deletes everything inside the default app-data folder — the `user` folder,
 /// `data.db`, and the encrypted data-location pointer file itself — the same way
 /// "clear app data" works from the OS settings. Never touches the custom data
-/// folder, even if one is currently set.
+/// folder, even if one is currently set. Closes secondary windows then the shared
+/// `data.db` connection pool first (see `clear_custom_data_folder_contents`) and
+/// restarts the app afterward.
 #[tauri::command]
-pub fn delete_app_data(app: AppHandle) -> Result<(), String> {
+pub async fn delete_app_data(
+    app: AppHandle,
+    windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
+    db_state: tauri::State<'_, crate::app_state::AppDbState>,
+) -> Result<(), String> {
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
-    clear_directory_contents(&default_dir, custom_dir.as_deref())
+
+    crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
+    db_state.pool.close().await;
+
+    clear_directory_contents(&default_dir, custom_dir.as_deref())?;
+    app.restart();
 }
 
 #[cfg(test)]

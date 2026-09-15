@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import { FolderOpen, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import IconButton from './IconButton'
 import {
@@ -61,9 +62,9 @@ export default function SettingsTab() {
   async function clearCustomFolder() {
     if (!info?.customPath) return
     if (
-      !window.confirm(
+      !(await confirm(
         `Permanently delete everything inside the custom data folder?\n\n${info.customPath}\n\nThe folder itself is kept, but its contents cannot be recovered.`,
-      )
+      ))
     ) {
       return
     }
@@ -83,9 +84,9 @@ export default function SettingsTab() {
   async function wipeAppData() {
     if (!info) return
     if (
-      !window.confirm(
+      !(await confirm(
         `Permanently delete all app data in the default folder?\n\n${info.defaultPath}\n\nThis removes the user folder, data.db, and the saved custom-folder location — just like clearing app data from the OS settings. Your custom data folder (if any) is not touched. This cannot be undone.`,
-      )
+      ))
     ) {
       return
     }
@@ -156,8 +157,10 @@ export default function SettingsTab() {
         <strong>Danger zone</strong>
       </div>
       <p className="muted">
-        These delete files immediately and cannot be undone. Restart the app afterwards — files
-        the running app still has open may fail to delete until then.
+        These delete files immediately and cannot be undone. Before deleting, the app closes
+        every open secondary window, any open SQLite connections, and its own browser
+        storage, then closes its database connection — and restarts itself automatically
+        once the deletion finishes.
       </p>
       <div className="toolbar-actions">
         <IconButton

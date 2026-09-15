@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import {
   Copy,
@@ -248,7 +248,7 @@ export default function FilesTab() {
 
   async function deleteEntry(entry: EntryRow) {
     if (!activeRoot) return
-    if (!window.confirm(`Delete "${entry.name}"? This cannot be undone.`)) return
+    if (!(await confirm(`Delete "${entry.name}"? This cannot be undone.`))) return
     try {
       await removeRootPath(activeRoot, joinRelative(path, entry.name), entry.isDirectory)
       await refresh()

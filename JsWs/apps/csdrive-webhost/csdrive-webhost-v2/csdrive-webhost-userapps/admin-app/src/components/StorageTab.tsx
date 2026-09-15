@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import { Clock, Database as DatabaseIcon, HardDrive, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import IconButton from './IconButton'
 import {
@@ -75,8 +76,8 @@ function WebStoragePanel({ storage, label }: { storage: Storage; label: string }
     refresh()
   }
 
-  function clearAll() {
-    if (!window.confirm(`Clear all ${label} entries?`)) return
+  async function clearAll() {
+    if (!(await confirm(`Clear all ${label} entries?`))) return
     storage.clear()
     refresh()
   }
@@ -221,7 +222,7 @@ function IndexedDbPanel() {
   }
 
   async function handleDeleteDatabase(name: string) {
-    if (!window.confirm(`Permanently delete IndexedDB database "${name}"?`)) return
+    if (!(await confirm(`Permanently delete IndexedDB database "${name}"?`))) return
     try {
       await deleteDatabase(name)
       if (selectedDb === name) {
@@ -252,7 +253,7 @@ function IndexedDbPanel() {
 
   async function handleDeleteStore(name: string) {
     if (!selectedDb) return
-    if (!window.confirm(`Delete object store "${name}"?`)) return
+    if (!(await confirm(`Delete object store "${name}"?`))) return
     try {
       await deleteStore(selectedDb, name)
       if (selectedStore === name) {
@@ -299,7 +300,7 @@ function IndexedDbPanel() {
 
   async function handleClearStore() {
     if (!selectedDb || !selectedStore) return
-    if (!window.confirm(`Clear all records in "${selectedStore}"?`)) return
+    if (!(await confirm(`Clear all records in "${selectedStore}"?`))) return
     try {
       await clearStore(selectedDb, selectedStore)
       await refreshRecords()
@@ -467,9 +468,9 @@ export default function StorageTab() {
 
   async function handleWipeAll() {
     if (
-      !window.confirm(
+      !(await confirm(
         'Wipe ALL browser storage for this app — local storage, session storage, and every IndexedDB database (including this app’s own saved tab/folder state)?\n\nThis cannot be undone.',
-      )
+      ))
     ) {
       return
     }

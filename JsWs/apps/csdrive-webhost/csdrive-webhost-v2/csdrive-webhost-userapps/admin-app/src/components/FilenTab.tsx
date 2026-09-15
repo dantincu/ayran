@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Buffer } from 'buffer'
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
+import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import IconButton from './IconButton'
@@ -135,7 +135,7 @@ export default function FilenTab() {
 
   async function handleRemove() {
     if (!activeId) return
-    if (!window.confirm(`Disconnect account "${activeId}"? You can reconnect it later.`)) return
+    if (!(await confirm(`Disconnect account "${activeId}"? You can reconnect it later.`))) return
     await removeAccount(activeId)
     await loadAccounts()
   }
@@ -175,7 +175,7 @@ export default function FilenTab() {
 
   async function deleteEntry(entry: RemoteEntry) {
     if (!sdk) return
-    if (!window.confirm(`Move "${entry.name}" to Filen trash?`)) return
+    if (!(await confirm(`Move "${entry.name}" to Filen trash?`))) return
     try {
       await sdk.fs().rm({ path: joinFilenPath(path, entry.name) })
       await refreshDir(sdk, path)

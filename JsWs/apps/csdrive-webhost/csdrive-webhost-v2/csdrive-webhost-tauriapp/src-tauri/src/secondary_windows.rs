@@ -680,6 +680,26 @@ pub fn suspend_secondary_window(
     Ok(())
 }
 
+/// Polls until none of `guids` are still open, or 5 seconds pass. `.close()` only
+/// *requests* a close — the window isn't actually gone until its `Destroyed` event
+/// fires on a later event-loop tick — so callers that need to know a window's file
+/// handles have truly been released (e.g. before deleting the data folder) must
+/// wait for this rather than assuming `.close()` was enough.
+async fn wait_for_windows_to_close(app: &AppHandle, guids: &[String]) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while guids.iter().any(|g| app.get_webview_window(g).is_some()) {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Closes every open secondary window matching `relative_path` (or all of them, if
+/// `None`) and waits for them to actually finish closing before returning. Also
+/// called directly (not just as a command) by the data-folder deletion flow in
+/// `data_location`, which must not proceed while a window might still be reading
+/// from — or writing tab data into — the folder about to be deleted.
 #[tauri::command]
 pub async fn close_all_secondary_windows(
     app: AppHandle,
@@ -690,14 +710,18 @@ pub async fn close_all_secondary_windows(
         .await
         .map_err(|e| e.to_string())?;
 
-    for (guid, _, _) in rows {
-        if let Some(w) = app.get_webview_window(&guid) {
+    let mut closing = Vec::new();
+    for (guid, _, _) in &rows {
+        if let Some(w) = app.get_webview_window(guid) {
             // Destroyed handler deletes the row (and its tags) once the window actually closes.
             let _ = w.close();
+            closing.push(guid.clone());
         } else {
-            delete_window_and_tags(&state.pool, &guid).await;
+            delete_window_and_tags(&state.pool, guid).await;
         }
     }
+
+    wait_for_windows_to_close(&app, &closing).await;
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
