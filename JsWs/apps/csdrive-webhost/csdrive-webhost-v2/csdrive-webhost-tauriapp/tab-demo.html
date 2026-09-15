@@ -16,11 +16,18 @@
   Every click below simulates a real app opening another document/view as a new tab
   in this same window: it first updates the page's own URL (via
   <code>history.pushState</code>, so <code>location.href</code> encodes which
-  resource is "open"), calls <code>init_window_tab</code> with just the app version
-  and that URL, then — after a short simulated load — calls
+  resource is "open"), calls <code>init_window_tab</code> with the app version, that
+  URL, and a resource type key, then — after a short simulated load — calls
   <code>update_tab_resource</code> with the two-line styled label to show for it. The
   window itself is identified implicitly (this window's own Tauri label) — nothing
   about it is ever passed explicitly.
+</p>
+<p>
+  This page also registers an icon for its <code>demo-doc</code> resource type on
+  load. The very first tab it ever opens (a first-time <code>appVersion</code> for
+  this html file) makes the backend ask for it via a
+  <code>request-resource-icons</code> event — watch the Windows tab in the admin
+  app to see the icon show up next to the tab once that round trip completes.
 </p>
 <p>
   <button id="open-tab">Open another tab</button>
@@ -28,19 +35,49 @@
 <div id="log"></div>
 
 <script>
+  // Inlined rather than loaded from a shared file — this demo lives on its own at
+  // the top of the user folder (the qwer/ demos share _tab-lib.js because they all
+  // live together in that one folder).
+  const TabLib = {
+    span(text, opts) {
+      opts = opts || {}
+      return { text: String(text), bold: !!opts.bold, italic: !!opts.italic }
+    },
+    async openTab(params, appVersion, resourceType) {
+      const url = new URL(location.href)
+      url.search = ''
+      for (const key in params) url.searchParams.set(key, String(params[key]))
+      history.pushState(null, '', url)
+      return window.__TAURI__.core.invoke('init_window_tab', {
+        appVersion: appVersion || 1,
+        url: location.href,
+        resourceType: resourceType || null,
+      })
+    },
+    async updateTab(tabGuid, firstRow, secondRow, resourceType) {
+      return window.__TAURI__.core.invoke('update_tab_resource', {
+        tabGuid,
+        tabText: { firstRow, secondRow },
+        resourceType: resourceType || null,
+      })
+    },
+    registerIcons(icons) {
+      return window.__TAURI__.event.listen('request-resource-icons', () => {
+        window.__TAURI__.core.invoke('submit_resource_icons', { icons })
+      })
+    },
+  }
+
+  const DOC_ICON =
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">' +
+    '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>' +
+    '</svg>'
+
   let counter = 1
 
   async function openTab() {
     const n = counter++
-
-    const url = new URL(location.href)
-    url.searchParams.set('doc', `demo-${n}`)
-    history.pushState(null, '', url)
-
-    const initResp = await window.__TAURI__.core.invoke('init_window_tab', {
-      appVersion: 1,
-      url: location.href,
-    })
+    const initResp = await TabLib.openTab({ doc: `demo-${n}` }, 1, 'demo-doc')
 
     const el = document.createElement('div')
     el.className = 'entry'
@@ -50,22 +87,12 @@
     // Simulate the app loading some data before it knows what to display.
     await new Promise((r) => setTimeout(r, 400))
 
-    const tabText = {
-      firstRow: [
-        { text: `Demo ${n}`, bold: true },
-        { text: 'ready' },
-      ],
-      secondRow: [
-        { text: initResp.resourceId, italic: true },
-      ],
-    }
-    await window.__TAURI__.core.invoke('update_tab_resource', {
-      tabGuid: initResp.tabGuid,
-      tabText,
-    })
+    const firstRow = [TabLib.span(`Demo ${n}`, { bold: true }), TabLib.span('ready')]
+    const secondRow = [TabLib.span(initResp.resourceId, { italic: true })]
+    await TabLib.updateTab(initResp.tabGuid, firstRow, secondRow, 'demo-doc')
 
     const pre = el.querySelector('pre')
-    pre.textContent += `\nupdateResource: ${JSON.stringify(tabText, null, 2)}`
+    pre.textContent += `\nupdateResource: ${JSON.stringify({ firstRow, secondRow }, null, 2)}`
   }
 
   document.getElementById('open-tab').addEventListener('click', () => {
@@ -77,13 +104,17 @@
     })
   })
 
-  // Register one tab automatically on load, like a real app would on startup.
-  openTab().catch((e) => {
-    const el = document.createElement('div')
-    el.className = 'entry'
-    el.textContent = `Error: ${e}`
-    document.getElementById('log').prepend(el)
-  })
+  // Register the icon listener *before* opening any tab — otherwise the very
+  // first init_window_tab call (which triggers the icon request, since it's a
+  // first-time app_version) could fire before the listener is actually attached.
+  TabLib.registerIcons({ 'demo-doc': DOC_ICON })
+    .then(() => openTab())
+    .catch((e) => {
+      const el = document.createElement('div')
+      el.className = 'entry'
+      el.textContent = `Error: ${e}`
+      document.getElementById('log').prepend(el)
+    })
 </script>
 </body>
 </html>

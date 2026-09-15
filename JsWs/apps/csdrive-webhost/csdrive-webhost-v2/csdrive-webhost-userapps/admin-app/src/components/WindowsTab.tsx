@@ -391,6 +391,7 @@ function TabRow({
   return (
     <div className="tab-row">
       <div className="tab-row-header">
+        {tab.icon && <span className="tab-row-icon" dangerouslySetInnerHTML={{ __html: tab.icon }} />}
         <div className="tab-row-title-block">
           {tab.tabText ? (
             <>

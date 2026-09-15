@@ -27,6 +27,9 @@ export interface TabRecord {
   relativePath: string
   appVersion: number
   resourceId: string
+  resourceType: string | null
+  /** SVG markup registered by the app for `resourceType`, resolved server-side. */
+  icon: string | null
   tabText: TabText | null
   createdAt: number
   tags: TagRecord[]
@@ -114,15 +117,40 @@ export async function removeWindowTag(id: number): Promise<void> {
  * resources as a tab. The window is identified implicitly (its own Tauri window
  * label), never sent explicitly — see `secondary_windows::init_window_tab` in Rust.
  * `url` is expected to be the page's own `location.href`; the backend splits it into
- * the window's html-file relative path and a resource id (relative path + query). */
-export async function initWindowTab(appVersion: number, url: string): Promise<TabInitResponse> {
-  return invoke<TabInitResponse>('init_window_tab', { appVersion, url })
+ * the window's html-file relative path and a resource id (relative path + query).
+ * `resourceType` (optional, can instead — or also — be set later via
+ * `updateTabResource`) is the key into this app's icon set; if this is the first
+ * time the backend has seen this `appVersion` for this html file, it will emit
+ * `request-resource-icons` back at this same window, expecting a reply via
+ * `submitResourceIcons`. */
+export async function initWindowTab(appVersion: number, url: string, resourceType?: string): Promise<TabInitResponse> {
+  return invoke<TabInitResponse>('init_window_tab', { appVersion, url, resourceType: resourceType ?? null })
 }
 
-/** Sets (or replaces) the two-line, styled label a tab shows in the window manager.
- * Only the window that owns the tab may update it. */
-export async function updateTabResource(tabGuid: string, tabText: TabText): Promise<void> {
-  await invoke('update_tab_resource', { tabGuid, tabText })
+/** Sets (or replaces) the two-line, styled label a tab shows in the window manager,
+ * and optionally its resource type (see `initWindowTab`). Only the window that owns
+ * the tab may update it. */
+export async function updateTabResource(tabGuid: string, tabText: TabText, resourceType?: string): Promise<void> {
+  await invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType ?? null })
+}
+
+const EVENT_REQUEST_RESOURCE_ICONS = 'request-resource-icons'
+
+/** Reports this app's icon set in response to a `request-resource-icons` event —
+ * a map of resource-type key to SVG markup. The backend figures out which app this
+ * is from the calling window, same as `initWindowTab`. */
+export async function submitResourceIcons(icons: Record<string, string>): Promise<void> {
+  await invoke('submit_resource_icons', { icons })
+}
+
+/** Listens for the backend asking this window's app to (re-)report its icon set —
+ * fired the first time a given `appVersion` is seen for this html file, and again
+ * whenever `appVersion` increases. `getIcons` may be async. */
+export function onResourceIconsRequested(getIcons: () => Record<string, string> | Promise<Record<string, string>>): Promise<UnlistenFn> {
+  return listen(EVENT_REQUEST_RESOURCE_ICONS, async () => {
+    const icons = await getIcons()
+    await submitResourceIcons(icons)
+  })
 }
 
 /** Creates an empty tab group under a window, so tabs have somewhere to move to. */

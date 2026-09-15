@@ -10,12 +10,29 @@
 <p class="lead">
   Opening a file registers it as a tab whose label shows the file name (bold) and
   size (regular) on the first line, and the full path (italic) on the second — that
-  second line is exactly the <code>resourceId</code> the backend handed back.
+  second line is exactly the <code>resourceId</code> the backend handed back. Each
+  file extension here is its own resource type, each with its own icon — a
+  showcase of one app registering several icons at once.
 </p>
 <ul id="files"></ul>
 
 <script src="_tab-lib.js"></script>
 <script>
+  function iconFor(color) {
+    return (
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="2">' +
+      '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>' +
+      '</svg>'
+    )
+  }
+
+  TabLib.registerIcons({
+    pdf: iconFor('#dc2626'),
+    xlsx: iconFor('#16a34a'),
+    png: iconFor('#2563eb'),
+    txt: iconFor('#6b7280'),
+  })
+
   const files = [
     { path: 'reports/2026/summary.pdf', size: '184 KB' },
     { path: 'reports/2026/budget.xlsx', size: '52 KB' },
@@ -25,14 +42,16 @@
 
   const list = document.getElementById('files')
   for (const file of files) {
+    const ext = file.path.split('.').pop()
     const li = document.createElement('li')
     li.innerHTML = '<span>' + file.path + ' <span class="muted">(' + file.size + ')</span></span><button>Open</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ file: file.path })
+      const resp = await TabLib.openTab({ file: file.path }, 1, ext)
       await TabLib.updateTab(
         resp.tabGuid,
         [TabLib.span(file.path.split('/').pop(), { bold: true }), TabLib.span(file.size)],
         [TabLib.span(resp.resourceId, { italic: true })],
+        ext,
       )
     })
     list.appendChild(li)

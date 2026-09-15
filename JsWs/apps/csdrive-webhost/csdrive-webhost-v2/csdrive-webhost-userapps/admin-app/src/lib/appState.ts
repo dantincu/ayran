@@ -1,24 +1,27 @@
-/** Small IndexedDB-backed key/value store for persisting UI state (active tab,
- * last-browsed folder, collapsed groups, ...) across app restarts.
+/** Small key/value store for persisting UI state (active tab, last-browsed folder,
+ * collapsed groups, ...) across app restarts — backed by the app's own `data.db`
+ * (via the generic `app_state` table), *not* browser storage.
  *
- * Naming convention: every user app under csdrive-webhost-userapps/ runs from the
- * same `csuser://localhost` origin, so IndexedDB databases and Web Storage keys are
- * shared browser-wide across all of them unless namespaced. Any database or key an
- * app creates for its own persistence must be prefixed with `[<html-file-relative-path>]`
- * — the path this page was served from (e.g. `[index.html]`), taken from
- * `location.pathname` rather than a hardcoded app name, so the same app keeps its
- * state separate when deployed at more than one location. See
+ * Why not IndexedDB/localStorage: this app supports relocating its whole data
+ * folder (see the Settings tab) as a way to switch between profiles for testing —
+ * but browser storage lives in the fixed WebView2 profile, not the data folder, so
+ * switching folders never actually gave you a fresh UI-state profile. Storing state
+ * in `data.db` instead means it moves (or doesn't) exactly when the rest of the
+ * app's data does.
+ *
+ * Rows are namespaced by `appId` — this page's own relative path (e.g.
+ * `index.html`), taken from `location.pathname` rather than a hardcoded name — so
+ * the same app keeps separate state when deployed at more than one location, and
+ * multiple apps sharing this one database never collide. See
  * csdrive-webhost-v2/CLAUDE.md for the full rule. */
 
-const APP_PREFIX = `[${location.pathname.replace(/^\//, '')}]`
+import { invoke } from '@tauri-apps/api/core'
 
-const DB_NAME = `${APP_PREFIX}app-state`
-const STORE_NAME = 'kv'
+const APP_ID = location.pathname.replace(/^\//, '')
 
-/** Superseded by the path-based prefix above; deleted once on first use so it
- * doesn't linger under its old name. Safe to remove this once it's rolled out
- * everywhere. */
-const OLD_DB_NAMES = ['csdrive-admin-app-state', '[admin-app]app-state']
+/** This app's state used to live in IndexedDB under these names; deleted once on
+ * first use so it doesn't linger unused. Safe to remove once rolled out everywhere. */
+const OLD_DB_NAMES = ['csdrive-admin-app-state', '[admin-app]app-state', `[${APP_ID}]app-state`]
 for (const name of OLD_DB_NAMES) {
   try {
     indexedDB.deleteDatabase(name)
@@ -27,46 +30,16 @@ for (const name of OLD_DB_NAMES) {
   }
 }
 
-function openAppStateDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
-    req.onupgradeneeded = () => {
-      req.result.createObjectStore(STORE_NAME, { keyPath: 'key' })
-    }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
-  })
-}
-
-function prefixedKey(key: string): string {
-  return key.startsWith(APP_PREFIX) ? key : `${APP_PREFIX}${key}`
-}
-
 export async function getAppState<T>(key: string): Promise<T | undefined> {
-  const db = await openAppStateDb()
+  const raw = await invoke<string | null>('get_app_state', { appId: APP_ID, key })
+  if (raw == null) return undefined
   try {
-    return await new Promise<T | undefined>((resolve, reject) => {
-      const req = db.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(prefixedKey(key))
-      req.onsuccess = () => resolve(req.result?.value)
-      req.onerror = () => reject(req.error)
-    })
-  } finally {
-    db.close()
+    return JSON.parse(raw) as T
+  } catch {
+    return undefined
   }
 }
 
 export async function setAppState<T>(key: string, value: T): Promise<void> {
-  const db = await openAppStateDb()
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const req = db
-        .transaction(STORE_NAME, 'readwrite')
-        .objectStore(STORE_NAME)
-        .put({ key: prefixedKey(key), value })
-      req.onsuccess = () => resolve()
-      req.onerror = () => reject(req.error)
-    })
-  } finally {
-    db.close()
-  }
+  await invoke('set_app_state', { appId: APP_ID, key, value: JSON.stringify(value) })
 }

@@ -74,6 +74,10 @@ pub struct TabRecord {
     pub relative_path: String,
     pub app_version: i64,
     pub resource_id: String,
+    pub resource_type: Option<String>,
+    /// The SVG registered for `resource_type` under this app, if any — resolved
+    /// server-side so the window manager doesn't need to look it up itself.
+    pub icon: Option<String>,
     pub tab_text: Option<TabText>,
     pub created_at: i64,
     pub tags: Vec<TagRecord>,
@@ -161,8 +165,45 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<SqlitePool, sqlx:
             relative_path TEXT NOT NULL,
             app_version INTEGER NOT NULL,
             resource_id TEXT NOT NULL,
+            resource_type TEXT,
             tab_text TEXT,
             created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    // `resource_type` was added after `tabs` first shipped — add it to any table
+    // that predates it (a plain nullable column, so existing rows are unaffected).
+    let has_resource_type_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('tabs') WHERE name = 'resource_type'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if has_resource_type_column == 0 {
+        sqlx::query("ALTER TABLE tabs ADD COLUMN resource_type TEXT").execute(&pool).await?;
+    }
+
+    // Tracks the highest app_version seen for each html file, so init_window_tab can
+    // tell when a page has shipped a newer build and its icon set may have changed.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS app_versions (
+            relative_path TEXT PRIMARY KEY,
+            version INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+
+    // One SVG per (app, resource type), supplied by the app itself in response to a
+    // request-resource-icons event — see `submit_resource_icons`.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS resource_icons (
+            relative_path TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            svg TEXT NOT NULL,
+            PRIMARY KEY (relative_path, resource_type)
         )",
     )
     .execute(&pool)
@@ -300,7 +341,40 @@ async fn fetch_tags(pool: &SqlitePool, guids: &[String]) -> Result<Vec<TagRecord
         .collect())
 }
 
-/// Fetches every tab belonging to any of `group_guids`, each with its own tags.
+/// Fetches the registered icon (if any) for every (relative_path, resource_type)
+/// pair that could be relevant to `relative_paths`.
+async fn fetch_icons(
+    pool: &SqlitePool,
+    relative_paths: &[String],
+) -> Result<std::collections::HashMap<(String, String), String>, sqlx::Error> {
+    if relative_paths.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let placeholders = (1..=relative_paths.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
+    let query = format!(
+        "SELECT relative_path, resource_type, svg FROM resource_icons WHERE relative_path IN ({placeholders})"
+    );
+
+    let mut q = sqlx::query(&query);
+    for rp in relative_paths {
+        q = q.bind(rp);
+    }
+    let rows = q.fetch_all(pool).await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let relative_path: String = row.get("relative_path");
+            let resource_type: String = row.get("resource_type");
+            let svg: String = row.get("svg");
+            ((relative_path, resource_type), svg)
+        })
+        .collect())
+}
+
+/// Fetches every tab belonging to any of `group_guids`, each with its own tags and
+/// its icon resolved (if it has a resource_type and that app has registered one).
 async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<TabRecord>, sqlx::Error> {
     if group_guids.is_empty() {
         return Ok(Vec::new());
@@ -308,7 +382,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
 
     let placeholders = (1..=group_guids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT guid, group_guid, window_guid, relative_path, app_version, resource_id, tab_text, created_at
+        "SELECT guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at
          FROM tabs WHERE group_guid IN ({placeholders}) ORDER BY created_at ASC"
     );
 
@@ -321,20 +395,36 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
     let tab_guids: Vec<String> = rows.iter().map(|row| row.get::<String, _>("guid")).collect();
     let all_tags = fetch_tags(pool, &tab_guids).await?;
 
+    let relative_paths: Vec<String> = rows
+        .iter()
+        .map(|row| row.get::<String, _>("relative_path"))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let icons = fetch_icons(pool, &relative_paths).await?;
+
     Ok(rows
         .into_iter()
         .map(|row| {
             let guid: String = row.get("guid");
+            let relative_path: String = row.get("relative_path");
             let tags = all_tags.iter().filter(|t| t.guid == guid).cloned().collect();
             let tab_text_json: Option<String> = row.get("tab_text");
             let tab_text = tab_text_json.and_then(|json| serde_json::from_str::<TabText>(&json).ok());
+            let resource_type: Option<String> = row.get("resource_type");
+            let icon = resource_type
+                .as_ref()
+                .and_then(|rt| icons.get(&(relative_path.clone(), rt.clone())))
+                .cloned();
             TabRecord {
                 guid,
                 group_guid: row.get("group_guid"),
                 window_guid: row.get("window_guid"),
-                relative_path: row.get("relative_path"),
+                relative_path,
                 app_version: row.get("app_version"),
                 resource_id: row.get("resource_id"),
+                resource_type,
+                icon,
                 tab_text,
                 created_at: row.get("created_at"),
                 tags,
@@ -658,6 +748,31 @@ fn split_url_into_path_and_resource_id(url: &str) -> Result<(String, String), St
     Ok((relative_path, resource_id))
 }
 
+/// Records `app_version` as the highest seen for `relative_path`, if it's newer
+/// than (or the first ever for) that app. Returns whether it was — the signal
+/// `init_window_tab` uses to decide whether to ask the window for a fresh icon set.
+async fn note_app_version(pool: &SqlitePool, relative_path: &str, app_version: i64) -> Result<bool, String> {
+    let known_version: Option<i64> = sqlx::query_scalar("SELECT version FROM app_versions WHERE relative_path = ?1")
+        .bind(relative_path)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let is_new_or_newer = known_version.map_or(true, |v| app_version > v);
+    if is_new_or_newer {
+        sqlx::query(
+            "INSERT INTO app_versions (relative_path, version) VALUES (?1, ?2)
+             ON CONFLICT(relative_path) DO UPDATE SET version = excluded.version",
+        )
+        .bind(relative_path)
+        .bind(app_version)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(is_new_or_newer)
+}
+
 /// Called by an app running *inside* a secondary window to register one of its
 /// resources (a document, a view, ...) as a tab. The calling window's own label is
 /// its guid (see `build_window`), so the window never needs to know or send its own
@@ -666,14 +781,16 @@ fn split_url_into_path_and_resource_id(url: &str) -> Result<(String, String), St
 /// whichever group the tab has since been moved to, on a version bump / reconnect —
 /// out of scope for this first cut, so today every call makes a fresh tab). The tab
 /// starts with no display text — the app fills that in with a follow-up
-/// `update_tab_resource` call once it has something to show.
+/// `update_tab_resource` call once it has something to show. Returns whether this
+/// app_version is new/newer for this html file, alongside the usual response.
 async fn init_window_tab_impl(
     pool: &SqlitePool,
     window_guid: &str,
     relative_path: &str,
     resource_id: &str,
+    resource_type: Option<&str>,
     app_version: i64,
-) -> Result<TabInitResponse, String> {
+) -> Result<(TabInitResponse, bool), String> {
     let existing_group: Option<String> = sqlx::query_scalar(
         "SELECT guid FROM tab_groups WHERE window_guid = ?1 ORDER BY created_at ASC LIMIT 1",
     )
@@ -699,8 +816,8 @@ async fn init_window_tab_impl(
 
     let tab_guid = uuid::Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, tab_text, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7)",
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8)",
     )
     .bind(&tab_guid)
     .bind(&group_guid)
@@ -708,16 +825,27 @@ async fn init_window_tab_impl(
     .bind(relative_path)
     .bind(app_version)
     .bind(resource_id)
+    .bind(resource_type)
     .bind(current_millis())
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    Ok(TabInitResponse {
-        tab_guid,
-        resource_id: resource_id.to_string(),
-    })
+    let is_new_or_newer_version = note_app_version(pool, relative_path, app_version).await?;
+
+    Ok((
+        TabInitResponse {
+            tab_guid,
+            resource_id: resource_id.to_string(),
+        },
+        is_new_or_newer_version,
+    ))
 }
+
+/// Emitted to a specific window asking the app running in it to report its icons —
+/// see `submit_resource_icons`. Sent whenever `init_window_tab` sees an app_version
+/// it hasn't seen before (including the very first time that html file is opened).
+pub const EVENT_REQUEST_RESOURCE_ICONS: &str = "request-resource-icons";
 
 #[tauri::command]
 pub async fn init_window_tab(
@@ -726,17 +854,32 @@ pub async fn init_window_tab(
     state: tauri::State<'_, SecondaryWindowsState>,
     app_version: i64,
     url: String,
+    resource_type: Option<String>,
 ) -> Result<TabInitResponse, String> {
     let (relative_path, resource_id) = split_url_into_path_and_resource_id(&url)?;
-    let result = init_window_tab_impl(&state.pool, window.label(), &relative_path, &resource_id, app_version).await?;
+    let (result, needs_icons) = init_window_tab_impl(
+        &state.pool,
+        window.label(),
+        &relative_path,
+        &resource_id,
+        resource_type.as_deref(),
+        app_version,
+    )
+    .await?;
+
+    if needs_icons {
+        let _ = window.emit(EVENT_REQUEST_RESOURCE_ICONS, ());
+    }
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(result)
 }
 
 /// Called by an app to set (or replace) the two-line, richly-styled label its tab
-/// shows in the window manager. Rejects updating a tab that doesn't belong to the
-/// calling window, so one app's page can't relabel another window's tab.
+/// shows in the window manager, and optionally its resource type (the key into that
+/// app's icon set — see `submit_resource_icons`). Rejects updating a tab that
+/// doesn't belong to the calling window, so one app's page can't relabel another
+/// window's tab.
 #[tauri::command]
 pub async fn update_tab_resource(
     window: tauri::WebviewWindow,
@@ -744,6 +887,7 @@ pub async fn update_tab_resource(
     state: tauri::State<'_, SecondaryWindowsState>,
     tab_guid: String,
     tab_text: TabText,
+    resource_type: Option<String>,
 ) -> Result<(), String> {
     let owner_window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
         .bind(&tab_guid)
@@ -756,12 +900,57 @@ pub async fn update_tab_resource(
     }
 
     let json = serde_json::to_string(&tab_text).map_err(|e| e.to_string())?;
-    sqlx::query("UPDATE tabs SET tab_text = ?1 WHERE guid = ?2")
-        .bind(&json)
-        .bind(&tab_guid)
+    if let Some(resource_type) = &resource_type {
+        sqlx::query("UPDATE tabs SET tab_text = ?1, resource_type = ?2 WHERE guid = ?3")
+            .bind(&json)
+            .bind(resource_type)
+            .bind(&tab_guid)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query("UPDATE tabs SET tab_text = ?1 WHERE guid = ?2")
+            .bind(&json)
+            .bind(&tab_guid)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
+}
+
+/// Called by an app in response to a `request-resource-icons` event to report its
+/// icon set: a map of resource-type key to SVG markup. The calling window's own
+/// relative path (looked up the same way `init_window_tab` identifies it) is what
+/// the icons get filed under.
+#[tauri::command]
+pub async fn submit_resource_icons(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    icons: std::collections::HashMap<String, String>,
+) -> Result<(), String> {
+    let relative_path: Option<String> = sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
+        .bind(window.label())
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let relative_path = relative_path.ok_or_else(|| "Window not found.".to_string())?;
+
+    for (resource_type, svg) in icons {
+        sqlx::query(
+            "INSERT INTO resource_icons (relative_path, resource_type, svg) VALUES (?1, ?2, ?3)
+             ON CONFLICT(relative_path, resource_type) DO UPDATE SET svg = excluded.svg",
+        )
+        .bind(&relative_path)
+        .bind(&resource_type)
+        .bind(&svg)
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
+    }
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
@@ -878,6 +1067,15 @@ mod tests {
             .unwrap()
     }
 
+    /// Thin wrapper matching the pre-icons test call shape: no resource_type, and
+    /// discards the "is this a new/newer app_version" bool most tests don't care about.
+    async fn init_tab(pool: &SqlitePool, window_guid: &str, relative_path: &str, resource_id: &str, app_version: i64) -> TabInitResponse {
+        init_window_tab_impl(pool, window_guid, relative_path, resource_id, None, app_version)
+            .await
+            .unwrap()
+            .0
+    }
+
     #[test]
     fn split_url_separates_relative_path_from_resource_id() {
         let (path, resource_id) =
@@ -897,8 +1095,8 @@ mod tests {
             let pool = test_pool("init-reuse").await;
             insert_window(&pool, "win1", "asdf/index.html").await;
 
-            let first = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
-            let second = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-b", 1).await.unwrap();
+            let first = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+            let second = init_tab(&pool, "win1", "asdf/index.html", "res-b", 1).await;
 
             assert_eq!(first.resource_id, "res-a");
             assert_ne!(first.tab_guid, second.tab_guid);
@@ -919,7 +1117,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let pool = test_pool("update-reject").await;
             insert_window(&pool, "win1", "asdf/index.html").await;
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
 
             let owner: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
                 .bind(&tab.tab_guid)
@@ -938,7 +1136,7 @@ mod tests {
         tauri::async_runtime::block_on(async {
             let pool = test_pool("tab-text").await;
             insert_window(&pool, "win1", "asdf/index.html").await;
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
 
             let tab_text = TabText {
                 first_row: vec![
@@ -971,8 +1169,8 @@ mod tests {
             insert_window(&pool, "win1", "asdf/index1.html").await;
             insert_window(&pool, "win2", "asdf/index2.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index1.html", "res-a", 1).await.unwrap();
-            let other_tab = init_window_tab_impl(&pool, "win2", "asdf/index2.html", "res-b", 1).await.unwrap();
+            let tab = init_tab(&pool, "win1", "asdf/index1.html", "res-a", 1).await;
+            let other_tab = init_tab(&pool, "win2", "asdf/index2.html", "res-b", 1).await;
             let other_group = group_guid_of_tab(&pool, &other_tab.tab_guid).await;
 
             let err = move_tab_to_group_impl(&pool, &tab.tab_guid, &other_group).await.unwrap_err();
@@ -987,8 +1185,8 @@ mod tests {
             insert_window(&pool, "win1", "asdf/index.html").await;
             insert_window(&pool, "win2", "asdf/index.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
-            let target_tab = init_window_tab_impl(&pool, "win2", "asdf/index.html", "res-b", 1).await.unwrap();
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+            let target_tab = init_tab(&pool, "win2", "asdf/index.html", "res-b", 1).await;
             let target_group = group_guid_of_tab(&pool, &target_tab.tab_guid).await;
 
             move_tab_to_group_impl(&pool, &tab.tab_guid, &target_group).await.unwrap();
@@ -1004,7 +1202,7 @@ mod tests {
             let pool = test_pool("cascade").await;
             insert_window(&pool, "win1", "asdf/index.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", 1).await.unwrap();
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
             let group_guid = group_guid_of_tab(&pool, &tab.tab_guid).await;
 
             sqlx::query("INSERT INTO window_tags (guid, text, fg_color, bg_color) VALUES (?1, 'x', '#fff', '#000')")
@@ -1025,6 +1223,60 @@ mod tests {
 
             let remaining_tags = fetch_tags(&pool, &[tab.tab_guid, group_guid]).await.unwrap();
             assert!(remaining_tags.is_empty(), "tags on the deleted tab/group must be gone too");
+        });
+    }
+
+    #[test]
+    fn init_window_tab_flags_only_new_or_newer_app_versions() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("version-flag").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+
+            let (_, first_is_new) =
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", None, 1).await.unwrap();
+            assert!(first_is_new, "the very first call for an app should be flagged");
+
+            let (_, same_version_is_new) =
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-b", None, 1).await.unwrap();
+            assert!(!same_version_is_new, "an unchanged version should not be re-flagged");
+
+            let (_, older_version_is_new) =
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-c", None, 0).await.unwrap();
+            assert!(!older_version_is_new, "an older version should not be flagged either");
+
+            let (_, newer_version_is_new) =
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-d", None, 2).await.unwrap();
+            assert!(newer_version_is_new, "a genuinely newer version should be flagged");
+        });
+    }
+
+    #[test]
+    fn tab_icon_resolves_from_resource_type_scoped_to_the_app() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("icons").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            insert_window(&pool, "win2", "asdf/other.html").await;
+
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", Some("document"), 1)
+                .await
+                .unwrap()
+                .0;
+            let other_app_tab = init_window_tab_impl(&pool, "win2", "asdf/other.html", "res-b", Some("document"), 1)
+                .await
+                .unwrap()
+                .0;
+
+            sqlx::query("INSERT INTO resource_icons (relative_path, resource_type, svg) VALUES ('asdf/index.html', 'document', '<svg>a</svg>')")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string(), "win2".to_string()]).await.unwrap();
+            let found_tab = groups.iter().flat_map(|g| &g.tabs).find(|t| t.guid == tab.tab_guid).unwrap();
+            let found_other = groups.iter().flat_map(|g| &g.tabs).find(|t| t.guid == other_app_tab.tab_guid).unwrap();
+
+            assert_eq!(found_tab.icon.as_deref(), Some("<svg>a</svg>"));
+            assert_eq!(found_other.icon, None, "the same resource_type key in a different app must not share icons");
         });
     }
 }

@@ -909,12 +909,26 @@ select {
 .tab-row-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+}
+
+.tab-row-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-row-icon svg {
+  width: 100%;
+  height: 100%;
 }
 
 .tab-row-title-block {
   min-width: 0;
+  flex: 1;
 }
 
 .tab-row-title {

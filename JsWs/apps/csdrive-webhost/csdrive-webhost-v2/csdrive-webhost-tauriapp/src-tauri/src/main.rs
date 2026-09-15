@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod app_state;
 mod data_location;
 mod secondary_windows;
 
@@ -174,8 +175,11 @@ fn main() {
             secondary_windows::remove_window_tag,
             secondary_windows::init_window_tab,
             secondary_windows::update_tab_resource,
+            secondary_windows::submit_resource_icons,
             secondary_windows::create_tab_group,
             secondary_windows::move_tab_to_group,
+            app_state::get_app_state,
+            app_state::set_app_state,
             data_location::get_data_folder_info,
             data_location::pick_and_set_custom_data_folder,
             data_location::reset_data_folder_to_default,
@@ -209,6 +213,8 @@ fn main() {
         .setup(|app| {
             let app_data_dir = data_location::effective_data_dir(app.handle())?;
             let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&app_data_dir))?;
+            tauri::async_runtime::block_on(app_state::ensure_schema(&pool))?;
+            app.manage(app_state::AppDbState { pool: pool.clone() });
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
 
             let user_dir = app_data_dir.join("user");
