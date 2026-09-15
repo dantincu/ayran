@@ -19,6 +19,7 @@ import {
   ClipboardPaste,
 } from 'lucide-react'
 import IconButton from './IconButton'
+import Pagination, { DEFAULT_PAGE_SIZE } from './Pagination'
 import { getAppState, setAppState } from '../lib/appState'
 import { joinRelative } from '../lib/localFs'
 import {
@@ -75,6 +76,7 @@ function isSameOrWithin(ancestor: string, candidate: string): boolean {
 }
 
 const LOCATION_KEY = 'filesTab.location'
+const PAGE_SIZE_KEY = 'filesTab.pageSize'
 
 interface SavedLocation {
   rootId: string
@@ -93,6 +95,8 @@ export default function FilesTab() {
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
   const [hydrated, setHydrated] = useState(false)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
 
   useEffect(() => {
     ;(async () => {
@@ -101,13 +105,25 @@ export default function FilesTab() {
       // yet the restored path would kick off a wasted (and potentially racy) fetch.
       const root = await getUserRoot()
       const saved = await getAppState<SavedLocation>(LOCATION_KEY)
+      const savedPageSize = await getAppState<number>(PAGE_SIZE_KEY)
       setRoots([root])
       if (saved && saved.rootId === USER_ROOT_ID && typeof saved.path === 'string') {
         setPath(saved.path)
       }
+      if (savedPageSize) setPageSizeState(savedPageSize)
       setHydrated(true)
     })()
   }, [])
+
+  function setPageSize(size: number) {
+    setPageSizeState(size)
+    setAppState(PAGE_SIZE_KEY, size)
+    setPage(0)
+  }
+
+  useEffect(() => {
+    setPage(0)
+  }, [activeRootId, path])
 
   useEffect(() => {
     if (!hydrated) return
@@ -351,6 +367,10 @@ export default function FilesTab() {
     }
   }
 
+  const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+
   return (
     <div className="tab-panel files-tab">
       <div className="root-switcher">
@@ -414,7 +434,7 @@ export default function FilesTab() {
                 </td>
               </tr>
             )}
-            {entries.map((entry) => (
+            {pagedEntries.map((entry) => (
               <tr key={entry.name}>
                 <td>
                   {renaming === entry.name ? (
@@ -455,6 +475,14 @@ export default function FilesTab() {
           </tbody>
         </table>
       )}
+
+      <Pagination
+        page={currentPage}
+        pageSize={pageSize}
+        totalItems={entries.length}
+        onPageChange={setPage}
+        onPageSizeChange={setPageSize}
+      />
 
       {editing && (
         <div className="editor-overlay">

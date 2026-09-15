@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Playlist</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Playlist</h1>
+<p class="lead">
+  Opening a track shows its title and duration (bold) on the first line, and the
+  artist (italic) on the second.
+</p>
+<ul id="tracks"></ul>
+
+<script src="_tab-lib.js"></script>
+<script>
+  const tracks = [
+    { title: 'Clair de Lune', artist: 'Debussy', duration: '5:12' },
+    { title: 'Take Five', artist: 'Dave Brubeck', duration: '5:24' },
+    { title: 'So What', artist: 'Miles Davis', duration: '9:22' },
+  ]
+
+  const list = document.getElementById('tracks')
+  for (const t of tracks) {
+    const li = document.createElement('li')
+    li.innerHTML =
+      '<span>' + t.title + ' <span class="muted">— ' + t.artist + '</span></span><button>Open</button>'
+    li.querySelector('button').addEventListener('click', async () => {
+      const resp = await TabLib.openTab({ track: t.title.toLowerCase().replace(/\s+/g, '-') })
+      await TabLib.updateTab(
+        resp.tabGuid,
+        [TabLib.span(t.title, { bold: true }), TabLib.span(t.duration)],
+        [TabLib.span(t.artist, { italic: true })],
+      )
+    })
+    list.appendChild(li)
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Style &amp; resourceId showcase</title>
+<link rel="stylesheet" href="_style.css" />
+</head>
+<body>
+<h1>Style &amp; resourceId showcase</h1>
+<p class="lead">
+  The other pages in this folder each demonstrate one realistic use of tabs. This one
+  is a reference instead: one button opens a tab whose two rows use all four text
+  styles at once, and a form lets you pick the query string yourself so you can see
+  exactly how the backend turns <code>location.href</code> into a <code>resourceId</code>.
+</p>
+
+<h2>All four styles</h2>
+<button id="style-demo">Open style-showcase tab</button>
+
+<h2>Build your own resourceId</h2>
+<p class="muted">This page is <span id="own-path"></span> — whatever you type below becomes its query string.</p>
+<form id="custom-form">
+  <input id="custom-query" placeholder="e.g. doc=42&amp;mode=edit" size="30" />
+  <button type="submit">Open tab</button>
+</form>
+<div id="result" class="card" style="display:none"></div>
+
+<script src="_tab-lib.js"></script>
+<script>
+  document.getElementById('own-path').textContent = location.pathname.replace(/^\//, '')
+
+  document.getElementById('style-demo').addEventListener('click', async () => {
+    const resp = await TabLib.openTab({ demo: 'styles' })
+    await TabLib.updateTab(
+      resp.tabGuid,
+      [
+        TabLib.span('Regular'),
+        TabLib.span('Bold', { bold: true }),
+        TabLib.span('Italic', { italic: true }),
+        TabLib.span('Bold+italic', { bold: true, italic: true }),
+      ],
+      [TabLib.span('Second row is smaller and uses the same four styles', { italic: true })],
+    )
+  })
+
+  document.getElementById('custom-form').addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const raw = document.getElementById('custom-query').value.trim()
+    const params = {}
+    for (const pair of raw.split('&')) {
+      if (!pair) continue
+      const [key, value] = pair.split('=')
+      params[decodeURIComponent(key)] = decodeURIComponent(value || '')
+    }
+
+    const resp = await TabLib.openTab(params)
+    await TabLib.updateTab(
+      resp.tabGuid,
+      [TabLib.span('Custom tab', { bold: true })],
+      [TabLib.span(resp.resourceId, { italic: true })],
+    )
+
+    const result = document.getElementById('result')
+    result.style.display = 'block'
+    result.innerHTML =
+      '<div><strong>tabGuid</strong>: ' + resp.tabGuid + '</div>' +
+      '<div><strong>resourceId</strong>: ' + resp.resourceId + '</div>'
+  })
+</script>
+</body>
+</html>

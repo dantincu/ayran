@@ -304,6 +304,32 @@ select {
   flex-wrap: wrap;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  font-size: 12px;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pagination-size {
+  font: inherit;
+  font-size: 12px;
+}
+
+.pagination-page {
+  min-width: 3.5em;
+  text-align: center;
+}
+
 .row-actions button {
   padding: 4px 8px;
   font-size: 12px;

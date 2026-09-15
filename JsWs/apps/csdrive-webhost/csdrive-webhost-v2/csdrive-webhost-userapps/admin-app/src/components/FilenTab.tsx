@@ -4,6 +4,7 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import IconButton from './IconButton'
+import Pagination, { DEFAULT_PAGE_SIZE } from './Pagination'
 import {
   addAccount,
   type FilenAccountMeta,
@@ -12,8 +13,11 @@ import {
   removeAccount,
   setActiveAccount,
 } from '../lib/filenAccounts'
+import { getAppState, setAppState } from '../lib/appState'
 import { writeUserFile } from '../lib/localFs'
 import type FilenSDK from '@filen/sdk'
+
+const PAGE_SIZE_KEY = 'filenTab.pageSize'
 
 interface RemoteEntry {
   name: string
@@ -40,6 +44,25 @@ export default function FilenTab() {
   const [form, setForm] = useState({ email: '', password: '', twoFactorCode: '' })
   const [addBusy, setAddBusy] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
+
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
+
+  useEffect(() => {
+    getAppState<number>(PAGE_SIZE_KEY).then((saved) => {
+      if (saved) setPageSizeState(saved)
+    })
+  }, [])
+
+  function setPageSize(size: number) {
+    setPageSizeState(size)
+    setAppState(PAGE_SIZE_KEY, size)
+    setPage(0)
+  }
+
+  useEffect(() => {
+    setPage(0)
+  }, [path])
 
   const loadAccounts = useCallback(async () => {
     const index = await listAccounts()
@@ -213,6 +236,9 @@ export default function FilenTab() {
   }
 
   const breadcrumbs = path === '/' ? [''] : ['', ...path.split('/').filter(Boolean)]
+  const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
 
   return (
     <div className="tab-panel">
@@ -322,7 +348,7 @@ export default function FilenTab() {
                     </td>
                   </tr>
                 )}
-                {entries.map((entry) => (
+                {pagedEntries.map((entry) => (
                   <tr key={entry.name}>
                     <td>
                       <button className="link-button entry-name" onClick={() => openEntry(entry)}>
@@ -349,6 +375,14 @@ export default function FilenTab() {
               </tbody>
             </table>
           )}
+
+          <Pagination
+            page={currentPage}
+            pageSize={pageSize}
+            totalItems={entries.length}
+            onPageChange={setPage}
+            onPageSizeChange={setPageSize}
+          />
         </>
       )}
     </div>
