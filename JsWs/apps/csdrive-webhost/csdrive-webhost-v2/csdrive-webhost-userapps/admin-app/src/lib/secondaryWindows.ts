@@ -39,6 +39,7 @@ export interface TabGroupRecord {
   guid: string
   windowGuid: string
   createdAt: number
+  name: string | null
   tags: TagRecord[]
   tabs: TabRecord[]
 }
@@ -153,9 +154,39 @@ export function onResourceIconsRequested(getIcons: () => Record<string, string> 
   })
 }
 
-/** Creates an empty tab group under a window, so tabs have somewhere to move to. */
+/** Creates an empty tab group under a window, so tabs have somewhere to move to.
+ * Gets a suggestive default name ("Tab Group N") — see `renameTabGroup`. */
 export async function createTabGroup(windowGuid: string): Promise<TabGroupRecord> {
   return invoke<TabGroupRecord>('create_tab_group', { windowGuid })
+}
+
+/** Renames a tab group. An empty/blank name clears it back to unnamed. */
+export async function renameTabGroup(guid: string, name: string): Promise<void> {
+  await invoke('rename_tab_group', { guid, name })
+}
+
+/** Adds a blank tab to a group — no immediate effect on the corresponding
+ * secondary window. Its resource id starts empty and its label starts blank;
+ * activating it later (see `activateTab`) tells the web app it's now
+ * representing this (possibly still blank) tab, and lets it decide what to show. */
+export async function addBlankTab(groupGuid: string): Promise<TabRecord> {
+  return invoke<TabRecord>('add_blank_tab', { groupGuid })
+}
+
+/** Adds a new tab to the same group as `tabGuid`, copying its resource id (but
+ * not its label — the web app fills that in again once activated). */
+export async function cloneTab(tabGuid: string): Promise<TabRecord> {
+  return invoke<TabRecord>('clone_tab', { tabGuid })
+}
+
+/** Makes a tab the one its window's next init request binds to, then makes that
+ * window "reopen its web app" (a fresh reload, discarding any in-app navigation
+ * state) — opening it first if it was suspended. The web app's own subsequent
+ * `initWindowTab` call is told this tab's own resource id (possibly empty, for a
+ * tab that's never been used) instead of one derived from its URL, so it can
+ * decide what to show for it. */
+export async function activateTab(tabGuid: string): Promise<void> {
+  await invoke('activate_tab', { tabGuid })
 }
 
 /** Moves a tab into a different group — possibly under a different window, as long

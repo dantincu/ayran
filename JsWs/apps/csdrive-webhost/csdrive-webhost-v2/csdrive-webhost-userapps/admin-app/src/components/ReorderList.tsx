@@ -12,10 +12,17 @@ interface ReorderListProps<T> {
 /** A reorderable list: drag-and-drop for mouse users, plus a selection + up/down-arrow
  * mechanism that also works on touch (holding an arrow repeats the move ~10x/sec).
  * Selected items move together as a block, preserving their relative order. */
+/** Below this many ms of holding an arrow button down, it's treated as a single
+ * click (one move only) — above it, rapid-repeat kicks in. Keeps a slightly slow
+ * single click from being mistaken for the start of a long press. */
+const HOLD_THRESHOLD_MS = 400
+const HOLD_REPEAT_MS = 100
+
 export default function ReorderList<T>({ items, getId, renderItem, onChange }: ReorderListProps<T>) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const dragIndex = useRef<number | null>(null)
-  const holdTimer = useRef<number | null>(null)
+  const holdThresholdTimer = useRef<number | null>(null)
+  const holdRepeatTimer = useRef<number | null>(null)
 
   // Kept current every render so the setInterval callback in startHold always acts
   // on the latest props/state instead of a stale snapshot from when the hold began.
@@ -72,16 +79,22 @@ export default function ReorderList<T>({ items, getId, renderItem, onChange }: R
   }
 
   function stopHold() {
-    if (holdTimer.current !== null) {
-      window.clearInterval(holdTimer.current)
-      holdTimer.current = null
+    if (holdThresholdTimer.current !== null) {
+      window.clearTimeout(holdThresholdTimer.current)
+      holdThresholdTimer.current = null
+    }
+    if (holdRepeatTimer.current !== null) {
+      window.clearInterval(holdRepeatTimer.current)
+      holdRepeatTimer.current = null
     }
   }
 
   function startHold(direction: 'up' | 'down') {
     stopHold()
     moveOnce(direction)
-    holdTimer.current = window.setInterval(() => moveOnce(direction), 100)
+    holdThresholdTimer.current = window.setTimeout(() => {
+      holdRepeatTimer.current = window.setInterval(() => moveOnce(direction), HOLD_REPEAT_MS)
+    }, HOLD_THRESHOLD_MS)
   }
 
   function handleDrop(targetIndex: number) {
@@ -135,10 +148,15 @@ export default function ReorderList<T>({ items, getId, renderItem, onChange }: R
               key={id}
               className={`reorder-item ${selected.has(id) ? 'selected' : ''}`}
               draggable
-              onDragStart={() => {
+              onDragStart={(e) => {
                 dragIndex.current = index
+                e.dataTransfer.effectAllowed = 'move'
+                e.dataTransfer.setData('text/plain', id)
               }}
-              onDragOver={(e) => e.preventDefault()}
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+              }}
               onDrop={() => handleDrop(index)}
             >
               <label className="reorder-item-select">

@@ -6,12 +6,14 @@ import {
   CheckCheck,
   ClipboardPaste,
   Copy,
+  CopyPlus,
   ExternalLink,
   FilePlus,
   Fingerprint,
   FolderPlus,
   Pause,
   PauseCircle,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -25,8 +27,11 @@ import Modal from './Modal'
 import ReorderList from './ReorderList'
 import { getAppState, setAppState } from '../lib/appState'
 import {
+  activateTab,
+  addBlankTab,
   addSecondaryWindowEntry,
   addWindowTag,
+  cloneTab,
   closeAllSecondaryWindows,
   closeSecondaryWindow,
   createTabGroup,
@@ -35,6 +40,7 @@ import {
   moveTabToGroup,
   onSecondaryWindowsChanged,
   removeWindowTag,
+  renameTabGroup,
   reopenSecondaryWindow,
   suspendAllSecondaryWindows,
   suspendSecondaryWindow,
@@ -255,6 +261,42 @@ function WindowDetailsModal({ record, onClose }: { record: SecondaryWindowRecord
   )
 }
 
+function RenameGroupModal({
+  group,
+  onRename,
+  onClose,
+}: {
+  group: TabGroupRecord
+  onRename: (name: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(group.name ?? '')
+
+  function submit() {
+    onRename(name)
+    onClose()
+  }
+
+  return (
+    <Modal title="Rename tab group" onClose={onClose}>
+      <input
+        autoFocus
+        placeholder="Tab group name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit()
+          if (e.key === 'Escape') onClose()
+        }}
+      />
+      <div className="toolbar-actions" style={{ justifyContent: 'flex-end' }}>
+        <IconButton icon={Check} label="Save" onClick={submit} />
+        <IconButton icon={X} label="Cancel" onClick={onClose} />
+      </div>
+    </Modal>
+  )
+}
+
 function AddGroupRow({ onAdd }: { onAdd: (relativePath: string) => Promise<boolean> }) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
@@ -351,6 +393,8 @@ function TabRow({
   onRemoveTag,
   onMove,
   onCut,
+  onClone,
+  onActivate,
 }: {
   tab: TabRecord
   cut: boolean
@@ -358,24 +402,27 @@ function TabRow({
   onRemoveTag: (id: number) => void
   onMove: () => void
   onCut: () => void
+  onClone: () => void
+  onActivate: () => void
 }) {
   return (
     <div className={`window-item tab-row ${cut ? 'tab-row-cut' : ''}`}>
       <div className="tab-row-header">
         {tab.icon && <span className="tab-row-icon" dangerouslySetInnerHTML={{ __html: tab.icon }} />}
-        <div className="tab-row-title-block">
+        <button className="link-button tab-row-title-block" onClick={onActivate} title="Reopen this tab's web app">
           {tab.tabText ? (
             <>
               <TabTextRow spans={tab.tabText.firstRow} className="tab-row-title" />
               <TabTextRow spans={tab.tabText.secondRow} className="tab-row-subtitle" />
             </>
           ) : (
-            <div className="muted tab-row-title">{tab.resourceId}</div>
+            <div className="muted tab-row-title">{tab.resourceId || 'New tab'}</div>
           )}
-        </div>
+        </button>
         <div className="row-actions">
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
           <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
+          <IconButton icon={CopyPlus} label="Clone tab" onClick={onClone} />
         </div>
       </div>
       <div className="window-item-tags">
@@ -447,6 +494,7 @@ export default function WindowsTab() {
   const [detailsFor, setDetailsFor] = useState<SecondaryWindowRecord | null>(null)
   const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
   const [cutTab, setCutTab] = useState<TabRecord | null>(null)
+  const [renamingGroup, setRenamingGroup] = useState<TabGroupRecord | null>(null)
 
   const [useCustomOrder, setUseCustomOrderState] = useState(false)
   const [groupOrder, setGroupOrderState] = useState<string[]>([])
@@ -620,6 +668,38 @@ export default function WindowsTab() {
     }
   }
 
+  async function handleRenameGroup(guid: string, name: string) {
+    try {
+      await renameTabGroup(guid, name)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function handleAddBlankTab(groupGuid: string) {
+    try {
+      await addBlankTab(groupGuid)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function handleCloneTab(tabGuid: string) {
+    try {
+      await cloneTab(tabGuid)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function handleActivateTab(tabGuid: string) {
+    try {
+      await activateTab(tabGuid)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleMoveTab(targetGroupGuid: string) {
     if (!movingTab) return
     try {
@@ -724,7 +804,7 @@ export default function WindowsTab() {
             <span>
               <span className="crumb-sep">/</span>
               <button className={`link-button ${view === 'tabs' ? 'active' : ''}`} onClick={() => navigate('tabs')}>
-                Tab group · {formatDateTime(currentGroup.createdAt)}
+                {currentGroup.name ?? `Tab group · ${formatDateTime(currentGroup.createdAt)}`}
               </button>
             </span>
           )}
@@ -898,18 +978,21 @@ export default function WindowsTab() {
               emptyMessage="No tab groups yet."
               renderReorderLabel={(g) => (
                 <span className="muted">
-                  Tab group · {formatDateTime(g.createdAt)} ({g.tabs.length} tab{g.tabs.length === 1 ? '' : 's'})
+                  {g.name ?? `Tab group · ${formatDateTime(g.createdAt)}`} ({g.tabs.length} tab{g.tabs.length === 1 ? '' : 's'})
                 </span>
               )}
               renderRow={(g) => (
                 <div className={`window-item ${g.guid === currentGroupGuid ? 'recently-visited' : ''}`}>
                   <div className="window-item-row">
                     <button className="link-button window-item-main" onClick={() => openGroup(g.guid)}>
-                      <span className="muted window-item-date">Tab group · {formatDateTime(g.createdAt)}</span>
+                      <span className="muted window-item-date">{g.name ?? `Tab group · ${formatDateTime(g.createdAt)}`}</span>
                       <span className="muted window-item-state">
                         {g.tabs.length} tab{g.tabs.length === 1 ? '' : 's'}
                       </span>
                     </button>
+                    <div className="row-actions">
+                      <IconButton icon={Pencil} label="Rename tab group" onClick={() => setRenamingGroup(g)} />
+                    </div>
                   </div>
                   <div className="window-item-tags">
                     {g.tags.map((tag) => (
@@ -929,6 +1012,7 @@ export default function WindowsTab() {
           <div className="toolbar">
             <span className="muted">Tabs</span>
             <div className="toolbar-actions">
+              <IconButton icon={Plus} label="New tab" onClick={() => handleAddBlankTab(currentGroup.guid)} />
               {canPaste && <IconButton icon={ClipboardPaste} label="Paste tab into this group" onClick={handlePasteTab} />}
               <IconButton
                 icon={ArrowUpDown}
@@ -957,6 +1041,8 @@ export default function WindowsTab() {
                   onRemoveTag={handleRemoveTag}
                   onMove={() => setMovingTab(t)}
                   onCut={() => setCutTab(t)}
+                  onClone={() => handleCloneTab(t.guid)}
+                  onActivate={() => handleActivateTab(t.guid)}
                 />
               )}
             />
@@ -975,6 +1061,14 @@ export default function WindowsTab() {
 
       {movingTab && (
         <MoveTabModal candidates={moveCandidates} onMove={handleMoveTab} onClose={() => setMovingTab(null)} />
+      )}
+
+      {renamingGroup && (
+        <RenameGroupModal
+          group={renamingGroup}
+          onRename={(name) => handleRenameGroup(renamingGroup.guid, name)}
+          onClose={() => setRenamingGroup(null)}
+        />
       )}
     </div>
   )

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,6 +16,18 @@ pub struct SecondaryWindowsState {
     pool: SqlitePool,
     /// Guids whose *next* Destroyed event should NOT delete the DB row (a suspend in progress).
     pending_suspend: Mutex<HashSet<String>>,
+    /// window_guid -> (tab_guid, force_stored_resource_id): the tab the *next*
+    /// `init_window_tab` call from that window should bind to instead of creating a
+    /// brand new one, consumed the moment that call arrives. Set in two different
+    /// situations that must behave differently once bound:
+    ///  - a window (re)opened with no tabs yet (`ensure_default_tab_group`) —
+    ///    `force_stored_resource_id: false`, so the placeholder just gets filled in
+    ///    with the real URL-derived resource id, like any other first tab would.
+    ///  - a specific tab activated by the user (`activate_tab`) — `true`, so the
+    ///    response echoes that tab's *own* stored resource id (empty, for one
+    ///    that's never been used) instead of one derived from the reloaded page's
+    ///    URL, letting the app decide what a reactivated/new tab should show.
+    pending_tab_activation: Mutex<HashMap<String, (String, bool)>>,
 }
 
 impl SecondaryWindowsState {
@@ -23,6 +35,7 @@ impl SecondaryWindowsState {
         Self {
             pool,
             pending_suspend: Mutex::new(HashSet::new()),
+            pending_tab_activation: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -44,6 +57,7 @@ pub struct TabGroupRecord {
     pub guid: String,
     pub window_guid: String,
     pub created_at: i64,
+    pub name: Option<String>,
     pub tags: Vec<TagRecord>,
     pub tabs: Vec<TabRecord>,
 }
@@ -143,6 +157,18 @@ pub async fn init_db(app_data_dir: &std::path::Path) -> Result<SqlitePool, sqlx:
     )
     .execute(&pool)
     .await?;
+
+    // `name` (user-editable, defaults to a suggestive "Tab Group N" for
+    // auto-created groups) was added after `tab_groups` first shipped.
+    let has_group_name_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('tab_groups') WHERE name = 'name'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if has_group_name_column == 0 {
+        sqlx::query("ALTER TABLE tab_groups ADD COLUMN name TEXT").execute(&pool).await?;
+    }
 
     // The `tabs` schema changed shape early in its life (title/resource_type
     // columns dropped in favor of tab_text) before any real tab data existed —
@@ -272,6 +298,53 @@ fn build_window(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), 
     });
 
     Ok(())
+}
+
+/// If `window_guid` has no tab groups yet, creates one ("Tab Group 1") with a
+/// single blank placeholder tab inside it (empty resource id, no text) and
+/// returns that tab's guid — so the caller can mark it pending (see
+/// `SecondaryWindowsState::pending_tab_activation`), guaranteeing a freshly
+/// opened window always shows at least one tab immediately rather than waiting
+/// on the web app's own (possibly delayed, possibly never-sent) init request.
+async fn ensure_default_tab_group(
+    pool: &SqlitePool,
+    window_guid: &str,
+    relative_path: &str,
+) -> Result<Option<String>, String> {
+    let existing_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tab_groups WHERE window_guid = ?1")
+        .bind(window_guid)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if existing_count > 0 {
+        return Ok(None);
+    }
+
+    let group_guid = uuid::Uuid::new_v4().to_string();
+    let created_at = current_millis();
+    sqlx::query("INSERT INTO tab_groups (guid, window_guid, created_at, name) VALUES (?1, ?2, ?3, 'Tab Group 1')")
+        .bind(&group_guid)
+        .bind(window_guid)
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let tab_guid = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at)
+         VALUES (?1, ?2, ?3, ?4, 0, '', NULL, NULL, ?5)",
+    )
+    .bind(&tab_guid)
+    .bind(&group_guid)
+    .bind(window_guid)
+    .bind(relative_path)
+    .bind(created_at)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(Some(tab_guid))
 }
 
 /// Deletes a secondary window's row along with its tab groups, tabs, and every tag
@@ -442,7 +515,7 @@ async fn fetch_tab_groups(pool: &SqlitePool, window_guids: &[String]) -> Result<
 
     let placeholders = (1..=window_guids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT guid, window_guid, created_at FROM tab_groups WHERE window_guid IN ({placeholders}) ORDER BY created_at ASC"
+        "SELECT guid, window_guid, created_at, name FROM tab_groups WHERE window_guid IN ({placeholders}) ORDER BY created_at ASC"
     );
 
     let mut q = sqlx::query(&query);
@@ -465,6 +538,7 @@ async fn fetch_tab_groups(pool: &SqlitePool, window_guids: &[String]) -> Result<
                 guid,
                 window_guid: row.get("window_guid"),
                 created_at: row.get("created_at"),
+                name: row.get("name"),
                 tags,
                 tabs,
             }
@@ -596,16 +670,21 @@ pub async fn open_new_secondary_window(
         .await
         .map_err(|e| e.to_string())?;
 
+    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &relative_path).await? {
+        state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
+    }
+
     build_window(&app, &guid, &relative_path)?;
     let _ = app.emit(EVENT_CHANGED, ());
 
+    let tab_groups = fetch_tab_groups(&state.pool, &[guid.clone()]).await.map_err(|e| e.to_string())?;
     Ok(SecondaryWindowRecord {
         guid,
         relative_path,
         created_at,
         is_open: true,
         tags: Vec::new(),
-        tab_groups: Vec::new(),
+        tab_groups,
     })
 }
 
@@ -630,21 +709,27 @@ pub async fn add_secondary_window_entry(
         .await
         .map_err(|e| e.to_string())?;
 
+    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &relative_path).await? {
+        state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
+    }
+
     let _ = app.emit(EVENT_CHANGED, ());
 
+    let tab_groups = fetch_tab_groups(&state.pool, &[guid.clone()]).await.map_err(|e| e.to_string())?;
     Ok(SecondaryWindowRecord {
         guid,
         relative_path,
         created_at,
         is_open: false,
         tags: Vec::new(),
-        tab_groups: Vec::new(),
+        tab_groups,
     })
 }
 
 #[tauri::command]
 pub async fn reopen_secondary_window(
     app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
     guid: String,
     relative_path: String,
 ) -> Result<(), String> {
@@ -652,6 +737,12 @@ pub async fn reopen_secondary_window(
 
     if app.get_webview_window(&guid).is_some() {
         return Ok(());
+    }
+
+    // Defensive: a row from before this feature existed could have zero tab
+    // groups; a normal reopen otherwise already has some from its original open.
+    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &relative_path).await? {
+        state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
     }
 
     build_window(&app, &guid, &relative_path)?;
@@ -797,14 +888,38 @@ async fn note_app_version(pool: &SqlitePool, relative_path: &str, app_version: i
     Ok(is_new_or_newer)
 }
 
+/// A suggestive default name for the `n`th tab group created under a window
+/// (1-indexed) — "Tab Group 1", "Tab Group 2", ... — used for both the
+/// auto-created default group and manually-created ones; editable afterward via
+/// `rename_tab_group`.
+async fn next_group_name(pool: &SqlitePool, window_guid: &str) -> Result<String, String> {
+    let existing_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tab_groups WHERE window_guid = ?1")
+        .bind(window_guid)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(format!("Tab Group {}", existing_count + 1))
+}
+
 /// Called by an app running *inside* a secondary window to register one of its
 /// resources (a document, a view, ...) as a tab. The calling window's own label is
 /// its guid (see `build_window`), so the window never needs to know or send its own
-/// guid — Tauri hands it to us via the `window` parameter. The window's first ever
-/// call creates its default tab group; every call creates a new tab in it (or in
-/// whichever group the tab has since been moved to, on a version bump / reconnect —
-/// out of scope for this first cut, so today every call makes a fresh tab). The tab
-/// starts with no display text — the app fills that in with a follow-up
+/// guid — Tauri hands it to us via the `window` parameter.
+///
+/// If `reuse` is set, this call binds to that exact tab instead of creating a new
+/// one, in one of two ways depending on why it was set (see
+/// `SecondaryWindowsState::pending_tab_activation`):
+///  - `force_stored_resource_id: false` (a window opened with no tabs yet) — the
+///    placeholder is simply filled in with the real URL-derived resource id, the
+///    same as a fresh tab would get.
+///  - `true` (a specific tab was activated) — the response echoes back *that
+///    tab's own* stored resource id (unchanged) instead of one derived from the
+///    reloaded page's URL, letting the app decide what to show for a reactivated
+///    (possibly still-blank) tab itself.
+///
+/// Otherwise, behaves as before: finds-or-creates the window's default tab group
+/// and always creates a fresh tab in it, deriving the resource id from the URL.
+/// The tab starts with no display text — the app fills that in with a follow-up
 /// `update_tab_resource` call once it has something to show. Returns whether this
 /// app_version is new/newer for this html file, alongside the usual response.
 async fn init_window_tab_impl(
@@ -814,7 +929,41 @@ async fn init_window_tab_impl(
     resource_id: &str,
     resource_type: Option<&str>,
     app_version: i64,
+    reuse: Option<(&str, bool)>,
 ) -> Result<(TabInitResponse, bool), String> {
+    let is_new_or_newer_version = note_app_version(pool, relative_path, app_version).await?;
+
+    if let Some((tab_guid, force_stored_resource_id)) = reuse {
+        let existing_resource_id: Option<String> = sqlx::query_scalar("SELECT resource_id FROM tabs WHERE guid = ?1")
+            .bind(tab_guid)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        if let Some(existing_resource_id) = existing_resource_id {
+            let response_resource_id = if force_stored_resource_id {
+                existing_resource_id
+            } else {
+                sqlx::query("UPDATE tabs SET resource_id = ?1, resource_type = ?2 WHERE guid = ?3")
+                    .bind(resource_id)
+                    .bind(resource_type)
+                    .bind(tab_guid)
+                    .execute(pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                resource_id.to_string()
+            };
+            return Ok((
+                TabInitResponse {
+                    tab_guid: tab_guid.to_string(),
+                    resource_id: response_resource_id,
+                },
+                is_new_or_newer_version,
+            ));
+        }
+        // The tab has since been deleted (e.g. its window closed) — fall through
+        // and create a fresh one as if no reuse had been requested.
+    }
+
     let existing_group: Option<String> = sqlx::query_scalar(
         "SELECT guid FROM tab_groups WHERE window_guid = ?1 ORDER BY created_at ASC LIMIT 1",
     )
@@ -827,10 +976,12 @@ async fn init_window_tab_impl(
         Some(g) => g,
         None => {
             let g = uuid::Uuid::new_v4().to_string();
-            sqlx::query("INSERT INTO tab_groups (guid, window_guid, created_at) VALUES (?1, ?2, ?3)")
+            let name = next_group_name(pool, window_guid).await?;
+            sqlx::query("INSERT INTO tab_groups (guid, window_guid, created_at, name) VALUES (?1, ?2, ?3, ?4)")
                 .bind(&g)
                 .bind(window_guid)
                 .bind(current_millis())
+                .bind(&name)
                 .execute(pool)
                 .await
                 .map_err(|e| e.to_string())?;
@@ -854,8 +1005,6 @@ async fn init_window_tab_impl(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-
-    let is_new_or_newer_version = note_app_version(pool, relative_path, app_version).await?;
 
     Ok((
         TabInitResponse {
@@ -881,6 +1030,7 @@ pub async fn init_window_tab(
     resource_type: Option<String>,
 ) -> Result<TabInitResponse, String> {
     let (relative_path, resource_id) = split_url_into_path_and_resource_id(&url)?;
+    let reuse = state.pending_tab_activation.lock().unwrap().remove(window.label());
     let (result, needs_icons) = init_window_tab_impl(
         &state.pool,
         window.label(),
@@ -888,6 +1038,7 @@ pub async fn init_window_tab(
         &resource_id,
         resource_type.as_deref(),
         app_version,
+        reuse.as_ref().map(|(guid, force)| (guid.as_str(), *force)),
     )
     .await?;
 
@@ -981,7 +1132,8 @@ pub async fn submit_resource_icons(
 }
 
 /// Creates an empty tab group under a window, so tabs have somewhere to be moved to
-/// besides a window's single default group.
+/// besides a window's single default group. Gets a suggestive default name ("Tab
+/// Group N") the user can change later via `rename_tab_group`.
 #[tauri::command]
 pub async fn create_tab_group(
     app: AppHandle,
@@ -990,10 +1142,12 @@ pub async fn create_tab_group(
 ) -> Result<TabGroupRecord, String> {
     let guid = uuid::Uuid::new_v4().to_string();
     let created_at = current_millis();
-    sqlx::query("INSERT INTO tab_groups (guid, window_guid, created_at) VALUES (?1, ?2, ?3)")
+    let name = next_group_name(&state.pool, &window_guid).await?;
+    sqlx::query("INSERT INTO tab_groups (guid, window_guid, created_at, name) VALUES (?1, ?2, ?3, ?4)")
         .bind(&guid)
         .bind(&window_guid)
         .bind(created_at)
+        .bind(&name)
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -1004,9 +1158,180 @@ pub async fn create_tab_group(
         guid,
         window_guid,
         created_at,
+        name: Some(name),
         tags: Vec::new(),
         tabs: Vec::new(),
     })
+}
+
+/// Renames a tab group. An empty/blank `name` clears it back to unnamed.
+#[tauri::command]
+pub async fn rename_tab_group(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    guid: String,
+    name: String,
+) -> Result<(), String> {
+    let trimmed = name.trim();
+    let stored: Option<&str> = if trimmed.is_empty() { None } else { Some(trimmed) };
+    sqlx::query("UPDATE tab_groups SET name = ?1 WHERE guid = ?2")
+        .bind(stored)
+        .bind(&guid)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
+}
+
+/// Adds a blank tab to a group — no immediate effect on the corresponding
+/// secondary window. Its resource id starts empty and its label starts blank;
+/// the user activates it later (see `activate_tab`) to have the window reopen
+/// its web app and bind to it, at which point the web app decides what a "new
+/// tab" should show.
+#[tauri::command]
+pub async fn add_blank_tab(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    group_guid: String,
+) -> Result<TabRecord, String> {
+    let window_guid: String = sqlx::query_scalar("SELECT window_guid FROM tab_groups WHERE guid = ?1")
+        .bind(&group_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Tab group not found.".to_string())?;
+    let relative_path: String = sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
+        .bind(&window_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Window not found.".to_string())?;
+
+    let tab_guid = uuid::Uuid::new_v4().to_string();
+    let created_at = current_millis();
+    sqlx::query(
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at)
+         VALUES (?1, ?2, ?3, ?4, 0, '', NULL, NULL, ?5)",
+    )
+    .bind(&tab_guid)
+    .bind(&group_guid)
+    .bind(&window_guid)
+    .bind(&relative_path)
+    .bind(created_at)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(EVENT_CHANGED, ());
+
+    Ok(TabRecord {
+        guid: tab_guid,
+        group_guid,
+        window_guid,
+        relative_path,
+        app_version: 0,
+        resource_id: String::new(),
+        resource_type: None,
+        icon: None,
+        tab_text: None,
+        created_at,
+        tags: Vec::new(),
+    })
+}
+
+/// Adds a new tab to the same group as `tab_guid`, copying its resource id (but
+/// not its label — the web app fills that in again once activated, the same as
+/// any other tab).
+#[tauri::command]
+pub async fn clone_tab(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    tab_guid: String,
+) -> Result<TabRecord, String> {
+    let row = sqlx::query("SELECT group_guid, window_guid, relative_path, resource_id FROM tabs WHERE guid = ?1")
+        .bind(&tab_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Tab not found.".to_string())?;
+    let group_guid: String = row.get("group_guid");
+    let window_guid: String = row.get("window_guid");
+    let relative_path: String = row.get("relative_path");
+    let resource_id: String = row.get("resource_id");
+
+    let new_guid = uuid::Uuid::new_v4().to_string();
+    let created_at = current_millis();
+    sqlx::query(
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, NULL, NULL, ?6)",
+    )
+    .bind(&new_guid)
+    .bind(&group_guid)
+    .bind(&window_guid)
+    .bind(&relative_path)
+    .bind(&resource_id)
+    .bind(created_at)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let _ = app.emit(EVENT_CHANGED, ());
+
+    Ok(TabRecord {
+        guid: new_guid,
+        group_guid,
+        window_guid,
+        relative_path,
+        app_version: 0,
+        resource_id,
+        resource_type: None,
+        icon: None,
+        tab_text: None,
+        created_at,
+        tags: Vec::new(),
+    })
+}
+
+/// Makes a tab the one its window's *next* `init_window_tab` call binds to
+/// (see `init_window_tab_impl`), then makes the corresponding secondary window
+/// "reopen its web app": navigates it back to its plain base URL if it's already
+/// open (discarding whatever in-app view it had drifted to via its own
+/// `history.pushState` calls), or opens it fresh if it was suspended. The web
+/// app's own subsequent init call is told this tab's resource id (its stored
+/// value — empty for a tab that's never been used) so it can decide what to show.
+#[tauri::command]
+pub async fn activate_tab(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    tab_guid: String,
+) -> Result<(), String> {
+    let window_guid: String = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
+        .bind(&tab_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Tab not found.".to_string())?;
+    let relative_path: String = sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
+        .bind(&window_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Window not found.".to_string())?;
+
+    state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid, true));
+
+    if let Some(w) = app.get_webview_window(&window_guid) {
+        let base = Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).map_err(|e| e.to_string())?;
+        let url = base.join(&relative_path).map_err(|e| e.to_string())?;
+        w.navigate(url).map_err(|e| e.to_string())?;
+    } else {
+        build_window(&app, &window_guid, &relative_path)?;
+    }
+
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
 }
 
 async fn move_tab_to_group_impl(pool: &SqlitePool, tab_guid: &str, target_group_guid: &str) -> Result<(), String> {
@@ -1094,7 +1419,7 @@ mod tests {
     /// Thin wrapper matching the pre-icons test call shape: no resource_type, and
     /// discards the "is this a new/newer app_version" bool most tests don't care about.
     async fn init_tab(pool: &SqlitePool, window_guid: &str, relative_path: &str, resource_id: &str, app_version: i64) -> TabInitResponse {
-        init_window_tab_impl(pool, window_guid, relative_path, resource_id, None, app_version)
+        init_window_tab_impl(pool, window_guid, relative_path, resource_id, None, app_version, None)
             .await
             .unwrap()
             .0
@@ -1257,19 +1582,19 @@ mod tests {
             insert_window(&pool, "win1", "asdf/index.html").await;
 
             let (_, first_is_new) =
-                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", None, 1).await.unwrap();
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", None, 1, None).await.unwrap();
             assert!(first_is_new, "the very first call for an app should be flagged");
 
             let (_, same_version_is_new) =
-                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-b", None, 1).await.unwrap();
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-b", None, 1, None).await.unwrap();
             assert!(!same_version_is_new, "an unchanged version should not be re-flagged");
 
             let (_, older_version_is_new) =
-                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-c", None, 0).await.unwrap();
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-c", None, 0, None).await.unwrap();
             assert!(!older_version_is_new, "an older version should not be flagged either");
 
             let (_, newer_version_is_new) =
-                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-d", None, 2).await.unwrap();
+                init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-d", None, 2, None).await.unwrap();
             assert!(newer_version_is_new, "a genuinely newer version should be flagged");
         });
     }
@@ -1281,11 +1606,11 @@ mod tests {
             insert_window(&pool, "win1", "asdf/index.html").await;
             insert_window(&pool, "win2", "asdf/other.html").await;
 
-            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", Some("document"), 1)
+            let tab = init_window_tab_impl(&pool, "win1", "asdf/index.html", "res-a", Some("document"), 1, None)
                 .await
                 .unwrap()
                 .0;
-            let other_app_tab = init_window_tab_impl(&pool, "win2", "asdf/other.html", "res-b", Some("document"), 1)
+            let other_app_tab = init_window_tab_impl(&pool, "win2", "asdf/other.html", "res-b", Some("document"), 1, None)
                 .await
                 .unwrap()
                 .0;
@@ -1301,6 +1626,109 @@ mod tests {
 
             assert_eq!(found_tab.icon.as_deref(), Some("<svg>a</svg>"));
             assert_eq!(found_other.icon, None, "the same resource_type key in a different app must not share icons");
+        });
+    }
+
+    #[test]
+    fn ensure_default_tab_group_creates_a_placeholder_once() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("ensure-default").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+
+            let placeholder = ensure_default_tab_group(&pool, "win1", "asdf/index.html").await.unwrap();
+            assert!(placeholder.is_some(), "a fresh window should get a placeholder tab");
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].name.as_deref(), Some("Tab Group 1"));
+            assert_eq!(groups[0].tabs.len(), 1);
+            assert_eq!(groups[0].tabs[0].resource_id, "");
+            assert!(groups[0].tabs[0].tab_text.is_none());
+
+            let second_call = ensure_default_tab_group(&pool, "win1", "asdf/index.html").await.unwrap();
+            assert!(second_call.is_none(), "must not create a second placeholder once one exists");
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            assert_eq!(groups[0].tabs.len(), 1, "still just the one placeholder tab");
+        });
+    }
+
+    #[test]
+    fn init_window_tab_fills_the_auto_created_placeholder_with_the_real_resource_id() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("reuse-placeholder").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let placeholder_guid = ensure_default_tab_group(&pool, "win1", "asdf/index.html")
+                .await
+                .unwrap()
+                .expect("fresh window should get a placeholder");
+
+            // force_stored_resource_id: false — a plain window-open placeholder gets
+            // filled in with the real URL-derived resource id, same as any other
+            // first tab would, just reusing the existing row instead of a new one.
+            let (response, _) = init_window_tab_impl(
+                &pool,
+                "win1",
+                "asdf/index.html",
+                "asdf/index.html?doc=real",
+                None,
+                1,
+                Some((&placeholder_guid, false)),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(response.tab_guid, placeholder_guid, "must bind to the pending tab, not create a new one");
+            assert_eq!(response.resource_id, "asdf/index.html?doc=real", "must use the real URL-derived resource id");
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            assert_eq!(groups[0].tabs.len(), 1, "no extra tab should have been created");
+            assert_eq!(groups[0].tabs[0].resource_id, "asdf/index.html?doc=real", "the row itself must be updated too");
+        });
+    }
+
+    #[test]
+    fn init_window_tab_activated_tab_keeps_its_own_stored_resource_id() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("reuse-activated").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let placeholder_guid = ensure_default_tab_group(&pool, "win1", "asdf/index.html")
+                .await
+                .unwrap()
+                .expect("fresh window should get a placeholder");
+
+            // force_stored_resource_id: true — the tab the user explicitly
+            // activated (a blank "new tab", here) keeps its own resource id (empty)
+            // regardless of whatever URL the reloaded page happens to send.
+            let (response, _) = init_window_tab_impl(
+                &pool,
+                "win1",
+                "asdf/index.html",
+                "asdf/index.html?doc=should-be-ignored",
+                None,
+                1,
+                Some((&placeholder_guid, true)),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(response.tab_guid, placeholder_guid);
+            assert_eq!(response.resource_id, "", "must echo the tab's own stored resource id, not the URL-derived one");
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            assert_eq!(groups[0].tabs.len(), 1, "no extra tab should have been created");
+            assert_eq!(groups[0].tabs[0].resource_id, "", "the row itself must be left unchanged");
+        });
+    }
+
+    #[test]
+    fn next_group_name_increments_per_window() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("group-naming").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+
+            assert_eq!(next_group_name(&pool, "win1").await.unwrap(), "Tab Group 1");
+            ensure_default_tab_group(&pool, "win1", "asdf/index.html").await.unwrap();
+            assert_eq!(next_group_name(&pool, "win1").await.unwrap(), "Tab Group 2");
         });
     }
 }

@@ -177,6 +177,10 @@ fn main() {
             secondary_windows::update_tab_resource,
             secondary_windows::submit_resource_icons,
             secondary_windows::create_tab_group,
+            secondary_windows::rename_tab_group,
+            secondary_windows::add_blank_tab,
+            secondary_windows::clone_tab,
+            secondary_windows::activate_tab,
             secondary_windows::move_tab_to_group,
             app_state::get_app_state,
             app_state::set_app_state,
@@ -244,6 +248,11 @@ fn main() {
             )
             .title("CsDrive WebHost")
             .inner_size(1024.0, 768.0)
+            // Tauri's own drag-and-drop (for OS file drops) intercepts the same
+            // events HTML5 drag-and-drop needs on Windows, permanently showing a
+            // "not allowed" cursor for the admin app's own draggable reorder lists
+            // unless this is off — see WebviewWindowBuilder::drag_and_drop's docs.
+            .drag_and_drop(false)
             .on_navigation(move |url| {
                 if url.scheme() == ACTION_SCHEME {
                     let action = url.host_str().unwrap_or("").to_string();
