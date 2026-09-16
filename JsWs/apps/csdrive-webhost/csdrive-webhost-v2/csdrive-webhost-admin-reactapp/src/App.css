@@ -984,3 +984,24 @@ select {
 .move-tab-option:hover {
   background: var(--row-hover);
 }
+
+.deploy-apps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.deploy-app-option {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.deploy-app-option:hover {
+  background: var(--row-hover);
+}

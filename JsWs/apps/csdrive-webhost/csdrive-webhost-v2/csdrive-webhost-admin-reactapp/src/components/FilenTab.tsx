@@ -4,7 +4,7 @@ import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plu
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import IconButton from './IconButton'
-import Pagination, { DEFAULT_PAGE_SIZE } from './Pagination'
+import Pagination from './Pagination'
 import {
   addAccount,
   type FilenAccountMeta,
@@ -13,11 +13,9 @@ import {
   removeAccount,
   setActiveAccount,
 } from '../lib/filenAccounts'
-import { getAppState, setAppState } from '../lib/appState'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { writeUserFile } from '../lib/localFs'
 import type FilenSDK from '@filen/sdk'
-
-const PAGE_SIZE_KEY = 'filenTab.pageSize'
 
 interface RemoteEntry {
   name: string
@@ -49,14 +47,12 @@ export default function FilenTab() {
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
 
   useEffect(() => {
-    getAppState<number>(PAGE_SIZE_KEY).then((saved) => {
-      if (saved) setPageSizeState(saved)
-    })
+    getGlobalPageSize().then(setPageSizeState)
   }, [])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setAppState(PAGE_SIZE_KEY, size)
+    setGlobalPageSize(size)
     setPage(0)
   }
 

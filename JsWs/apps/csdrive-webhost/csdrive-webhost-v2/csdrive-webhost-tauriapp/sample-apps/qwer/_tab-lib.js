@@ -35,12 +35,15 @@ window.TabLib = (function () {
   }
 
   // Sets (or replaces) a tab's two-line label, and optionally its resource type
-  // (the key into this app's icon set — see registerIcons).
-  async function updateTab(tabGuid, firstRow, secondRow, resourceType) {
+  // (the key into this app's icon set — see registerIcons) and/or its resource id
+  // — pass this when the tab has navigated to a different view without opening a
+  // new tab for it. Omitting either leaves that field as it was.
+  async function updateTab(tabGuid, firstRow, secondRow, resourceType, resourceId) {
     return invoke('update_tab_resource', {
       tabGuid,
       tabText: { firstRow: firstRow, secondRow: secondRow },
       resourceType: resourceType || null,
+      resourceId: resourceId || null,
     })
   }
 

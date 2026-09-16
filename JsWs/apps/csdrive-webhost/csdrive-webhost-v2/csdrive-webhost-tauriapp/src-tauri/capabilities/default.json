@@ -40,6 +40,8 @@
     "allow-pick-and-set-custom-data-folder",
     "allow-reset-data-folder-to-default",
     "allow-clear-custom-data-folder-contents",
-    "allow-delete-app-data"
+    "allow-delete-app-data",
+    "allow-list-deployable-apps",
+    "allow-get-deployable-app-html"
   ]
 }

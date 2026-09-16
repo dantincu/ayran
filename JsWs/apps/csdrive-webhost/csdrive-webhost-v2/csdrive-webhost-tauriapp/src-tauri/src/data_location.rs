@@ -1,5 +1,6 @@
-//! Lets the user relocate the app's data folder (the `user` folder and `data.db`)
-//! away from the default machine app-data location, via a native folder picker.
+//! Lets the user relocate the app's data folder (the `user` and `admin` folders,
+//! the latter holding `data.db` and the admin app's own frontend bundle) away
+//! from the default machine app-data location, via a native folder picker.
 //!
 //! Where the custom location is recorded: a single small file, always at a fixed
 //! path inside the *default* app-data folder, encrypted with a key held in the OS
@@ -117,7 +118,7 @@ fn write_custom_dir(default_dir: &Path, path: Option<&Path>) -> Result<(), Strin
     }
 }
 
-/// The folder that `user/` and `data.db` should actually live under right now:
+/// The folder that `user/` and `admin/` should actually live under right now:
 /// the custom location if one is set and still exists, otherwise the default.
 pub fn effective_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let default_dir = default_app_data_dir(app)?;
@@ -371,8 +372,10 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&default_dir);
         std::fs::create_dir_all(default_dir.join("user")).unwrap();
-        std::fs::write(default_dir.join("user").join("index.html"), b"<html></html>").unwrap();
-        std::fs::write(default_dir.join("data.db"), b"fake-sqlite").unwrap();
+        std::fs::write(default_dir.join("user").join("some-app.html"), b"<html></html>").unwrap();
+        std::fs::create_dir_all(default_dir.join("admin")).unwrap();
+        std::fs::write(default_dir.join("admin").join("index.html"), b"<html></html>").unwrap();
+        std::fs::write(default_dir.join("admin").join("data.db"), b"fake-sqlite").unwrap();
 
         let custom_dir = std::env::temp_dir().join(format!(
             "csdrive-delete-app-data-test-custom-{}",
@@ -389,7 +392,7 @@ mod tests {
 
         assert!(default_dir.exists());
         assert!(!default_dir.join("user").exists());
-        assert!(!default_dir.join("data.db").exists());
+        assert!(!default_dir.join("admin").exists());
         assert!(!config_file_path(&default_dir).exists());
         // The custom folder and its contents must survive a default-folder wipe.
         assert!(custom_dir.join("untouched.txt").exists());

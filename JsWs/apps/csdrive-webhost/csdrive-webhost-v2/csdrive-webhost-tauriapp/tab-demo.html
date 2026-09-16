@@ -54,11 +54,12 @@
         resourceType: resourceType || null,
       })
     },
-    async updateTab(tabGuid, firstRow, secondRow, resourceType) {
+    async updateTab(tabGuid, firstRow, secondRow, resourceType, resourceId) {
       return window.__TAURI__.core.invoke('update_tab_resource', {
         tabGuid,
         tabText: { firstRow, secondRow },
         resourceType: resourceType || null,
+        resourceId: resourceId || null,
       })
     },
     registerIcons(icons) {

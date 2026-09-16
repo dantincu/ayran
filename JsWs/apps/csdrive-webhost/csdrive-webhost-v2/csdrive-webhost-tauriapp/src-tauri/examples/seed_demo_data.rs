@@ -173,7 +173,7 @@ async fn insert_tab(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = effective_data_dir();
-    let db_path = data_dir.join("data.db");
+    let db_path = data_dir.join("admin").join("data.db");
     println!("Using data folder: {}", data_dir.display());
 
     if !db_path.exists() {

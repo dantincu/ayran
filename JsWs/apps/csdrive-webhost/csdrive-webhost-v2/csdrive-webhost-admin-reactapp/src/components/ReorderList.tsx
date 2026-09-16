@@ -157,7 +157,10 @@ export default function ReorderList<T>({ items, getId, renderItem, onChange }: R
                 e.preventDefault()
                 e.dataTransfer.dropEffect = 'move'
               }}
-              onDrop={() => handleDrop(index)}
+              onDrop={(e) => {
+                e.preventDefault()
+                handleDrop(index)
+              }}
             >
               <label className="reorder-item-select">
                 <input type="checkbox" checked={selected.has(id)} onChange={() => toggle(id)} />

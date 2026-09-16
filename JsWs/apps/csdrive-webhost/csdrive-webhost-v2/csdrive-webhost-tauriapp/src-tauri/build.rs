@@ -1,4 +1,18 @@
 fn main() {
+    // main.rs embeds this file directly (`include_str!`) as the default
+    // `admin/index.html` — give a clear error instead of a cryptic include_str!
+    // failure if it's missing, since it lives in a sibling package this crate
+    // doesn't otherwise build.
+    let admin_app_index = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../csdrive-webhost-admin-reactapp/dist/index.html");
+    if !admin_app_index.exists() {
+        panic!(
+            "\n\nMissing {}\n\nBuild the admin-app first:\n  cd csdrive-webhost-admin-reactapp && npm run build\n\n",
+            admin_app_index.display()
+        );
+    }
+    println!("cargo:rerun-if-changed={}", admin_app_index.display());
+
     let attributes = tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "keychain_set_secret",
@@ -31,6 +45,8 @@ fn main() {
             "reset_data_folder_to_default",
             "clear_custom_data_folder_contents",
             "delete_app_data",
+            "list_deployable_apps",
+            "get_deployable_app_html",
         ]),
     );
     tauri_build::try_build(attributes).expect("failed to run tauri-build");

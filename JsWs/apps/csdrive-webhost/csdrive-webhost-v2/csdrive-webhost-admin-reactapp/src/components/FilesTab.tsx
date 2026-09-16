@@ -11,6 +11,7 @@ import {
   FolderPlus,
   Pencil,
   RefreshCw,
+  Rocket,
   Save,
   Scissors,
   Trash2,
@@ -19,8 +20,11 @@ import {
   ClipboardPaste,
 } from 'lucide-react'
 import IconButton from './IconButton'
-import Pagination, { DEFAULT_PAGE_SIZE } from './Pagination'
+import Modal from './Modal'
+import Pagination from './Pagination'
 import { getAppState, setAppState } from '../lib/appState'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
+import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
 import { joinRelative } from '../lib/localFs'
 import {
   copyRootPath,
@@ -76,11 +80,79 @@ function isSameOrWithin(ancestor: string, candidate: string): boolean {
 }
 
 const LOCATION_KEY = 'filesTab.location'
-const PAGE_SIZE_KEY = 'filesTab.pageSize'
 
 interface SavedLocation {
   rootId: string
   path: string
+}
+
+function DeployAppsModal({
+  apps,
+  onPick,
+  onClose,
+}: {
+  apps: DeployableAppInfo[]
+  onPick: (app: DeployableAppInfo) => void
+  onClose: () => void
+}) {
+  return (
+    <Modal title="Deploy an app" onClose={onClose}>
+      {apps.length === 0 ? (
+        <div className="muted">No deployable apps available.</div>
+      ) : (
+        <ul className="deploy-apps-list">
+          {apps.map((app) => (
+            <li key={app.id}>
+              <button className="link-button deploy-app-option" onClick={() => onPick(app)}>
+                {app.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Modal>
+  )
+}
+
+function DeployFolderNameModal({
+  app,
+  existingNames,
+  onConfirm,
+  onClose,
+}: {
+  app: DeployableAppInfo
+  existingNames: string[]
+  onConfirm: (folderName: string) => void
+  onClose: () => void
+}) {
+  const [name, setName] = useState(app.defaultFolderName)
+  const trimmed = name.trim()
+  const conflict = trimmed !== '' && existingNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())
+
+  function submit() {
+    if (!trimmed || conflict) return
+    onConfirm(trimmed)
+  }
+
+  return (
+    <Modal title={`Deploy "${app.name}"`} onClose={onClose}>
+      <div className="modal-field-label">New folder name</div>
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit()
+          if (e.key === 'Escape') onClose()
+        }}
+      />
+      {conflict && <div className="error-banner">"{trimmed}" already exists here — pick a different name.</div>}
+      <div className="toolbar-actions" style={{ justifyContent: 'flex-end' }}>
+        <IconButton icon={Rocket} label="Deploy" disabled={!trimmed || conflict} onClick={submit} />
+        <IconButton icon={X} label="Cancel" onClick={onClose} />
+      </div>
+    </Modal>
+  )
 }
 
 export default function FilesTab() {
@@ -94,6 +166,9 @@ export default function FilesTab() {
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
+  const [deployableApps, setDeployableApps] = useState<DeployableAppInfo[]>([])
+  const [pickingAppToDeploy, setPickingAppToDeploy] = useState(false)
+  const [deployingApp, setDeployingApp] = useState<DeployableAppInfo | null>(null)
   const [hydrated, setHydrated] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
@@ -105,19 +180,19 @@ export default function FilesTab() {
       // yet the restored path would kick off a wasted (and potentially racy) fetch.
       const root = await getUserRoot()
       const saved = await getAppState<SavedLocation>(LOCATION_KEY)
-      const savedPageSize = await getAppState<number>(PAGE_SIZE_KEY)
+      const savedPageSize = await getGlobalPageSize()
       setRoots([root])
       if (saved && saved.rootId === USER_ROOT_ID && typeof saved.path === 'string') {
         setPath(saved.path)
       }
-      if (savedPageSize) setPageSizeState(savedPageSize)
+      setPageSizeState(savedPageSize)
       setHydrated(true)
     })()
   }, [])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setAppState(PAGE_SIZE_KEY, size)
+    setGlobalPageSize(size)
     setPage(0)
   }
 
@@ -367,6 +442,34 @@ export default function FilesTab() {
     }
   }
 
+  async function openDeployApps() {
+    try {
+      setDeployableApps(await listDeployableApps())
+      setPickingAppToDeploy(true)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  function pickAppToDeploy(app: DeployableAppInfo) {
+    setPickingAppToDeploy(false)
+    setDeployingApp(app)
+  }
+
+  async function deployApp(app: DeployableAppInfo, folderName: string) {
+    if (!activeRoot) return
+    try {
+      const html = await getDeployableAppHtml(app.id)
+      const folderPath = joinRelative(path, folderName)
+      await mkdirRoot(activeRoot, folderPath)
+      await writeRootTextFile(activeRoot, joinRelative(folderPath, 'index.html'), html)
+      setDeployingApp(null)
+      await refresh()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
   const currentPage = Math.min(page, pageCount - 1)
   const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
@@ -407,6 +510,7 @@ export default function FilesTab() {
           <IconButton icon={FilePlus} label="New file" onClick={createFile} />
           <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
           <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
+          <IconButton icon={Rocket} label="Deploy apps…" onClick={openDeployApps} />
           {clipboard && (
             <IconButton icon={ClipboardPaste} label={`Paste "${clipboard.name}"`} onClick={paste} />
           )}
@@ -501,6 +605,23 @@ export default function FilesTab() {
             />
           </div>
         </div>
+      )}
+
+      {pickingAppToDeploy && (
+        <DeployAppsModal
+          apps={deployableApps}
+          onPick={pickAppToDeploy}
+          onClose={() => setPickingAppToDeploy(false)}
+        />
+      )}
+
+      {deployingApp && (
+        <DeployFolderNameModal
+          app={deployingApp}
+          existingNames={entries.map((e) => e.name)}
+          onConfirm={(folderName) => deployApp(deployingApp, folderName)}
+          onClose={() => setDeployingApp(null)}
+        />
       )}
     </div>
   )

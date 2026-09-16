@@ -2,18 +2,25 @@
 
 mod app_state;
 mod data_location;
+mod deployable_apps;
 mod secondary_windows;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use tauri::http::{header::CONTENT_TYPE, Request, Response, StatusCode};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 const USER_PROTOCOL: &str = "csuser";
-const ACTION_SCHEME: &str = "csuser-action";
+const ADMIN_PROTOCOL: &str = "csadmin";
 const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
+
+/// The admin-app's own single-file bundle, embedded into this binary at compile
+/// time (and thus into every installer built from it) so it's always available
+/// as the default `admin/index.html` — no separate resource file or internet
+/// access needed. Built via `cd csdrive-webhost-admin-reactapp && npm run
+/// build`; see `build.rs`, which fails the build early with a clear message if
+/// this hasn't been done.
+const ADMIN_APP_INDEX_HTML: &str = include_str!("../../../csdrive-webhost-admin-reactapp/dist/index.html");
 
 #[tauri::command]
 fn keychain_set_secret(key: String, value: String) -> Result<(), String> {
@@ -64,10 +71,11 @@ fn content_type_for(path: &Path) -> &'static str {
     }
 }
 
-/// Resolves a request path against the user folder, rejecting attempts to
-/// escape it (e.g. via `..`) since the served content is arbitrary
-/// user-authored HTML/JS.
-fn resolve_user_file(user_dir: &Path, request_path: &str) -> Option<PathBuf> {
+/// Resolves a request path against `base_dir` (the `user` folder for
+/// `csuser://`, the `admin` folder for `csadmin://`), rejecting attempts to
+/// escape it (e.g. via `..`) since — at least for `user` — the served content
+/// is arbitrary user-authored HTML/JS.
+fn resolve_file_in(base_dir: &Path, request_path: &str) -> Option<PathBuf> {
     let relative = request_path.trim_start_matches('/');
     let relative = if relative.is_empty() {
         "index.html"
@@ -75,81 +83,14 @@ fn resolve_user_file(user_dir: &Path, request_path: &str) -> Option<PathBuf> {
         relative
     };
 
-    let candidate = user_dir.join(relative);
-    let canonical_user_dir = user_dir.canonicalize().ok()?;
+    let candidate = base_dir.join(relative);
+    let canonical_base_dir = base_dir.canonicalize().ok()?;
     let canonical_candidate = candidate.canonicalize().ok()?;
 
-    if canonical_candidate.starts_with(&canonical_user_dir) {
+    if canonical_candidate.starts_with(&canonical_base_dir) {
         Some(canonical_candidate)
     } else {
         None
-    }
-}
-
-fn sample_index_html(user_dir: &Path) -> String {
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>CsDrive WebHost</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; line-height: 1.5; padding: 0 1rem; }}
-  code {{ background: #eee; padding: 0.15em 0.4em; border-radius: 4px; }}
-  .path {{ word-break: break-all; }}
-  a.action {{ display: inline-block; margin: 0.5rem 1rem 0.5rem 0; }}
-</style>
-</head>
-<body>
-<h1>CsDrive WebHost</h1>
-<p>This is a sample page. CsDrive WebHost renders whatever <code>index.html</code>
-you place in your user folder instead of a built-in UI.</p>
-<p>Your user folder is:</p>
-<p class="path"><code>{user_dir}</code></p>
-<p>Edit or replace <code>index.html</code> in that folder (and add any CSS/JS/images
-alongside it) and reopen the app to see your own page.</p>
-<p>
-  <a class="action" href="csuser-action://open-folder">Open user folder</a>
-  <a class="action" href="csuser-action://open-editor">Open this file in a text editor</a>
-</p>
-</body>
-</html>
-"#,
-        user_dir = user_dir.display()
-    )
-}
-
-fn open_in_file_manager(path: &Path) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer").arg(path).spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(path).spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(path).spawn();
-    }
-}
-
-fn open_in_text_editor(path: &Path) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("notepad").arg(path).spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open")
-            .arg("-e")
-            .arg(path)
-            .spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "xdg-open".to_string());
-        let _ = std::process::Command::new(editor).arg(path).spawn();
     }
 }
 
@@ -189,13 +130,39 @@ fn main() {
             data_location::reset_data_folder_to_default,
             data_location::clear_custom_data_folder_contents,
             data_location::delete_app_data,
+            deployable_apps::list_deployable_apps,
+            deployable_apps::get_deployable_app_html,
         ])
         .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
             let user_dir = data_location::effective_data_dir(ctx.app_handle())
                 .expect("failed to resolve app data dir")
                 .join("user");
 
-            match resolve_user_file(&user_dir, request.uri().path()) {
+            match resolve_file_in(&user_dir, request.uri().path()) {
+                Some(file_path) => match std::fs::read(&file_path) {
+                    Ok(data) => Response::builder()
+                        .header(CONTENT_TYPE, content_type_for(&file_path))
+                        .body(data)
+                        .unwrap(),
+                    Err(_) => Response::builder()
+                        .status(StatusCode::NOT_FOUND)
+                        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                        .body(b"File not found".to_vec())
+                        .unwrap(),
+                },
+                None => Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(b"Forbidden".to_vec())
+                    .unwrap(),
+            }
+        })
+        .register_uri_scheme_protocol(ADMIN_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
+            let admin_dir = data_location::effective_data_dir(ctx.app_handle())
+                .expect("failed to resolve app data dir")
+                .join("admin");
+
+            match resolve_file_in(&admin_dir, request.uri().path()) {
                 Some(file_path) => match std::fs::read(&file_path) {
                     Ok(data) => Response::builder()
                         .header(CONTENT_TYPE, content_type_for(&file_path))
@@ -216,65 +183,50 @@ fn main() {
         })
         .setup(|app| {
             let app_data_dir = data_location::effective_data_dir(app.handle())?;
-            let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&app_data_dir))?;
+            let admin_dir = app_data_dir.join("admin");
+            let user_dir = app_data_dir.join("user");
+            // Always ensure both exist, regardless of which (if either) files
+            // inside them are missing.
+            std::fs::create_dir_all(&admin_dir)?;
+            std::fs::create_dir_all(&user_dir)?;
+
+            let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&admin_dir))?;
             tauri::async_runtime::block_on(app_state::ensure_schema(&pool))?;
             app.manage(app_state::AppDbState { pool: pool.clone() });
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
 
-            let user_dir = app_data_dir.join("user");
-            let index_path = user_dir.join("index.html");
+            let index_path = admin_dir.join("index.html");
 
+            // No admin frontend yet (fresh install, or a "Delete app data" reset) —
+            // install the one embedded into this binary at compile time.
             if !index_path.exists() {
-                std::fs::create_dir_all(&user_dir)?;
-                std::fs::write(&index_path, sample_index_html(&user_dir))?;
+                std::fs::write(&index_path, ADMIN_APP_INDEX_HTML)?;
             }
 
             // The custom data folder (if any) lives outside the default app-data dir
             // that fs:allow-appdata-* scopes cover, so extend the runtime scope to it.
             let _ = tauri_plugin_fs::FsExt::fs_scope(app).allow_directory(&user_dir, true);
 
-            let index_path_for_editor = index_path.clone();
-            let user_dir_for_folder = user_dir.clone();
-            // WebView2 can fire the navigation-intercept callback more than once
-            // for a single link click/redirect; debounce so actions don't double-fire.
-            let last_action: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-
             WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::CustomProtocol(
-                    format!("{USER_PROTOCOL}://localhost/index.html").parse()?,
+                    format!("{ADMIN_PROTOCOL}://localhost/index.html").parse()?,
                 ),
             )
             .title("CsDrive WebHost")
             .inner_size(1024.0, 768.0)
-            // Tauri's own drag-and-drop (for OS file drops) intercepts the same
-            // events HTML5 drag-and-drop needs on Windows, permanently showing a
-            // "not allowed" cursor for the admin app's own draggable reorder lists
-            // unless this is off — see WebviewWindowBuilder::drag_and_drop's docs.
+            // wry registers its own IDropTarget on the WebView2 child window (for OS
+            // file drops) unless this is off, which prevents WebView2/Chromium's own
+            // internal HTML5 drag-and-drop from ever receiving drag events on
+            // Windows — permanently showing a "not allowed" cursor and the drop
+            // never landing. `drag_and_drop(false)` (window-level, OS file drops
+            // onto the window) alone is NOT enough; `disable_drag_drop_handler()`
+            // (webview-level) is the one that actually stops wry's own handler —
+            // both are documented as "required to use HTML5 drag and drop on
+            // Windows," but only the webview one is.
             .drag_and_drop(false)
-            .on_navigation(move |url| {
-                if url.scheme() == ACTION_SCHEME {
-                    let action = url.host_str().unwrap_or("").to_string();
-                    let mut last = last_action.lock().unwrap();
-                    let is_duplicate = matches!(
-                        &*last,
-                        Some((prev_action, at)) if *prev_action == action && at.elapsed() < Duration::from_millis(500)
-                    );
-                    *last = Some((action.clone(), Instant::now()));
-
-                    if !is_duplicate {
-                        match action.as_str() {
-                            "open-folder" => open_in_file_manager(&user_dir_for_folder),
-                            "open-editor" => open_in_text_editor(&index_path_for_editor),
-                            _ => {}
-                        }
-                    }
-                    false
-                } else {
-                    true
-                }
-            })
+            .disable_drag_drop_handler()
             .build()?;
 
             Ok(())

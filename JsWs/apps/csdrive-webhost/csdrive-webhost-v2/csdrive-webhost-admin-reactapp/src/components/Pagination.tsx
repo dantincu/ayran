@@ -1,8 +1,6 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import IconButton from './IconButton'
-
-export const PAGE_SIZE_OPTIONS = [10, 25, 50, 100]
-export const DEFAULT_PAGE_SIZE = 25
+import { PAGE_SIZE_OPTIONS } from '../lib/listPageSize'
 
 interface PaginationProps {
   /** 0-indexed. Clamp this yourself before using it to slice — Pagination clamps

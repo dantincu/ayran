@@ -129,10 +129,17 @@ export async function initWindowTab(appVersion: number, url: string, resourceTyp
 }
 
 /** Sets (or replaces) the two-line, styled label a tab shows in the window manager,
- * and optionally its resource type (see `initWindowTab`). Only the window that owns
- * the tab may update it. */
-export async function updateTabResource(tabGuid: string, tabText: TabText, resourceType?: string): Promise<void> {
-  await invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType ?? null })
+ * and optionally its resource type (see `initWindowTab`) and/or its resource id —
+ * e.g. the app navigated to a different view within the same tab, without opening
+ * a new one. Omitting either leaves that field as it was. Only the window that
+ * owns the tab may update it. */
+export async function updateTabResource(
+  tabGuid: string,
+  tabText: TabText,
+  resourceType?: string,
+  resourceId?: string,
+): Promise<void> {
+  await invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType ?? null, resourceId: resourceId ?? null })
 }
 
 const EVENT_REQUEST_RESOURCE_ICONS = 'request-resource-icons'

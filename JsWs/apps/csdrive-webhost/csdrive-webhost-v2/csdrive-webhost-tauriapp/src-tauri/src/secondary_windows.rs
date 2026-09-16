@@ -114,11 +114,13 @@ pub struct TagRecord {
     pub bg_color: String,
 }
 
-/// Opens (creating if needed) the app's own `data.db`, living directly under the app data
-/// directory — outside the user-editable `user` folder — and ensures its schema exists.
-pub async fn init_db(app_data_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Error> {
-    std::fs::create_dir_all(app_data_dir)?;
-    let db_path = app_data_dir.join("data.db");
+/// Opens (creating if needed) the app's own `data.db` inside `admin_dir` — the
+/// `admin` folder, a sibling of the user-editable `user` folder that holds only
+/// this app's own files (its database and its own frontend bundle) — and
+/// ensures its schema exists.
+pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Error> {
+    std::fs::create_dir_all(admin_dir)?;
+    let db_path = admin_dir.join("data.db");
     let options = SqliteConnectOptions::new()
         .filename(&db_path)
         .create_if_missing(true);
@@ -1050,11 +1052,36 @@ pub async fn init_window_tab(
     Ok(result)
 }
 
+/// Updates a tab's label and/or resource type/id. `resource_type`/`resource_id`
+/// are only changed when the app actually sends one — COALESCE keeps whatever
+/// was already stored otherwise.
+async fn update_tab_resource_impl(
+    pool: &SqlitePool,
+    tab_guid: &str,
+    tab_text: &TabText,
+    resource_type: Option<&str>,
+    resource_id: Option<&str>,
+) -> Result<(), String> {
+    let json = serde_json::to_string(tab_text).map_err(|e| e.to_string())?;
+    sqlx::query(
+        "UPDATE tabs SET tab_text = ?1, resource_type = COALESCE(?2, resource_type), resource_id = COALESCE(?3, resource_id) WHERE guid = ?4",
+    )
+    .bind(&json)
+    .bind(resource_type)
+    .bind(resource_id)
+    .bind(tab_guid)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Called by an app to set (or replace) the two-line, richly-styled label its tab
 /// shows in the window manager, and optionally its resource type (the key into that
-/// app's icon set — see `submit_resource_icons`). Rejects updating a tab that
-/// doesn't belong to the calling window, so one app's page can't relabel another
-/// window's tab.
+/// app's icon set — see `submit_resource_icons`) and/or its resource id (e.g. the
+/// app navigated to a different view within the same tab, without opening a new
+/// one). Rejects updating a tab that doesn't belong to the calling window, so one
+/// app's page can't relabel another window's tab.
 #[tauri::command]
 pub async fn update_tab_resource(
     window: tauri::WebviewWindow,
@@ -1063,6 +1090,7 @@ pub async fn update_tab_resource(
     tab_guid: String,
     tab_text: TabText,
     resource_type: Option<String>,
+    resource_id: Option<String>,
 ) -> Result<(), String> {
     let owner_window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
         .bind(&tab_guid)
@@ -1074,23 +1102,7 @@ pub async fn update_tab_resource(
         return Err("Tab does not belong to this window.".to_string());
     }
 
-    let json = serde_json::to_string(&tab_text).map_err(|e| e.to_string())?;
-    if let Some(resource_type) = &resource_type {
-        sqlx::query("UPDATE tabs SET tab_text = ?1, resource_type = ?2 WHERE guid = ?3")
-            .bind(&json)
-            .bind(resource_type)
-            .bind(&tab_guid)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    } else {
-        sqlx::query("UPDATE tabs SET tab_text = ?1 WHERE guid = ?2")
-            .bind(&json)
-            .bind(&tab_guid)
-            .execute(&state.pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    }
+    update_tab_resource_impl(&state.pool, &tab_guid, &tab_text, resource_type.as_deref(), resource_id.as_deref()).await?;
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
@@ -1477,6 +1489,37 @@ mod tests {
             // The actual ownership check lives in the #[tauri::command] wrapper (it
             // needs a real WebviewWindow for its label, which a unit test can't
             // construct) — this test just pins down the data it checks against.
+        });
+    }
+
+    #[test]
+    fn update_tab_resource_can_change_the_resource_id_but_only_when_given() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("update-resource-id").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+
+            let blank_text = TabText { first_row: vec![], second_row: vec![] };
+
+            // Given a new resource id, it replaces the old one.
+            update_tab_resource_impl(&pool, &tab.tab_guid, &blank_text, None, Some("res-b"))
+                .await
+                .unwrap();
+            let resource_id: String = sqlx::query_scalar("SELECT resource_id FROM tabs WHERE guid = ?1")
+                .bind(&tab.tab_guid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(resource_id, "res-b");
+
+            // Without one, the previous value is left untouched.
+            update_tab_resource_impl(&pool, &tab.tab_guid, &blank_text, None, None).await.unwrap();
+            let resource_id: String = sqlx::query_scalar("SELECT resource_id FROM tabs WHERE guid = ?1")
+                .bind(&tab.tab_guid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(resource_id, "res-b", "omitting resource id must not clear/reset it");
         });
     }
 
