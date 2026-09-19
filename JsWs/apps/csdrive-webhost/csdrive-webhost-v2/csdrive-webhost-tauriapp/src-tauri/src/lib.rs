@@ -173,6 +173,7 @@ pub fn run() {
             secondary_windows::add_blank_tab,
             secondary_windows::clone_tab,
             secondary_windows::activate_tab,
+            secondary_windows::add_window_tab,
             secondary_windows::close_tab,
             secondary_windows::delete_tab_group,
             secondary_windows::move_tab_to_group,

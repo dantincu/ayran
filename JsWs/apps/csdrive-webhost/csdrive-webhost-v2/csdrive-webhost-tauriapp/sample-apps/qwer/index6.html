@@ -27,7 +27,7 @@
     const li = document.createElement('li')
     li.innerHTML = '<span>' + s.name + '</span><button>Open</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ section: s.name.toLowerCase() })
+      const resp = await TabLib.addTab({ section: s.name.toLowerCase() })
       await TabLib.updateTab(
         resp.tabGuid,
         [TabLib.span(s.name, { bold: true, italic: true })],

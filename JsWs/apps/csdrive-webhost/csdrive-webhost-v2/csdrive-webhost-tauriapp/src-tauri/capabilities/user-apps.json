@@ -43,6 +43,7 @@
     "allow-add-blank-tab",
     "allow-clone-tab",
     "allow-activate-tab",
+    "allow-add-window-tab",
     "allow-close-tab",
     "allow-delete-tab-group",
     "allow-move-tab-to-group",

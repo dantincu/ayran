@@ -27,7 +27,7 @@
     li.innerHTML =
       '<span>' + t.title + ' <span class="muted">— ' + t.artist + '</span></span><button>Open</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ track: t.title.toLowerCase().replace(/\s+/g, '-') })
+      const resp = await TabLib.addTab({ track: t.title.toLowerCase().replace(/\s+/g, '-') })
       await TabLib.updateTab(
         resp.tabGuid,
         [TabLib.span(t.title, { bold: true }), TabLib.span(t.duration)],

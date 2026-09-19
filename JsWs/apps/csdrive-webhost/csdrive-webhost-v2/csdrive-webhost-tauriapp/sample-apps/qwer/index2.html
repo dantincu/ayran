@@ -46,7 +46,7 @@
     const li = document.createElement('li')
     li.innerHTML = '<span>' + file.path + ' <span class="muted">(' + file.size + ')</span></span><button>Open</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ file: file.path }, 1, ext)
+      const resp = await TabLib.addTab({ file: file.path }, 1, ext)
       await TabLib.updateTab(
         resp.tabGuid,
         [TabLib.span(file.path.split('/').pop(), { bold: true }), TabLib.span(file.size)],

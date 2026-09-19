@@ -559,8 +559,9 @@ impl Cache {
 
     /// Records a fresh listing of `path` from Filen: new things are added (with a safe local name),
     /// changed files lose their cached content, things that are gone are dropped with everything
-    /// under them.
-    async fn sync_listing(&self, user_id: i64, path: &str, remote: Vec<RemoteEntry>) -> Result<(), String> {
+    /// under them. Resolves to the time the listing was recorded with — what a caller must report as
+    /// its `fetched_at`, so the value it shows is the stored one.
+    async fn sync_listing(&self, user_id: i64, path: &str, remote: Vec<RemoteEntry>) -> Result<i64, String> {
         let now = self.now();
         let existing: HashMap<String, EntryRow> = self.children(user_id, path).await?.into_iter().map(|r| (r.name.clone(), r)).collect();
         let listed: HashSet<&str> = remote.iter().map(|e| e.name.as_str()).collect();
@@ -628,7 +629,7 @@ impl Cache {
             .execute(&self.pool)
             .await
             .map_err(sql)?;
-        Ok(())
+        Ok(now)
     }
 
     fn to_entry(row: &EntryRow) -> CacheEntry {
@@ -657,8 +658,7 @@ impl Cache {
             Some(at) if !force && fresh(at, ttl, self.now()) => (at, false),
             _ => match remote.readdir(path).await {
                 Ok(entries) => {
-                    self.sync_listing(user_id, path, entries).await?;
-                    (self.now(), false)
+                    (self.sync_listing(user_id, path, entries).await?, false)
                 }
                 Err(e) => match known {
                     Some(at) => (at, true),
@@ -1711,6 +1711,30 @@ mod tests {
             assert!(f.cache.branches(7).await.unwrap().is_empty());
             assert!(f.cache.discard_branch(7, second.index).await.is_err());
             assert!(!f.base.join("b").join("001").exists());
+        });
+    }
+
+    #[test]
+    fn a_fetched_listing_reports_the_time_it_was_stored_with() {
+        run(async {
+            let base = std::env::temp_dir().join(format!("csdrive-files-cache-ticking-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+            // A clock that moves on every reading, like a real one does while a fetch is in flight.
+            let ticks = Arc::new(AtomicI64::new(1_000_000));
+            let clock = {
+                let ticks = ticks.clone();
+                Arc::new(move || ticks.fetch_add(1, Ordering::SeqCst))
+            };
+            let cache = Cache::with_pool(pool, base.clone(), clock).await.unwrap();
+            cache.ensure_account(7, "me@example.com").await.unwrap();
+            let remote = MemoryRemote::new();
+
+            let forced = cache.list(&remote, 7, None, "/", true).await.unwrap();
+            let again = cache.list(&remote, 7, None, "/", false).await.unwrap();
+            assert_eq!(forced.fetched_at, again.fetched_at, "the refresh reports what it stored, so the next read agrees");
+            let _ = std::fs::remove_dir_all(&base);
         });
     }
 

@@ -159,8 +159,11 @@ export async function removeWindowTag(id: number): Promise<void> {
   await invoke('remove_window_tag', { id })
 }
 
-/** Called by an app running inside a secondary window to register one of its
- * resources as a tab. The window is identified implicitly (its own Tauri window
+/** Called by a page, as it loads, to **bind itself to its tab**. The admin-app has already made the
+ * tab (a window's tabs are created there — when the window is opened, or with "new tab"/"clone"),
+ * so this never creates one: it finds the one made for this page — or, when the page is just
+ * reloading, the tab its window is showing — and answers with it. To *add* another tab from the
+ * page, use `addWindowTab`. The window is identified implicitly (its own Tauri window
  * label), never sent explicitly — see `secondary_windows::init_window_tab` in Rust.
  * `url` is expected to be the page's own `location.href`; the backend splits it into
  * the window's html-file relative path and a resource id (relative path + query).
@@ -171,6 +174,15 @@ export async function removeWindowTag(id: number): Promise<void> {
  * `submitResourceIcons`. */
 export async function initWindowTab(appVersion: number, url: string, resourceType?: string): Promise<TabInitResponse> {
   return invoke<TabInitResponse>('init_window_tab', { appVersion, url, resourceType: resourceType ?? null })
+}
+
+/** Called by a page to **add another tab** to the list — a second document, a new view. It takes what
+ * `initWindowTab` takes (the page's own `location.href`, the resource type) and answers with the same
+ * data. The new tab is placed next to the one the window is showing and becomes the window's current
+ * tab (the page is showing it now), so a reload of the page binds to it. This is the only request with
+ * which a page creates a tab. */
+export async function addWindowTab(appVersion: number, url: string, resourceType?: string): Promise<TabInitResponse> {
+  return invoke<TabInitResponse>('add_window_tab', { appVersion, url, resourceType: resourceType ?? null })
 }
 
 const EVENT_TAB_NAVIGATE = 'tab-navigate'

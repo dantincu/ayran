@@ -26,7 +26,7 @@
     const li = document.createElement('li')
     li.innerHTML = '<span>#' + t.id + ' ' + t.title + ' <span class="muted">(' + t.priority + ')</span></span><button>Open</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ task: t.id })
+      const resp = await TabLib.addTab({ task: t.id })
       await TabLib.updateTab(
         resp.tabGuid,
         [TabLib.span(t.title, { bold: true }), TabLib.span(t.priority, { bold: true })],

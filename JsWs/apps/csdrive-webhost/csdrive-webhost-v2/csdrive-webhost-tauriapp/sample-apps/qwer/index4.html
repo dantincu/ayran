@@ -27,7 +27,7 @@
     const li = document.createElement('li')
     li.innerHTML = '<span>' + w.name + '</span><button>Open live tile</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ widget: w.name.toLowerCase() })
+      const resp = await TabLib.addTab({ widget: w.name.toLowerCase() })
       const refresh = () => {
         const value = Math.round(Math.random() * 100)
         TabLib.updateTab(

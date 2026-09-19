@@ -49,25 +49,49 @@ window.TabLib = (function () {
     history.pushState(null, '', url)
   }
 
-  // Registers the resource named by `params` as a new tab. Returns
-  // { tabGuid, resourceId } — resourceId is this page's relative path plus the
-  // query string just set, e.g. "qwer/index2.html?file=notes.txt". `resourceType`
-  // is optional here — it can be set later (or changed) via updateTab instead.
-  //
-  // `onNavigate` (optional): a function called when the user switches to another tab of this
-  // window — with the same { tabGuid, resourceId, codeSnippets } that this call returns — so the
-  // page can show that tab in place. Without one, the page starts over at its own address (the
-  // way it was before the backend sent this event), and the openTab it then makes is told the
-  // tab. The listener is added *before* the init request, so no switch can be missed.
-  async function openTab(params, appVersion, resourceType, onNavigate) {
+  // The window manager tells the page when the user switches to another tab of its window (the
+  // 'tab-navigate' event, carrying the same { tabGuid, resourceId, codeSnippets } that openTab and
+  // addTab return). The listener is on this window (not the global event.listen, which also hears
+  // events sent to other windows) and is added as soon as this file loads, i.e. before any request
+  // below is sent, so no switch can be missed. The default reaction is to start over at the page's
+  // own address; a page that can show another tab in place calls onNavigate(handler) instead.
+  var navigateHandler = null
+  var listening = window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', function (event) {
+    applySnippets(event.payload.codeSnippets)
+    if (navigateHandler) navigateHandler(event.payload)
+    else location.href = location.pathname
+  })
+  function onNavigate(handler) {
+    navigateHandler = handler
+  }
+
+  // Binds this page to its tab — the one the admin-app made for it (a window's tabs are created in
+  // the admin-app; when a window is opened one is waiting for the page). Never creates a tab: to
+  // add another one from the page, use addTab. Returns { tabGuid, resourceId } — for a tab that
+  // is new, resourceId is this page's relative path plus the query string just set, e.g.
+  // "qwer/index2.html?file=notes.txt"; for one that already had a resource id, that one. `resourceType`
+  // is optional here — it can be set later (or changed) via updateTab instead. `handler` (optional)
+  // is passed to onNavigate.
+  async function openTab(params, appVersion, resourceType, handler) {
+    if (handler) onNavigate(handler)
     setQuery(params)
-    // On this window (not the global event.listen, which also hears events sent to other windows).
-    await window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', function (event) {
-      applySnippets(event.payload.codeSnippets)
-      if (onNavigate) onNavigate(event.payload)
-      else location.href = location.pathname
-    })
+    await listening
     const response = await invoke('init_window_tab', {
+      appVersion: appVersion || 1,
+      url: location.href,
+      resourceType: resourceType || null,
+    })
+    applySnippets(response.codeSnippets)
+    return response
+  }
+
+  // Adds another tab for the resource named by `params` — a second document, a new view — next to
+  // the one the window is showing, and makes it the window's current tab. Takes and returns what
+  // openTab does. This is the only way a page creates a tab.
+  async function addTab(params, appVersion, resourceType) {
+    setQuery(params)
+    await listening
+    const response = await invoke('add_window_tab', {
       appVersion: appVersion || 1,
       url: location.href,
       resourceType: resourceType || null,
@@ -102,5 +126,13 @@ window.TabLib = (function () {
     })
   }
 
-  return { span: span, openTab: openTab, updateTab: updateTab, registerIcons: registerIcons, applySnippets: applySnippets }
+  return {
+    span: span,
+    openTab: openTab,
+    addTab: addTab,
+    onNavigate: onNavigate,
+    updateTab: updateTab,
+    registerIcons: registerIcons,
+    applySnippets: applySnippets,
+  }
 })()

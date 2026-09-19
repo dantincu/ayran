@@ -28,7 +28,7 @@
       '<span><strong>' + c.name + '</strong>' + (c.unread ? ' <span class="muted">(' + c.unread + ' unread)</span>' : '') + '</span>' +
       '<button>Open</button>'
     li.querySelector('button').addEventListener('click', async () => {
-      const resp = await TabLib.openTab({ contact: c.name.toLowerCase() })
+      const resp = await TabLib.addTab({ contact: c.name.toLowerCase() })
       await TabLib.updateTab(
         resp.tabGuid,
         [TabLib.span(c.name, { bold: true }), TabLib.span(c.unread ? c.unread + ' unread' : 'read')],

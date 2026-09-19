@@ -34,6 +34,7 @@ fn main() {
             "add_blank_tab",
             "clone_tab",
             "activate_tab",
+            "add_window_tab",
             "close_tab",
             "delete_tab_group",
             "move_tab_to_group",
