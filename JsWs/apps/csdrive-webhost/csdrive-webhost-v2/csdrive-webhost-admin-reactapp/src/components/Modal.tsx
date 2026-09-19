@@ -8,13 +8,23 @@ interface ModalProps {
   children: React.ReactNode
 }
 
+/** Open modals, oldest first — Escape closes only the top one, so a dialog opened
+ * from inside another (e.g. editing a tag from the window-details dialog) doesn't
+ * take its parent down with it. */
+const openModals: symbol[] = []
+
 export default function Modal({ title, onClose, children }: ModalProps) {
   useEffect(() => {
+    const token = Symbol('modal')
+    openModals.push(token)
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape' && openModals[openModals.length - 1] === token) onClose()
     }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      openModals.splice(openModals.indexOf(token), 1)
+    }
   }, [onClose])
 
   return (

@@ -22,6 +22,7 @@ import {
 import IconButton from './IconButton'
 import Modal from './Modal'
 import Pagination from './Pagination'
+import { TagList } from './Tags'
 import { getAppState, setAppState } from '../lib/appState'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
@@ -45,7 +46,7 @@ import {
   writeRootFile,
   writeRootTextFile,
 } from '../lib/fileRoots'
-import { openNewSecondaryWindow } from '../lib/secondaryWindows'
+import { listTags, openNewSecondaryWindow, type TagRecord } from '../lib/secondaryWindows'
 
 function isHtmlFile(name: string): boolean {
   return /\.html?$/i.test(name)
@@ -80,6 +81,11 @@ function isSameOrWithin(ancestor: string, candidate: string): boolean {
 }
 
 const LOCATION_KEY = 'filesTab.location'
+
+/** Tags are keyed by an opaque guid; a root's is derived from its id. */
+function rootTagGuid(rootId: string): string {
+  return `root:${rootId}`
+}
 
 interface SavedLocation {
   rootId: string
@@ -169,6 +175,7 @@ export default function FilesTab() {
   const [deployableApps, setDeployableApps] = useState<DeployableAppInfo[]>([])
   const [pickingAppToDeploy, setPickingAppToDeploy] = useState(false)
   const [deployingApp, setDeployingApp] = useState<DeployableAppInfo | null>(null)
+  const [rootTags, setRootTags] = useState<TagRecord[]>([])
   const [hydrated, setHydrated] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
@@ -206,6 +213,19 @@ export default function FilesTab() {
   }, [hydrated, activeRootId, path])
 
   const activeRoot = roots.find((r) => r.id === activeRootId)
+
+  const refreshRootTags = useCallback(async () => {
+    if (roots.length === 0) return
+    try {
+      setRootTags(await listTags(roots.map((r) => rootTagGuid(r.id))))
+    } catch (e) {
+      setError(String(e))
+    }
+  }, [roots])
+
+  useEffect(() => {
+    refreshRootTags()
+  }, [refreshRootTags])
 
   // Guards against out-of-order responses: if the folder changes again before an
   // in-flight listing resolves, the stale response must not overwrite the newer one.
@@ -478,16 +498,25 @@ export default function FilesTab() {
     <div className="tab-panel files-tab">
       <div className="root-switcher">
         {roots.map((root) => (
-          <span key={root.id} className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
-            <button className="link-button" onClick={() => switchRoot(root.id)} title={root.absolutePath}>
-              <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
-            </button>
-            {root.id !== USER_ROOT_ID && (
-              <button className="root-pill-remove" onClick={() => removeRoot(root.id)} title="Stop browsing this folder">
-                <X size={12} strokeWidth={2} aria-hidden="true" />
+          <div key={root.id} className="root-item">
+            <span className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
+              <button className="link-button" onClick={() => switchRoot(root.id)} title={root.absolutePath}>
+                <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
               </button>
-            )}
-          </span>
+              {root.id !== USER_ROOT_ID && (
+                <button className="root-pill-remove" onClick={() => removeRoot(root.id)} title="Stop browsing this folder">
+                  <X size={12} strokeWidth={2} aria-hidden="true" />
+                </button>
+              )}
+            </span>
+            <TagList
+              guid={rootTagGuid(root.id)}
+              tags={rootTags.filter((t) => t.guid === rootTagGuid(root.id))}
+              className="root-item-tags"
+              onChanged={refreshRootTags}
+              onError={setError}
+            />
+          </div>
         ))}
         <IconButton icon={FolderPlus} label="Add root folder…" onClick={addRoot} />
       </div>

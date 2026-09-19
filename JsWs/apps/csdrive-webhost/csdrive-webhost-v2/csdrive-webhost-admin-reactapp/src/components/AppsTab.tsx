@@ -18,19 +18,18 @@ import {
   Plus,
   RefreshCw,
   Scissors,
-  Tag,
   X,
   XCircle,
 } from 'lucide-react'
 import IconButton from './IconButton'
 import Modal from './Modal'
+import { TagList } from './Tags'
 import ReorderList from './ReorderList'
 import { getAppState, setAppState } from '../lib/appState'
 import {
   activateTab,
   addBlankTab,
   addSecondaryWindowEntry,
-  addWindowTag,
   cloneTab,
   closeAllSecondaryWindows,
   closeSecondaryWindow,
@@ -39,7 +38,6 @@ import {
   listSecondaryWindows,
   moveTabToGroup,
   onSecondaryWindowsChanged,
-  removeWindowTag,
   renameTabGroup,
   reopenSecondaryWindow,
   suspendAllSecondaryWindows,
@@ -48,13 +46,7 @@ import {
   type TabGroupRecord,
   type TabRecord,
   type TabTextSpan,
-  type TagRecord,
 } from '../lib/secondaryWindows'
-
-const PRESET_COLORS = [
-  '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4',
-  '#3b82f6', '#8b5cf6', '#ec4899', '#ffffff', '#000000', '#6b7280',
-]
 
 type View = 'apps' | 'windows' | 'groups' | 'tabs'
 const VIEW_DEPTH: Record<View, number> = { apps: 0, windows: 1, groups: 2, tabs: 3 }
@@ -109,95 +101,6 @@ const ITEM_ORDER_KEY = 'windowsTab.itemOrder'
 const TAB_GROUP_ORDER_KEY = 'windowsTab.tabGroupOrder'
 const TAB_ORDER_KEY = 'windowsTab.tabOrder'
 
-function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
-  return (
-    <div className="color-field">
-      <span className="muted">{label}</span>
-      <div className="color-swatches">
-        {PRESET_COLORS.map((c) => (
-          <button
-            key={c}
-            type="button"
-            className={`color-swatch ${value.toLowerCase() === c ? 'selected' : ''}`}
-            style={{ background: c }}
-            onClick={() => onChange(c)}
-            title={c}
-          />
-        ))}
-        <input
-          type="color"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          className="color-custom"
-          title="Custom color"
-        />
-      </div>
-    </div>
-  )
-}
-
-function AddTagModal({
-  onAdd,
-  onClose,
-}: {
-  onAdd: (text: string, fgColor: string, bgColor: string) => void
-  onClose: () => void
-}) {
-  const [text, setText] = useState('')
-  const [fgColor, setFgColor] = useState('#ffffff')
-  const [bgColor, setBgColor] = useState('#3b82f6')
-
-  function submit() {
-    if (text.trim()) onAdd(text.trim(), fgColor, bgColor)
-  }
-
-  return (
-    <Modal title="Add tag" onClose={onClose}>
-      <input
-        autoFocus
-        placeholder="tag text"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') submit()
-          if (e.key === 'Escape') onClose()
-        }}
-      />
-      <ColorField label="Text color" value={fgColor} onChange={setFgColor} />
-      <ColorField label="Background color" value={bgColor} onChange={setBgColor} />
-      <div>
-        <div className="modal-field-label">Preview</div>
-        <span className="tag-badge tag-preview" style={{ color: fgColor, background: bgColor }}>
-          {text.trim() || 'preview'}
-        </span>
-      </div>
-      <div className="toolbar-actions" style={{ justifyContent: 'flex-end' }}>
-        <IconButton icon={Check} label="Add tag" disabled={!text.trim()} onClick={submit} />
-        <IconButton icon={X} label="Cancel" onClick={onClose} />
-      </div>
-    </Modal>
-  )
-}
-
-function TagBadge({ tag, onRemove }: { tag: TagRecord; onRemove: () => void }) {
-  return (
-    <span className="tag-badge" style={{ color: tag.fgColor, background: tag.bgColor }}>
-      {tag.text}
-      <button className="tag-remove" onClick={onRemove} title="Remove tag" aria-label="Remove tag">
-        <X size={11} strokeWidth={2.5} aria-hidden="true" />
-      </button>
-    </span>
-  )
-}
-
-function AddTagButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button className="add-tag-button" onClick={onClick} title="Add tag" aria-label="Add tag">
-      <Tag size={12} strokeWidth={2} aria-hidden="true" />
-    </button>
-  )
-}
-
 /** Synchronous, no permission prompt involved — the reliable path in a desktop
  * webview. Tried first so a slow/hanging clipboard permission negotiation (seen with
  * the async Clipboard API when the window lacks OS focus) never leaves the button
@@ -219,7 +122,15 @@ async function copyToClipboard(text: string): Promise<void> {
   await navigator.clipboard.writeText(text)
 }
 
-function WindowDetailsModal({ record, onClose }: { record: SecondaryWindowRecord; onClose: () => void }) {
+function WindowDetailsModal({
+  record,
+  onClose,
+  onError,
+}: {
+  record: SecondaryWindowRecord
+  onClose: () => void
+  onError: (message: string) => void
+}) {
   const [copied, setCopied] = useState(false)
 
   async function handleCopy() {
@@ -237,17 +148,7 @@ function WindowDetailsModal({ record, onClose }: { record: SecondaryWindowRecord
 
       <div>
         <div className="modal-field-label">Tags</div>
-        {record.tags.length === 0 ? (
-          <div className="muted">No tags.</div>
-        ) : (
-          <div className="window-item-tags" style={{ padding: 0 }}>
-            {record.tags.map((tag) => (
-              <span key={tag.id} className="tag-badge" style={{ color: tag.fgColor, background: tag.bgColor }}>
-                {tag.text}
-              </span>
-            ))}
-          </div>
-        )}
+        <TagList guid={record.guid} tags={record.tags} className="window-item-tags tag-list-flush" onError={onError} />
       </div>
 
       <div>
@@ -389,8 +290,7 @@ function TabTextRow({ spans, className }: { spans: TabTextSpan[]; className: str
 function TabRow({
   tab,
   cut,
-  onAddTag,
-  onRemoveTag,
+  onError,
   onMove,
   onCut,
   onClone,
@@ -398,8 +298,7 @@ function TabRow({
 }: {
   tab: TabRecord
   cut: boolean
-  onAddTag: () => void
-  onRemoveTag: (id: number) => void
+  onError: (message: string) => void
   onMove: () => void
   onCut: () => void
   onClone: () => void
@@ -425,12 +324,7 @@ function TabRow({
           <IconButton icon={CopyPlus} label="Clone tab" onClick={onClone} />
         </div>
       </div>
-      <div className="window-item-tags">
-        {tab.tags.map((tag) => (
-          <TagBadge key={tag.id} tag={tag} onRemove={() => onRemoveTag(tag.id)} />
-        ))}
-        <AddTagButton onClick={onAddTag} />
-      </div>
+      <TagList guid={tab.guid} tags={tab.tags} className="window-item-tags" onError={onError} />
     </div>
   )
 }
@@ -479,7 +373,7 @@ function LevelPanel<T>({
   )
 }
 
-export default function WindowsTab() {
+export default function AppsTab() {
   const [records, setRecords] = useState<SecondaryWindowRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -490,7 +384,6 @@ export default function WindowsTab() {
   const [currentGroupGuid, setCurrentGroupGuid] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
 
-  const [addingTagFor, setAddingTagFor] = useState<string | null>(null)
   const [detailsFor, setDetailsFor] = useState<SecondaryWindowRecord | null>(null)
   const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
   const [cutTab, setCutTab] = useState<TabRecord | null>(null)
@@ -640,23 +533,6 @@ export default function WindowsTab() {
     } catch (e) {
       setError(String(e))
       return false
-    }
-  }
-
-  async function handleAddTag(guid: string, text: string, fgColor: string, bgColor: string) {
-    try {
-      await addWindowTag(guid, text, fgColor, bgColor)
-      setAddingTagFor(null)
-    } catch (e) {
-      setError(String(e))
-    }
-  }
-
-  async function handleRemoveTag(id: number) {
-    try {
-      await removeWindowTag(id)
-    } catch (e) {
-      setError(String(e))
     }
   }
 
@@ -939,12 +815,7 @@ export default function WindowsTab() {
                       )}
                     </div>
                   </div>
-                  <div className="window-item-tags">
-                    {w.tags.map((tag) => (
-                      <TagBadge key={tag.id} tag={tag} onRemove={() => handleRemoveTag(tag.id)} />
-                    ))}
-                    <AddTagButton onClick={() => setAddingTagFor(w.guid)} />
-                  </div>
+                  <TagList guid={w.guid} tags={w.tags} className="window-item-tags" onError={setError} />
                 </div>
               )}
             />
@@ -994,12 +865,7 @@ export default function WindowsTab() {
                       <IconButton icon={Pencil} label="Rename tab group" onClick={() => setRenamingGroup(g)} />
                     </div>
                   </div>
-                  <div className="window-item-tags">
-                    {g.tags.map((tag) => (
-                      <TagBadge key={tag.id} tag={tag} onRemove={() => handleRemoveTag(tag.id)} />
-                    ))}
-                    <AddTagButton onClick={() => setAddingTagFor(g.guid)} />
-                  </div>
+                  <TagList guid={g.guid} tags={g.tags} className="window-item-tags" onError={setError} />
                 </div>
               )}
             />
@@ -1037,8 +903,7 @@ export default function WindowsTab() {
                 <TabRow
                   tab={t}
                   cut={cutTab?.guid === t.guid}
-                  onAddTag={() => setAddingTagFor(t.guid)}
-                  onRemoveTag={handleRemoveTag}
+                  onError={setError}
                   onMove={() => setMovingTab(t)}
                   onCut={() => setCutTab(t)}
                   onClone={() => handleCloneTab(t.guid)}
@@ -1050,13 +915,8 @@ export default function WindowsTab() {
         </>
       )}
 
-      {liveDetailsFor && <WindowDetailsModal record={liveDetailsFor} onClose={() => setDetailsFor(null)} />}
-
-      {addingTagFor && (
-        <AddTagModal
-          onAdd={(text, fg, bg) => handleAddTag(addingTagFor, text, fg, bg)}
-          onClose={() => setAddingTagFor(null)}
-        />
+      {liveDetailsFor && (
+        <WindowDetailsModal record={liveDetailsFor} onClose={() => setDetailsFor(null)} onError={setError} />
       )}
 
       {movingTab && (

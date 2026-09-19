@@ -8,7 +8,7 @@ use sqlx::{Row, SqlitePool};
 use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// Emitted whenever a secondary window (or one of its tab groups/tabs) is opened,
-/// closed, suspended, reopened, or edited, so the "Windows" tab in the main window
+/// closed, suspended, reopened, or edited, so the "Apps" tab in the main window
 /// can refresh its list live.
 pub const EVENT_CHANGED: &str = "secondary-windows-changed";
 
@@ -144,11 +144,27 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
             guid TEXT NOT NULL,
             text TEXT NOT NULL,
             fg_color TEXT NOT NULL,
-            bg_color TEXT NOT NULL
+            bg_color TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0
         )",
     )
     .execute(&pool)
     .await?;
+
+    // `sort_order` (user-arrangeable order among the tags on one guid) was added
+    // after `window_tags` first shipped; existing rows all get 0 and so keep their
+    // insertion (id) order until first rearranged.
+    let has_tag_sort_order_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('window_tags') WHERE name = 'sort_order'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if has_tag_sort_order_column == 0 {
+        sqlx::query("ALTER TABLE window_tags ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            .execute(&pool)
+            .await?;
+    }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS tab_groups (
@@ -395,7 +411,7 @@ async fn fetch_tags(pool: &SqlitePool, guids: &[String]) -> Result<Vec<TagRecord
 
     let placeholders = (1..=guids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT id, guid, text, fg_color, bg_color FROM window_tags WHERE guid IN ({placeholders}) ORDER BY id ASC"
+        "SELECT id, guid, text, fg_color, bg_color FROM window_tags WHERE guid IN ({placeholders}) ORDER BY sort_order ASC, id ASC"
     );
 
     let mut q = sqlx::query(&query);
@@ -608,6 +624,95 @@ pub async fn list_secondary_windows(
         .collect())
 }
 
+/// Tags attached to arbitrary guids — e.g. a file-manager root, which isn't a
+/// secondary window/group/tab and so isn't covered by `list_secondary_windows`.
+#[tauri::command]
+pub async fn list_tags(
+    state: tauri::State<'_, SecondaryWindowsState>,
+    guids: Vec<String>,
+) -> Result<Vec<TagRecord>, String> {
+    fetch_tags(&state.pool, &guids).await.map_err(|e| e.to_string())
+}
+
+async fn add_tag_impl(
+    pool: &SqlitePool,
+    guid: &str,
+    text: &str,
+    fg_color: &str,
+    bg_color: &str,
+) -> Result<TagRecord, sqlx::Error> {
+    // New tags go after the guid's existing ones.
+    let id = sqlx::query(
+        "INSERT INTO window_tags (guid, text, fg_color, bg_color, sort_order)
+         VALUES (?1, ?2, ?3, ?4, COALESCE((SELECT MAX(sort_order) FROM window_tags WHERE guid = ?1), -1) + 1)",
+    )
+    .bind(guid)
+    .bind(text)
+    .bind(fg_color)
+    .bind(bg_color)
+    .execute(pool)
+    .await?
+    .last_insert_rowid();
+
+    Ok(TagRecord {
+        id,
+        guid: guid.to_string(),
+        text: text.to_string(),
+        fg_color: fg_color.to_string(),
+        bg_color: bg_color.to_string(),
+    })
+}
+
+async fn update_tag_impl(
+    pool: &SqlitePool,
+    id: i64,
+    text: &str,
+    fg_color: &str,
+    bg_color: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE window_tags SET text = ?1, fg_color = ?2, bg_color = ?3 WHERE id = ?4")
+        .bind(text)
+        .bind(fg_color)
+        .bind(bg_color)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Rewrites the order of the tags on `guid` to match `ids`. Ids that don't belong to
+/// `guid` are ignored, and tags of `guid` missing from `ids` keep their relative order
+/// after the listed ones.
+async fn reorder_tags_impl(pool: &SqlitePool, guid: &str, ids: &[i64]) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let current: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM window_tags WHERE guid = ?1 ORDER BY sort_order ASC, id ASC")
+            .bind(guid)
+            .fetch_all(&mut *tx)
+            .await?;
+
+    let mut ordered: Vec<i64> = Vec::with_capacity(current.len());
+    for id in ids {
+        if current.contains(id) && !ordered.contains(id) {
+            ordered.push(*id);
+        }
+    }
+    for id in &current {
+        if !ordered.contains(id) {
+            ordered.push(*id);
+        }
+    }
+
+    for (position, id) in ordered.iter().enumerate() {
+        sqlx::query("UPDATE window_tags SET sort_order = ?1 WHERE id = ?2")
+            .bind(position as i64)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
+}
+
 #[tauri::command]
 pub async fn add_window_tag(
     app: AppHandle,
@@ -617,25 +722,39 @@ pub async fn add_window_tag(
     fg_color: String,
     bg_color: String,
 ) -> Result<TagRecord, String> {
-    let id = sqlx::query("INSERT INTO window_tags (guid, text, fg_color, bg_color) VALUES (?1, ?2, ?3, ?4)")
-        .bind(&guid)
-        .bind(&text)
-        .bind(&fg_color)
-        .bind(&bg_color)
-        .execute(&state.pool)
+    let tag = add_tag_impl(&state.pool, &guid, &text, &fg_color, &bg_color)
         .await
-        .map_err(|e| e.to_string())?
-        .last_insert_rowid();
-
+        .map_err(|e| e.to_string())?;
     let _ = app.emit(EVENT_CHANGED, ());
+    Ok(tag)
+}
 
-    Ok(TagRecord {
-        id,
-        guid,
-        text,
-        fg_color,
-        bg_color,
-    })
+#[tauri::command]
+pub async fn update_window_tag(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    id: i64,
+    text: String,
+    fg_color: String,
+    bg_color: String,
+) -> Result<(), String> {
+    update_tag_impl(&state.pool, id, &text, &fg_color, &bg_color)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reorder_window_tags(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    guid: String,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    reorder_tags_impl(&state.pool, &guid, &ids).await.map_err(|e| e.to_string())?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
 }
 
 #[tauri::command]
@@ -1615,6 +1734,40 @@ mod tests {
 
             let remaining_tags = fetch_tags(&pool, &[tab.tab_guid, group_guid]).await.unwrap();
             assert!(remaining_tags.is_empty(), "tags on the deleted tab/group must be gone too");
+        });
+    }
+
+    async fn tag_texts(pool: &SqlitePool, guid: &str) -> Vec<String> {
+        fetch_tags(pool, &[guid.to_string()]).await.unwrap().into_iter().map(|t| t.text).collect()
+    }
+
+    #[test]
+    fn tags_come_back_in_insertion_order_and_can_be_reordered_edited_and_scoped_per_guid() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("tag-order").await;
+            let a = add_tag_impl(&pool, "g1", "a", "#fff", "#000").await.unwrap();
+            let b = add_tag_impl(&pool, "g1", "b", "#fff", "#000").await.unwrap();
+            let c = add_tag_impl(&pool, "g1", "c", "#fff", "#000").await.unwrap();
+            let other = add_tag_impl(&pool, "g2", "other", "#fff", "#000").await.unwrap();
+            assert_eq!(tag_texts(&pool, "g1").await, ["a", "b", "c"]);
+
+            reorder_tags_impl(&pool, "g1", &[c.id, a.id, b.id]).await.unwrap();
+            assert_eq!(tag_texts(&pool, "g1").await, ["c", "a", "b"]);
+
+            let d = add_tag_impl(&pool, "g1", "d", "#fff", "#000").await.unwrap();
+            assert_eq!(tag_texts(&pool, "g1").await, ["c", "a", "b", "d"], "a new tag goes last");
+
+            // A partial list puts those first; the rest keep their relative order after them.
+            // An id from a different guid is ignored, not moved.
+            reorder_tags_impl(&pool, "g1", &[d.id, other.id]).await.unwrap();
+            assert_eq!(tag_texts(&pool, "g1").await, ["d", "c", "a", "b"]);
+            assert_eq!(tag_texts(&pool, "g2").await, ["other"]);
+
+            update_tag_impl(&pool, b.id, "B!", "#111", "#222").await.unwrap();
+            let edited = fetch_tags(&pool, &["g1".to_string()]).await.unwrap();
+            let edited_b = edited.iter().find(|t| t.id == b.id).unwrap();
+            assert_eq!((edited_b.text.as_str(), edited_b.fg_color.as_str(), edited_b.bg_color.as_str()), ("B!", "#111", "#222"));
+            assert_eq!(edited.last().unwrap().id, b.id, "editing must not change position");
         });
     }
 

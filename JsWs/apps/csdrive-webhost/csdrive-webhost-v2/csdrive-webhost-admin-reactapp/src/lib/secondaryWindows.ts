@@ -101,6 +101,12 @@ export function onSecondaryWindowsChanged(callback: () => void): Promise<Unliste
   return listen(EVENT_CHANGED, () => callback())
 }
 
+/** Tags attached to arbitrary guids — tags aren't tied to windows, so anything with a
+ * stable id (e.g. a file-manager root) can carry them. */
+export async function listTags(guids: string[]): Promise<TagRecord[]> {
+  return invoke<TagRecord[]>('list_tags', { guids })
+}
+
 export async function addWindowTag(
   guid: string,
   text: string,
@@ -108,6 +114,16 @@ export async function addWindowTag(
   bgColor: string,
 ): Promise<TagRecord> {
   return invoke<TagRecord>('add_window_tag', { guid, text, fgColor, bgColor })
+}
+
+export async function updateWindowTag(id: number, text: string, fgColor: string, bgColor: string): Promise<void> {
+  await invoke('update_window_tag', { id, text, fgColor, bgColor })
+}
+
+/** Sets the order of the tags on `guid`. Any of its tags missing from `ids` keep
+ * their relative order after the listed ones. */
+export async function reorderWindowTags(guid: string, ids: number[]): Promise<void> {
+  await invoke('reorder_window_tags', { guid, ids })
 }
 
 export async function removeWindowTag(id: number): Promise<void> {

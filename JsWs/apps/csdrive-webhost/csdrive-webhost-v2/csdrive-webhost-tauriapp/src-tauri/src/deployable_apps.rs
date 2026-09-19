@@ -8,12 +8,9 @@
 //!
 //! Adding a new deployable app: create its source folder under
 //! `csdrive-webhost-userapps/`, add an `include_str!` for it below, and add one
-//! entry to `registry()`.
+//! entry to `REGISTRY`.
 
 use serde::Serialize;
-
-const NOTES_APP_INDEX_HTML: &str = include_str!("../../../csdrive-webhost-userapps/notes/index.html");
-const FILES_APP_INDEX_HTML: &str = include_str!("../../../csdrive-webhost-userapps/files/index.html");
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,18 +23,13 @@ pub struct DeployableAppInfo {
     pub default_folder_name: String,
 }
 
-fn registry() -> [(&'static str, &'static str, &'static str, &'static str); 2] {
-    // (id, display name, default folder name, embedded index.html)
-    [
-        ("notes", "Notes", "notes", NOTES_APP_INDEX_HTML),
-        ("files", "Files", "files", FILES_APP_INDEX_HTML),
-    ]
-}
+// (id, display name, default folder name, embedded index.html)
+const REGISTRY: &[(&str, &str, &str, &str)] = &[];
 
 #[tauri::command]
 pub fn list_deployable_apps() -> Vec<DeployableAppInfo> {
-    registry()
-        .into_iter()
+    REGISTRY
+        .iter()
         .map(|(id, name, default_folder_name, _)| DeployableAppInfo {
             id: id.to_string(),
             name: name.to_string(),
@@ -52,8 +44,8 @@ pub fn list_deployable_apps() -> Vec<DeployableAppInfo> {
 /// to know).
 #[tauri::command]
 pub fn get_deployable_app_html(app_id: String) -> Result<String, String> {
-    registry()
-        .into_iter()
+    REGISTRY
+        .iter()
         .find(|(id, ..)| *id == app_id)
         .map(|(_, _, _, html)| html.to_string())
         .ok_or_else(|| format!("Unknown deployable app \"{app_id}\"."))
