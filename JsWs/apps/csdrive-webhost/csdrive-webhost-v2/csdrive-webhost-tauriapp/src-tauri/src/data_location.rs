@@ -380,7 +380,8 @@ mod tests {
         std::fs::create_dir_all(default_dir.join("user")).unwrap();
         std::fs::write(default_dir.join("user").join("some-app.html"), b"<html></html>").unwrap();
         std::fs::create_dir_all(default_dir.join("admin")).unwrap();
-        std::fs::write(default_dir.join("admin").join("index.html"), b"<html></html>").unwrap();
+        std::fs::create_dir_all(default_dir.join("admin").join("dist")).unwrap();
+        std::fs::write(default_dir.join("admin").join("dist").join("index.html"), b"<html></html>").unwrap();
         std::fs::write(default_dir.join("admin").join("data.db"), b"fake-sqlite").unwrap();
 
         let custom_dir = std::env::temp_dir().join(format!(

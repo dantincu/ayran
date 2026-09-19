@@ -4,17 +4,26 @@
 //! inside a folder the user has picked with a native dialog (both of which are in the
 //! plugin-fs runtime scope — the same scope the file APIs obey) can be reached.
 //!
+//! SQLite has its own ways to name files — `ATTACH DATABASE`, `VACUUM INTO`,
+//! `PRAGMA temp_store_directory` — which would sidestep that check, so every connection
+//! also runs under an authorizer that applies the same rule to them (see
+//! `install_authorizer`), and `VACUUM INTO` (which SQLite doesn't route through the
+//! authorizer) is refused by `reject_forbidden_statements`.
+//!
 //! Values cross the boundary as JSON: `null`, booleans, numbers, strings (binds), and
 //! rows come back as `{column: value}` objects with BLOBs as arrays of byte values
 //! (the same shape `tauri-plugin-sql` used, so callers didn't have to change).
 
 use std::collections::HashMap;
+use std::ffi::{c_char, c_int, c_void, CStr};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteRow};
+use libsqlite3_sys as ffi;
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
+use sqlx::SqliteConnection;
 use sqlx::{Column, Row, SqlitePool, TypeInfo, ValueRef};
 use tauri::AppHandle;
 use tauri_plugin_fs::FsExt;
@@ -61,6 +70,15 @@ pub struct ExecuteResult {
     pub last_insert_id: i64,
 }
 
+/// Resolves symlinks and `..` in `requested` (so neither can escape the scope). A file
+/// that doesn't exist yet is resolved via its parent folder.
+fn resolve_for_scope(requested: &Path) -> Option<PathBuf> {
+    match requested.canonicalize() {
+        Ok(p) => Some(p),
+        Err(_) => Some(requested.parent()?.canonicalize().ok()?.join(requested.file_name()?)),
+    }
+}
+
 /// Resolves `path` (absolute, or relative to the user folder) to the real file it
 /// names and checks it's somewhere the user has made available.
 fn authorize(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
@@ -71,21 +89,7 @@ fn authorize(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
         data_location::effective_data_dir(app)?.join("user").join(requested)
     };
 
-    // Resolve symlinks and `..` before checking, so neither can escape the scope. A
-    // database that doesn't exist yet is resolved via its parent folder.
-    let resolved = match requested.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            let parent = requested
-                .parent()
-                .ok_or_else(|| format!("\"{path}\" isn't a valid path."))?
-                .canonicalize()
-                .map_err(|_| format!("\"{path}\" isn't in a folder that exists."))?;
-            let name = requested.file_name().ok_or_else(|| format!("\"{path}\" isn't a valid path."))?;
-            parent.join(name)
-        }
-    };
-
+    let resolved = resolve_for_scope(&requested).ok_or_else(|| format!("\"{path}\" isn't in a folder that exists."))?;
     if app.fs_scope().is_allowed(&resolved) {
         Ok(resolved)
     } else {
@@ -95,9 +99,120 @@ fn authorize(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
     }
 }
 
-async fn connect(path: &Path) -> Result<SqlitePool, sqlx::Error> {
+type PathCheck = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
+
+/// Whether SQLite may `ATTACH` the database file named `name`: an in-memory or temporary
+/// database, or a file (given as an absolute path — SQLite would resolve a relative one
+/// against the process's working directory, not the user folder) that `is_allowed`.
+fn attach_target_allowed(name: &str, is_allowed: &dyn Fn(&Path) -> bool) -> bool {
+    if name.is_empty() || name == ":memory:" {
+        return true;
+    }
+    if name.starts_with("file:") {
+        return false; // URI filenames can carry their own path and options
+    }
+    let path = Path::new(name);
+    path.is_absolute() && resolve_for_scope(path).is_some_and(|resolved| is_allowed(&resolved))
+}
+
+struct AuthContext {
+    is_allowed: PathCheck,
+}
+
+unsafe extern "C" fn authorizer(
+    context: *mut c_void,
+    action: c_int,
+    arg1: *const c_char,
+    arg2: *const c_char,
+    _database: *const c_char,
+    _trigger: *const c_char,
+) -> c_int {
+    let context = &*(context as *const AuthContext);
+    let text = |p: *const c_char| if p.is_null() { None } else { CStr::from_ptr(p).to_str().ok() };
+
+    let allowed = match action {
+        ffi::SQLITE_ATTACH => text(arg1).is_some_and(|name| attach_target_allowed(name, &*context.is_allowed)),
+        ffi::SQLITE_PRAGMA => !text(arg1)
+            .is_some_and(|name| ["temp_store_directory", "data_store_directory"].iter().any(|p| name.eq_ignore_ascii_case(p))),
+        ffi::SQLITE_FUNCTION => !text(arg2).is_some_and(|name| name.eq_ignore_ascii_case("load_extension")),
+        _ => true,
+    };
+    if allowed { ffi::SQLITE_OK } else { ffi::SQLITE_DENY }
+}
+
+/// Makes SQLite consult `authorizer` for everything the connection prepares. The
+/// context is leaked on purpose — SQLite holds the pointer for the connection's whole
+/// life and there's no hook to free it — at a cost of a few bytes per connection opened.
+async fn install_authorizer(connection: &mut SqliteConnection, is_allowed: PathCheck) -> Result<(), sqlx::Error> {
+    let mut handle = connection.lock_handle().await?;
+    let context = Box::into_raw(Box::new(AuthContext { is_allowed })) as *mut c_void;
+    unsafe {
+        ffi::sqlite3_set_authorizer(handle.as_raw_handle().as_ptr(), Some(authorizer), context);
+    }
+    Ok(())
+}
+
+fn guarded_pool_options(is_allowed: PathCheck) -> SqlitePoolOptions {
+    SqlitePoolOptions::new().after_connect(move |connection, _meta| {
+        let is_allowed = is_allowed.clone();
+        Box::pin(async move { install_authorizer(connection, is_allowed).await })
+    })
+}
+
+/// Statements SQLite doesn't put through the authorizer but that write to a path the
+/// caller names. Token-based so that the words inside string literals, comments or
+/// quoted names don't trip it.
+fn reject_forbidden_statements(sql: &str) -> Result<(), String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let chars: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+        } else if c == '-' && chars.get(i + 1) == Some(&'-') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i < chars.len() && !(chars[i] == '*' && chars.get(i + 1) == Some(&'/')) {
+                i += 1;
+            }
+            i += 2;
+        } else if c == '\'' || c == '"' || c == '`' || c == '[' {
+            let close = if c == '[' { ']' } else { c };
+            i += 1;
+            while i < chars.len() && chars[i] != close {
+                i += 1;
+            }
+            i += 1;
+            tokens.push("<quoted>".to_string());
+        } else if c.is_alphanumeric() || c == '_' {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            tokens.push(chars[start..i].iter().collect::<String>().to_lowercase());
+        } else {
+            tokens.push(c.to_string());
+            i += 1;
+        }
+    }
+
+    // VACUUM [schema-name] INTO <file>
+    let vacuum_into = tokens.iter().enumerate().any(|(n, t)| {
+        t == "vacuum" && (tokens.get(n + 1).is_some_and(|x| x == "into") || tokens.get(n + 2).is_some_and(|x| x == "into"))
+    });
+    if vacuum_into {
+        return Err("VACUUM INTO isn't supported.".to_string());
+    }
+    Ok(())
+}
+
+async fn connect(path: &Path, is_allowed: PathCheck) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
-    SqlitePool::connect_with(options).await
+    guarded_pool_options(is_allowed).connect_with(options).await
 }
 
 #[tauri::command]
@@ -112,7 +227,8 @@ pub async fn sqlite_load(
     let key = (window.label().to_string(), handle.clone());
 
     if !state.pools.lock().unwrap().contains_key(&key) {
-        let pool = connect(&resolved).await.map_err(|e| e.to_string())?;
+        let scope = app.fs_scope();
+        let pool = connect(&resolved, Arc::new(move |p: &Path| scope.is_allowed(p))).await.map_err(|e| e.to_string())?;
         state.pools.lock().unwrap().insert(key, pool);
     }
     Ok(handle)
@@ -136,6 +252,7 @@ pub async fn sqlite_execute(
     query: String,
     values: Option<Vec<Value>>,
 ) -> Result<ExecuteResult, String> {
+    reject_forbidden_statements(&query)?;
     let pool = state.get(window.label(), &db)?;
     run_execute(&pool, &query, &values.unwrap_or_default()).await
 }
@@ -148,6 +265,7 @@ pub async fn sqlite_select(
     query: String,
     values: Option<Vec<Value>>,
 ) -> Result<Vec<Map<String, Value>>, String> {
+    reject_forbidden_statements(&query)?;
     let pool = state.get(window.label(), &db)?;
     run_select(&pool, &query, &values.unwrap_or_default()).await
 }
@@ -259,6 +377,75 @@ mod tests {
 
             assert!(run_select(&pool, "SELECT * FROM missing_table", &[]).await.is_err());
         });
+    }
+
+    #[test]
+    fn sqlite_cannot_be_used_to_reach_files_outside_the_allowed_folders() {
+        tauri::async_runtime::block_on(async {
+            let root = std::env::temp_dir().join(format!("csdrive-sqlite-guard-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let (allowed, outside) = (root.join("allowed"), root.join("outside"));
+            std::fs::create_dir_all(&allowed).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            let allowed = allowed.canonicalize().unwrap();
+            let outside = outside.canonicalize().unwrap();
+
+            // A database with a secret in it, outside the allowed folder.
+            let secret = outside.join("secret.db");
+            let plain = connect(&secret, Arc::new(|_: &Path| true)).await.unwrap();
+            run_execute(&plain, "CREATE TABLE t (x)", &[]).await.unwrap();
+            run_execute(&plain, "INSERT INTO t VALUES ('top secret')", &[]).await.unwrap();
+            plain.close().await;
+
+            let inside_allowed = allowed.clone();
+            let guard: PathCheck = Arc::new(move |p: &Path| p.starts_with(&inside_allowed));
+            let db = connect(&allowed.join("mine.db"), guard).await.unwrap();
+
+            let attach = |p: &Path| format!("ATTACH DATABASE '{}' AS x", p.display());
+            assert!(run_execute(&db, &attach(&secret), &[]).await.is_err(), "attaching an outside database must fail");
+            assert!(run_select(&db, "SELECT * FROM x.t", &[]).await.is_err(), "and nothing is readable through it");
+            assert!(run_execute(&db, &attach(&outside.join("new.db")), &[]).await.is_err(), "nor may it create one there");
+            assert!(!outside.join("new.db").exists());
+
+            assert!(run_execute(&db, &attach(&allowed.join("other.db")), &[]).await.is_ok(), "attaching inside is fine");
+            assert!(run_execute(&db, "ATTACH DATABASE 'relative.db' AS r", &[]).await.is_err(), "relative names are refused");
+            assert!(run_execute(&db, "ATTACH DATABASE ':memory:' AS m", &[]).await.is_ok(), "in-memory is fine");
+            assert!(
+                run_execute(&db, &format!("PRAGMA temp_store_directory = '{}'", outside.display()), &[]).await.is_err(),
+                "temp_store_directory is refused"
+            );
+
+            run_execute(&db, "CREATE TABLE ok (v TEXT)", &[]).await.unwrap();
+            run_execute(&db, "INSERT INTO ok VALUES ('attach vacuum into pragma')", &[]).await.unwrap();
+            assert_eq!(run_select(&db, "SELECT v FROM ok", &[]).await.unwrap().len(), 1, "ordinary SQL is unaffected");
+
+            db.close().await;
+            let _ = std::fs::remove_dir_all(&root);
+        });
+    }
+
+    #[test]
+    fn vacuum_into_is_refused_but_lookalikes_are_not() {
+        for bad in [
+            "VACUUM INTO 'C:\\x.db'",
+            "vacuum into \"x\"",
+            "VACUUM main INTO 'x'",
+            "  /* hi */ Vacuum\n  temp\n INTO ?1",
+            "PRAGMA foreign_keys=ON; VACUUM INTO 'x'",
+        ] {
+            assert!(reject_forbidden_statements(bad).is_err(), "{bad}");
+        }
+        for fine in [
+            "VACUUM",
+            "VACUUM main",
+            "SELECT 'vacuum into'",
+            "-- vacuum into\nSELECT 1",
+            "INSERT INTO vacuum VALUES (1)",
+            "SELECT \"vacuum\" FROM t WHERE x IN (SELECT into_col FROM u)",
+            "/* VACUUM INTO 'x' */ SELECT 1",
+        ] {
+            assert!(reject_forbidden_statements(fine).is_ok(), "{fine}");
+        }
     }
 
     #[test]

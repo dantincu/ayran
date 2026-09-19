@@ -1,6 +1,6 @@
 fn main() {
     // main.rs embeds this file directly (`include_str!`) as the default
-    // `admin/index.html` — give a clear error instead of a cryptic include_str!
+    // `admin/dist/index.html` — give a clear error instead of a cryptic include_str!
     // failure if it's missing, since it lives in a sibling package this crate
     // doesn't otherwise build.
     let admin_app_index = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -804,6 +804,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "keyring",
+ "libsqlite3-sys",
  "pbkdf2",
  "percent-encoding",
  "rand 0.8.8",

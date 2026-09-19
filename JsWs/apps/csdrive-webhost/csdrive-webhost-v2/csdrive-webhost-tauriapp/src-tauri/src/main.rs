@@ -10,7 +10,8 @@ mod sqlite_db;
 use std::path::{Path, PathBuf};
 
 use tauri::http::{header::CONTENT_TYPE, Request, Response, StatusCode};
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::webview::NewWindowResponse;
+use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 const USER_PROTOCOL: &str = "csuser";
 const ADMIN_PROTOCOL: &str = "csadmin";
@@ -18,11 +19,113 @@ pub(crate) const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
 
 /// The admin-app's own single-file bundle, embedded into this binary at compile
 /// time (and thus into every installer built from it) so it's always available
-/// as the default `admin/index.html` — no separate resource file or internet
+/// as the default `admin/dist/index.html` — no separate resource file or internet
 /// access needed. Built via `cd csdrive-webhost-admin-reactapp && npm run
 /// build`; see `build.rs`, which fails the build early with a clear message if
 /// this hasn't been done.
 const ADMIN_APP_INDEX_HTML: &str = include_str!("../../../csdrive-webhost-admin-reactapp/dist/index.html");
+
+/// Sent with every page we serve, to the admin-app's window and to user-provided web
+/// apps alike, so no script running in any window can talk to the network: the only
+/// things `connect-src` allows are this window's own origin (its own files), the
+/// IPC channel to this backend (`ipc:` / `http://ipc.localhost`, depending on the OS),
+/// and in-memory `data:`/`blob:` URLs. Everything else is locked to the same
+/// origin or in-memory sources too, so images/fonts/scripts/frames can't be used to
+/// reach out either (nor can forms). Inline scripts and styles stay allowed, since
+/// the admin-app is one self-contained file and user apps commonly are too.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; \
+     script-src 'self' 'unsafe-inline'; \
+     style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data: blob:; \
+     font-src 'self' data:; \
+     media-src 'self' data: blob:; \
+     connect-src 'self' data: blob: ipc: http://ipc.localhost; \
+     frame-src 'self'; \
+     worker-src 'self' blob:; \
+     object-src 'none'; \
+     base-uri 'self'; \
+     form-action 'none'";
+
+/// CSP doesn't cover navigating the window itself (`location.href = "https://…"`
+/// would ship data out in the URL, and leave our CSP behind), so windows may only
+/// ever be at one of our own two origins. On Windows a custom scheme `x` is served
+/// as `http://x.localhost`.
+fn is_internal_url(url: &Url) -> bool {
+    let ours = |scheme: &str| scheme == USER_PROTOCOL || scheme == ADMIN_PROTOCOL;
+    if ours(url.scheme()) {
+        return true;
+    }
+    matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some_and(|host| {
+            host.strip_suffix(".localhost").is_some_and(ours)
+        })
+}
+
+/// Makes `admin/dist/index.html` exactly the admin-app bundle embedded in this binary,
+/// on every start. That installs it on a fresh install or after "Delete app data",
+/// updates it when the app itself is upgraded, and — because the admin-app is the
+/// one window with privileged commands — undoes any tampering with the file between
+/// runs. (So during development, rebuild the Tauri app after building the admin-app
+/// rather than copying the bundle by hand; a hand-copied one is replaced at startup.)
+fn install_admin_bundle(admin_dir: &Path, bundle: &str) -> std::io::Result<()> {
+    let dist_dir = admin_dir.join("dist");
+    std::fs::create_dir_all(&dist_dir)?;
+
+    let index_path = dist_dir.join("index.html");
+    let up_to_date = std::fs::read(&index_path).is_ok_and(|current| current == bundle.as_bytes());
+    if !up_to_date {
+        std::fs::write(&index_path, bundle)?;
+    }
+
+    // `dist/` is ours alone and the bundle is a single file, so anything else in it
+    // shouldn't be there (e.g. something written into it by way of a link planted
+    // in the `user` folder).
+    if let Ok(entries) = std::fs::read_dir(&dist_dir) {
+        for entry in entries.flatten() {
+            if entry.file_name() != "index.html" {
+                let path = entry.path();
+                let _ = std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir_all(&path));
+            }
+        }
+    }
+
+    // Where the bundle lived before it moved into `dist/`.
+    let _ = std::fs::remove_file(admin_dir.join("index.html"));
+    Ok(())
+}
+
+/// Applies the network lockdown to a window under construction.
+pub(crate) fn lock_down_navigation<R: tauri::Runtime>(
+    builder: WebviewWindowBuilder<'_, R, impl Manager<R>>,
+) -> WebviewWindowBuilder<'_, R, impl Manager<R>> {
+    builder
+        .on_navigation(is_internal_url)
+        .on_new_window(|_url, _features| NewWindowResponse::Deny)
+}
+
+fn respond(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Vec<u8>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, content_type)
+        .header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        .body(body)
+        .unwrap()
+}
+
+fn respond_text(status: StatusCode, message: &str) -> Response<Vec<u8>> {
+    respond(status, "text/plain; charset=utf-8", message.as_bytes().to_vec())
+}
+
+/// Serves `request_path` from inside `base_dir`.
+fn serve_file(base_dir: &Path, request_path: &str) -> Response<Vec<u8>> {
+    match resolve_file_in(base_dir, request_path) {
+        Some(file_path) => match std::fs::read(&file_path) {
+            Ok(data) => respond(StatusCode::OK, content_type_for(&file_path), data),
+            Err(_) => respond_text(StatusCode::NOT_FOUND, "File not found"),
+        },
+        None => respond_text(StatusCode::FORBIDDEN, "Forbidden"),
+    }
+}
 
 fn content_type_for(path: &Path) -> &'static str {
     match path
@@ -49,7 +152,7 @@ fn content_type_for(path: &Path) -> &'static str {
 }
 
 /// Resolves a request path against `base_dir` (the `user` folder for
-/// `csuser://`, the `admin` folder for `csadmin://`), rejecting attempts to
+/// `csuser://`, the `admin/dist` folder for `csadmin://`), rejecting attempts to
 /// escape it (e.g. via `..`) since — at least for `user` — the served content
 /// is arbitrary user-authored HTML/JS.
 fn resolve_file_in(base_dir: &Path, request_path: &str) -> Option<PathBuf> {
@@ -127,60 +230,19 @@ fn main() {
             let user_dir = data_location::effective_data_dir(ctx.app_handle())
                 .expect("failed to resolve app data dir")
                 .join("user");
-
-            match resolve_file_in(&user_dir, request.uri().path()) {
-                Some(file_path) => match std::fs::read(&file_path) {
-                    Ok(data) => Response::builder()
-                        .header(CONTENT_TYPE, content_type_for(&file_path))
-                        .body(data)
-                        .unwrap(),
-                    Err(_) => Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                        .body(b"File not found".to_vec())
-                        .unwrap(),
-                },
-                None => Response::builder()
-                    .status(StatusCode::FORBIDDEN)
-                    .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                    .body(b"Forbidden".to_vec())
-                    .unwrap(),
-            }
+            serve_file(&user_dir, request.uri().path())
         })
         .register_uri_scheme_protocol(ADMIN_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
-            let admin_dir = data_location::effective_data_dir(ctx.app_handle())
+            // Only the admin-app's own window may load this; user-provided web apps
+            // run in other windows.
+            if ctx.webview_label() != "main" {
+                return respond_text(StatusCode::FORBIDDEN, "Forbidden");
+            }
+            let admin_dist_dir = data_location::effective_data_dir(ctx.app_handle())
                 .expect("failed to resolve app data dir")
-                .join("admin");
-
-            // Only the admin-app's own window may load this — the folder also holds
-            // `data.db`, and user-provided web apps run in other windows.
-            let path = request.uri().path().trim_start_matches('/');
-            if ctx.webview_label() != "main" || !(path.is_empty() || path == "index.html") {
-                return Response::builder()
-                    .status(StatusCode::FORBIDDEN)
-                    .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                    .body(b"Forbidden".to_vec())
-                    .unwrap();
-            }
-
-            match resolve_file_in(&admin_dir, request.uri().path()) {
-                Some(file_path) => match std::fs::read(&file_path) {
-                    Ok(data) => Response::builder()
-                        .header(CONTENT_TYPE, content_type_for(&file_path))
-                        .body(data)
-                        .unwrap(),
-                    Err(_) => Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                        .body(b"File not found".to_vec())
-                        .unwrap(),
-                },
-                None => Response::builder()
-                    .status(StatusCode::FORBIDDEN)
-                    .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                    .body(b"Forbidden".to_vec())
-                    .unwrap(),
-            }
+                .join("admin")
+                .join("dist");
+            serve_file(&admin_dist_dir, request.uri().path())
         })
         .setup(|app| {
             let app_data_dir = data_location::effective_data_dir(app.handle())?;
@@ -200,25 +262,19 @@ fn main() {
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
 
-            let index_path = admin_dir.join("index.html");
-
-            // No admin frontend yet (fresh install, or a "Delete app data" reset) —
-            // install the one embedded into this binary at compile time.
-            if !index_path.exists() {
-                std::fs::write(&index_path, ADMIN_APP_INDEX_HTML)?;
-            }
+            install_admin_bundle(&admin_dir, ADMIN_APP_INDEX_HTML)?;
 
             // The custom data folder (if any) lives outside the default app-data dir
             // that fs:allow-appdata-* scopes cover, so extend the runtime scope to it.
             let _ = tauri_plugin_fs::FsExt::fs_scope(app).allow_directory(&user_dir, true);
 
-            WebviewWindowBuilder::new(
+            lock_down_navigation(WebviewWindowBuilder::new(
                 app,
                 "main",
                 WebviewUrl::CustomProtocol(
                     format!("{ADMIN_PROTOCOL}://localhost/index.html").parse()?,
                 ),
-            )
+            ))
             .title("CsDrive WebHost")
             .inner_size(1024.0, 768.0)
             // wry registers its own IDropTarget on the WebView2 child window (for OS
@@ -238,4 +294,97 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn internal(url: &str) -> bool {
+        is_internal_url(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn windows_may_only_navigate_within_our_own_origins() {
+        assert!(internal("csuser://localhost/qwer/index1.html"));
+        assert!(internal("csadmin://localhost/index.html"));
+        assert!(internal("http://csuser.localhost/qwer/index1.html"));
+        assert!(internal("http://csadmin.localhost/index.html"));
+
+        assert!(!internal("https://example.com/"));
+        assert!(!internal("http://example.com/"));
+        assert!(!internal("http://csuser.localhost.evil.com/"));
+        assert!(!internal("http://evilcsuser.localhost/"));
+        assert!(!internal("http://localhost/"));
+        assert!(!internal("data:text/html,<script>alert(1)</script>"));
+        assert!(!internal("blob:http://csuser.localhost/1234"));
+        assert!(!internal("file:///C:/Windows/win.ini"));
+        assert!(!internal("about:blank"));
+    }
+
+    #[test]
+    fn the_csp_never_names_an_external_host_or_scheme() {
+        for directive in CONTENT_SECURITY_POLICY.split(';').map(str::trim) {
+            for source in directive.split_whitespace().skip(1) {
+                let allowed = matches!(
+                    source,
+                    "'none'" | "'self'" | "'unsafe-inline'" | "data:" | "blob:" | "ipc:" | "http://ipc.localhost"
+                );
+                assert!(allowed, "unexpected source \"{source}\" in \"{directive}\"");
+            }
+        }
+        assert!(CONTENT_SECURITY_POLICY.contains("default-src 'none'"));
+        assert!(CONTENT_SECURITY_POLICY.contains("connect-src 'self' data: blob: ipc: http://ipc.localhost"));
+    }
+
+    #[test]
+    fn the_admin_bundle_is_installed_updated_and_restored_at_every_start() {
+        fn dist_extra(admin_dir: &Path) -> PathBuf {
+            admin_dir.join("dist").join("_planted.txt")
+        }
+        let admin_dir = std::env::temp_dir().join(format!("csdrive-admin-bundle-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&admin_dir);
+        std::fs::create_dir_all(&admin_dir).unwrap();
+        let index = admin_dir.join("dist").join("index.html");
+
+        install_admin_bundle(&admin_dir, "<h1>v1</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), "<h1>v1</h1>", "fresh install");
+
+        std::fs::write(&index, "<script>evil()</script>").unwrap();
+        install_admin_bundle(&admin_dir, "<h1>v1</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), "<h1>v1</h1>", "tampering is undone");
+
+        install_admin_bundle(&admin_dir, "<h1>v2</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(&index).unwrap(), "<h1>v2</h1>", "an upgrade replaces it");
+
+        std::fs::write(dist_extra(&admin_dir), "planted").unwrap();
+        std::fs::create_dir_all(admin_dir.join("dist").join("planted-dir")).unwrap();
+        install_admin_bundle(&admin_dir, "<h1>v2</h1>").unwrap();
+        assert_eq!(std::fs::read_dir(admin_dir.join("dist")).unwrap().count(), 1, "only index.html is left in dist/");
+
+        std::fs::write(admin_dir.join("index.html"), "old location").unwrap();
+        install_admin_bundle(&admin_dir, "<h1>v2</h1>").unwrap();
+        assert!(!admin_dir.join("index.html").exists(), "the pre-dist/ copy is removed");
+
+        let _ = std::fs::remove_dir_all(&admin_dir);
+    }
+
+    #[test]
+    fn every_response_carries_the_csp() {
+        let dir = std::env::temp_dir().join(format!("csdrive-serve-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<h1>hi</h1>").unwrap();
+
+        for (path, status) in [("/index.html", StatusCode::OK), ("/", StatusCode::OK), ("/missing.html", StatusCode::FORBIDDEN), ("/../x", StatusCode::FORBIDDEN)] {
+            let response = serve_file(&dir, path);
+            assert_eq!(response.status(), status, "{path}");
+            assert_eq!(
+                response.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()),
+                Some(CONTENT_SECURITY_POLICY),
+                "{path}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

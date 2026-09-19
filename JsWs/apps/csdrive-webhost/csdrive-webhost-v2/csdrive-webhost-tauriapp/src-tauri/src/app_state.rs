@@ -33,7 +33,7 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// The label of the admin-app's own (main) window; every other window is a
 /// secondary one hosting a user-provided html file, labelled by its guid.
 const MAIN_WINDOW_LABEL: &str = "main";
-/// The admin-app's `app_id`: it's always served as `admin/index.html`.
+/// The admin-app's `app_id`. It's the path it's served at (`index.html`, from `admin/dist/`).
 const ADMIN_APP_ID: &str = "index.html";
 
 /// Which `app_id` the calling window's state lives under — decided here, from the

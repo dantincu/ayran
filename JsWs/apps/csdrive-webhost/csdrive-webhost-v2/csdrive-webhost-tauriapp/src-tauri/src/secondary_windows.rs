@@ -297,7 +297,7 @@ fn build_window(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), 
     let base = Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).map_err(|e| e.to_string())?;
     let url = base.join(relative_path).map_err(|e| e.to_string())?;
 
-    let window = WebviewWindowBuilder::new(app, guid, WebviewUrl::CustomProtocol(url))
+    let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, WebviewUrl::CustomProtocol(url)))
         .title(relative_path)
         .inner_size(1024.0, 768.0)
         .build()
