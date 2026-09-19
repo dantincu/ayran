@@ -53,8 +53,20 @@ window.TabLib = (function () {
   // { tabGuid, resourceId } — resourceId is this page's relative path plus the
   // query string just set, e.g. "qwer/index2.html?file=notes.txt". `resourceType`
   // is optional here — it can be set later (or changed) via updateTab instead.
-  async function openTab(params, appVersion, resourceType) {
+  //
+  // `onNavigate` (optional): a function called when the user switches to another tab of this
+  // window — with the same { tabGuid, resourceId, codeSnippets } that this call returns — so the
+  // page can show that tab in place. Without one, the page starts over at its own address (the
+  // way it was before the backend sent this event), and the openTab it then makes is told the
+  // tab. The listener is added *before* the init request, so no switch can be missed.
+  async function openTab(params, appVersion, resourceType, onNavigate) {
     setQuery(params)
+    // On this window (not the global event.listen, which also hears events sent to other windows).
+    await window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', function (event) {
+      applySnippets(event.payload.codeSnippets)
+      if (onNavigate) onNavigate(event.payload)
+      else location.href = location.pathname
+    })
     const response = await invoke('init_window_tab', {
       appVersion: appVersion || 1,
       url: location.href,

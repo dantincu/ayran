@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type { CodeSnippet } from './codeSnippets'
 
 export interface TagRecord {
@@ -167,6 +168,21 @@ export async function initWindowTab(appVersion: number, url: string, resourceTyp
   return invoke<TabInitResponse>('init_window_tab', { appVersion, url, resourceType: resourceType ?? null })
 }
 
+const EVENT_TAB_NAVIGATE = 'tab-navigate'
+
+/** Listens for the user switching to a tab of this window while it is open: the backend sends the same
+ * data `initWindowTab` answers with — `{ tabGuid, resourceId, codeSnippets }`, the tab's own stored
+ * resource id (empty for a tab that has never been used) — and the app shows that tab *in place*.
+ * Every app gets it, system or user, and the page is never reloaded for it, so an app that has
+ * several tabs must handle it. (A window that isn't open is opened instead, and the response of its
+ * page's `initWindowTab` says which tab it is.)
+ *
+ * **Start listening before calling `initWindowTab`** (`await` this first), so no event can be missed. */
+export function onTabNavigate(callback: (tab: TabInitResponse) => void): Promise<UnlistenFn> {
+  // On this window, not the global `listen`: that one also hears events sent to *other* windows.
+  return getCurrentWebviewWindow().listen<TabInitResponse>(EVENT_TAB_NAVIGATE, (event) => callback(event.payload))
+}
+
 /** Sets (or replaces) the two-line, styled label a tab shows in the window manager,
  * and optionally its resource type (see `initWindowTab`) and/or its resource id —
  * e.g. the app navigated to a different view within the same tab, without opening
@@ -233,6 +249,12 @@ export async function cloneTab(tabGuid: string): Promise<TabRecord> {
  * decide what to show for it. */
 export async function activateTab(tabGuid: string): Promise<void> {
   await invoke('activate_tab', { tabGuid })
+}
+
+/** Closes a tab (deleting it, and its tags). If it is the tab an open window is showing, that window
+ * is suspended; closing any other tab leaves windows alone. */
+export async function closeTab(tabGuid: string): Promise<void> {
+  await invoke('close_tab', { tabGuid })
 }
 
 /** Moves a tab into a different group — possibly under a different window, as long

@@ -34,6 +34,7 @@ import {
   cloneTab,
   closeAllSecondaryWindows,
   closeSecondaryWindow,
+  closeTab,
   createTabGroup,
   focusSecondaryWindow,
   listSecondaryWindows,
@@ -318,6 +319,7 @@ function TabRow({
   onCut,
   onClone,
   onActivate,
+  onClose,
 }: {
   tab: TabRecord
   /** The tags of every root the listed tabs show (see `rootOfTab`); this tab's are picked out by guid. */
@@ -329,6 +331,7 @@ function TabRow({
   onCut: () => void
   onClone: () => void
   onActivate: () => void
+  onClose: () => void
 }) {
   // A tab that shows a root (a folder, a Filen account) has two sets of tags: the root's — the same
   // wherever that root appears — and its own. When both are shown each line says which it is.
@@ -351,6 +354,7 @@ function TabRow({
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
           <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
           <IconButton icon={CopyPlus} label="Clone tab" onClick={onClone} />
+          <IconButton icon={X} label="Close tab (suspends its window if the window is showing it)" variant="danger" onClick={onClose} />
         </div>
       </div>
       {root ? (
@@ -621,6 +625,17 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     }
   }
 
+  async function handleCloseTab(tabGuid: string) {
+    try {
+      await closeTab(tabGuid)
+      // Nothing may keep pointing at the tab that's gone.
+      setCutTab((cut) => (cut?.guid === tabGuid ? null : cut))
+      setMovingTab((moving) => (moving?.guid === tabGuid ? null : moving))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleCreateTabGroup(windowGuid: string) {
     try {
       await createTabGroup(windowGuid)
@@ -771,6 +786,12 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           )}
         </div>
         <div className="toolbar-actions">
+          {view === 'apps' && (
+            <>
+              <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
+              <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
+            </>
+          )}
           <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
         </div>
       </div>
@@ -780,13 +801,6 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
 
       {view === 'apps' && (
         <>
-          <div className="toolbar">
-            <strong>{isSystem ? 'System apps' : 'Web apps'}</strong>
-            <div className="toolbar-actions">
-              <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
-              <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
-            </div>
-          </div>
           <div className="toolbar">
             <label className="custom-order-toggle">
               <input type="checkbox" checked={useCustomOrder} onChange={(e) => setUseCustomOrder(e.target.checked)} />
@@ -997,6 +1011,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                   onCut={() => setCutTab(t)}
                   onClone={() => handleCloneTab(t.guid)}
                   onActivate={() => handleActivateTab(t.guid)}
+                  onClose={() => handleCloseTab(t.guid)}
                 />
               )}
             />

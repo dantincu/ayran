@@ -114,6 +114,7 @@ impl Allowed {
 /// The URL a webview must be *navigated* to for a custom-protocol `url`. (`WebviewUrl::CustomProtocol`
 /// converts it for you when a window is built; `navigate` does not.) On Windows and
 /// Android a custom scheme `x` is served as `http://x.localhost/...`.
+#[cfg_attr(desktop, allow(dead_code))] // used by the mobile window host, which navigates one webview
 pub fn navigation_url(url: &Url) -> Url {
     #[cfg(any(windows, target_os = "android"))]
     {
@@ -249,10 +250,10 @@ pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
     platform::open(app, guid, page)
 }
 
-/// If entry `guid` is showing, reloads it at its base URL (discarding whatever in-app
-/// view it drifted to) and returns `true`; otherwise does nothing and returns `false`.
-pub fn reload_if_open(app: &AppHandle, guid: &str, page: &Page) -> Result<bool, String> {
-    platform::reload_if_open(app, guid, page)
+/// Sends `event` to entry `guid`'s window — to that window only, not to every window — if it is
+/// showing, and returns whether it was.
+pub fn emit_if_open<S: serde::Serialize + Clone>(app: &AppHandle, guid: &str, event: &str, payload: S) -> bool {
+    platform::emit_if_open(app, guid, event, payload)
 }
 
 /// Asks entry `guid`'s window to close. Once it has, `secondary_windows` deletes the
@@ -322,14 +323,10 @@ mod platform {
         Ok(())
     }
 
-    pub fn reload_if_open(app: &AppHandle, guid: &str, page: &Page) -> Result<bool, String> {
-        match app.get_webview_window(guid) {
-            Some(window) => {
-                window.navigate(navigation_url(&page.url()?)).map_err(|e| e.to_string())?;
-                Ok(true)
-            }
-            None => Ok(false),
-        }
+    pub fn emit_if_open<S: serde::Serialize + Clone>(app: &AppHandle, guid: &str, event: &str, payload: S) -> bool {
+        use tauri::Emitter;
+        // A window's label is its guid.
+        app.get_webview_window(guid).is_some() && app.emit_to(guid, event, payload).is_ok()
     }
 
     pub fn request_close(app: &AppHandle, guid: &str) -> bool {
@@ -409,12 +406,10 @@ mod platform {
         navigate(app, page.url()?)
     }
 
-    pub fn reload_if_open(app: &AppHandle, guid: &str, page: &Page) -> Result<bool, String> {
-        if !is_open(app, guid) {
-            return Ok(false);
-        }
-        navigate(app, page.url()?)?;
-        Ok(true)
+    pub fn emit_if_open<S: serde::Serialize + Clone>(app: &AppHandle, guid: &str, event: &str, payload: S) -> bool {
+        use tauri::Emitter;
+        // There is one webview, `main`, showing whichever page is active.
+        is_open(app, guid) && app.emit_to(MAIN_WINDOW_LABEL, event, payload).is_ok()
     }
 
     pub fn request_close(app: &AppHandle, guid: &str) -> bool {

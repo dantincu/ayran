@@ -28,6 +28,10 @@ pub struct SecondaryWindowsState {
     ///    that's never been used) instead of one derived from the reloaded page's
     ///    URL, letting the app decide what a reactivated/new tab should show.
     pending_tab_activation: Mutex<HashMap<String, (String, bool)>>,
+    /// The tab each window is showing right now: window guid → tab guid. Set when the page registers
+    /// itself (`init_window_tab`), gone when the window is (`handle_window_destroyed`). It is what
+    /// tells `close_tab` that closing a tab must also suspend the window that shows it.
+    current_tabs: Mutex<HashMap<String, String>>,
 }
 
 impl SecondaryWindowsState {
@@ -36,6 +40,7 @@ impl SecondaryWindowsState {
             pool,
             pending_suspend: Mutex::new(HashSet::new()),
             pending_tab_activation: Mutex::new(HashMap::new()),
+            current_tabs: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -434,6 +439,7 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
     app.state::<crate::sqlite_db::SqliteState>().close(guid, None).await;
 
     let state = app.state::<SecondaryWindowsState>();
+    state.current_tabs.lock().unwrap().remove(guid);
 
     let was_suspended = {
         let mut pending = state.pending_suspend.lock().unwrap();
@@ -1152,6 +1158,13 @@ async fn init_window_tab_impl(
     ))
 }
 
+/// Sent to a window (only) when a tab is activated in it while it is open — the tab's
+/// `TabInitResponse`, the very same data `init_window_tab` answers with — so the page can switch to
+/// that tab in place. Every app, system or user, gets it and is expected to handle it (a page is never
+/// reloaded for it). A page should start listening *before* it calls `init_window_tab`, so it can't
+/// miss one. (A window that is not open is simply opened, and the init response carries the tab.)
+pub const EVENT_TAB_NAVIGATE: &str = "tab-navigate";
+
 /// Emitted to a specific window asking the app running in it to report its icons —
 /// see `submit_resource_icons`. Sent whenever `init_window_tab` sees an app_version
 /// it hasn't seen before (including the very first time that html file is opened).
@@ -1179,6 +1192,8 @@ pub async fn init_window_tab(
         reuse.as_ref().map(|(guid, force)| (guid.as_str(), *force)),
     )
     .await?;
+
+    state.current_tabs.lock().unwrap().insert(window_guid.clone(), result.tab_guid.clone());
 
     if needs_icons {
         let _ = window.emit(EVENT_REQUEST_RESOURCE_ICONS, ());
@@ -1463,15 +1478,73 @@ pub async fn activate_tab(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Tab not found.".to_string())?;
     let page = page_of(&state.pool, &window_guid).await?;
+    let payload = navigation_payload(&state.pool, &tab_guid).await?;
 
-    state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid, true));
+    // The tab is also left pending for the window: if its page loads (again) — it was closed, or it
+    // reloads itself in response to the event — its init request binds to this tab, not a new one.
+    state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid.clone(), true));
 
-    if !crate::window_host::reload_if_open(&app, &window_guid, &page)? {
+    if crate::window_host::emit_if_open(&app, &window_guid, EVENT_TAB_NAVIGATE, payload) {
+        state.current_tabs.lock().unwrap().insert(window_guid, tab_guid);
+    } else {
         crate::window_host::open(&app, &window_guid, &page)?;
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
+}
+
+/// Deletes a tab and the tags on it. Resolves to the guid of the window it belonged to.
+async fn close_tab_impl(pool: &SqlitePool, tab_guid: &str) -> Result<String, String> {
+    let window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
+        .bind(tab_guid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let window_guid = window_guid.ok_or_else(|| "Tab not found.".to_string())?;
+
+    sqlx::query("DELETE FROM window_tags WHERE guid = ?1").bind(tab_guid).execute(pool).await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM tabs WHERE guid = ?1").bind(tab_guid).execute(pool).await.map_err(|e| e.to_string())?;
+    Ok(window_guid)
+}
+
+/// Closes a tab: it is deleted, with its tags. If it is the tab an open window is showing right now,
+/// that window is **suspended** (its entry and its other tabs are kept, as with any suspend) — the
+/// page it was showing has nothing left to belong to. Closing any other tab leaves windows alone.
+#[tauri::command]
+pub async fn close_tab(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    tab_guid: String,
+) -> Result<(), String> {
+    let window_guid = close_tab_impl(&state.pool, &tab_guid).await?;
+
+    // An activation still waiting for this tab's page would find it gone; nothing is left to wait for.
+    state.pending_tab_activation.lock().unwrap().retain(|_, (pending_tab, _)| *pending_tab != tab_guid);
+
+    let showing_it = state.current_tabs.lock().unwrap().get(&window_guid).is_some_and(|current| *current == tab_guid);
+    if showing_it && crate::window_host::is_open(&app, &window_guid) {
+        state.pending_suspend.lock().unwrap().insert(window_guid.clone());
+        crate::window_host::request_close(&app, &window_guid);
+    }
+
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
+}
+
+/// What a page is told when a tab is activated in it: what `init_window_tab` would answer for that
+/// tab — its own stored resource id (empty for a tab that has never been used).
+async fn navigation_payload(pool: &SqlitePool, tab_guid: &str) -> Result<TabInitResponse, String> {
+    let resource_id: Option<String> = sqlx::query_scalar("SELECT resource_id FROM tabs WHERE guid = ?1")
+        .bind(tab_guid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(TabInitResponse {
+        tab_guid: tab_guid.to_string(),
+        resource_id: resource_id.ok_or_else(|| "Tab not found.".to_string())?,
+        code_snippets: crate::code_snippets::code_snippets(),
+    })
 }
 
 async fn move_tab_to_group_impl(pool: &SqlitePool, tab_guid: &str, target_group_guid: &str) -> Result<(), String> {
@@ -1713,6 +1786,48 @@ mod tests {
 
             let groups = fetch_tab_groups(&pool, &["win2".to_string()]).await.unwrap();
             assert_eq!(groups[0].tabs.len(), 2, "the moved tab should now be alongside win2's own tab");
+        });
+    }
+
+    #[test]
+    fn navigation_carries_what_init_would_answer_for_the_tab() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("navigation").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "asdf/index.html?doc=7", 1).await;
+
+            let payload = navigation_payload(&pool, &tab.tab_guid).await.unwrap();
+            assert_eq!(payload.tab_guid, tab.tab_guid);
+            assert_eq!(payload.resource_id, "asdf/index.html?doc=7", "the tab's own stored resource id");
+            assert_eq!(payload.code_snippets.len(), crate::code_snippets::code_snippets().len());
+
+            assert!(navigation_payload(&pool, "nope").await.unwrap_err().contains("not found"));
+        });
+    }
+
+    #[test]
+    fn closing_a_tab_deletes_it_and_its_tags_but_not_its_siblings() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("close-tab").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+
+            let first = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+            let second = init_tab(&pool, "win1", "asdf/index.html", "res-b", 1).await;
+            add_tag_impl(&pool, &first.tab_guid, "mine", "#fff", "#000").await.unwrap();
+            add_tag_impl(&pool, &second.tab_guid, "theirs", "#fff", "#000").await.unwrap();
+
+            let window = close_tab_impl(&pool, &first.tab_guid).await.unwrap();
+            assert_eq!(window, "win1");
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            let tabs: Vec<&TabRecord> = groups.iter().flat_map(|g| g.tabs.iter()).collect();
+            assert_eq!(tabs.len(), 1);
+            assert_eq!(tabs[0].guid, second.tab_guid);
+            assert_eq!(tabs[0].tags.len(), 1, "the sibling keeps its tag");
+            assert!(fetch_tags(&pool, &[first.tab_guid.clone()]).await.unwrap().is_empty(), "the closed tab's tags go with it");
+
+            let err = close_tab_impl(&pool, &first.tab_guid).await.unwrap_err();
+            assert!(err.contains("not found"));
         });
     }
 

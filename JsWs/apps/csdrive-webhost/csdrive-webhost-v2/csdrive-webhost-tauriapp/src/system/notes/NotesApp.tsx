@@ -49,7 +49,7 @@ import {
   type FileSource,
   type FilenAccountInfo,
 } from './sources'
-import { reportLocation, type Location, type Tab } from './tabs'
+import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
 
 const LAST_LOCATION_KEY = 'notes.lastLocation'
 const MAX_BRANCH_NAME_CHARS = 100
@@ -105,12 +105,16 @@ interface Clipboard {
 }
 
 interface Editing {
+  /** Where the file is — kept, because switching tabs can change what the file manager shows. */
+  source: FileSource
   path: string
   content: string
   dirty: boolean
 }
 
-export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: Location | null }) {
+export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null; initial: Location | null }) {
+  // The tab this page is showing: the one it registered as, then whichever the user switches to.
+  const [tab, setTab] = useState<Tab | null>(initialTab)
   const [roots, setRoots] = useState<FileRoot[]>([])
   const [accounts, setAccounts] = useState<FilenAccountInfo[]>([])
   const [ready, setReady] = useState(false)
@@ -140,6 +144,27 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
 
   // ── Sources ──
 
+  // Where the person last was (the fallback for a tab that names no place), and — for a switch of tab
+  // that arrives before the sources are loaded — the tab to show once they are.
+  const lastRef = useRef<Location | null>(null)
+  const earlyNavigationRef = useRef<Tab | null>(null)
+  const sourcesRef = useRef<{ roots: FileRoot[]; accounts: FilenAccountInfo[] } | null>(null)
+
+  /** Shows `target` if its source still exists, otherwise the start of the user folder. */
+  function showLocation(target: Location | null, allRoots: FileRoot[], filen: FilenAccountInfo[]) {
+    const exists = (id: string) =>
+      allRoots.some((r) => `${LOCAL_PREFIX}${r.id}` === id) || filen.some((a) => `${FILEN_PREFIX}${a.userId}` === id)
+    if (target && exists(target.sourceId)) {
+      setSourceId(target.sourceId)
+      setBranch(target.branch ?? null)
+      setPath(target.path ?? '')
+    } else {
+      setSourceId(`${LOCAL_PREFIX}user`)
+      setBranch(null)
+      setPath('')
+    }
+  }
+
   useEffect(() => {
     ;(async () => {
       const [userRoot, saved, filen, savedPageSize, last] = await Promise.all([
@@ -149,27 +174,41 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
         getGlobalPageSize().catch(() => DEFAULT_PAGE_SIZE),
         initial ? Promise.resolve(null) : getAppState<Location>(LAST_LOCATION_KEY).catch(() => null),
       ])
+      lastRef.current = last ?? null
       const allRoots = [userRoot, ...saved]
       setRoots(allRoots)
       setAccounts(filen)
       setPageSizeState(savedPageSize)
 
-      // Where to start: the tab's own place, else where the person last was — if it still exists.
-      const start = initial ?? last
-      const exists = (id: string) =>
-        allRoots.some((r) => `${LOCAL_PREFIX}${r.id}` === id) || filen.some((a) => `${FILEN_PREFIX}${a.userId}` === id)
-      if (start && exists(start.sourceId)) {
-        setSourceId(start.sourceId)
-        setBranch(start.branch ?? null)
-        setPath(start.path ?? '')
-      } else {
-        setSourceId(`${LOCAL_PREFIX}${userRoot.id}`)
-        setBranch(null)
-        setPath('')
-      }
+      // Where to start: the tab the user switched to while this was loading, else the tab's own place,
+      // else where the person last was — if it still exists.
+      const early = earlyNavigationRef.current
+      earlyNavigationRef.current = null
+      if (early) setTab(early)
+      sourcesRef.current = { roots: allRoots, accounts: filen }
+      showLocation((early ? (decodeLocation(early.resourceId) ?? last) : (initial ?? last)) ?? null, allRoots, filen)
       setReady(true)
     })()
   }, [])
+
+  useEffect(() => {
+    if (ready) sourcesRef.current = { roots, accounts }
+  }, [ready, roots, accounts])
+
+  // The user switched to another tab of this window: show its place, in place — no reload.
+  useEffect(
+    () =>
+      subscribeNavigate((next) => {
+        const sources = sourcesRef.current
+        if (!sources) {
+          earlyNavigationRef.current = next
+          return
+        }
+        setTab(next)
+        showLocation(decodeLocation(next.resourceId) ?? lastRef.current, sources.roots, sources.accounts)
+      }),
+    [],
+  )
 
   const account = useMemo(() => accounts.find((a) => `${FILEN_PREFIX}${a.userId}` === sourceId) ?? null, [accounts, sourceId])
   const source = useMemo<FileSource | null>(() => {
@@ -184,6 +223,7 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
   useEffect(() => {
     if (!ready || !source) return
     const location: Location = { sourceId, branch, path }
+    lastRef.current = location
     setAppState(LAST_LOCATION_KEY, location).catch(() => {})
     if (tab) reportLocation(tab, location, source.label, currentBranch?.name ?? null)
   }, [ready, source, sourceId, branch, path, tab, currentBranch])
@@ -338,7 +378,7 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
       if (text === null) {
         setError(`"${entry.name}" isn't a text file this small — export it instead.`)
       } else {
-        setEditing({ path: rel, content: text, dirty: false })
+        setEditing({ source, path: rel, content: text, dirty: false })
       }
     } catch (e) {
       setError(String(e))
@@ -350,11 +390,11 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
   }
 
   async function save() {
-    if (!editing || !source) return
-    const { path: filePath, content } = editing
+    if (!editing) return
+    const { source: editedSource, path: filePath, content } = editing
     setError(null)
     try {
-      await source.write(filePath, new TextEncoder().encode(content))
+      await editedSource.write(filePath, new TextEncoder().encode(content))
       setEditing((e) => (e && e.path === filePath ? { ...e, dirty: false } : e))
       await load(false)
       if (account) await reloadBranches()
@@ -390,7 +430,7 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
     if (!name || !nameOk(name)) return
     if (entries.some((e) => e.name === name)) return setError(`"${name}" already exists.`)
     const rel = joinRelative(path, name)
-    if (await act(() => source.write(rel, new Uint8Array()))) setEditing({ path: rel, content: '', dirty: false })
+    if (await act(() => source.write(rel, new Uint8Array()))) setEditing({ source, path: rel, content: '', dirty: false })
   }
 
   async function uploadFiles() {
@@ -741,7 +781,9 @@ export default function NotesApp({ tab, initial }: { tab: Tab | null; initial: L
         <div className="editor-overlay">
           <div className="editor-panel">
             <div className="editor-header">
-              <strong>{editing.path}</strong>
+              <strong>
+                {editing.source.label} · {editing.path}
+              </strong>
               <div>
                 <IconButton icon={Save} label="Save" onClick={save} disabled={!editing.dirty} />
                 <IconButton icon={X} label="Close" onClick={closeEditor} />

@@ -173,6 +173,7 @@ pub fn run() {
             secondary_windows::add_blank_tab,
             secondary_windows::clone_tab,
             secondary_windows::activate_tab,
+            secondary_windows::close_tab,
             secondary_windows::move_tab_to_group,
             app_state::get_global_setting,
             app_state::set_global_setting,

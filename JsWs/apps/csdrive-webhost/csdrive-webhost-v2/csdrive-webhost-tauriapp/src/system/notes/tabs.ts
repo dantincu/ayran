@@ -1,6 +1,7 @@
 import {
   initWindowTab,
   onResourceIconsRequested,
+  onTabNavigate,
   updateTabResource,
   type TabText,
 } from '../../lib/secondaryWindows'
@@ -64,10 +65,39 @@ export interface Tab {
   resourceId: string
 }
 
+// The window manager tells this page when the user switches to another tab of the window (the
+// `tab-navigate` event). The listener is added before the page registers, so none is missed — but
+// the first can arrive before React has mounted anything to receive it, so it waits here.
+let navigateHandler: ((tab: Tab) => void) | null = null
+let navigateBuffered: Tab | null = null
+
+function deliverNavigation(tab: Tab): void {
+  if (navigateHandler) navigateHandler(tab)
+  else navigateBuffered = tab
+}
+
+/** Calls `handler` with each tab the user switches to (first, with one that came before this was
+ * called). Returns how to stop. */
+export function subscribeNavigate(handler: (tab: Tab) => void): () => void {
+  navigateHandler = handler
+  if (navigateBuffered) {
+    const waiting = navigateBuffered
+    navigateBuffered = null
+    handler(waiting)
+  }
+  return () => {
+    if (navigateHandler === handler) navigateHandler = null
+  }
+}
+
 /** Registers this page as a tab; null if that isn't possible (e.g. the page isn't in a managed window). */
 export async function registerTab(): Promise<Tab | null> {
   try {
     await onResourceIconsRequested(() => ICONS)
+    await onTabNavigate((response) => {
+      applyCodeSnippets(response.codeSnippets ?? [])
+      deliverNavigation({ tabGuid: response.tabGuid, resourceId: response.resourceId })
+    })
     const response = await initWindowTab(APP_VERSION, location.href)
     applyCodeSnippets(response.codeSnippets ?? [])
     return { tabGuid: response.tabGuid, resourceId: response.resourceId }

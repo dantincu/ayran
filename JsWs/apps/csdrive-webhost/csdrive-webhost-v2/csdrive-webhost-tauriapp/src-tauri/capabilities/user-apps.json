@@ -43,6 +43,7 @@
     "allow-add-blank-tab",
     "allow-clone-tab",
     "allow-activate-tab",
+    "allow-close-tab",
     "allow-move-tab-to-group",
     "allow-get-global-setting",
     "allow-set-global-setting",
