@@ -33,8 +33,10 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 /// The label of the admin-app's own (main) window; every other window is a
 /// secondary one hosting a user-provided html file, labelled by its guid.
 const MAIN_WINDOW_LABEL: &str = "main";
-/// The admin-app's `app_id`. It's the path it's served at (`index.html`, from `admin/dist/`).
-const ADMIN_APP_ID: &str = "index.html";
+/// The admin-app's `app_id`: the path it's served at, i.e. its bundle's file name (`layout::ADMIN_BUNDLE_PATH`).
+fn admin_app_id() -> &'static str {
+    crate::layout::admin_bundle_url_path()
+}
 
 /// Which `app_id` the calling window's state lives under — decided here, from the
 /// window's own identity, never taken from the caller: otherwise any user-provided
@@ -42,7 +44,7 @@ const ADMIN_APP_ID: &str = "index.html";
 /// naming its `app_id`.
 async fn caller_app_id(pool: &SqlitePool, window_label: &str) -> Result<String, String> {
     if window_label == MAIN_WINDOW_LABEL {
-        return Ok(ADMIN_APP_ID.to_string());
+        return Ok(admin_app_id().to_string());
     }
     sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
         .bind(window_label)
@@ -147,7 +149,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(caller_app_id(&pool, "main").await.unwrap(), "index.html");
+            assert_eq!(caller_app_id(&pool, "main").await.unwrap(), crate::layout::admin_bundle_url_path());
             assert_eq!(caller_app_id(&pool, "win-1").await.unwrap(), "qwer/index1.html");
             assert!(caller_app_id(&pool, "unknown").await.is_err());
         });

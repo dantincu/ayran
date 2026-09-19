@@ -86,7 +86,7 @@ fn authorize(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
     let requested = if requested.is_absolute() {
         requested
     } else {
-        data_location::effective_data_dir(app)?.join("user").join(requested)
+        crate::layout::user_dir(&data_location::effective_data_dir(app)?).join(requested)
     };
 
     let resolved = resolve_for_scope(&requested).ok_or_else(|| format!("\"{path}\" isn't in a folder that exists."))?;

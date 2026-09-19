@@ -19,8 +19,11 @@ use base64::Engine;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 
-const IDENTIFIER: &str = "com.ayran.csdrive-webhost-tauriapp";
-const KEYCHAIN_SERVICE: &str = IDENTIFIER;
+// The app's own folder layout (default data folder, admin/ and user/ names) — shared, not copied.
+#[allow(dead_code)]
+#[path = "../src/layout.rs"]
+mod layout;
+
 const KEYCHAIN_KEY_NAME: &str = "data-location-encryption-key";
 const CONFIG_FILE_NAME: &str = "data-location.enc";
 const NONCE_LEN: usize = 12;
@@ -33,14 +36,14 @@ fn base64_engine() -> base64::engine::general_purpose::GeneralPurpose {
 
 fn default_app_data_dir() -> PathBuf {
     let appdata = std::env::var("APPDATA").expect("%APPDATA% is not set");
-    PathBuf::from(appdata).join(IDENTIFIER)
+    layout::default_data_dir(&PathBuf::from(appdata))
 }
 
 /// Reads (never creates) the encryption key from the OS keychain — if it isn't
 /// there, no custom data folder was ever set, so falling back to the default is
 /// the correct behavior anyway.
 fn get_key() -> Option<Vec<u8>> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, KEYCHAIN_KEY_NAME).ok()?;
+    let entry = keyring::Entry::new(layout::keychain_service(), KEYCHAIN_KEY_NAME).ok()?;
     let encoded = entry.get_password().ok()?;
     base64_engine().decode(encoded).ok()
 }
@@ -173,7 +176,7 @@ async fn insert_tab(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = effective_data_dir();
-    let db_path = data_dir.join("admin").join("data.db");
+    let db_path = layout::admin_dir(&data_dir).join("data.db");
     println!("Using data folder: {}", data_dir.display());
 
     if !db_path.exists() {
@@ -184,7 +187,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
-    let qwer_dir = data_dir.join("user").join("qwer");
+    let qwer_dir = layout::user_dir(&data_dir).join("qwer");
     for n in 1..=9 {
         let file = qwer_dir.join(format!("index{n}.html"));
         if !file.exists() {

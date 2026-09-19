@@ -17,19 +17,6 @@
 
 import { invoke } from '@tauri-apps/api/core'
 
-const APP_ID = location.pathname.replace(/^\//, '')
-
-/** This app's state used to live in IndexedDB under these names; deleted once on
- * first use so it doesn't linger unused. Safe to remove once rolled out everywhere. */
-const OLD_DB_NAMES = ['csdrive-admin-app-state', '[admin-app]app-state', `[${APP_ID}]app-state`]
-for (const name of OLD_DB_NAMES) {
-  try {
-    indexedDB.deleteDatabase(name)
-  } catch {
-    // ignore — best-effort cleanup only
-  }
-}
-
 export async function getAppState<T>(key: string): Promise<T | undefined> {
   const raw = await invoke<string | null>('get_app_state', { key })
   if (raw == null) return undefined

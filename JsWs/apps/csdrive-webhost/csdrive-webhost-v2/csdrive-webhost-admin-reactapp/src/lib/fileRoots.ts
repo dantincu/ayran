@@ -1,7 +1,7 @@
 import { readDir, readFile, readTextFile, writeFile, writeTextFile, mkdir, remove, rename, stat, exists, type DirEntry, type FileInfo } from '@tauri-apps/plugin-fs'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
-import { appDataDir, join } from '@tauri-apps/api/path'
-import { joinRelative, RESERVED_CONFIG_DIR } from './localFs'
+import { join } from '@tauri-apps/api/path'
+import { getUserFolder, joinRelative } from './localFs'
 
 /** A browsable filesystem root: either the app's own `user` folder, or an arbitrary
  * folder the user picked via the native folder picker. Everything below is addressed
@@ -18,9 +18,7 @@ let cachedUserRoot: FileRoot | null = null
 
 export async function getUserRoot(): Promise<FileRoot> {
   if (!cachedUserRoot) {
-    const base = await appDataDir()
-    const absolutePath = await join(base, 'user')
-    cachedUserRoot = { id: USER_ROOT_ID, label: 'user', absolutePath }
+    cachedUserRoot = { id: USER_ROOT_ID, label: 'user', absolutePath: await getUserFolder() }
   }
   return cachedUserRoot
 }
@@ -46,7 +44,6 @@ function toAbsolute(root: FileRoot, relativePath: string): Promise<string> {
 export async function listRootDir(root: FileRoot, relativePath: string): Promise<DirEntry[]> {
   const entries = await readDir(await toAbsolute(root, relativePath))
   return entries
-    .filter((e) => !(root.id === USER_ROOT_ID && relativePath === '' && e.name === RESERVED_CONFIG_DIR))
     .sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
       return a.name.localeCompare(b.name)

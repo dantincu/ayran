@@ -1,134 +1,24 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "user-apps",
-  "description": "What every window may do, user-provided web apps included: use files under the user folder and folders the user picks with a native dialog, SQLite databases in those same places, the Filen.io accounts the user has connected (file operations only — never credentials), and manage app windows, tab groups, tabs and their tags. Deliberately absent: connecting/disconnecting Filen accounts, data-folder management, system/OS information, and window/app introspection.",
+  "description": "What every window may do, user-provided web apps included: use files under the user folder (found with get_user_folder) and folders the user picks with a native dialog — the fs scope is the runtime scope: the user folder plus dialog picks —, SQLite databases in those same places, the Filen.io accounts the user has connected (file operations only — never credentials), and manage app windows, tab groups, tabs and their tags. Deliberately absent: connecting/disconnecting Filen accounts, data-folder management, system/OS information, and window/app introspection.",
   "windows": [
     "*"
   ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
-    {
-      "identifier": "fs:allow-read-dir",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-read-file",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-read-text-file",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-file",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-write-text-file",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-mkdir",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-remove",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-rename",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-copy-file",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-stat",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
-    {
-      "identifier": "fs:allow-exists",
-      "allow": [
-        {
-          "path": "$APPDATA/user"
-        },
-        {
-          "path": "$APPDATA/user/**"
-        }
-      ]
-    },
+    "fs:allow-read-dir",
+    "fs:allow-read-file",
+    "fs:allow-read-text-file",
+    "fs:allow-write-file",
+    "fs:allow-write-text-file",
+    "fs:allow-mkdir",
+    "fs:allow-remove",
+    "fs:allow-rename",
+    "fs:allow-copy-file",
+    "fs:allow-stat",
+    "fs:allow-exists",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-confirm",
@@ -168,6 +58,7 @@
     "allow-filen-write-file",
     "allow-filen-mkdir",
     "allow-filen-rm",
-    "allow-filen-rename"
+    "allow-filen-rename",
+    "allow-get-user-folder"
   ]
 }

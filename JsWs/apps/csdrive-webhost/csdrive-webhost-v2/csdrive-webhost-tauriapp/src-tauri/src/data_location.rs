@@ -25,8 +25,10 @@ fn base64_engine() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
+/// The default data folder (see `layout::DEFAULT_DATA_FOLDER`).
 fn default_app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    app.path().app_data_dir().map_err(|e| e.to_string())
+    let os_data_dir = app.path().data_dir().map_err(|e| e.to_string())?;
+    Ok(crate::layout::default_data_dir(&os_data_dir))
 }
 
 fn config_file_path(default_dir: &Path) -> PathBuf {
@@ -35,7 +37,7 @@ fn config_file_path(default_dir: &Path) -> PathBuf {
 
 fn get_or_create_key() -> Result<Vec<u8>, String> {
     let entry =
-        keyring::Entry::new(crate::KEYCHAIN_SERVICE, KEYCHAIN_KEY_NAME).map_err(|e| e.to_string())?;
+        keyring::Entry::new(crate::layout::keychain_service(), KEYCHAIN_KEY_NAME).map_err(|e| e.to_string())?;
 
     match entry.get_password() {
         Ok(existing) => base64_engine()
@@ -123,6 +125,14 @@ fn write_custom_dir(default_dir: &Path, path: Option<&Path>) -> Result<(), Strin
 pub fn effective_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let default_dir = default_app_data_dir(app)?;
     Ok(read_custom_dir(&default_dir).unwrap_or(default_dir))
+}
+
+/// Absolute path of the folder holding user-authored content (`layout::USER_FOLDER`
+/// inside the data folder in use right now). Available to every window: it's how a
+/// web app finds where to point the fs commands.
+#[tauri::command]
+pub fn get_user_folder(app: AppHandle) -> Result<String, String> {
+    Ok(crate::layout::user_dir(&effective_data_dir(&app)?).display().to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -377,12 +387,12 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&default_dir);
-        std::fs::create_dir_all(default_dir.join("user")).unwrap();
-        std::fs::write(default_dir.join("user").join("some-app.html"), b"<html></html>").unwrap();
-        std::fs::create_dir_all(default_dir.join("admin")).unwrap();
-        std::fs::create_dir_all(default_dir.join("admin").join("dist")).unwrap();
-        std::fs::write(default_dir.join("admin").join("dist").join("index.html"), b"<html></html>").unwrap();
-        std::fs::write(default_dir.join("admin").join("data.db"), b"fake-sqlite").unwrap();
+        use crate::layout;
+        std::fs::create_dir_all(layout::user_dir(&default_dir)).unwrap();
+        std::fs::write(layout::user_dir(&default_dir).join("some-app.html"), b"<html></html>").unwrap();
+        std::fs::create_dir_all(layout::admin_bundle_root(&default_dir)).unwrap();
+        std::fs::write(layout::admin_bundle_file(&default_dir), b"<html></html>").unwrap();
+        std::fs::write(layout::admin_dir(&default_dir).join("data.db"), b"fake-sqlite").unwrap();
 
         let custom_dir = std::env::temp_dir().join(format!(
             "csdrive-delete-app-data-test-custom-{}",
@@ -398,8 +408,8 @@ mod tests {
         clear_directory_contents(&default_dir, custom_before.as_deref()).unwrap();
 
         assert!(default_dir.exists());
-        assert!(!default_dir.join("user").exists());
-        assert!(!default_dir.join("admin").exists());
+        assert!(!crate::layout::user_dir(&default_dir).exists());
+        assert!(!crate::layout::admin_dir(&default_dir).exists());
         assert!(!config_file_path(&default_dir).exists());
         // The custom folder and its contents must survive a default-folder wipe.
         assert!(custom_dir.join("untouched.txt").exists());

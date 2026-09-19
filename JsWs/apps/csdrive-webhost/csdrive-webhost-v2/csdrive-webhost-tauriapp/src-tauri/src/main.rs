@@ -4,6 +4,7 @@ mod app_state;
 mod data_location;
 mod deployable_apps;
 mod filen;
+mod layout;
 mod secondary_windows;
 mod sqlite_db;
 
@@ -15,11 +16,10 @@ use tauri::{Manager, Url, WebviewUrl, WebviewWindowBuilder};
 
 const USER_PROTOCOL: &str = "csuser";
 const ADMIN_PROTOCOL: &str = "csadmin";
-pub(crate) const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
 
 /// The admin-app's own single-file bundle, embedded into this binary at compile
 /// time (and thus into every installer built from it) so it's always available
-/// as the default `admin/dist/index.html` — no separate resource file or internet
+/// as the admin bundle file (`layout::ADMIN_BUNDLE_PATH`) — no separate resource file or internet
 /// access needed. Built via `cd csdrive-webhost-admin-reactapp && npm run
 /// build`; see `build.rs`, which fails the build early with a clear message if
 /// this hasn't been done.
@@ -61,36 +61,35 @@ fn is_internal_url(url: &Url) -> bool {
         })
 }
 
-/// Makes `admin/dist/index.html` exactly the admin-app bundle embedded in this binary,
-/// on every start. That installs it on a fresh install or after "Delete app data",
-/// updates it when the app itself is upgraded, and — because the admin-app is the
-/// one window with privileged commands — undoes any tampering with the file between
-/// runs. (So during development, rebuild the Tauri app after building the admin-app
-/// rather than copying the bundle by hand; a hand-copied one is replaced at startup.)
-fn install_admin_bundle(admin_dir: &Path, bundle: &str) -> std::io::Result<()> {
-    let dist_dir = admin_dir.join("dist");
-    std::fs::create_dir_all(&dist_dir)?;
+/// Makes the admin bundle file (`layout::ADMIN_BUNDLE_PATH`) exactly the admin-app
+/// bundle embedded in this binary, on every start. That installs it on a fresh install
+/// or after "Delete app data", updates it when the app itself is upgraded, and —
+/// because the admin-app is the one window with privileged commands — undoes any
+/// tampering with the file between runs. (So during development, rebuild the Tauri app
+/// after building the admin-app rather than copying the bundle by hand; a hand-copied
+/// one is replaced at startup.)
+fn install_admin_bundle(data_dir: &Path, bundle: &str) -> std::io::Result<()> {
+    let bundle_file = layout::admin_bundle_file(data_dir);
+    let bundle_root = layout::admin_bundle_root(data_dir);
+    std::fs::create_dir_all(&bundle_root)?;
 
-    let index_path = dist_dir.join("index.html");
-    let up_to_date = std::fs::read(&index_path).is_ok_and(|current| current == bundle.as_bytes());
+    let up_to_date = std::fs::read(&bundle_file).is_ok_and(|current| current == bundle.as_bytes());
     if !up_to_date {
-        std::fs::write(&index_path, bundle)?;
+        std::fs::write(&bundle_file, bundle)?;
     }
 
-    // `dist/` is ours alone and the bundle is a single file, so anything else in it
-    // shouldn't be there (e.g. something written into it by way of a link planted
-    // in the `user` folder).
-    if let Ok(entries) = std::fs::read_dir(&dist_dir) {
+    // The folder is ours alone and the bundle is a single file, so anything else in it
+    // shouldn't be there (e.g. something written into it by way of a link planted in
+    // the `user` folder).
+    if let Ok(entries) = std::fs::read_dir(&bundle_root) {
         for entry in entries.flatten() {
-            if entry.file_name() != "index.html" {
+            if entry.path() != bundle_file {
                 let path = entry.path();
                 let _ = std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir_all(&path));
             }
         }
     }
 
-    // Where the bundle lived before it moved into `dist/`.
-    let _ = std::fs::remove_file(admin_dir.join("index.html"));
     Ok(())
 }
 
@@ -117,8 +116,8 @@ fn respond_text(status: StatusCode, message: &str) -> Response<Vec<u8>> {
 }
 
 /// Serves `request_path` from inside `base_dir`.
-fn serve_file(base_dir: &Path, request_path: &str) -> Response<Vec<u8>> {
-    match resolve_file_in(base_dir, request_path) {
+fn serve_file(base_dir: &Path, request_path: &str, default_document: &str) -> Response<Vec<u8>> {
+    match resolve_file_in(base_dir, request_path, default_document) {
         Some(file_path) => match std::fs::read(&file_path) {
             Ok(data) => respond(StatusCode::OK, content_type_for(&file_path), data),
             Err(_) => respond_text(StatusCode::NOT_FOUND, "File not found"),
@@ -152,13 +151,13 @@ fn content_type_for(path: &Path) -> &'static str {
 }
 
 /// Resolves a request path against `base_dir` (the `user` folder for
-/// `csuser://`, the `admin/dist` folder for `csadmin://`), rejecting attempts to
+/// `csuser://`, the admin bundle's folder for `csadmin://`), rejecting attempts to
 /// escape it (e.g. via `..`) since — at least for `user` — the served content
 /// is arbitrary user-authored HTML/JS.
-fn resolve_file_in(base_dir: &Path, request_path: &str) -> Option<PathBuf> {
+fn resolve_file_in(base_dir: &Path, request_path: &str, default_document: &str) -> Option<PathBuf> {
     let relative = request_path.trim_start_matches('/');
     let relative = if relative.is_empty() {
-        "index.html"
+        default_document
     } else {
         relative
     };
@@ -204,6 +203,7 @@ fn main() {
             secondary_windows::move_tab_to_group,
             app_state::get_app_state,
             app_state::set_app_state,
+            data_location::get_user_folder,
             data_location::get_data_folder_info,
             data_location::pick_and_set_custom_data_folder,
             data_location::reset_data_folder_to_default,
@@ -227,10 +227,8 @@ fn main() {
             filen::filen_rename,
         ])
         .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
-            let user_dir = data_location::effective_data_dir(ctx.app_handle())
-                .expect("failed to resolve app data dir")
-                .join("user");
-            serve_file(&user_dir, request.uri().path())
+            let data_dir = data_location::effective_data_dir(ctx.app_handle()).expect("failed to resolve app data dir");
+            serve_file(&layout::user_dir(&data_dir), request.uri().path(), "index.html")
         })
         .register_uri_scheme_protocol(ADMIN_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
             // Only the admin-app's own window may load this; user-provided web apps
@@ -238,16 +236,13 @@ fn main() {
             if ctx.webview_label() != "main" {
                 return respond_text(StatusCode::FORBIDDEN, "Forbidden");
             }
-            let admin_dist_dir = data_location::effective_data_dir(ctx.app_handle())
-                .expect("failed to resolve app data dir")
-                .join("admin")
-                .join("dist");
-            serve_file(&admin_dist_dir, request.uri().path())
+            let data_dir = data_location::effective_data_dir(ctx.app_handle()).expect("failed to resolve app data dir");
+            serve_file(&layout::admin_bundle_root(&data_dir), request.uri().path(), layout::admin_bundle_url_path())
         })
         .setup(|app| {
             let app_data_dir = data_location::effective_data_dir(app.handle())?;
-            let admin_dir = app_data_dir.join("admin");
-            let user_dir = app_data_dir.join("user");
+            let admin_dir = layout::admin_dir(&app_data_dir);
+            let user_dir = layout::user_dir(&app_data_dir);
             // Always ensure both exist, regardless of which (if either) files
             // inside them are missing.
             std::fs::create_dir_all(&admin_dir)?;
@@ -256,13 +251,12 @@ fn main() {
             let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&admin_dir))?;
             tauri::async_runtime::block_on(app_state::ensure_schema(&pool))?;
             tauri::async_runtime::block_on(filen::ensure_schema(&pool))?;
-            tauri::async_runtime::block_on(filen::import_legacy_accounts(&pool, &user_dir));
             app.manage(app_state::AppDbState { pool: pool.clone() });
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
 
-            install_admin_bundle(&admin_dir, ADMIN_APP_INDEX_HTML)?;
+            install_admin_bundle(&app_data_dir, ADMIN_APP_INDEX_HTML)?;
 
             // The custom data folder (if any) lives outside the default app-data dir
             // that fs:allow-appdata-* scopes cover, so extend the runtime scope to it.
@@ -272,7 +266,7 @@ fn main() {
                 app,
                 "main",
                 WebviewUrl::CustomProtocol(
-                    format!("{ADMIN_PROTOCOL}://localhost/index.html").parse()?,
+                    format!("{ADMIN_PROTOCOL}://localhost/{}", layout::admin_bundle_url_path()).parse()?,
                 ),
             ))
             .title("CsDrive WebHost")
@@ -339,34 +333,28 @@ mod tests {
 
     #[test]
     fn the_admin_bundle_is_installed_updated_and_restored_at_every_start() {
-        fn dist_extra(admin_dir: &Path) -> PathBuf {
-            admin_dir.join("dist").join("_planted.txt")
-        }
-        let admin_dir = std::env::temp_dir().join(format!("csdrive-admin-bundle-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&admin_dir);
-        std::fs::create_dir_all(&admin_dir).unwrap();
-        let index = admin_dir.join("dist").join("index.html");
+        let data_dir = std::env::temp_dir().join(format!("csdrive-admin-bundle-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let bundle_file = layout::admin_bundle_file(&data_dir);
+        let bundle_root = layout::admin_bundle_root(&data_dir);
 
-        install_admin_bundle(&admin_dir, "<h1>v1</h1>").unwrap();
-        assert_eq!(std::fs::read_to_string(&index).unwrap(), "<h1>v1</h1>", "fresh install");
+        install_admin_bundle(&data_dir, "<h1>v1</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(&bundle_file).unwrap(), "<h1>v1</h1>", "fresh install");
 
-        std::fs::write(&index, "<script>evil()</script>").unwrap();
-        install_admin_bundle(&admin_dir, "<h1>v1</h1>").unwrap();
-        assert_eq!(std::fs::read_to_string(&index).unwrap(), "<h1>v1</h1>", "tampering is undone");
+        std::fs::write(&bundle_file, "<script>evil()</script>").unwrap();
+        install_admin_bundle(&data_dir, "<h1>v1</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(&bundle_file).unwrap(), "<h1>v1</h1>", "tampering is undone");
 
-        install_admin_bundle(&admin_dir, "<h1>v2</h1>").unwrap();
-        assert_eq!(std::fs::read_to_string(&index).unwrap(), "<h1>v2</h1>", "an upgrade replaces it");
+        install_admin_bundle(&data_dir, "<h1>v2</h1>").unwrap();
+        assert_eq!(std::fs::read_to_string(&bundle_file).unwrap(), "<h1>v2</h1>", "an upgrade replaces it");
 
-        std::fs::write(dist_extra(&admin_dir), "planted").unwrap();
-        std::fs::create_dir_all(admin_dir.join("dist").join("planted-dir")).unwrap();
-        install_admin_bundle(&admin_dir, "<h1>v2</h1>").unwrap();
-        assert_eq!(std::fs::read_dir(admin_dir.join("dist")).unwrap().count(), 1, "only index.html is left in dist/");
+        std::fs::write(bundle_root.join("_planted.txt"), "planted").unwrap();
+        std::fs::create_dir_all(bundle_root.join("planted-dir")).unwrap();
+        install_admin_bundle(&data_dir, "<h1>v2</h1>").unwrap();
+        assert_eq!(std::fs::read_dir(&bundle_root).unwrap().count(), 1, "only the bundle is left in its folder");
 
-        std::fs::write(admin_dir.join("index.html"), "old location").unwrap();
-        install_admin_bundle(&admin_dir, "<h1>v2</h1>").unwrap();
-        assert!(!admin_dir.join("index.html").exists(), "the pre-dist/ copy is removed");
-
-        let _ = std::fs::remove_dir_all(&admin_dir);
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     #[test]
@@ -377,7 +365,7 @@ mod tests {
         std::fs::write(dir.join("index.html"), "<h1>hi</h1>").unwrap();
 
         for (path, status) in [("/index.html", StatusCode::OK), ("/", StatusCode::OK), ("/missing.html", StatusCode::FORBIDDEN), ("/../x", StatusCode::FORBIDDEN)] {
-            let response = serve_file(&dir, path);
+            let response = serve_file(&dir, path, "index.html");
             assert_eq!(response.status(), status, "{path}");
             assert_eq!(
                 response.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()),

@@ -1,5 +1,6 @@
+import { invoke } from '@tauri-apps/api/core'
+import { join } from '@tauri-apps/api/path'
 import {
-  BaseDirectory,
   readDir,
   readFile,
   readTextFile,
@@ -13,38 +14,28 @@ import {
   type DirEntry,
   type FileInfo,
 } from '@tauri-apps/plugin-fs'
-import { appDataDir, join } from '@tauri-apps/api/path'
 
-/** Everything under the app data dir's `user` folder is what the frontend is allowed to touch. */
-export const USER_ROOT = 'user'
-/** Reserved folder for this app's own metadata (Filen account index, etc.) — hidden from the file manager UI. */
-export const RESERVED_CONFIG_DIR = '.csdrive-config'
+let cachedUserFolder: string | null = null
 
-let cachedAppDataDir: string | null = null
-
-async function getAppDataDir(): Promise<string> {
-  if (!cachedAppDataDir) {
-    cachedAppDataDir = await appDataDir()
+/** Absolute path of the user folder, as the backend has it (which follows the data
+ * folder's location — default, or relocated from the Settings tab). */
+export async function getUserFolder(): Promise<string> {
+  if (!cachedUserFolder) {
+    cachedUserFolder = await invoke<string>('get_user_folder')
   }
-  return cachedAppDataDir
+  return cachedUserFolder
 }
 
-function userRelPath(relativePath: string): string {
-  const trimmed = relativePath.replace(/^\/+/, '')
-  return trimmed ? `${USER_ROOT}/${trimmed}` : USER_ROOT
-}
-
-/** Absolute filesystem path for a path relative to the user folder. Used by the sql plugin, which needs a real path. */
+/** Absolute filesystem path for a path relative to the user folder. */
 export async function userAbsolutePath(relativePath: string): Promise<string> {
-  const base = await getAppDataDir()
+  const base = await getUserFolder()
   const trimmed = relativePath.replace(/^\/+/, '')
-  return trimmed ? join(base, USER_ROOT, ...trimmed.split('/')) : join(base, USER_ROOT)
+  return trimmed ? join(base, ...trimmed.split('/')) : base
 }
 
 export async function listUserDir(relativePath: string): Promise<DirEntry[]> {
-  const entries = await readDir(userRelPath(relativePath), { baseDir: BaseDirectory.AppData })
+  const entries = await readDir(await userAbsolutePath(relativePath))
   return entries
-    .filter((e) => !(relativePath === '' && e.name === RESERVED_CONFIG_DIR))
     .sort((a, b) => {
       if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
       return a.name.localeCompare(b.name)
@@ -52,42 +43,39 @@ export async function listUserDir(relativePath: string): Promise<DirEntry[]> {
 }
 
 export async function statUserPath(relativePath: string): Promise<FileInfo> {
-  return stat(userRelPath(relativePath), { baseDir: BaseDirectory.AppData })
+  return stat(await userAbsolutePath(relativePath))
 }
 
 export async function userPathExists(relativePath: string): Promise<boolean> {
-  return exists(userRelPath(relativePath), { baseDir: BaseDirectory.AppData })
+  return exists(await userAbsolutePath(relativePath))
 }
 
 export async function readUserTextFile(relativePath: string): Promise<string> {
-  return readTextFile(userRelPath(relativePath), { baseDir: BaseDirectory.AppData })
+  return readTextFile(await userAbsolutePath(relativePath))
 }
 
 export async function writeUserTextFile(relativePath: string, content: string): Promise<void> {
-  return writeTextFile(userRelPath(relativePath), content, { baseDir: BaseDirectory.AppData })
+  return writeTextFile(await userAbsolutePath(relativePath), content)
 }
 
 export async function readUserFile(relativePath: string): Promise<Uint8Array> {
-  return readFile(userRelPath(relativePath), { baseDir: BaseDirectory.AppData })
+  return readFile(await userAbsolutePath(relativePath))
 }
 
 export async function writeUserFile(relativePath: string, data: Uint8Array): Promise<void> {
-  return writeFile(userRelPath(relativePath), data, { baseDir: BaseDirectory.AppData })
+  return writeFile(await userAbsolutePath(relativePath), data)
 }
 
 export async function mkdirUser(relativePath: string): Promise<void> {
-  return mkdir(userRelPath(relativePath), { baseDir: BaseDirectory.AppData, recursive: true })
+  return mkdir(await userAbsolutePath(relativePath), { recursive: true })
 }
 
 export async function removeUserPath(relativePath: string, recursive: boolean): Promise<void> {
-  return remove(userRelPath(relativePath), { baseDir: BaseDirectory.AppData, recursive })
+  return remove(await userAbsolutePath(relativePath), { recursive })
 }
 
 export async function renameUserPath(fromRelative: string, toRelative: string): Promise<void> {
-  return rename(userRelPath(fromRelative), userRelPath(toRelative), {
-    oldPathBaseDir: BaseDirectory.AppData,
-    newPathBaseDir: BaseDirectory.AppData,
-  })
+  return rename(await userAbsolutePath(fromRelative), await userAbsolutePath(toRelative))
 }
 
 export function joinRelative(...segments: string[]): string {

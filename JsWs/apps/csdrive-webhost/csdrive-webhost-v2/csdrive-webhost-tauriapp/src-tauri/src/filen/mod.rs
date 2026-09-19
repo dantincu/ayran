@@ -5,7 +5,6 @@
 //!
 //! - `crypto` / `api`: Filen's encryption and HTTP protocol.
 //! - `ops`: path-based operations (list, read, write, mkdir, remove, rename).
-//! - `legacy`: one-time import of accounts connected by the old JS-SDK-based UI.
 //!
 //! Where things live: the list of connected accounts (user id + email) is a table in
 //! `data.db`; each account's session secrets (API key, master keys, ...) are in the
@@ -13,7 +12,6 @@
 
 mod api;
 mod crypto;
-mod legacy;
 mod ops;
 
 use std::collections::HashMap;
@@ -83,7 +81,7 @@ impl StoredSession {
 }
 
 fn keychain_entry(user_id: u64) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(crate::KEYCHAIN_SERVICE, &format!("filen-session:{user_id}")).map_err(|e| e.to_string())
+    keyring::Entry::new(crate::layout::keychain_service(), &format!("filen-session:{user_id}")).map_err(|e| e.to_string())
 }
 
 fn save_session(stored: &StoredSession) -> Result<(), String> {
@@ -178,11 +176,6 @@ pub async fn forget_all_accounts(app: &AppHandle) {
         }
     }
     app.state::<FilenState>().sessions.lock().unwrap().clear();
-}
-
-/// Imports accounts the old (JS SDK based) UI connected. Run once at startup.
-pub async fn import_legacy_accounts(pool: &SqlitePool, user_dir: &std::path::Path) {
-    legacy::migrate(pool, user_dir).await;
 }
 
 // ── Login / logout (admin window only) ────────────────────────────────────────

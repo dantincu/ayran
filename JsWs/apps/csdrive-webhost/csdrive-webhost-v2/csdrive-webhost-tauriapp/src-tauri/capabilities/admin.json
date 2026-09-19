@@ -1,12 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "admin-app",
-  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, deploy bundled apps, and resolve app-data paths.",
+  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, deploy bundled apps, and join paths.",
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:path:allow-resolve-directory",
     "core:path:allow-join",
     "allow-get-data-folder-info",
     "allow-pick-and-set-custom-data-folder",

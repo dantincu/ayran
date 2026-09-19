@@ -40,6 +40,7 @@ fn main() {
             "move_tab_to_group",
             "get_app_state",
             "set_app_state",
+            "get_user_folder",
             "get_data_folder_info",
             "pick_and_set_custom_data_folder",
             "reset_data_folder_to_default",
