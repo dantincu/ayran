@@ -48,6 +48,7 @@ import {
   writeRootFile,
   writeRootTextFile,
 } from '../lib/fileRoots'
+import { rootTagGuid } from '../lib/rootTags'
 import { listTags, openNewSecondaryWindow, type TagRecord } from '../lib/secondaryWindows'
 
 function isHtmlFile(name: string): boolean {
@@ -81,11 +82,6 @@ function isSameOrWithin(ancestor: string, candidate: string): boolean {
 }
 
 const LOCATION_KEY = 'filesTab.location'
-
-/** Tags are keyed by an opaque guid; a root's is derived from its id. */
-function rootTagGuid(rootId: string): string {
-  return `root:${rootId}`
-}
 
 interface SavedLocation {
   rootId: string

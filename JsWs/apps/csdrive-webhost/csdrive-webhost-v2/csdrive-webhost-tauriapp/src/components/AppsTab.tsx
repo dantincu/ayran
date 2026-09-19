@@ -26,6 +26,7 @@ import Modal from './Modal'
 import { TagList } from './Tags'
 import ReorderList from './ReorderList'
 import { getAppState, setAppState } from '../lib/appState'
+import { rootOfTab } from '../lib/rootTags'
 import {
   activateTab,
   addBlankTab,
@@ -37,6 +38,7 @@ import {
   focusSecondaryWindow,
   listSecondaryWindows,
   listSystemApps,
+  listTags,
   moveTabToGroup,
   onSecondaryWindowsChanged,
   openNewSecondaryWindow,
@@ -49,6 +51,7 @@ import {
   type TabGroupRecord,
   type TabRecord,
   type TabTextSpan,
+  type TagRecord,
   type WindowKind,
 } from '../lib/secondaryWindows'
 
@@ -96,6 +99,20 @@ function applyOrder<T>(items: T[], getId: (item: T) => string, useCustom: boolea
     if (remaining.has(getId(item))) ordered.push(item)
   }
   return ordered
+}
+
+/** The tags of every root that the tabs of `records` show. */
+async function fetchRootTags(records: SecondaryWindowRecord[]): Promise<TagRecord[]> {
+  const guids = new Set<string>()
+  for (const record of records) {
+    for (const group of record.tabGroups) {
+      for (const tab of group.tabs) {
+        const root = rootOfTab(tab)
+        if (root) guids.add(root.guid)
+      }
+    }
+  }
+  return guids.size > 0 ? listTags(Array.from(guids)) : []
 }
 
 function formatDateTime(ms: number): string {
@@ -293,21 +310,29 @@ function TabTextRow({ spans, className }: { spans: TabTextSpan[]; className: str
 
 function TabRow({
   tab,
+  rootTags,
   cut,
   onError,
+  onRootTagsChanged,
   onMove,
   onCut,
   onClone,
   onActivate,
 }: {
   tab: TabRecord
+  /** The tags of every root the listed tabs show (see `rootOfTab`); this tab's are picked out by guid. */
+  rootTags: TagRecord[]
   cut: boolean
   onError: (message: string) => void
+  onRootTagsChanged: () => void
   onMove: () => void
   onCut: () => void
   onClone: () => void
   onActivate: () => void
 }) {
+  // A tab that shows a root (a folder, a Filen account) has two sets of tags: the root's — the same
+  // wherever that root appears — and its own. When both are shown each line says which it is.
+  const root = rootOfTab(tab)
   return (
     <div className={`window-item tab-row ${cut ? 'tab-row-cut' : ''}`}>
       <div className="tab-row-header">
@@ -328,7 +353,30 @@ function TabRow({
           <IconButton icon={CopyPlus} label="Clone tab" onClick={onClone} />
         </div>
       </div>
-      <TagList guid={tab.guid} tags={tab.tags} className="window-item-tags" onError={onError} />
+      {root ? (
+        <>
+          <div className="tab-tags-line">
+            <span className="tab-tags-caption" title="Tags of the folder or account this tab shows — shared by every tab on it, and by the Files tab">
+              Root
+            </span>
+            <TagList
+              guid={root.guid}
+              tags={rootTags.filter((t) => t.guid === root.guid)}
+              className="tab-tags-list"
+              onChanged={onRootTagsChanged}
+              onError={onError}
+            />
+          </div>
+          <div className="tab-tags-line">
+            <span className="tab-tags-caption" title="Tags of this tab only">
+              Tab
+            </span>
+            <TagList guid={tab.guid} tags={tab.tags} className="tab-tags-list" onError={onError} />
+          </div>
+        </>
+      ) : (
+        <TagList guid={tab.guid} tags={tab.tags} className="window-item-tags" onError={onError} />
+      )}
     </div>
   )
 }
@@ -390,6 +438,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
 
   const [records, setRecords] = useState<SecondaryWindowRecord[]>([])
   const [catalog, setCatalog] = useState<SystemAppInfo[]>([])
+  const [rootTags, setRootTags] = useState<TagRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -480,7 +529,9 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     setError(null)
     try {
       if (isSystem) setCatalog(await listSystemApps())
-      setRecords(await listSecondaryWindows(kind))
+      const list = await listSecondaryWindows(kind)
+      setRecords(list)
+      setRootTags(await fetchRootTags(list))
     } catch (e) {
       setError(String(e))
     } finally {
@@ -495,6 +546,14 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
       unlistenPromise.then((unlisten) => unlisten())
     }
   }, [refresh])
+
+  async function refreshRootTags() {
+    try {
+      setRootTags(await fetchRootTags(records))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   async function handleClose(guid: string) {
     try {
@@ -930,8 +989,10 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
               renderRow={(t) => (
                 <TabRow
                   tab={t}
+                  rootTags={rootTags}
                   cut={cutTab?.guid === t.guid}
                   onError={setError}
+                  onRootTagsChanged={refreshRootTags}
                   onMove={() => setMovingTab(t)}
                   onCut={() => setCutTab(t)}
                   onClone={() => handleCloneTab(t.guid)}

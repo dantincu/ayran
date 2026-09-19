@@ -967,6 +967,31 @@ select {
   min-width: 0;
 }
 
+/* A tab that shows a root has two tag lines — the root's and its own — each with a small caption. */
+.tab-tags-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 18px;
+}
+
+.tab-tags-caption {
+  flex-shrink: 0;
+  min-width: 34px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tab-tags-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .tab-row-header {
   display: flex;
   align-items: center;
