@@ -2,12 +2,20 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- Browsing and using folders the person picks (FolderPicker.kt). Android 11+: "All files access",
+         which the person grants in the system settings the first time. Older: the classic storage
+         permissions. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
+
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:requestLegacyExternalStorage="true"
         android:theme="@style/Theme.csdrive_webhost_tauriapp"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <activity
@@ -34,7 +42,4 @@
             android:resource="@xml/file_paths" />
         </provider>
     </application>
-    <!-- ANDROID FS PLUGIN. AUTO-GENERATED. DO NOT REMOVE. -->
-    
-    <!-- ANDROID FS PLUGIN. AUTO-GENERATED. DO NOT REMOVE. -->
 </manifest>

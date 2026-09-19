@@ -1,8 +1,8 @@
 //! SQLite access for the admin-app's SQLite studio and for user-provided web apps —
 //! in place of `tauri-plugin-sql`, which will open *any* path on disk. Every
 //! database is opened through `authorize`, so only files inside the user folder or
-//! inside a folder the user has picked with a native dialog (both of which are in the
-//! plugin-fs runtime scope — the same scope the file APIs obey) can be reached.
+//! inside a folder the user has picked (both of which are in `fs_scope` — the same scope the
+//! file commands obey) can be reached.
 //!
 //! SQLite has its own ways to name files — `ATTACH DATABASE`, `VACUUM INTO`,
 //! `PRAGMA temp_store_directory` — which would sidestep that check, so every connection
@@ -25,8 +25,9 @@ use libsqlite3_sys as ffi;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions, SqliteRow};
 use sqlx::SqliteConnection;
 use sqlx::{Column, Row, SqlitePool, TypeInfo, ValueRef};
-use tauri::AppHandle;
-use tauri_plugin_fs::FsExt;
+use tauri::{AppHandle, Manager};
+
+use crate::fs_scope::FsScope;
 
 use crate::data_location;
 
@@ -71,12 +72,9 @@ pub struct ExecuteResult {
 }
 
 /// Resolves symlinks and `..` in `requested` (so neither can escape the scope). A file
-/// that doesn't exist yet is resolved via its parent folder.
+/// that doesn't exist yet is resolved via the nearest folder that does.
 fn resolve_for_scope(requested: &Path) -> Option<PathBuf> {
-    match requested.canonicalize() {
-        Ok(p) => Some(p),
-        Err(_) => Some(requested.parent()?.canonicalize().ok()?.join(requested.file_name()?)),
-    }
+    crate::fs_scope::resolve(requested, true).ok()
 }
 
 /// Resolves `path` (absolute, or relative to the user folder) to the real file it
@@ -90,7 +88,7 @@ fn authorize(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
     };
 
     let resolved = resolve_for_scope(&requested).ok_or_else(|| format!("\"{path}\" isn't in a folder that exists."))?;
-    if app.fs_scope().is_allowed(&resolved) {
+    if app.state::<FsScope>().is_allowed(&resolved) {
         Ok(resolved)
     } else {
         Err(format!(
@@ -227,7 +225,7 @@ pub async fn sqlite_load(
     let key = (crate::window_host::caller_key(&window), handle.clone());
 
     if !state.pools.lock().unwrap().contains_key(&key) {
-        let scope = app.fs_scope();
+        let scope = app.state::<FsScope>().inner().clone();
         let pool = connect(&resolved, Arc::new(move |p: &Path| scope.is_allowed(p))).await.map_err(|e| e.to_string())?;
         state.pools.lock().unwrap().insert(key, pool);
     }

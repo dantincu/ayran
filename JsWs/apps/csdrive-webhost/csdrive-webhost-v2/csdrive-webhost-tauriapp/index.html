@@ -6,7 +6,11 @@
     <title>CsDrive WebHost</title>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- The loading indicator, on screen from the first paint. React replaces it when it starts
+         (see components/Splash.tsx, which renders the same markup). -->
+    <div id="root">
+      <div class="app-splash" role="status" aria-label="Loading"><div class="app-spinner"></div></div>
+    </div>
     <script>
       function csdriveShowFatal(message) {
         var el = document.createElement('pre')

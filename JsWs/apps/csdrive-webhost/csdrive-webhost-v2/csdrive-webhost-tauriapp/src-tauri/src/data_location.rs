@@ -67,6 +67,16 @@ pub fn effective_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(read_custom_dir(&default_dir).unwrap_or(default_dir))
 }
 
+/// Paths that no file command may ever touch, wherever a picked folder happens to sit: the app's own
+/// folder (database, Filen sessions) and the pointer file that records a relocated data folder.
+pub fn protected_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
+    let default_dir = default_app_data_dir(app)?;
+    Ok(vec![
+        crate::layout::admin_dir(&effective_data_dir(app)?),
+        config_file_path(&default_dir),
+    ])
+}
+
 /// Absolute path of the folder holding user-authored content (`layout::USER_FOLDER`
 /// inside the data folder in use right now). Available to every window: it's how a
 /// web app finds where to point the fs commands.
@@ -275,8 +285,6 @@ pub async fn delete_app_data(
     let custom_dir = read_custom_dir(&default_dir);
 
     crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
-    // The list of picked device folders is about to be wiped, so hand back Android's access to them.
-    crate::device_roots::release_all(&app, &db_state.pool).await;
     db_state.pool.close().await;
 
     clear_directory_contents(&default_dir, custom_dir.as_deref())?;

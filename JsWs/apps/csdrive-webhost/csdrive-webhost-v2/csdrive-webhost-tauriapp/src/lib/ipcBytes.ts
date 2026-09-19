@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { isMobile } from './isMobile'
 
 /** Calls a backend command that takes a file's bytes together with a few text arguments
- * (`filen_write_file`, `device_write_file`, `save_to_device`; see `ipc.rs`).
+ * (`filen_write_file`, `save_to_device`; see `ipc.rs`).
  *
  * Desktop: the bytes are the raw request body and the arguments go in percent-encoded
  * headers — the fast path. Android's webview can't pass a POST body to a custom protocol,

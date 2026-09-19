@@ -13,7 +13,7 @@ import {
   exists,
   type DirEntry,
   type FileInfo,
-} from '@tauri-apps/plugin-fs'
+} from './fs'
 
 let cachedUserFolder: string | null = null
 

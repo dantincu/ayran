@@ -16,6 +16,7 @@
     "allow-get-deployable-app-html",
     "allow-filen-login",
     "allow-filen-logout",
-    "allow-save-to-device"
+    "allow-save-to-device",
+    "allow-choose-save-location"
   ]
 }

@@ -5,10 +5,12 @@ mod code_snippets;
 mod data_location;
 mod deployable_apps;
 mod device_files;
-mod device_roots;
 mod filen;
+mod fs_commands;
+mod fs_scope;
 mod ipc;
 mod layout;
+mod picked_roots;
 mod secure_store;
 mod secondary_windows;
 mod sqlite_db;
@@ -141,12 +143,7 @@ fn resolve_file_in(base_dir: &Path, request_path: &str, default_document: &str) 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_dialog::init());
-    // Android's folder picker and the files inside a picked folder (see `device_roots.rs`).
-    #[cfg(target_os = "android")]
-    let builder = builder.plugin(tauri_plugin_android_fs::init());
-    let builder = builder
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             secondary_windows::list_secondary_windows,
             secondary_windows::open_new_secondary_window,
@@ -176,17 +173,18 @@ pub fn run() {
             code_snippets::get_code_snippets,
             data_location::get_user_folder,
             device_files::save_to_device,
-            device_roots::pick_device_root,
-            device_roots::list_device_roots,
-            device_roots::remove_device_root,
-            device_roots::device_readdir,
-            device_roots::device_stat,
-            device_roots::device_exists,
-            device_roots::device_read_file,
-            device_roots::device_write_file,
-            device_roots::device_mkdir,
-            device_roots::device_rm,
-            device_roots::device_rename,
+            fs_commands::fs_read_dir,
+            fs_commands::fs_stat,
+            fs_commands::fs_exists,
+            fs_commands::fs_read_file,
+            fs_commands::fs_write_file,
+            fs_commands::fs_mkdir,
+            fs_commands::fs_remove,
+            fs_commands::fs_rename,
+            device_files::choose_save_location,
+            picked_roots::pick_folder,
+            picked_roots::list_picked_roots,
+            picked_roots::remove_picked_root,
             data_location::get_data_folder_info,
             data_location::pick_and_set_custom_data_folder,
             data_location::reset_data_folder_to_default,
@@ -225,20 +223,27 @@ pub fn run() {
             let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&admin_dir))?;
             tauri::async_runtime::block_on(app_state::ensure_schema(&pool))?;
             tauri::async_runtime::block_on(filen::ensure_schema(&pool))?;
-            tauri::async_runtime::block_on(device_roots::ensure_schema(&pool))?;
+            tauri::async_runtime::block_on(picked_roots::ensure_schema(&pool))?;
             app.manage(app_state::AppDbState { pool: pool.clone() });
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
             app.manage(window_host::HostState::default());
+            app.manage(device_files::ExportState::default());
             #[cfg(target_os = "android")]
             android_jni::init(app.handle().clone());
 
             window_host::init(app.handle());
 
-            // The custom data folder (if any) lives outside the default app-data dir
-            // that fs:allow-appdata-* scopes cover, so extend the runtime scope to it.
-            let _ = tauri_plugin_fs::FsExt::fs_scope(app).allow_directory(&user_dir, true);
+            // What the file commands and SQLite may touch (see `fs_scope.rs`): the user folder, always;
+            // never the app's own database and secrets; and the folders picked in earlier sessions.
+            let fs_scope = fs_scope::FsScope::new();
+            fs_scope.allow_fixed(&user_dir);
+            for protected in data_location::protected_paths(app.handle())? {
+                fs_scope.deny(&protected);
+            }
+            picked_roots::allow_saved(&app.state::<app_state::AppDbState>().pool, &fs_scope);
+            app.manage(fs_scope);
 
             // The admin-app is the Tauri app's own frontend (`frontendDist`), compiled into the binary.
             let main_window = lock_down_navigation(

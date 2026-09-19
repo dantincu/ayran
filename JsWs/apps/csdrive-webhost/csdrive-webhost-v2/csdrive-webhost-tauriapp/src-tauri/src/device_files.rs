@@ -1,23 +1,67 @@
-//! Handing a file to the device's own storage, outside the app's sandbox.
+//! Handing a file to the device's own storage, outside the folders the app may use — the
+//! admin-app's "Export".
 //!
-//! On desktop the admin-app does this with a native "save as" dialog plus the fs
-//! plugin. Android has neither: its save dialog returns a content URI, which the fs
-//! plugin can't write to within our scope. So the admin-app sends the bytes here, and a
-//! Kotlin helper (`DeviceFiles.kt`) stores them in the public Downloads folder through
-//! MediaStore — which needs no storage permission.
+//! The person decides where it goes, so this is the one place a file is written outside the app's
+//! scope (`fs_scope.rs`), and only ever to what they chose:
+//! - **Desktop:** a native "save as" dialog. `choose_save_location` shows it and remembers the
+//!   chosen path under a one-time token; `save_to_device` then writes the bytes there. (Two steps so
+//!   the admin-app only fetches a big file — say from Filen — once the person has picked a place.)
+//! - **Android:** there is no dialog step: a Kotlin helper (`DeviceFiles.kt`) stores the file in the
+//!   public Downloads folder through MediaStore, which needs no storage permission.
 //!
 //! Admin-app only: leaving the app's sandbox is not something a web app gets to do.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
 use tauri::ipc::Request;
 
-/// Saves the request's body as a file named by the percent-encoded `name` header into
-/// the device's Downloads folder; resolves to where it ended up (for display).
+/// Desktop: locations the person chose in the dialog, waiting for their bytes (token → path).
+#[derive(Default)]
+pub struct ExportState {
+    chosen: Mutex<HashMap<String, PathBuf>>,
+}
+
+/// Desktop: asks where to save `name`. Resolves to a one-time token for `save_to_device`, or `None`
+/// if the person cancelled.
 #[tauri::command]
-pub async fn save_to_device(window: tauri::WebviewWindow, request: Request<'_>) -> Result<String, String> {
+pub async fn choose_save_location(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ExportState>,
+    name: String,
+) -> Result<Option<String>, String> {
+    crate::window_host::require_admin(&window)?;
+    let name = safe_file_name(&name)?;
+    let Some(path) = platform::choose(&app, &name).await? else { return Ok(None) };
+
+    let token = uuid::Uuid::new_v4().to_string();
+    state.chosen.lock().unwrap().insert(token.clone(), path);
+    Ok(Some(token))
+}
+
+/// Saves the request's body as a file named by `name`: on desktop to the location chosen with
+/// `choose_save_location` (its `token`), on Android into the Downloads folder. Resolves to where it
+/// ended up (for display).
+#[tauri::command]
+pub async fn save_to_device(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, ExportState>,
+    request: Request<'_>,
+) -> Result<String, String> {
     crate::window_host::require_admin(&window)?;
 
     let name = safe_file_name(&crate::ipc::field(&request, "name")?)?;
-    platform::save(name, crate::ipc::body_bytes(&request)?)
+    let data = crate::ipc::body_bytes(&request)?;
+    let target = if cfg!(desktop) {
+        let token = crate::ipc::field(&request, "token")?;
+        let path = state.chosen.lock().unwrap().remove(&token).ok_or("That save location has expired — choose it again.")?;
+        Some(path)
+    } else {
+        None
+    };
+    platform::save(name, data, target)
 }
 
 /// The last path component of `name`, so a hostile name can't aim outside Downloads.
@@ -31,11 +75,17 @@ fn safe_file_name(name: &str) -> Result<String, String> {
 
 #[cfg(target_os = "android")]
 mod platform {
+    use std::path::PathBuf;
+
     use jni::objects::{JString, JValue};
 
     const HELPER_CLASS: &str = "com.ayran.csdrive_webhost_tauriapp.DeviceFiles";
 
-    pub fn save(name: String, data: Vec<u8>) -> Result<String, String> {
+    pub async fn choose(_app: &tauri::AppHandle, _name: &str) -> Result<Option<PathBuf>, String> {
+        Err("There is no save dialog on Android: exports go to the Downloads folder.".to_string())
+    }
+
+    pub fn save(name: String, data: Vec<u8>, _target: Option<PathBuf>) -> Result<String, String> {
         let reply = crate::android_jni::on_activity(move |env, activity| {
             let class = crate::android_jni::helper_class(env, activity, HELPER_CLASS)?;
             let name = env.new_string(&name)?;
@@ -59,10 +109,39 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(desktop)]
 mod platform {
-    pub fn save(_name: String, _data: Vec<u8>) -> Result<String, String> {
-        Err("Saving to the Downloads folder is only available on Android; use a save dialog here.".to_string())
+    use std::path::PathBuf;
+
+    use tauri_plugin_dialog::DialogExt;
+
+    pub async fn choose(app: &tauri::AppHandle, name: &str) -> Result<Option<PathBuf>, String> {
+        let (app, name) = (app.clone(), name.to_string());
+        let chosen = tauri::async_runtime::spawn_blocking(move || {
+            app.dialog().file().set_file_name(name).blocking_save_file()
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        chosen.map(|p| p.into_path().map_err(|e| e.to_string())).transpose()
+    }
+
+    pub fn save(_name: String, data: Vec<u8>, target: Option<PathBuf>) -> Result<String, String> {
+        let path = target.ok_or("No save location was chosen.")?;
+        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        Ok(path.display().to_string())
+    }
+}
+
+#[cfg(target_os = "ios")]
+mod platform {
+    use std::path::PathBuf;
+
+    pub async fn choose(_app: &tauri::AppHandle, _name: &str) -> Result<Option<PathBuf>, String> {
+        Err("Exporting isn't implemented on iOS yet.".to_string())
+    }
+
+    pub fn save(_name: String, _data: Vec<u8>, _target: Option<PathBuf>) -> Result<String, String> {
+        Err("Exporting isn't implemented on iOS yet.".to_string())
     }
 }
 

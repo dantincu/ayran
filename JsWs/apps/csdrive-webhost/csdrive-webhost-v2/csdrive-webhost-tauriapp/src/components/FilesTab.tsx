@@ -33,7 +33,7 @@ import {
   type FileRoot,
   getUserRoot,
   listRootDir,
-  loadDeviceRoots,
+  loadSavedRoots,
   mkdirRoot,
   pickNewRoot,
   readRootFile,
@@ -186,11 +186,11 @@ export default function FilesTab() {
       // in the same render — otherwise an intermediate render with the root but not
       // yet the restored path would kick off a wasted (and potentially racy) fetch.
       const root = await getUserRoot()
-      // Folders picked on Android in an earlier session (none elsewhere: there they last one session).
-      const deviceRoots = await loadDeviceRoots().catch(() => [])
+      // Folders picked in earlier sessions (Android remembers them; elsewhere they last one session).
+      const savedRoots = await loadSavedRoots().catch(() => [])
       const saved = await getAppState<SavedLocation>(LOCATION_KEY)
       const savedPageSize = await getGlobalPageSize()
-      const all = [root, ...deviceRoots]
+      const all = [root, ...savedRoots]
       setRoots(all)
       if (saved && typeof saved.path === 'string' && all.some((r) => r.id === saved.rootId)) {
         setActiveRootId(saved.rootId)

@@ -2,5 +2,10 @@
     <!-- Base application theme. -->
     <style name="Theme.csdrive_webhost_tauriapp" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
+        <!-- No white flash while the app starts: the window, and Android 12+'s system splash, use the app's background. -->
+        <item name="colorPrimary">@color/csdrive_accent</item>
+        <item name="colorOnPrimary">@color/csdrive_on_accent</item>
+        <item name="android:windowBackground">@color/csdrive_bg</item>
+        <item name="android:windowSplashScreenBackground">@color/csdrive_bg</item>
     </style>
 </resources>

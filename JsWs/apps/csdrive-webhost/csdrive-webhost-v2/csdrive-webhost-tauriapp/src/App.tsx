@@ -7,6 +7,8 @@ import FilenTab from './components/FilenTab'
 import SqliteTab from './components/SqliteTab'
 import StorageTab from './components/StorageTab'
 import SettingsTab from './components/SettingsTab'
+import Splash from './components/Splash'
+import { hideNativeSplash } from './lib/nativeSplash'
 import { getAppState, setAppState } from './lib/appState'
 
 type Tab = 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
@@ -33,6 +35,8 @@ export default function App() {
   useEffect(() => {
     getAppState<Tab>(ACTIVE_TAB_KEY).then((stored) => {
       setTabState(isTab(stored) ? stored : DEFAULT_TAB)
+      // The first screen is about to be drawn: let the native loading spinner (Android) go.
+      requestAnimationFrame(hideNativeSplash)
     })
   }, [])
 
@@ -43,7 +47,11 @@ export default function App() {
 
   if (tab === null) {
     // Wait for the persisted tab to load so we don't flash the wrong one.
-    return <div className="app-shell" />
+    return (
+      <div className="app-shell">
+        <Splash />
+      </div>
+    )
   }
 
   return (

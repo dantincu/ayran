@@ -1,23 +1,21 @@
+import { invoke } from '@tauri-apps/api/core'
 import { invokeWithBytes } from './ipcBytes'
-import { save as saveDialog } from '@tauri-apps/plugin-dialog'
-import { writeFile } from '@tauri-apps/plugin-fs'
 
 import { isMobile } from './isMobile'
 
 export { isMobile }
 
-/** Gives a file to the device's own storage. Desktop: a native "save as" dialog. Android:
- * straight into the Downloads folder (its save dialog yields content URIs the fs scope
- * can't write to — see `device_files.rs`). `read` is only called once we know where to
- * save. Resolves to where the file went, or null if the user cancelled. */
+/** Gives a file to the device's own storage. Desktop: a native "save as" dialog (shown by the backend,
+ * which then writes the file wherever the person chose). Android: straight into the Downloads folder
+ * (its save dialog yields content URIs; see `device_files.rs`). `read` is only called once we know
+ * where to save. Resolves to where the file went, or null if the user cancelled. */
 export async function exportToDevice(name: string, read: () => Promise<Uint8Array>): Promise<string | null> {
   if (isMobile) {
     return invokeWithBytes<string>('save_to_device', await read(), { name })
   }
-  const dest = await saveDialog({ defaultPath: name })
-  if (!dest) return null
-  await writeFile(dest, await read())
-  return dest
+  const token = await invoke<string | null>('choose_save_location', { name })
+  if (!token) return null
+  return invokeWithBytes<string>('save_to_device', await read(), { name, token })
 }
 
 export interface PickedFile {

@@ -1,5 +1,5 @@
 //! Reading the pieces of a command that takes a file's bytes as its request body — used
-//! by every upload-style command (`filen_write_file`, `device_write_file`,
+//! by every upload-style command (`filen_write_file`,
 //! `save_to_device`). The frontend side is `invokeWithBytes` (`src/lib/ipcBytes.ts`).
 //!
 //! A request can arrive in three shapes:
