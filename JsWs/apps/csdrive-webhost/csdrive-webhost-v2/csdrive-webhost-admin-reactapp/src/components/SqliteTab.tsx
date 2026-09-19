@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import Database from '@tauri-apps/plugin-sql'
+import Database from '../lib/sqlite'
 import { Database as DatabaseIcon, Eye, Play, Plus, RefreshCw, Table2, X } from 'lucide-react'
 import IconButton from './IconButton'
 import { joinRelative, listUserDir, userAbsolutePath } from '../lib/localFs'
@@ -74,7 +74,7 @@ export default function SqliteTab() {
     setError(null)
     try {
       const abs = await userAbsolutePath(rel)
-      const database = await Database.load(`sqlite:${abs}`)
+      const database = await Database.load(abs)
       setDb(database)
       setSelectedRel(rel)
       setActiveTable(null)

@@ -30,12 +30,35 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// The label of the admin-app's own (main) window; every other window is a
+/// secondary one hosting a user-provided html file, labelled by its guid.
+const MAIN_WINDOW_LABEL: &str = "main";
+/// The admin-app's `app_id`: it's always served as `admin/index.html`.
+const ADMIN_APP_ID: &str = "index.html";
+
+/// Which `app_id` the calling window's state lives under — decided here, from the
+/// window's own identity, never taken from the caller: otherwise any user-provided
+/// web app could read or overwrite the admin-app's (or another app's) state just by
+/// naming its `app_id`.
+async fn caller_app_id(pool: &SqlitePool, window_label: &str) -> Result<String, String> {
+    if window_label == MAIN_WINDOW_LABEL {
+        return Ok(ADMIN_APP_ID.to_string());
+    }
+    sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
+        .bind(window_label)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "This window isn't a registered app window.".to_string())
+}
+
 #[tauri::command]
 pub async fn get_app_state(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppDbState>,
-    app_id: String,
     key: String,
 ) -> Result<Option<String>, String> {
+    let app_id = caller_app_id(&state.pool, window.label()).await?;
     sqlx::query_scalar("SELECT value FROM app_state WHERE app_id = ?1 AND key = ?2")
         .bind(&app_id)
         .bind(&key)
@@ -46,11 +69,12 @@ pub async fn get_app_state(
 
 #[tauri::command]
 pub async fn set_app_state(
+    window: tauri::WebviewWindow,
     state: tauri::State<'_, AppDbState>,
-    app_id: String,
     key: String,
     value: String,
 ) -> Result<(), String> {
+    let app_id = caller_app_id(&state.pool, window.label()).await?;
     sqlx::query(
         "INSERT INTO app_state (app_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT(app_id, key) DO UPDATE SET value = excluded.value",
@@ -107,6 +131,25 @@ mod tests {
 
             assert_eq!(a.as_deref(), Some("\"windows\""));
             assert_eq!(b.as_deref(), Some("\"files\""));
+        });
+    }
+
+    #[test]
+    fn a_windows_app_id_comes_from_its_own_identity() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("caller").await;
+            sqlx::query("CREATE TABLE secondary_windows (guid TEXT PRIMARY KEY, relative_path TEXT NOT NULL, created_at INTEGER NOT NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO secondary_windows (guid, relative_path, created_at) VALUES ('win-1', 'qwer/index1.html', 0)")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            assert_eq!(caller_app_id(&pool, "main").await.unwrap(), "index.html");
+            assert_eq!(caller_app_id(&pool, "win-1").await.unwrap(), "qwer/index1.html");
+            assert!(caller_app_id(&pool, "unknown").await.is_err());
         });
     }
 

@@ -1,0 +1,173 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "user-apps",
+  "description": "What every window may do, user-provided web apps included: use files under the user folder and folders the user picks with a native dialog, SQLite databases in those same places, the Filen.io accounts the user has connected (file operations only — never credentials), and manage app windows, tab groups, tabs and their tags. Deliberately absent: connecting/disconnecting Filen accounts, data-folder management, system/OS information, and window/app introspection.",
+  "windows": [
+    "*"
+  ],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-file",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-mkdir",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-remove",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-rename",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-copy-file",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-stat",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    {
+      "identifier": "fs:allow-exists",
+      "allow": [
+        {
+          "path": "$APPDATA/user"
+        },
+        {
+          "path": "$APPDATA/user/**"
+        }
+      ]
+    },
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-confirm",
+    "allow-sqlite-load",
+    "allow-sqlite-close",
+    "allow-sqlite-execute",
+    "allow-sqlite-select",
+    "allow-list-secondary-windows",
+    "allow-open-new-secondary-window",
+    "allow-add-secondary-window-entry",
+    "allow-reopen-secondary-window",
+    "allow-close-secondary-window",
+    "allow-suspend-secondary-window",
+    "allow-close-all-secondary-windows",
+    "allow-suspend-all-secondary-windows",
+    "allow-focus-secondary-window",
+    "allow-list-tags",
+    "allow-add-window-tag",
+    "allow-update-window-tag",
+    "allow-reorder-window-tags",
+    "allow-remove-window-tag",
+    "allow-init-window-tab",
+    "allow-update-tab-resource",
+    "allow-submit-resource-icons",
+    "allow-create-tab-group",
+    "allow-rename-tab-group",
+    "allow-add-blank-tab",
+    "allow-clone-tab",
+    "allow-activate-tab",
+    "allow-move-tab-to-group",
+    "allow-get-app-state",
+    "allow-set-app-state",
+    "allow-filen-list-accounts",
+    "allow-filen-readdir",
+    "allow-filen-stat",
+    "allow-filen-read-file",
+    "allow-filen-write-file",
+    "allow-filen-mkdir",
+    "allow-filen-rm",
+    "allow-filen-rename"
+  ]
+}

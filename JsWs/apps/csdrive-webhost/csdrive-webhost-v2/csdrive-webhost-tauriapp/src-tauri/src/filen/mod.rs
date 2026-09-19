@@ -1,0 +1,455 @@
+//! Filen.io support, entirely on the Rust side: login, session storage, and
+//! path-based file operations. Nothing here ever hands a credential to a webview —
+//! windows (the admin-app and user-provided web apps alike) get file/folder metadata
+//! and contents, plus each account's Filen user id and email, and nothing more.
+//!
+//! - `crypto` / `api`: Filen's encryption and HTTP protocol.
+//! - `ops`: path-based operations (list, read, write, mkdir, remove, rename).
+//! - `legacy`: one-time import of accounts connected by the old JS-SDK-based UI.
+//!
+//! Where things live: the list of connected accounts (user id + email) is a table in
+//! `data.db`; each account's session secrets (API key, master keys, ...) are in the
+//! OS keychain, one entry per account.
+
+mod api;
+mod crypto;
+mod legacy;
+mod ops;
+
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
+use tauri::{AppHandle, Manager};
+
+use crate::app_state::AppDbState;
+
+// ── Sessions ──────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub struct Session {
+    api_key: String,
+    /// Oldest first, newest last; decrypting tries newest first, encrypting uses the newest.
+    master_keys: Vec<String>,
+    base_folder_uuid: String,
+    auth_version: u8,
+    /// Salts name hashes on auth-version-3 accounts (see `crypto::derive_hmac_key`).
+    hmac_key: Option<Vec<u8>>,
+    client: reqwest::Client,
+}
+
+impl Session {
+    /// The hash Filen uses server-side to detect duplicate names in a folder.
+    fn hash_name(&self, name: &str) -> Result<String, String> {
+        match (&self.hmac_key, self.auth_version) {
+            (Some(key), 3) => crypto::hash_filename_hmac(name, key),
+            (None, 3) => Err("This account has to be reconnected before files can be changed.".to_string()),
+            _ => Ok(crypto::hash_filename(name)),
+        }
+    }
+}
+
+/// What's persisted (in the keychain) for a session.
+#[derive(Serialize, Deserialize, Clone)]
+struct StoredSession {
+    api_key: String,
+    master_keys: Vec<String>,
+    base_folder_uuid: String,
+    user_id: u64,
+    email: String,
+    #[serde(default = "default_auth_version")]
+    auth_version: u8,
+    #[serde(default)]
+    hmac_key_hex: Option<String>,
+}
+
+fn default_auth_version() -> u8 {
+    2
+}
+
+impl StoredSession {
+    fn into_session(self) -> Result<Session, String> {
+        let hmac_key = self.hmac_key_hex.as_deref().map(hex::decode).transpose().map_err(|e| e.to_string())?;
+        Ok(Session {
+            api_key: self.api_key,
+            master_keys: self.master_keys,
+            base_folder_uuid: self.base_folder_uuid,
+            auth_version: self.auth_version,
+            hmac_key,
+            client: reqwest::Client::new(),
+        })
+    }
+}
+
+fn keychain_entry(user_id: u64) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(crate::KEYCHAIN_SERVICE, &format!("filen-session:{user_id}")).map_err(|e| e.to_string())
+}
+
+fn save_session(stored: &StoredSession) -> Result<(), String> {
+    let json = serde_json::to_string(stored).map_err(|e| e.to_string())?;
+    keychain_entry(stored.user_id)?.set_password(&json).map_err(|e| e.to_string())
+}
+
+fn load_session(user_id: u64) -> Result<Option<StoredSession>, String> {
+    match keychain_entry(user_id)?.get_password() {
+        Ok(json) => serde_json::from_str(&json).map(Some).map_err(|e| e.to_string()),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn delete_session(user_id: u64) -> Result<(), String> {
+    match keychain_entry(user_id)?.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Sessions already loaded from the keychain this run.
+#[derive(Default)]
+pub struct FilenState {
+    sessions: Mutex<HashMap<u64, Session>>,
+}
+
+// ── Connected accounts (data.db) ──────────────────────────────────────────────
+
+/// The only things a web app is ever told about an account.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FilenAccount {
+    pub user_id: u64,
+    pub email: String,
+}
+
+pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS filen_accounts (user_id INTEGER PRIMARY KEY, email TEXT NOT NULL)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn upsert_account(pool: &SqlitePool, user_id: u64, email: &str) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO filen_accounts (user_id, email) VALUES (?1, ?2)
+         ON CONFLICT(user_id) DO UPDATE SET email = excluded.email",
+    )
+    .bind(user_id as i64)
+    .bind(email)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn list_accounts(pool: &SqlitePool) -> Result<Vec<FilenAccount>, sqlx::Error> {
+    let rows: Vec<(i64, String)> = sqlx::query_as("SELECT user_id, email FROM filen_accounts ORDER BY email")
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().map(|(user_id, email)| FilenAccount { user_id: user_id as u64, email }).collect())
+}
+
+fn pool(app: &AppHandle) -> SqlitePool {
+    app.state::<AppDbState>().pool.clone()
+}
+
+/// The session for a connected account, loading it from the keychain the first time.
+async fn session_for(app: &AppHandle, user_id: u64) -> Result<Session, String> {
+    if let Some(session) = app.state::<FilenState>().sessions.lock().unwrap().get(&user_id).cloned() {
+        return Ok(session);
+    }
+
+    let connected = list_accounts(&pool(app)).await.map_err(|e| e.to_string())?.iter().any(|a| a.user_id == user_id);
+    if !connected {
+        return Err("No connected Filen account has that user id.".to_string());
+    }
+    let stored = load_session(user_id)?
+        .ok_or_else(|| "The saved Filen session is missing — reconnect this account.".to_string())?;
+    let session = stored.into_session()?;
+    app.state::<FilenState>().sessions.lock().unwrap().insert(user_id, session.clone());
+    Ok(session)
+}
+
+/// Forgets every connected account's session — for when the data folder (and with it
+/// the account list) is about to be wiped, so no orphaned secrets are left in the keychain.
+pub async fn forget_all_accounts(app: &AppHandle) {
+    if let Ok(accounts) = list_accounts(&pool(app)).await {
+        for account in accounts {
+            let _ = delete_session(account.user_id);
+        }
+    }
+    app.state::<FilenState>().sessions.lock().unwrap().clear();
+}
+
+/// Imports accounts the old (JS SDK based) UI connected. Run once at startup.
+pub async fn import_legacy_accounts(pool: &SqlitePool, user_dir: &std::path::Path) {
+    legacy::migrate(pool, user_dir).await;
+}
+
+// ── Login / logout (admin window only) ────────────────────────────────────────
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthInfoResponse {
+    auth_version: u8,
+    salt: String,
+    id: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginResponse {
+    api_key: String,
+    master_keys: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BaseFolderResponse {
+    uuid: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct KeyPairResponse {
+    private_key: Option<String>,
+}
+
+#[tauri::command]
+pub async fn filen_login(
+    app: AppHandle,
+    email: String,
+    password: String,
+    two_factor_code: Option<String>,
+) -> Result<FilenAccount, String> {
+    let client = reqwest::Client::new();
+
+    let info: AuthInfoResponse =
+        api::post(&client, "/v3/auth/info", &serde_json::json!({ "email": email }), None).await?;
+
+    let (derived_password, initial_master_key) = match info.auth_version {
+        2 => crypto::derive_keys_v2(&password, &info.salt),
+        3 => crypto::derive_keys_v3(&password, &info.salt)?,
+        v => return Err(format!("Unsupported Filen auth version: {v}")),
+    };
+
+    let login: LoginResponse = api::post(
+        &client,
+        "/v3/login",
+        &serde_json::json!({
+            "email": email,
+            "password": derived_password,
+            "twoFactorCode": two_factor_code.filter(|c| !c.trim().is_empty()).unwrap_or_else(|| "XXXXXX".into()),
+            "authVersion": info.auth_version
+        }),
+        None,
+    )
+    .await?;
+
+    let master_keys = match login.master_keys.as_deref() {
+        Some(encrypted) if !encrypted.is_empty() => crypto::decrypt_with_key(encrypted, &initial_master_key)?
+            .split('|')
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => vec![initial_master_key],
+    };
+
+    let base: BaseFolderResponse = api::get(&client, "/v3/user/baseFolder", &login.api_key).await?;
+
+    // Version-3 accounts salt their name hashes with a key derived from the account's
+    // RSA private key, which is stored server-side encrypted with the master key.
+    let key_pair: KeyPairResponse = api::get(&client, "/v3/user/keyPair/info", &login.api_key).await?;
+    let hmac_key = match key_pair.private_key.as_deref().filter(|k| !k.is_empty()) {
+        Some(encrypted) => Some(crypto::derive_hmac_key(&crypto::decrypt_metadata(encrypted, &master_keys)?)?),
+        None if info.auth_version == 3 => return Err("Filen didn't return this account's key pair.".to_string()),
+        None => None,
+    };
+
+    let stored = StoredSession {
+        api_key: login.api_key,
+        master_keys,
+        base_folder_uuid: base.uuid,
+        user_id: info.id,
+        email: email.clone(),
+        auth_version: info.auth_version,
+        hmac_key_hex: hmac_key.map(hex::encode),
+    };
+    save_session(&stored)?;
+    upsert_account(&pool(&app), info.id, &email).await.map_err(|e| e.to_string())?;
+
+    let session = stored.into_session()?;
+    app.state::<FilenState>().sessions.lock().unwrap().insert(info.id, session);
+    Ok(FilenAccount { user_id: info.id, email })
+}
+
+#[tauri::command]
+pub async fn filen_logout(app: AppHandle, user_id: u64) -> Result<(), String> {
+    delete_session(user_id)?;
+    app.state::<FilenState>().sessions.lock().unwrap().remove(&user_id);
+    sqlx::query("DELETE FROM filen_accounts WHERE user_id = ?1")
+        .bind(user_id as i64)
+        .execute(&pool(&app))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── File operations (any window) ──────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn filen_list_accounts(app: AppHandle) -> Result<Vec<FilenAccount>, String> {
+    list_accounts(&pool(&app)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn filen_readdir(app: AppHandle, user_id: u64, path: String) -> Result<Vec<ops::Entry>, String> {
+    ops::readdir(&session_for(&app, user_id).await?, &path).await
+}
+
+#[tauri::command]
+pub async fn filen_stat(app: AppHandle, user_id: u64, path: String) -> Result<ops::Entry, String> {
+    ops::stat(&session_for(&app, user_id).await?, &path).await
+}
+
+/// Returns the file's bytes as a raw binary response (an `ArrayBuffer` in JS).
+#[tauri::command]
+pub async fn filen_read_file(app: AppHandle, user_id: u64, path: String) -> Result<tauri::ipc::Response, String> {
+    let content = ops::read_file(&session_for(&app, user_id).await?, &path).await?;
+    Ok(tauri::ipc::Response::new(content))
+}
+
+/// Takes the file's bytes as the raw request body, with `userId` and a
+/// percent-encoded `path` as request headers:
+/// `invoke('filen_write_file', bytes, { headers: { userId, path: encodeURIComponent(path) } })`.
+#[tauri::command]
+pub async fn filen_write_file(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(content) = request.body() else {
+        return Err("filen_write_file expects the file's bytes as the request body.".to_string());
+    };
+    let header = |name: &str| -> Result<String, String> {
+        request
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .ok_or_else(|| format!("Missing \"{name}\" header."))
+    };
+    let user_id: u64 = header("userId")?.parse().map_err(|_| "\"userId\" must be a number.".to_string())?;
+    let path = percent_encoding::percent_decode_str(&header("path")?)
+        .decode_utf8()
+        .map_err(|_| "\"path\" must be percent-encoded UTF-8.".to_string())?
+        .to_string();
+
+    ops::write_file(&session_for(&app, user_id).await?, &path, content).await
+}
+
+#[tauri::command]
+pub async fn filen_mkdir(app: AppHandle, user_id: u64, path: String) -> Result<(), String> {
+    ops::mkdir(&session_for(&app, user_id).await?, &path).await
+}
+
+#[tauri::command]
+pub async fn filen_rm(app: AppHandle, user_id: u64, path: String) -> Result<(), String> {
+    ops::remove(&session_for(&app, user_id).await?, &path).await
+}
+
+#[tauri::command]
+pub async fn filen_rename(app: AppHandle, user_id: u64, from: String, to: String) -> Result<(), String> {
+    ops::rename(&session_for(&app, user_id).await?, &from, &to).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session(auth_version: u8, hmac_key: Option<Vec<u8>>) -> Session {
+        Session {
+            api_key: "k".into(),
+            master_keys: vec!["m".into()],
+            base_folder_uuid: "b".into(),
+            auth_version,
+            hmac_key,
+            client: reqwest::Client::new(),
+        }
+    }
+
+    #[test]
+    fn name_hash_depends_on_the_accounts_auth_version() {
+        assert_eq!(session(2, None).hash_name("A.txt").unwrap(), crypto::hash_filename("a.txt"));
+        let key = vec![7u8; 32];
+        assert_eq!(
+            session(3, Some(key.clone())).hash_name("A.txt").unwrap(),
+            crypto::hash_filename_hmac("a.txt", &key).unwrap()
+        );
+        assert!(session(3, None).hash_name("a.txt").is_err());
+    }
+
+    #[test]
+    fn stored_sessions_round_trip_and_older_ones_default_to_auth_v2() {
+        let stored = StoredSession {
+            api_key: "key".into(),
+            master_keys: vec!["m1".into(), "m2".into()],
+            base_folder_uuid: "base".into(),
+            user_id: 42,
+            email: "me@example.com".into(),
+            auth_version: 3,
+            hmac_key_hex: Some("00".repeat(32)),
+        };
+        let json = serde_json::to_string(&stored).unwrap();
+        let session = serde_json::from_str::<StoredSession>(&json).unwrap().into_session().unwrap();
+        assert_eq!((session.auth_version, session.hmac_key.map(|k| k.len())), (3, Some(32)));
+
+        let old = r#"{"api_key":"k","master_keys":["m"],"base_folder_uuid":"b","user_id":1,"email":"e"}"#;
+        assert_eq!(serde_json::from_str::<StoredSession>(old).unwrap().auth_version, 2);
+    }
+
+    /// Uses the real OS keychain (with an id no account will ever have) — including a
+    /// session as large as a long-lived account's could be, since some keychains cap entry size.
+    #[test]
+    fn sessions_round_trip_through_the_os_keychain() {
+        let user_id = 999_999_999_001u64;
+        let stored = StoredSession {
+            api_key: "a".repeat(64),
+            master_keys: (0..12).map(|i| format!("{i:0>64}")).collect(),
+            base_folder_uuid: uuid::Uuid::new_v4().to_string(),
+            user_id,
+            email: "someone.with.a.long.address@example-domain.com".into(),
+            auth_version: 3,
+            hmac_key_hex: Some("ab".repeat(32)),
+        };
+
+        save_session(&stored).unwrap();
+        let loaded = load_session(user_id).unwrap().expect("saved session should be found");
+        assert_eq!(loaded.master_keys, stored.master_keys);
+        assert_eq!(loaded.hmac_key_hex, stored.hmac_key_hex);
+
+        delete_session(user_id).unwrap();
+        assert!(load_session(user_id).unwrap().is_none());
+        delete_session(user_id).unwrap(); // deleting what's already gone is fine
+    }
+
+    #[test]
+    fn accounts_are_stored_and_listed_by_email() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!("csdrive-filen-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let pool = SqlitePool::connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("t.db")).create_if_missing(true),
+            )
+            .await
+            .unwrap();
+            ensure_schema(&pool).await.unwrap();
+
+            upsert_account(&pool, 2, "b@x.com").await.unwrap();
+            upsert_account(&pool, 1, "a@x.com").await.unwrap();
+            upsert_account(&pool, 2, "b2@x.com").await.unwrap();
+            assert_eq!(
+                list_accounts(&pool).await.unwrap(),
+                [
+                    FilenAccount { user_id: 1, email: "a@x.com".into() },
+                    FilenAccount { user_id: 2, email: "b2@x.com".into() }
+                ]
+            );
+        });
+    }
+}

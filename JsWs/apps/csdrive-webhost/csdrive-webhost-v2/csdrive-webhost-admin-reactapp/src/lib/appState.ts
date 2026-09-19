@@ -9,11 +9,11 @@
  * in `data.db` instead means it moves (or doesn't) exactly when the rest of the
  * app's data does.
  *
- * Rows are namespaced by `appId` — this page's own relative path (e.g.
- * `index.html`), taken from `location.pathname` rather than a hardcoded name — so
- * the same app keeps separate state when deployed at more than one location, and
- * multiple apps sharing this one database never collide. See
- * csdrive-webhost-v2/CLAUDE.md for the full rule. */
+ * Rows are namespaced per app — by the calling window's own html file relative path
+ * (e.g. `index.html`), which the *backend* works out from the window itself, so an
+ * app can only ever reach its own state — so the same app keeps separate state when
+ * deployed at more than one location, and multiple apps sharing this one database
+ * never collide. See csdrive-webhost-v2/CLAUDE.md for the full rule. */
 
 import { invoke } from '@tauri-apps/api/core'
 
@@ -31,7 +31,7 @@ for (const name of OLD_DB_NAMES) {
 }
 
 export async function getAppState<T>(key: string): Promise<T | undefined> {
-  const raw = await invoke<string | null>('get_app_state', { appId: APP_ID, key })
+  const raw = await invoke<string | null>('get_app_state', { key })
   if (raw == null) return undefined
   try {
     return JSON.parse(raw) as T
@@ -41,5 +41,5 @@ export async function getAppState<T>(key: string): Promise<T | undefined> {
 }
 
 export async function setAppState<T>(key: string, value: T): Promise<void> {
-  await invoke('set_app_state', { appId: APP_ID, key, value: JSON.stringify(value) })
+  await invoke('set_app_state', { key, value: JSON.stringify(value) })
 }

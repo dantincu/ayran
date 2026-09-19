@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { closeAllSecondaryWindows } from './secondaryWindows'
+import { closeAllDatabases } from './sqlite'
 import { wipeAllBrowserStorage } from './storageInspector'
 
 /** Thin wrappers around the CsDrive backend's data-folder relocation commands. */
@@ -30,13 +31,13 @@ export async function resetDataFolderToDefault(): Promise<void> {
  * window first (closing one can itself trigger further tab/database activity, so
  * nothing downstream may be touched until they're gone — the Rust command this
  * precedes waits for them to actually finish closing, not just requests it), then
- * any `tauri-plugin-sql` connections the SQLite tab has open on files under
+ * any SQLite connections the SQLite tab has open on files under
  * `user/`, then this app's own browser storage (IndexedDB/localStorage/
  * sessionStorage — the same wipe the Storage tab's own button performs). Doesn't
  * touch `data.db` itself — only the Rust command that follows can reach that. */
 async function prepareForDataWipe(): Promise<void> {
   await closeAllSecondaryWindows()
-  await invoke('plugin:sql|close', { db: null })
+  await closeAllDatabases()
   await wipeAllBrowserStorage()
 }
 

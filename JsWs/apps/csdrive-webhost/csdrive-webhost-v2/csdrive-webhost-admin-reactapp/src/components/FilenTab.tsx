@@ -1,40 +1,38 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Buffer } from 'buffer'
 import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
 import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
 import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import IconButton from './IconButton'
 import Pagination from './Pagination'
+import { getAppState, setAppState } from '../lib/appState'
 import {
-  addAccount,
-  type FilenAccountMeta,
-  getSdkForAccount,
-  listAccounts,
-  removeAccount,
-  setActiveAccount,
-} from '../lib/filenAccounts'
+  filenMkdir,
+  filenReadFile,
+  filenReaddir,
+  filenRename,
+  filenRm,
+  filenWriteFile,
+  listFilenAccounts,
+  loginFilen,
+  logoutFilen,
+  type FilenAccount,
+  type FilenEntry,
+} from '../lib/filen'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { writeUserFile } from '../lib/localFs'
-import type FilenSDK from '@filen/sdk'
 
-interface RemoteEntry {
-  name: string
-  isDirectory: boolean
-  size?: number
-}
+const ACTIVE_ACCOUNT_KEY = 'filenTab.activeAccount'
 
 function joinFilenPath(base: string, name: string): string {
   return base === '/' ? `/${name}` : `${base}/${name}`
 }
 
 export default function FilenTab() {
-  const [accounts, setAccounts] = useState<FilenAccountMeta[]>([])
-  const [activeId, setActiveId] = useState<string | null>(null)
-  const [sdk, setSdk] = useState<FilenSDK | null>(null)
-  const [needsReconnect, setNeedsReconnect] = useState(false)
+  const [accounts, setAccounts] = useState<FilenAccount[]>([])
+  const [activeId, setActiveId] = useState<number | null>(null)
 
   const [path, setPath] = useState('/')
-  const [entries, setEntries] = useState<RemoteEntry[]>([])
+  const [entries, setEntries] = useState<FilenEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -61,79 +59,56 @@ export default function FilenTab() {
   }, [path])
 
   const loadAccounts = useCallback(async () => {
-    const index = await listAccounts()
-    setAccounts(index.accounts)
-    setActiveId(index.activeId)
+    const list = await listFilenAccounts()
+    setAccounts(list)
+    const saved = await getAppState<number>(ACTIVE_ACCOUNT_KEY)
+    setActiveId((current) => {
+      if (current != null && list.some((a) => a.userId === current)) return current
+      return list.find((a) => a.userId === saved)?.userId ?? list[0]?.userId ?? null
+    })
   }, [])
 
   useEffect(() => {
-    loadAccounts()
+    loadAccounts().catch((e) => setError(String(e)))
   }, [loadAccounts])
 
-  const refreshDir = useCallback(
-    async (activeSdk: FilenSDK, dirPath: string) => {
-      setLoading(true)
-      setError(null)
-      try {
-        const names = await activeSdk.fs().readdir({ path: dirPath })
-        const withStats = await Promise.all(
-          names.map(async (name) => {
-            const full = joinFilenPath(dirPath, name)
-            try {
-              const info = await activeSdk.fs().stat({ path: full })
-              return { name, isDirectory: info.isDirectory(), size: info.isFile() ? info.size : undefined }
-            } catch {
-              return { name, isDirectory: false }
-            }
-          }),
-        )
-        withStats.sort((a, b) => {
-          if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
-          return a.name.localeCompare(b.name)
-        })
-        setEntries(withStats)
-      } catch (e) {
-        setError(String(e))
-      } finally {
-        setLoading(false)
-      }
-    },
-    [],
-  )
+  const refreshDir = useCallback(async (userId: number, dirPath: string) => {
+    setLoading(true)
+    setError(null)
+    try {
+      setEntries(await filenReaddir(userId, dirPath))
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    if (!activeId) {
-      setSdk(null)
+    if (activeId == null) {
       setEntries([])
       return
     }
-    let cancelled = false
-    setNeedsReconnect(false)
-    getSdkForAccount(activeId)
-      .then((activeSdk) => {
-        if (cancelled) return
-        setSdk(activeSdk)
-        setPath('/')
-        refreshDir(activeSdk, '/')
-      })
-      .catch(() => {
-        if (!cancelled) setNeedsReconnect(true)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [activeId, refreshDir])
+    refreshDir(activeId, path)
+  }, [activeId, path, refreshDir])
 
-  async function handleSwitch(id: string) {
-    await setActiveAccount(id)
-    setActiveId(id)
+  function switchAccount(userId: number) {
+    setActiveId(userId)
+    setPath('/')
+    setAppState(ACTIVE_ACCOUNT_KEY, userId)
   }
 
   async function handleRemove() {
-    if (!activeId) return
-    if (!(await confirm(`Disconnect account "${activeId}"? You can reconnect it later.`))) return
-    await removeAccount(activeId)
-    await loadAccounts()
+    const account = accounts.find((a) => a.userId === activeId)
+    if (!account) return
+    if (!(await confirm(`Disconnect account "${account.email}"? You can reconnect it later.`))) return
+    try {
+      await logoutFilen(account.userId)
+      setPath('/')
+      await loadAccounts()
+    } catch (e) {
+      setError(String(e))
+    }
   }
 
   async function handleAddSubmit(e: React.FormEvent) {
@@ -141,11 +116,11 @@ export default function FilenTab() {
     setAddBusy(true)
     setAddError(null)
     try {
-      const id = await addAccount(form)
+      const account = await loginFilen(form)
       setForm({ email: '', password: '', twoFactorCode: '' })
       setShowAddForm(false)
       await loadAccounts()
-      setActiveId(id)
+      switchAccount(account.userId)
     } catch (e) {
       setAddError(String(e))
     } finally {
@@ -153,78 +128,64 @@ export default function FilenTab() {
     }
   }
 
-  function openEntry(entry: RemoteEntry) {
+  // Runs an operation on the active account, then reloads the current folder.
+  async function act(operation: (userId: number) => Promise<void>) {
+    if (activeId == null) return
+    try {
+      await operation(activeId)
+      await refreshDir(activeId, path)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  function openEntry(entry: FilenEntry) {
     if (entry.isDirectory) setPath(joinFilenPath(path, entry.name))
   }
 
   async function createFolder() {
-    if (!sdk) return
     const name = window.prompt('New folder name:')
     if (!name) return
-    try {
-      await sdk.fs().mkdir({ path: joinFilenPath(path, name) })
-      await refreshDir(sdk, path)
-    } catch (e) {
-      setError(String(e))
-    }
+    await act((userId) => filenMkdir(userId, joinFilenPath(path, name)))
   }
 
-  async function deleteEntry(entry: RemoteEntry) {
-    if (!sdk) return
+  async function deleteEntry(entry: FilenEntry) {
     if (!(await confirm(`Move "${entry.name}" to Filen trash?`))) return
-    try {
-      await sdk.fs().rm({ path: joinFilenPath(path, entry.name) })
-      await refreshDir(sdk, path)
-    } catch (e) {
-      setError(String(e))
-    }
+    await act((userId) => filenRm(userId, joinFilenPath(path, entry.name)))
   }
 
-  async function renameEntry(entry: RemoteEntry) {
-    if (!sdk) return
+  async function renameEntry(entry: FilenEntry) {
     const newName = window.prompt('New name:', entry.name)
     if (!newName || newName === entry.name) return
-    try {
-      await sdk.fs().rename({ from: joinFilenPath(path, entry.name), to: joinFilenPath(path, newName) })
-      await refreshDir(sdk, path)
-    } catch (e) {
-      setError(String(e))
-    }
+    await act((userId) => filenRename(userId, joinFilenPath(path, entry.name), joinFilenPath(path, newName)))
   }
 
   async function uploadFromComputer() {
-    if (!sdk) return
-    try {
+    await act(async (userId) => {
       const selected = await openDialog({ multiple: true })
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
       for (const absPath of paths) {
         const name = absPath.split(/[\\/]/).pop() ?? 'file'
-        const data = await readAbsoluteFile(absPath)
-        await sdk.fs().writeFile({ path: joinFilenPath(path, name), content: Buffer.from(data) })
+        await filenWriteFile(userId, joinFilenPath(path, name), await readAbsoluteFile(absPath))
       }
-      if (paths.length) await refreshDir(sdk, path)
-    } catch (e) {
-      setError(String(e))
-    }
+    })
   }
 
-  async function downloadToComputer(entry: RemoteEntry) {
-    if (!sdk) return
+  async function downloadToComputer(entry: FilenEntry) {
+    if (activeId == null) return
     try {
       const dest = await saveDialog({ defaultPath: entry.name })
       if (!dest) return
-      const buf = await sdk.fs().readFile({ path: joinFilenPath(path, entry.name) })
-      await writeAbsoluteFile(dest, new Uint8Array(buf))
+      await writeAbsoluteFile(dest, await filenReadFile(activeId, joinFilenPath(path, entry.name)))
     } catch (e) {
       setError(String(e))
     }
   }
 
-  async function saveToUserFolder(entry: RemoteEntry) {
-    if (!sdk) return
+  async function saveToUserFolder(entry: FilenEntry) {
+    if (activeId == null) return
     try {
-      const buf = await sdk.fs().readFile({ path: joinFilenPath(path, entry.name) })
-      await writeUserFile(entry.name, new Uint8Array(buf))
+      await writeUserFile(entry.name, await filenReadFile(activeId, joinFilenPath(path, entry.name)))
       window.alert(`Saved "${entry.name}" to your local user folder.`)
     } catch (e) {
       setError(String(e))
@@ -241,15 +202,15 @@ export default function FilenTab() {
       <div className="toolbar">
         <div className="filen-account-bar">
           {accounts.length > 0 && (
-            <select value={activeId ?? ''} onChange={(e) => handleSwitch(e.target.value)}>
+            <select value={activeId ?? ''} onChange={(e) => switchAccount(Number(e.target.value))}>
               {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.displayName}
+                <option key={a.userId} value={a.userId}>
+                  {a.email}
                 </option>
               ))}
             </select>
           )}
-          {activeId && <IconButton icon={LogOut} label="Disconnect" onClick={handleRemove} />}
+          {activeId != null && <IconButton icon={LogOut} label="Disconnect" onClick={handleRemove} />}
           <IconButton
             icon={showAddForm ? X : UserPlus}
             label={showAddForm ? 'Cancel' : 'Add account'}
@@ -286,17 +247,11 @@ export default function FilenTab() {
         </form>
       )}
 
-      {!activeId && !showAddForm && (
+      {activeId == null && !showAddForm && (
         <div className="muted">No Filen account connected yet. Click "Add account" to connect one.</div>
       )}
 
-      {needsReconnect && (
-        <div className="error-banner">
-          Could not restore the saved session for "{activeId}". Please remove and reconnect it.
-        </div>
-      )}
-
-      {sdk && (
+      {activeId != null && (
         <>
           <div className="toolbar">
             <div className="breadcrumbs">
@@ -321,7 +276,7 @@ export default function FilenTab() {
             <div className="toolbar-actions">
               <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
               <IconButton icon={Upload} label="Upload from computer…" onClick={uploadFromComputer} />
-              <IconButton icon={RefreshCw} label="Refresh" onClick={() => refreshDir(sdk, path)} />
+              <IconButton icon={RefreshCw} label="Refresh" onClick={() => refreshDir(activeId, path)} />
             </div>
           </div>
 

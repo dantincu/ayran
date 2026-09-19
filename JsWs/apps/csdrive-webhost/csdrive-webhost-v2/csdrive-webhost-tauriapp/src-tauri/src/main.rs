@@ -3,7 +3,9 @@
 mod app_state;
 mod data_location;
 mod deployable_apps;
+mod filen;
 mod secondary_windows;
+mod sqlite_db;
 
 use std::path::{Path, PathBuf};
 
@@ -12,7 +14,7 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 const USER_PROTOCOL: &str = "csuser";
 const ADMIN_PROTOCOL: &str = "csadmin";
-const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
+pub(crate) const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
 
 /// The admin-app's own single-file bundle, embedded into this binary at compile
 /// time (and thus into every installer built from it) so it's always available
@@ -21,31 +23,6 @@ const KEYCHAIN_SERVICE: &str = "com.ayran.csdrive-webhost-tauriapp";
 /// build`; see `build.rs`, which fails the build early with a clear message if
 /// this hasn't been done.
 const ADMIN_APP_INDEX_HTML: &str = include_str!("../../../csdrive-webhost-admin-reactapp/dist/index.html");
-
-#[tauri::command]
-fn keychain_set_secret(key: String, value: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
-    entry.set_password(&value).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn keychain_get_secret(key: String) -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.get_password() {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[tauri::command]
-fn keychain_delete_secret(key: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(KEYCHAIN_SERVICE, &key).map_err(|e| e.to_string())?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
 
 fn content_type_for(path: &Path) -> &'static str {
     match path
@@ -98,11 +75,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_sql::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            keychain_set_secret,
-            keychain_get_secret,
-            keychain_delete_secret,
             secondary_windows::list_secondary_windows,
             secondary_windows::open_new_secondary_window,
             secondary_windows::add_secondary_window_entry,
@@ -135,6 +108,20 @@ fn main() {
             data_location::delete_app_data,
             deployable_apps::list_deployable_apps,
             deployable_apps::get_deployable_app_html,
+            sqlite_db::sqlite_load,
+            sqlite_db::sqlite_close,
+            sqlite_db::sqlite_execute,
+            sqlite_db::sqlite_select,
+            filen::filen_list_accounts,
+            filen::filen_login,
+            filen::filen_logout,
+            filen::filen_readdir,
+            filen::filen_stat,
+            filen::filen_read_file,
+            filen::filen_write_file,
+            filen::filen_mkdir,
+            filen::filen_rm,
+            filen::filen_rename,
         ])
         .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
             let user_dir = data_location::effective_data_dir(ctx.app_handle())
@@ -164,6 +151,17 @@ fn main() {
             let admin_dir = data_location::effective_data_dir(ctx.app_handle())
                 .expect("failed to resolve app data dir")
                 .join("admin");
+
+            // Only the admin-app's own window may load this — the folder also holds
+            // `data.db`, and user-provided web apps run in other windows.
+            let path = request.uri().path().trim_start_matches('/');
+            if ctx.webview_label() != "main" || !(path.is_empty() || path == "index.html") {
+                return Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                    .body(b"Forbidden".to_vec())
+                    .unwrap();
+            }
 
             match resolve_file_in(&admin_dir, request.uri().path()) {
                 Some(file_path) => match std::fs::read(&file_path) {
@@ -195,8 +193,12 @@ fn main() {
 
             let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&admin_dir))?;
             tauri::async_runtime::block_on(app_state::ensure_schema(&pool))?;
+            tauri::async_runtime::block_on(filen::ensure_schema(&pool))?;
+            tauri::async_runtime::block_on(filen::import_legacy_accounts(&pool, &user_dir));
             app.manage(app_state::AppDbState { pool: pool.clone() });
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
+            app.manage(sqlite_db::SqliteState::default());
+            app.manage(filen::FilenState::default());
 
             let index_path = admin_dir.join("index.html");
 

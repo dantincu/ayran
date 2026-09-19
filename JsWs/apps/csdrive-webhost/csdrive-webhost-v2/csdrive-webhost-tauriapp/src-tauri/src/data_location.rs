@@ -267,6 +267,8 @@ pub async fn clear_custom_data_folder_contents(
         read_custom_dir(&default_dir).ok_or_else(|| "No custom data folder is set.".to_string())?;
 
     crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
+    // The account list lives in the folder being wiped, so drop the keychain secrets too.
+    crate::filen::forget_all_accounts(&app).await;
     db_state.pool.close().await;
 
     clear_directory_contents(&custom_dir, None)?;
@@ -289,6 +291,10 @@ pub async fn delete_app_data(
     let custom_dir = read_custom_dir(&default_dir);
 
     crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
+    if custom_dir.is_none() {
+        // `data.db` (and so the account list) is inside the folder being wiped.
+        crate::filen::forget_all_accounts(&app).await;
+    }
     db_state.pool.close().await;
 
     clear_directory_contents(&default_dir, custom_dir.as_deref())?;

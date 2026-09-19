@@ -390,6 +390,9 @@ async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) {
 }
 
 async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
+    // Release any SQLite databases the window still had open.
+    app.state::<crate::sqlite_db::SqliteState>().close(guid, None).await;
+
     let state = app.state::<SecondaryWindowsState>();
 
     let was_suspended = {

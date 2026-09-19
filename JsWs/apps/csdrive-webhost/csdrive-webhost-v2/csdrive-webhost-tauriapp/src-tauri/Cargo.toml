@@ -9,14 +9,22 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 aes-gcm = "0.11.1"
+argon2 = "0.5"
 base64 = "0.23.1"
+hex = "0.4"
+hmac = "0.12"
 keyring = "4.2.0"
+pbkdf2 = "0.12"
+percent-encoding = "2"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha1 = "0.10"
+sha2 = "0.10"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sqlx = { version = "=0.8.6", features = ["sqlite", "runtime-tokio"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2.7.3"
 tauri-plugin-fs = "2.5.2"
-tauri-plugin-sql = { version = "2.4.1", features = ["sqlite"] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "time"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1.26.1", features = ["v4"] }
