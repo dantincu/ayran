@@ -1,17 +1,14 @@
 fn main() {
-    // lib.rs embeds this file directly (`include_str!`) as the default
-    // `admin/dist/index.html` — give a clear error instead of a cryptic include_str!
-    // failure if it's missing, since it lives in a sibling package this crate
-    // doesn't otherwise build.
-    let admin_app_index = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../csdrive-webhost-admin-reactapp/dist/index.html");
-    if !admin_app_index.exists() {
+    // The admin-app is this app's frontend: Tauri embeds the built `frontendDist` (`../dist`)
+    // into the binary. Fail early, with the command to run, instead of tauri-build's terser error.
+    // (`cargo tauri build`/`dev` run the frontend build themselves via `beforeBuildCommand`.)
+    let frontend_index = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist/index.html");
+    if !frontend_index.exists() {
         panic!(
-            "\n\nMissing {}\n\nBuild the admin-app first:\n  cd csdrive-webhost-admin-reactapp && npm run build\n\n",
-            admin_app_index.display()
+            "\n\nMissing {}\n\nBuild the admin-app (the frontend) first:\n  cd csdrive-webhost-tauriapp && npm install && npm run build\n\n",
+            frontend_index.display()
         );
     }
-    println!("cargo:rerun-if-changed={}", admin_app_index.display());
 
     let attributes = tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[

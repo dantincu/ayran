@@ -28,16 +28,15 @@ use std::path::{Path, PathBuf};
 /// else also gives a run its own, separate keychain entries.
 pub const DEFAULT_DATA_FOLDER: &str = "com.ayran.csdrive-webhost-tauriapp";
 
-/// The admin-app's single-file bundle, relative to the data folder. The backend
-/// keeps this file identical to the bundle embedded in the binary (see
-/// `install_admin_bundle` in `lib.rs`), serves its containing folder to the main
-/// window only, and treats everything else in that folder as disposable. Its file
-/// name is also the admin-app's `app_id` for saved UI state, so renaming the file
-/// starts the admin-app's saved state afresh.
-pub const ADMIN_BUNDLE_PATH: &str = "admin/dist/index.html";
-
-/// The app's own files inside the data folder (`data.db` lives here).
+/// The app's own files inside the data folder (`data.db`, the Filen sessions). Nothing
+/// in here is ever served to a window: the admin-app itself is not a file in the data
+/// folder but the Tauri app's own compiled-in frontend (`frontendDist` in `tauri.conf.json`).
 pub const ADMIN_FOLDER: &str = "admin";
+
+/// The admin-app's `app_id` for its saved UI state (see `app_state`). A web app's is the
+/// relative path of its html file, so this is deliberately not a valid one and can never
+/// collide with theirs.
+pub const ADMIN_APP_ID: &str = "::admin";
 
 /// The encrypted file holding every connected Filen.io account's session (API key,
 /// master keys, ...), relative to the data folder. Encrypted with the app key kept in
@@ -75,22 +74,6 @@ pub fn filen_sessions_file(data_dir: &Path) -> PathBuf {
     data_dir.join(FILEN_SESSIONS_FILE)
 }
 
-pub fn admin_bundle_file(data_dir: &Path) -> PathBuf {
-    data_dir.join(ADMIN_BUNDLE_PATH)
-}
-
-/// The folder containing the bundle â€” what the `csadmin://` protocol serves.
-pub fn admin_bundle_root(data_dir: &Path) -> PathBuf {
-    let file = admin_bundle_file(data_dir);
-    file.parent().map(Path::to_path_buf).unwrap_or(file)
-}
-
-/// The bundle's file name: its path within `admin_bundle_root`, so its URL is
-/// `csadmin://localhost/<this>`, and the admin-app's `app_id`.
-pub fn admin_bundle_url_path() -> &'static str {
-    ADMIN_BUNDLE_PATH.rsplit('/').next().unwrap_or(ADMIN_BUNDLE_PATH)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,14 +81,8 @@ mod tests {
     #[test]
     fn the_constants_fit_together() {
         assert!(!keychain_service().is_empty() && !keychain_service().contains(['/', '\\']));
-        assert!(ADMIN_BUNDLE_PATH.contains('/'), "the bundle must sit inside a folder of its own to be served safely");
-        assert!(!ADMIN_BUNDLE_PATH.starts_with('/') && !ADMIN_BUNDLE_PATH.contains(".."));
-        assert!(!admin_bundle_url_path().is_empty() && !admin_bundle_url_path().contains('/'));
-
-        let data = Path::new("data");
-        assert!(admin_bundle_file(data).starts_with(admin_bundle_root(data)));
-        assert_ne!(admin_bundle_root(data), data, "serving the whole data folder would expose data.db");
-        assert!(!admin_bundle_root(data).starts_with(user_dir(data)), "the bundle must live outside user/");
+        assert!(!ADMIN_APP_ID.is_empty() && ADMIN_APP_ID.contains(':'), "must not look like a relative html path");
+        assert_ne!(admin_dir(Path::new("data")), user_dir(Path::new("data")));
     }
 
     #[test]

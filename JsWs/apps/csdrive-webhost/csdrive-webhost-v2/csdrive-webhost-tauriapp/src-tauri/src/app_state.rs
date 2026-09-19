@@ -30,18 +30,9 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// The admin-app's `app_id`: the path it's served at, i.e. its bundle's file name (`layout::ADMIN_BUNDLE_PATH`).
-fn admin_app_id() -> &'static str {
-    crate::layout::admin_bundle_url_path()
-}
-
-/// Which `app_id` the calling window's state lives under — decided here, from the
-/// window's own identity, never taken from the caller: otherwise any user-provided
-/// web app could read or overwrite the admin-app's (or another app's) state just by
-/// naming its `app_id`.
 async fn caller_app_id(pool: &SqlitePool, caller_guid: Option<&str>) -> Result<String, String> {
     let Some(guid) = caller_guid else {
-        return Ok(admin_app_id().to_string());
+        return Ok(crate::layout::ADMIN_APP_ID.to_string());
     };
     sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
         .bind(guid)
@@ -146,7 +137,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(caller_app_id(&pool, None).await.unwrap(), crate::layout::admin_bundle_url_path());
+            assert_eq!(caller_app_id(&pool, None).await.unwrap(), crate::layout::ADMIN_APP_ID);
             assert_eq!(caller_app_id(&pool, Some("win-1")).await.unwrap(), "qwer/index1.html");
             assert!(caller_app_id(&pool, Some("unknown")).await.is_err());
         });

@@ -1,10 +1,9 @@
 //! Small standalone apps that can be *deployed* — copied as a new folder of
 //! content into a folder the admin-app's Files tab can browse — via the "Deploy
 //! apps" action there. Each one's source lives under `csdrive-webhost-userapps/`
-//! (a sibling of this crate and of `csdrive-webhost-admin-reactapp`), and its
-//! `index.html` is embedded into this binary at compile time (same as the
-//! admin-app's own bundle — see `ADMIN_APP_INDEX_HTML` in `lib.rs`), so
-//! deploying one never needs network access or an external file.
+//! (a sibling of the Tauri project), and its `index.html` is embedded into this
+//! binary at compile time, so deploying one never needs network access or an
+//! external file.
 //!
 //! Adding a new deployable app: create its source folder under
 //! `csdrive-webhost-userapps/`, add an `include_str!` for it below, and add one

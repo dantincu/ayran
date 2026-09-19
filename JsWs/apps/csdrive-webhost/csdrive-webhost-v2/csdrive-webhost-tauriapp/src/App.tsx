@@ -12,7 +12,7 @@ import { getAppState, setAppState } from './lib/appState'
 type Tab = 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
 
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
-  { id: 'apps', label: 'Apps', icon: AppWindow },
+  { id: 'apps', label: 'User Apps', icon: AppWindow },
   { id: 'files', label: 'Files', icon: Folder },
   { id: 'filen', label: 'Filen.io', icon: Cloud },
   { id: 'sqlite', label: 'SQLite', icon: Database },

@@ -362,8 +362,7 @@ mod tests {
         use crate::layout;
         std::fs::create_dir_all(layout::user_dir(&default_dir)).unwrap();
         std::fs::write(layout::user_dir(&default_dir).join("some-app.html"), b"<html></html>").unwrap();
-        std::fs::create_dir_all(layout::admin_bundle_root(&default_dir)).unwrap();
-        std::fs::write(layout::admin_bundle_file(&default_dir), b"<html></html>").unwrap();
+        std::fs::create_dir_all(layout::admin_dir(&default_dir)).unwrap();
         std::fs::write(layout::admin_dir(&default_dir).join("data.db"), b"fake-sqlite").unwrap();
 
         let custom_dir = std::env::temp_dir().join(format!(

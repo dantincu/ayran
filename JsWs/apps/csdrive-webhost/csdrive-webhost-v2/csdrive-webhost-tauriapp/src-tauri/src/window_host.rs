@@ -13,11 +13,11 @@
 //! Everything else (`secondary_windows`, `app_state`, `sqlite_db`, the admin-only
 //! commands) asks this module instead of touching windows or labels directly.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 use tauri::{AppHandle, Manager, Url, WebviewWindow};
 
-use crate::{ADMIN_PROTOCOL, USER_PROTOCOL};
+use crate::USER_PROTOCOL;
 
 /// The admin-app's window on every platform.
 pub const MAIN_WINDOW_LABEL: &str = "main";
@@ -59,25 +59,47 @@ pub fn navigation_url(url: &Url) -> Url {
     url.clone()
 }
 
-/// `csadmin://localhost/<bundle file name>` — where the admin-app is served.
+/// Where the admin-app is served from: the app's own compiled-in frontend (`frontendDist`
+/// in `tauri.conf.json`), which Tauri serves at `tauri://localhost` — or, on Windows and
+/// Android, `http://tauri.localhost` (see `navigation_url`) — and, while running under
+/// `tauri dev`, from the dev server (`devUrl`).
+static ADMIN_URL: OnceLock<Url> = OnceLock::new();
+
+/// Records where the admin-app is served from. Called once, at startup.
+pub fn init(app: &AppHandle) {
+    let dev_url = if tauri::is_dev() { app.config().build.dev_url.clone() } else { None };
+    let _ = ADMIN_URL.set(dev_url.unwrap_or_else(default_admin_url));
+}
+
+fn default_admin_url() -> Url {
+    Url::parse("tauri://localhost/index.html").expect("a valid URL")
+}
+
+/// The admin-app's page (in the form to pass to `navigation_url`).
 #[cfg_attr(desktop, allow(dead_code))] // used by the mobile window host
-pub fn admin_page_url() -> Result<Url, String> {
-    Url::parse(&format!("{ADMIN_PROTOCOL}://localhost/{}", crate::layout::admin_bundle_url_path()))
-        .map_err(|e| e.to_string())
+pub fn admin_page_url() -> Url {
+    ADMIN_URL.get().cloned().unwrap_or_else(default_admin_url)
 }
 
 /// Whether `url` is on `scheme`'s origin — on Windows and Android a custom scheme `x`
 /// is served as `http://x.localhost`.
-#[cfg_attr(desktop, allow(dead_code))] // used by the mobile window host
 fn url_is_on(url: &Url, scheme: &str) -> bool {
-    url.scheme() == scheme
+    (url.scheme() == scheme && url.host_str() == Some("localhost"))
         || (matches!(url.scheme(), "http" | "https")
             && url.host_str().is_some_and(|host| host.strip_suffix(".localhost") == Some(scheme)))
 }
 
-#[cfg_attr(desktop, allow(dead_code))] // used by the mobile window host
+/// Whether `url` is one of the web apps' pages (`csuser://…`).
+pub fn is_user_url(url: &Url) -> bool {
+    url_is_on(url, USER_PROTOCOL)
+}
+
+/// Whether `url` is one of the admin-app's pages.
 pub fn is_admin_url(url: &Url) -> bool {
-    url_is_on(url, ADMIN_PROTOCOL)
+    url_is_on(url, "tauri")
+        || ADMIN_URL.get().is_some_and(|admin| {
+            url.scheme() == admin.scheme() && url.host_str() == admin.host_str() && url.port_or_known_default() == admin.port_or_known_default()
+        })
 }
 
 // ── Who is calling ────────────────────────────────────────────────────────────
@@ -168,7 +190,7 @@ mod platform {
     pub fn open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), String> {
         let url = user_page_url(relative_path)?;
 
-        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, WebviewUrl::CustomProtocol(url)))
+        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, WebviewUrl::CustomProtocol(url)), false)
             .title(relative_path)
             .inner_size(1024.0, 768.0)
             .build()
@@ -291,9 +313,7 @@ mod platform {
         // Not "keep": the caller decides that (by marking the entry as suspending
         // first); otherwise closing deletes it, as on desktop.
         retire(app, guid.to_string(), false);
-        if let Ok(url) = admin_page_url() {
-            let _ = navigate(app, url);
-        }
+        let _ = navigate(app, admin_page_url());
         true
     }
 
@@ -330,12 +350,23 @@ mod tests {
     #[test]
     fn urls_are_recognised_by_origin_on_every_platform() {
         let admin = |u: &str| is_admin_url(&Url::parse(u).unwrap());
-        assert!(admin("csadmin://localhost/index.html"));
-        assert!(admin("http://csadmin.localhost/index.html"));
+        let user = |u: &str| is_user_url(&Url::parse(u).unwrap());
+        assert!(admin("tauri://localhost/index.html"));
+        assert!(admin("http://tauri.localhost/index.html"));
+        assert!(admin("https://tauri.localhost/"));
         assert!(!admin("csuser://localhost/x.html"));
         assert!(!admin("http://csuser.localhost/x.html"));
-        assert!(!admin("http://csadmin.localhost.evil.com/index.html"));
-        assert!(!admin("https://example.com/csadmin"));
+        assert!(!admin("http://tauri.localhost.evil.com/index.html"));
+        assert!(!admin("tauri://evil/index.html"));
+        assert!(!admin("https://example.com/tauri"));
+        // Only the development server's own origin is added while developing.
+        assert!(!admin("http://localhost:1420/"));
+
+        assert!(user("csuser://localhost/x.html"));
+        assert!(user("http://csuser.localhost/x.html"));
+        assert!(!user("tauri://localhost/index.html"));
+        assert!(!user("http://csuser.localhost.evil.com/"));
+        assert!(!user("csuser://evil/x.html"));
     }
 
     #[test]
@@ -350,11 +381,8 @@ mod tests {
     }
 
     #[test]
-    fn page_urls_are_built_from_the_relative_path_and_the_bundle_name() {
+    fn page_urls_are_built_from_the_relative_path() {
         assert_eq!(user_page_url("qwer/index1.html").unwrap().as_str(), "csuser://localhost/qwer/index1.html");
-        assert_eq!(
-            admin_page_url().unwrap().as_str(),
-            format!("csadmin://localhost/{}", crate::layout::admin_bundle_url_path())
-        );
+        assert_eq!(admin_page_url().as_str(), "tauri://localhost/index.html");
     }
 }

@@ -657,7 +657,7 @@ export default function AppsTab() {
         <div className="breadcrumbs">
           <span>
             <button className={`link-button ${view === 'apps' ? 'active' : ''}`} onClick={() => navigate('apps')}>
-              Apps
+              User Apps
             </button>
           </span>
           {depth >= 1 && currentApp && (
