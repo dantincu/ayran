@@ -26,7 +26,7 @@ import {
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
 import Pagination from '../../components/Pagination'
-import { exportToDevice, isMobile, pickFilesFromDevice } from '../../lib/platform'
+import { exportPathToDevice, isMobile, pickDeviceFiles } from '../../lib/platform'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
 import { joinRelative } from '../../lib/localFs'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
@@ -372,6 +372,11 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       return
     }
     setError(null)
+    const size = entry.size ?? meta[entry.name]?.size ?? (await source.stat?.(rel).catch(() => null))?.size ?? null
+    if (size !== null && size > MAX_EDIT_BYTES) {
+      setError(`"${entry.name}" is too big to edit here (${formatBytes(size)}) — export it instead.`)
+      return
+    }
     setLoading(true)
     try {
       const text = decodeText(await source.read(rel))
@@ -436,10 +441,14 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   async function uploadFiles() {
     if (!source) return
     try {
-      const picked = await pickFilesFromDevice()
-      for (const file of picked) {
+      // The files are handed over unread: a big one is read and sent on piece by piece.
+      for (const file of await pickDeviceFiles()) {
         if (entries.some((e) => e.name === file.name) && !(await confirm(`Replace "${file.name}"?`))) continue
-        await act(() => source.write(joinRelative(path, file.name), file.data))
+        await act(async () => {
+          const target = joinRelative(path, file.name)
+          if (source.writeFromFile) await source.writeFromFile(target, file)
+          else await source.write(target, new Uint8Array(await file.arrayBuffer()))
+        })
       }
     } catch (e) {
       setError(String(e))
@@ -449,7 +458,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   async function exportEntry(entry: Entry) {
     if (!source) return
     try {
-      const saved = await exportToDevice(entry.name, () => source.read(joinRelative(path, entry.name)))
+      const saved = await exportPathToDevice(entry.name, (token) => source.exportFile(joinRelative(path, entry.name), entry.name, token))
       if (saved && isMobile) setNotice(`Saved to ${saved}`)
       if (account) load(false)
     } catch (e) {
@@ -608,7 +617,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
               const id = `${LOCAL_PREFIX}${root.id}`
               return (
                 <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`}>
-                  <button className="link-button" onClick={() => selectSource(id)} title={root.absolutePath || root.label}>
+                  <button className="link-button" onClick={() => selectSource(id)} title={root.label}>
                     <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.label}
                   </button>
                   {root.id !== 'user' && (

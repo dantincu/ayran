@@ -3,7 +3,8 @@
  * which means every place that shows the root shows the same tags: the Files tab's root switcher
  * and the tabs (in the System Apps tab) that are looking at it.
  *
- *   - a folder on this device: `root:<rootId>` — `root:user`, `root:ext:<picked path>`;
+ *   - a folder on this device: `root:<rootId>` — `root:user`, or `root:<id>` for a picked folder (an
+ *     opaque random id, never its path);
  *   - a Filen account: `root:filen:<userId>`.
  *
  * (Forgetting a root or disconnecting an account leaves its tags in the database, as with any tag;

@@ -50,6 +50,19 @@ export interface FileSource {
   read(path: string): Promise<Uint8Array>
   /** Creates or replaces the file; its folder must exist. */
   write(path: string, data: Uint8Array): Promise<void>
+  /** Copies a `File` from the device's file chooser in, sent on piece by piece so a big one is never
+   * held whole. Without it, the caller reads the file and uses `write`. */
+  writeFromFile?(path: string, file: File): Promise<void>
+  /** Hands the file to the device (see `exportPathToDevice`) — copied on the Rust side, never through
+   * the page. Resolves to the name it was saved as. */
+  exportFile(path: string, name: string, token: string | null): Promise<string>
+  /** A folder on this device: the root id the file commands know it by. */
+  rootId?: string
+  /** Filen: takes a file from a folder on this device (`root` and `source`, as the file commands
+   * name them) without it passing through the page. */
+  copyFromLocal?(path: string, root: string, source: string): Promise<void>
+  /** Filen: puts a file at `dest` inside a folder on this device, likewise. */
+  copyToLocal?(path: string, root: string, dest: string): Promise<void>
   mkdir(path: string): Promise<void>
   remove(path: string, isDirectory: boolean): Promise<void>
   rename(from: string, to: string): Promise<void>
@@ -82,8 +95,10 @@ export function localSource(root: FileRoot): FileSource {
       const info = await statRootPath(root, path)
       return { size: info.isDirectory ? null : info.size, mtimeMs: info.mtimeMs }
     },
+    rootId: root.id,
     read: (path) => readRootFile(root, path),
     write: (path, data) => writeRootFile(root, path, data),
+    exportFile: (path, name, token) => invoke<string>('export_local_file', { root: root.id, path, name, token }),
     mkdir: (path) => mkdirRoot(root, path),
     remove: (path, isDirectory) => removeRootPath(root, path, isDirectory),
     rename: (from, to) => renameRootPath(root, from, to),
@@ -144,6 +159,9 @@ export const filenCache = {
   discardBranch: (userId: number, branch: number) => invoke<void>('filen_cache_discard_branch', { userId, branch }),
 }
 
+/** How big a piece of a file is read and sent at a time when it goes up to Filen. */
+const UPLOAD_PIECE = 4 * 1024 * 1024
+
 /** A Filen account, seen through the cache; with `branch`, a branch of it (changes stay in the
  * branch until it is committed). */
 export function filenSource(account: FilenAccountInfo, branch: number | null): FileSource {
@@ -166,6 +184,22 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
       if (branch !== null) fields.branch = String(branch)
       await invokeWithBytes('filen_cache_write', data, fields)
     },
+    async writeFromFile(path, file) {
+      const id = await invoke<string>('filen_cache_upload_begin', { ...target, path: filenPath(path) })
+      try {
+        for (let at = 0; at < file.size; at += UPLOAD_PIECE) {
+          const piece = new Uint8Array(await file.slice(at, at + UPLOAD_PIECE).arrayBuffer())
+          await invokeWithBytes('filen_cache_upload_chunk', piece, { id })
+        }
+        await invoke('filen_cache_upload_finish', { id })
+      } catch (e) {
+        await invoke('filen_cache_upload_abort', { id }).catch(() => {})
+        throw e
+      }
+    },
+    exportFile: (path, name, token) => invoke<string>('filen_cache_export', { ...target, path: filenPath(path), name, token }),
+    copyFromLocal: (path, root, source) => invoke<void>('filen_cache_upload_from_path', { ...target, path: filenPath(path), root, source }),
+    copyToLocal: (path, root, dest) => invoke<void>('filen_cache_download_to', { ...target, path: filenPath(path), root, dest }),
     mkdir: (path) => invoke<void>('filen_cache_mkdir', { ...target, path: filenPath(path) }),
     remove: (path) => invoke<void>('filen_cache_rm', { ...target, path: filenPath(path) }),
     rename: (from, to) => invoke<void>('filen_cache_rename', { ...target, from: filenPath(from), to: filenPath(to) }),
@@ -189,6 +223,10 @@ export async function copyTree(
     for (const child of entries) {
       await copyTree(from, joinRelative(fromPath, child.name), child.isDirectory, to, joinRelative(toPath, child.name))
     }
+  } else if (from.rootId !== undefined && to.copyFromLocal) {
+    await to.copyFromLocal(toPath, from.rootId, fromPath) // read from disk on the Rust side
+  } else if (to.rootId !== undefined && from.copyToLocal) {
+    await from.copyToLocal(fromPath, to.rootId, toPath) // written to disk on the Rust side
   } else {
     await to.write(toPath, await from.read(fromPath))
   }

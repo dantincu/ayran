@@ -306,6 +306,10 @@ mod platform {
         let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, url), Allowed::for_kind(page.kind))
             .title(page.title())
             .inner_size(1024.0, 768.0)
+            // Without this, wry hands the page the *real paths* of files dropped on it (Tauri's
+            // drag-drop event) — and web apps never see a real path. Turning it off also lets the page
+            // use HTML5 drag and drop, whose `File` objects carry no path.
+            .disable_drag_drop_handler()
             .build()
             .map_err(|e| e.to_string())?;
 

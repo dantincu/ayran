@@ -1,14 +1,15 @@
-import { readDir, readFile, readTextFile, writeFile, writeTextFile, mkdir, remove, rename, stat, exists, type DirEntry, type FileInfo } from './fs'
-import { getUserFolder, joinPath, joinRelative } from './localFs'
+import { readDir, readFile, writeFile, mkdir, remove, rename, stat, exists, rootRealPath, type DirEntry, type FileInfo } from './fs'
+import { joinRelative } from './localFs'
 import { listPickedRoots, pickFolder, removePickedRoot, type PickedRoot } from './pickedRoots'
 
-/** A browsable filesystem root: either the app's own `user` folder, or a folder the user picked
- * with a native folder picker (the OS dialog on desktop, ours on Android). Everything below is
- * addressed by a path relative to `absolutePath`, through the backend's file commands. */
+/** A browsable filesystem root: either the app's own `user` folder, or a folder the user picked with
+ * a native folder picker (the OS dialog on desktop, ours on Android). Everything below is addressed
+ * by a path relative to the root, through the backend's file commands, which are told the root by
+ * its `id`. Nothing here knows where the folder really is. */
 export interface FileRoot {
+  /** `user`, or the opaque id of a picked folder. */
   id: string
   label: string
-  absolutePath: string
 }
 
 /** What a folder listing tells about one entry. */
@@ -16,17 +17,14 @@ export type RootEntry = DirEntry & { size?: number }
 
 export const USER_ROOT_ID = 'user'
 
-let cachedUserRoot: FileRoot | null = null
+const USER_ROOT: FileRoot = { id: USER_ROOT_ID, label: 'user' }
 
 export async function getUserRoot(): Promise<FileRoot> {
-  if (!cachedUserRoot) {
-    cachedUserRoot = { id: USER_ROOT_ID, label: 'user', absolutePath: await getUserFolder() }
-  }
-  return cachedUserRoot
+  return USER_ROOT
 }
 
 function toFileRoot(picked: PickedRoot): FileRoot {
-  return { id: `ext:${picked.path}`, label: picked.label, absolutePath: picked.path }
+  return { id: picked.id, label: picked.label }
 }
 
 /** The folders picked in earlier sessions (the backend remembers them and allows them again at startup). */
@@ -45,16 +43,23 @@ export async function pickNewRoot(): Promise<FileRoot | null> {
 /** Stops browsing a root and forgets it: the backend takes it out of what the app may use, at once.
  * Nothing inside the folder is touched. (The user folder can't be forgotten.) */
 export async function forgetRoot(root: FileRoot): Promise<void> {
-  if (root.id !== USER_ROOT_ID) await removePickedRoot(root.absolutePath)
+  if (root.id !== USER_ROOT_ID) await removePickedRoot(root.id)
 }
 
-function toAbsolute(root: FileRoot, relativePath: string): Promise<string> {
-  const trimmed = relativePath.replace(/^\/+/, '')
-  return trimmed ? Promise.resolve(joinPath(root.absolutePath, ...trimmed.split('/'))) : Promise.resolve(root.absolutePath)
+/** Where the root really is, for showing the person. **Admin-app only** — anywhere else this fails,
+ * and callers fall back to the label. */
+export async function realPathOf(root: FileRoot): Promise<string | null> {
+  try {
+    return await rootRealPath(root.id)
+  } catch {
+    return null
+  }
 }
+
+const relative = (path: string) => path.replace(/^\/+/, '')
 
 export async function listRootDir(root: FileRoot, relativePath: string): Promise<RootEntry[]> {
-  const entries: RootEntry[] = await readDir(await toAbsolute(root, relativePath))
+  const entries: RootEntry[] = await readDir(root.id, relative(relativePath))
   return entries.sort((a, b) => {
     if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
     return a.name.localeCompare(b.name)
@@ -62,39 +67,39 @@ export async function listRootDir(root: FileRoot, relativePath: string): Promise
 }
 
 export async function statRootPath(root: FileRoot, relativePath: string): Promise<FileInfo> {
-  return stat(await toAbsolute(root, relativePath))
+  return stat(root.id, relative(relativePath))
 }
 
 export async function rootPathExists(root: FileRoot, relativePath: string): Promise<boolean> {
-  return exists(await toAbsolute(root, relativePath))
+  return exists(root.id, relative(relativePath))
 }
 
 export async function readRootTextFile(root: FileRoot, relativePath: string): Promise<string> {
-  return readTextFile(await toAbsolute(root, relativePath))
+  return new TextDecoder().decode(await readRootFile(root, relativePath))
 }
 
 export async function writeRootTextFile(root: FileRoot, relativePath: string, content: string): Promise<void> {
-  return writeTextFile(await toAbsolute(root, relativePath), content)
+  return writeRootFile(root, relativePath, new TextEncoder().encode(content))
 }
 
 export async function readRootFile(root: FileRoot, relativePath: string): Promise<Uint8Array> {
-  return readFile(await toAbsolute(root, relativePath))
+  return readFile(root.id, relative(relativePath))
 }
 
 export async function writeRootFile(root: FileRoot, relativePath: string, data: Uint8Array): Promise<void> {
-  return writeFile(await toAbsolute(root, relativePath), data)
+  return writeFile(root.id, relative(relativePath), data)
 }
 
 export async function mkdirRoot(root: FileRoot, relativePath: string): Promise<void> {
-  return mkdir(await toAbsolute(root, relativePath), { recursive: true })
+  return mkdir(root.id, relative(relativePath), { recursive: true })
 }
 
 export async function removeRootPath(root: FileRoot, relativePath: string, recursive: boolean): Promise<void> {
-  return remove(await toAbsolute(root, relativePath), { recursive })
+  return remove(root.id, relative(relativePath), { recursive })
 }
 
 export async function renameRootPath(root: FileRoot, fromRelative: string, toRelative: string): Promise<void> {
-  return rename(await toAbsolute(root, fromRelative), await toAbsolute(root, toRelative))
+  return rename(root.id, relative(fromRelative), relative(toRelative))
 }
 
 /** Recursively copies a file or folder to a new location within the same root. */

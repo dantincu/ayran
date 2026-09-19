@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { exportToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
+import { invoke } from '@tauri-apps/api/core'
+import { exportPathToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
 import {
   Copy,
   Download,
@@ -34,9 +35,9 @@ import {
   getUserRoot,
   listRootDir,
   loadSavedRoots,
+  realPathOf,
   mkdirRoot,
   pickNewRoot,
-  readRootFile,
   readRootTextFile,
   removeRootPath,
   renameRootPath,
@@ -172,6 +173,8 @@ export default function FilesTab() {
   const [pickingAppToDeploy, setPickingAppToDeploy] = useState(false)
   const [deployingApp, setDeployingApp] = useState<DeployableAppInfo | null>(null)
   const [rootTags, setRootTags] = useState<TagRecord[]>([])
+  // Where each root really is, for its tooltip — the admin-app may ask; nothing else may.
+  const [rootPaths, setRootPaths] = useState<Record<string, string>>({})
   const [hydrated, setHydrated] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
@@ -211,6 +214,16 @@ export default function FilesTab() {
     if (!hydrated) return
     setAppState<SavedLocation>(LOCATION_KEY, { rootId: activeRootId, path })
   }, [hydrated, activeRootId, path])
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all(roots.map(async (r) => [r.id, await realPathOf(r)] as const)).then((pairs) => {
+      if (!cancelled) setRootPaths(Object.fromEntries(pairs.filter((p): p is [string, string] => p[1] !== null)))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [roots])
 
   const activeRoot = roots.find((r) => r.id === activeRootId)
 
@@ -457,7 +470,9 @@ export default function FilesTab() {
   async function downloadEntry(entry: EntryRow) {
     if (!activeRoot) return
     try {
-      const saved = await exportToDevice(entry.name, () => readRootFile(activeRoot, joinRelative(path, entry.name)))
+      const saved = await exportPathToDevice(entry.name, (token) =>
+        invoke<string>('export_local_file', { root: activeRoot.id, path: joinRelative(path, entry.name), name: entry.name, token }),
+      )
       if (saved && isMobile) window.alert(`Saved to ${saved}`)
     } catch (e) {
       setError(String(e))
@@ -502,7 +517,7 @@ export default function FilesTab() {
         {roots.map((root) => (
           <div key={root.id} className="root-item">
             <span className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
-              <button className="link-button" onClick={() => switchRoot(root.id)} title={root.absolutePath || root.label}>
+              <button className="link-button" onClick={() => switchRoot(root.id)} title={rootPaths[root.id] ?? root.label}>
                 <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
               </button>
               {root.id !== USER_ROOT_ID && (

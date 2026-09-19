@@ -1,12 +1,15 @@
 import { invoke } from '@tauri-apps/api/core'
 
 /** Thin wrappers around the backend's folder-picker commands (see `picked_roots.rs`): Android's
- * own folder picker (`FolderPicker.kt`), which hands back real paths, and the memory of what was
- * picked. On desktop `listPickedRoots` is always empty — folders are picked with the native
- * dialog there and last one session. */
+ * own folder picker (`FolderPicker.kt`), which browses the real filesystem, and the memory of what
+ * was picked (kept across restarts on both platforms). A picked folder is only ever known here by
+ * its **root id** (a random string; pass it as `root` to the file commands) and its own name — the
+ * real path never reaches a window. */
 
 export interface PickedRoot {
-  path: string
+  /** Names the folder to the file commands (`fs_*`, `sqlite_load`). Opaque. */
+  id: string
+  /** The folder's own name, for showing. */
   label: string
 }
 
@@ -20,7 +23,8 @@ export function listPickedRoots(): Promise<PickedRoot[]> {
   return invoke<PickedRoot[]>('list_picked_roots')
 }
 
-/** Stops remembering the folder; nothing inside it is touched. */
-export async function removePickedRoot(path: string): Promise<void> {
-  await invoke('remove_picked_root', { path })
+/** Stops remembering the folder and takes it out of what the app may use, at once; nothing inside
+ * it is touched. */
+export async function removePickedRoot(id: string): Promise<void> {
+  await invoke('remove_picked_root', { id })
 }

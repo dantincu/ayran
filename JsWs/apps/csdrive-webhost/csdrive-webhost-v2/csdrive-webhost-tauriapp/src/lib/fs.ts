@@ -1,9 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 import { invokeWithBytes } from './ipcBytes'
 
-/** The file commands (`fs_commands.rs`), with the shapes of the fs plugin they replaced. Every path
- * is absolute and is judged by the backend's own scope (`fs_scope.rs`) — the user folder and the
- * folders the person picked, nothing else — so an out-of-scope path is an error, not a silent no-op. */
+/** The file commands (`fs_commands.rs`), with the shapes of the fs plugin they replaced. Every call
+ * names a **root** — `user` for the user folder, or the id of a folder the person picked — and a
+ * `path` *relative* to it (`/`-separated, `''` for the root itself). The backend judges it with its
+ * own scope (`fs_scope.rs`) — the user folder and the folders the person picked, nothing else — so
+ * an out-of-scope path is an error, not a silent no-op. A window never learns a real path. */
 
 export interface DirEntry {
   name: string
@@ -21,44 +23,51 @@ export interface FileInfo {
   mtimeMs: number | null
 }
 
-export function readDir(path: string): Promise<DirEntry[]> {
-  return invoke<DirEntry[]>('fs_read_dir', { path })
+export function readDir(root: string, path: string): Promise<DirEntry[]> {
+  return invoke<DirEntry[]>('fs_read_dir', { root, path })
 }
 
-export function stat(path: string): Promise<FileInfo> {
-  return invoke<FileInfo>('fs_stat', { path })
+export function stat(root: string, path: string): Promise<FileInfo> {
+  return invoke<FileInfo>('fs_stat', { root, path })
 }
 
-export function exists(path: string): Promise<boolean> {
-  return invoke<boolean>('fs_exists', { path })
+export function exists(root: string, path: string): Promise<boolean> {
+  return invoke<boolean>('fs_exists', { root, path })
 }
 
-export async function readFile(path: string): Promise<Uint8Array> {
-  return new Uint8Array(await invoke<ArrayBuffer>('fs_read_file', { path }))
+export async function readFile(root: string, path: string): Promise<Uint8Array> {
+  return new Uint8Array(await invoke<ArrayBuffer>('fs_read_file', { root, path }))
 }
 
-export async function readTextFile(path: string): Promise<string> {
-  return new TextDecoder().decode(await readFile(path))
+export async function readTextFile(root: string, path: string): Promise<string> {
+  return new TextDecoder().decode(await readFile(root, path))
 }
 
 /** Creates or replaces the file; its folder must exist (see `mkdir`). */
-export async function writeFile(path: string, data: Uint8Array): Promise<void> {
-  await invokeWithBytes('fs_write_file', data, { path })
+export async function writeFile(root: string, path: string, data: Uint8Array): Promise<void> {
+  await invokeWithBytes('fs_write_file', data, { root, path })
 }
 
-export function writeTextFile(path: string, content: string): Promise<void> {
-  return writeFile(path, new TextEncoder().encode(content))
+export function writeTextFile(root: string, path: string, content: string): Promise<void> {
+  return writeFile(root, path, new TextEncoder().encode(content))
 }
 
-export async function mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
-  await invoke('fs_mkdir', { path, recursive: options?.recursive ?? false })
+export async function mkdir(root: string, path: string, options?: { recursive?: boolean }): Promise<void> {
+  await invoke('fs_mkdir', { root, path, recursive: options?.recursive ?? false })
 }
 
 /** Deletes a file, a link (never what it points to) or a folder — with its contents only if `recursive`. */
-export async function remove(path: string, options?: { recursive?: boolean }): Promise<void> {
-  await invoke('fs_remove', { path, recursive: options?.recursive ?? false })
+export async function remove(root: string, path: string, options?: { recursive?: boolean }): Promise<void> {
+  await invoke('fs_remove', { root, path, recursive: options?.recursive ?? false })
 }
 
-export async function rename(from: string, to: string): Promise<void> {
-  await invoke('fs_rename', { from, to })
+/** Renames or moves an entry within a root. */
+export async function rename(root: string, from: string, to: string): Promise<void> {
+  await invoke('fs_rename', { root, from, to })
+}
+
+/** Where a root really is. **Only the admin-app may ask** (to show the person which folder it is);
+ * every other window is refused — web apps never see a real path. */
+export function rootRealPath(root: string): Promise<string> {
+  return invoke<string>('fs_root_path', { root })
 }

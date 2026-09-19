@@ -7,6 +7,8 @@
   ],
   "permissions": [
     "allow-save-to-device",
-    "allow-choose-save-location"
+    "allow-choose-save-location",
+    "allow-filen-cache-export",
+    "allow-export-local-file"
   ]
 }

@@ -42,6 +42,11 @@ use crate::folder_pairs;
 /// The default cache interval: one hour.
 pub const DEFAULT_TTL_SECS: i64 = 3600;
 const PROVIDER: &str = "filen";
+/// Inside an account's short folder, beside the cached contents: where uploads are assembled and
+/// downloads' partial files never go (those sit next to their target, with a .part ending).
+const UPLOADS_FOLDER: &str = "tmp";
+/// The size of the pieces a file is read from disk in when it is uploaded.
+const READ_PIECE: usize = 1_048_576;
 /// Accounts' and branches' folder pairs take the lowest free index, so deleting one (disconnecting an
 /// account, committing or discarding a branch) leaves no permanent gap in the numbering.
 const INDEXING: folder_pairs::Indexing = folder_pairs::Indexing::FillGaps;
@@ -61,8 +66,14 @@ pub struct RemoteEntry {
 /// What the cache needs from the storage it caches.
 pub trait Remote: Send + Sync {
     fn readdir(&self, path: &str) -> impl Future<Output = Result<Vec<RemoteEntry>, String>> + Send;
-    fn read_file(&self, path: &str) -> impl Future<Output = Result<Vec<u8>, String>> + Send;
-    fn write_file(&self, path: &str, content: &[u8]) -> impl Future<Output = Result<(), String>> + Send;
+    /// A file being uploaded a piece at a time (see begin_upload).
+    type Upload: Send;
+    /// Streams the file's content to sink, a chunk at a time — the whole file is never held.
+    fn download(&self, path: &str, sink: &mut (dyn FnMut(&[u8]) -> Result<(), String> + Send)) -> impl Future<Output = Result<(), String>> + Send;
+    /// Starts uploading to path (creating the file, or replacing it): nothing exists until finish_upload.
+    fn begin_upload(&self, path: &str) -> impl Future<Output = Result<Self::Upload, String>> + Send;
+    fn upload_bytes(&self, upload: &mut Self::Upload, bytes: &[u8]) -> impl Future<Output = Result<(), String>> + Send;
+    fn finish_upload(&self, upload: Self::Upload) -> impl Future<Output = Result<(), String>> + Send;
     fn mkdir(&self, path: &str) -> impl Future<Output = Result<(), String>> + Send;
     fn remove(&self, path: &str) -> impl Future<Output = Result<(), String>> + Send;
     fn rename(&self, from: &str, to: &str) -> impl Future<Output = Result<(), String>> + Send;
@@ -72,6 +83,8 @@ pub trait Remote: Send + Sync {
 pub struct FilenRemote(pub crate::filen::Session);
 
 impl Remote for FilenRemote {
+    type Upload = crate::filen::ops::UploadSession;
+
     async fn readdir(&self, path: &str) -> Result<Vec<RemoteEntry>, String> {
         Ok(crate::filen::ops::readdir(&self.0, path)
             .await?
@@ -79,11 +92,17 @@ impl Remote for FilenRemote {
             .map(|e| RemoteEntry { name: e.name, is_directory: e.is_directory, size: e.size, mtime_ms: e.mtime_ms })
             .collect())
     }
-    async fn read_file(&self, path: &str) -> Result<Vec<u8>, String> {
-        crate::filen::ops::read_file(&self.0, path).await
+    async fn download(&self, path: &str, sink: &mut (dyn FnMut(&[u8]) -> Result<(), String> + Send)) -> Result<(), String> {
+        crate::filen::ops::read_file_chunks(&self.0, path, sink).await
     }
-    async fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
-        crate::filen::ops::write_file(&self.0, path, content).await
+    async fn begin_upload(&self, path: &str) -> Result<Self::Upload, String> {
+        crate::filen::ops::begin_upload(&self.0, path).await
+    }
+    async fn upload_bytes(&self, upload: &mut Self::Upload, bytes: &[u8]) -> Result<(), String> {
+        crate::filen::ops::upload_bytes(&self.0, upload, bytes).await
+    }
+    async fn finish_upload(&self, upload: Self::Upload) -> Result<(), String> {
+        crate::filen::ops::finish_upload(&self.0, upload).await
     }
     async fn mkdir(&self, path: &str) -> Result<(), String> {
         crate::filen::ops::mkdir(&self.0, path).await
@@ -324,7 +343,18 @@ impl Cache {
         std::fs::create_dir_all(files_dir).map_err(io)?;
         let options = sqlx::sqlite::SqliteConnectOptions::new().filename(files_dir.join(crate::layout::FILES_DB)).create_if_missing(true);
         let pool = SqlitePool::connect_with(options).await.map_err(sql)?;
-        Self::with_pool(pool, files_dir.to_path_buf(), Arc::new(now_real)).await
+        let cache = Self::with_pool(pool, files_dir.to_path_buf(), Arc::new(now_real)).await?;
+        cache.remove_leftover_uploads();
+        Ok(cache)
+    }
+
+    /// An upload in flight when the app stopped left its temporary file behind: they all go.
+    fn remove_leftover_uploads(&self) {
+        if let Ok(accounts) = std::fs::read_dir(self.a_dir()) {
+            for account in accounts.flatten() {
+                let _ = std::fs::remove_dir_all(account.path().join(UPLOADS_FOLDER));
+            }
+        }
     }
 
     pub async fn with_pool(pool: SqlitePool, root: PathBuf, clock: Clock) -> Result<Self, String> {
@@ -672,7 +702,17 @@ impl Cache {
     }
 
     /// The content of a file of the account itself: from the cache, or fetched (and cached).
+    /// The file's bytes — for small files (the caller holds them all); see cached_file for the rest.
     async fn read_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<Vec<u8>, String> {
+        let local = self.cached_file_account(remote, user_id, path).await?;
+        std::fs::read(local).map_err(io)
+    }
+
+    /// Where the account's file is cached, having fetched it from Filen if it wasn't (or the cached
+    /// copy is gone). The download goes to a .part file beside its target as it arrives — the whole
+    /// file is never in memory — and is renamed into place only when it is complete, so an interrupted
+    /// download leaves nothing that looks cached.
+    async fn cached_file_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<PathBuf, String> {
         let parent = parent_of(path).ok_or("That's the root folder, not a file.")?;
         self.list_account(remote, user_id, &parent, false).await?; // validates the listing (and so the entry)
         let entry = self.entry(user_id, path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
@@ -680,14 +720,32 @@ impl Cache {
             return Err(format!("\"{path}\" is a folder."));
         }
         let local = self.mirror_path(user_id, path).await?;
-        if entry.content_at.is_some() {
-            if let Ok(bytes) = std::fs::read(&local) {
-                return Ok(bytes);
+        if entry.content_at.is_some() && local.is_file() {
+            return Ok(local);
+        }
+        if let Some(dir) = local.parent() {
+            std::fs::create_dir_all(dir).map_err(io)?;
+        }
+        let mut part = local.as_os_str().to_owned();
+        part.push(".part");
+        let part = PathBuf::from(part);
+        let mut file = std::fs::File::create(&part).map_err(io)?;
+        let downloaded = {
+            use std::io::Write;
+            remote.download(path, &mut |chunk: &[u8]| file.write_all(chunk).map_err(io)).await
+        };
+        drop(file);
+        match downloaded {
+            Ok(()) => {
+                std::fs::rename(&part, &local).map_err(io)?;
+                self.mark_cached(user_id, path).await?;
+                Ok(local)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                Err(e)
             }
         }
-        let bytes = remote.read_file(path).await?;
-        self.store_content(user_id, path, &local, &bytes).await?;
-        Ok(bytes)
     }
 
     async fn store_content(&self, user_id: i64, path: &str, local: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -695,6 +753,11 @@ impl Cache {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
         std::fs::write(local, bytes).map_err(io)?;
+        self.mark_cached(user_id, path).await
+    }
+
+    /// Records that the file's content is in the cache now.
+    async fn mark_cached(&self, user_id: i64, path: &str) -> Result<(), String> {
         sqlx::query("UPDATE entries SET content_at = ?3 WHERE user_id = ?1 AND path = ?2")
             .bind(user_id)
             .bind(path)
@@ -737,7 +800,7 @@ impl Cache {
             Some(branch) => self.write_branch(remote, user_id, branch, &path, &parent, bytes).await,
             None => {
                 self.list_account(remote, user_id, &parent, false).await?;
-                remote.write_file(&path, bytes).await?;
+                write_remote(remote, &path, bytes).await?;
                 self.list_account(remote, user_id, &parent, true).await?; // Filen's own idea of the new file
                 let local = self.mirror_path(user_id, &path).await?;
                 self.store_content(user_id, &path, &local, bytes).await
@@ -1039,17 +1102,41 @@ impl Cache {
     }
 
     async fn read_branch(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str) -> Result<Vec<u8>, String> {
+        std::fs::read(self.cached_file_branch(remote, user_id, branch, path).await?).map_err(io)
+    }
+
+    /// Where the file, as the branch sees it, is on disk: the branch's own copy if it changed the
+    /// file, otherwise the account's cached one (fetched first if need be).
+    async fn cached_file_branch(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str) -> Result<PathBuf, String> {
         self.branch_exists(user_id, branch).await?;
         if self.deleted_in_branch(user_id, branch, path).await? {
             return Err(format!("\"{path}\" was deleted in this branch."));
         }
         if self.change(user_id, branch, path).await?.is_some_and(|c| c.kind == "put") {
-            return std::fs::read(self.branch_local_path(user_id, branch, path).await?).map_err(io);
+            return self.branch_local_path(user_id, branch, path).await;
         }
-        self.read_account(remote, user_id, path).await
+        self.cached_file_account(remote, user_id, path).await
+    }
+
+    /// Where the file is on disk, fetched (streamed) into the cache if it isn't there yet — for
+    /// callers that copy it somewhere (exporting) rather than hold its bytes. Never shown to a window.
+    pub async fn cached_file(&self, remote: &impl Remote, user_id: i64, branch: Option<i64>, path: &str) -> Result<PathBuf, String> {
+        let path = norm_path(path)?;
+        let _guard = self.lock(user_id).await;
+        match branch {
+            None => self.cached_file_account(remote, user_id, &path).await,
+            Some(branch) => self.cached_file_branch(remote, user_id, branch, &path).await,
+        }
     }
 
     async fn write_branch(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str, parent: &str, bytes: &[u8]) -> Result<(), String> {
+        let local = self.begin_put(remote, user_id, branch, path, parent).await?;
+        std::fs::write(local, bytes).map_err(io)
+    }
+
+    /// Records that the branch puts a file at path (based on what Filen has there now) and returns
+    /// where its content goes, with the folder made.
+    async fn begin_put(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str, parent: &str) -> Result<PathBuf, String> {
         self.branch_exists(user_id, branch).await?;
         self.require_folder(remote, user_id, branch, parent).await?;
 
@@ -1087,7 +1174,7 @@ impl Cache {
         if let Some(dir) = local.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
-        std::fs::write(local, bytes).map_err(io)
+        Ok(local)
     }
 
     async fn mkdir_branch(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str) -> Result<(), String> {
@@ -1246,8 +1333,8 @@ impl Cache {
             match change.kind.as_str() {
                 "mkdir" => remote.mkdir(&change.path).await?,
                 "put" => {
-                    let bytes = std::fs::read(self.branch_local_path(user_id, branch, &change.path).await?).map_err(io)?;
-                    remote.write_file(&change.path, &bytes).await?;
+                    let local = self.branch_local_path(user_id, branch, &change.path).await?;
+                    upload_local_file(remote, &change.path, &local).await?;
                 }
                 _ => {
                     let parent = parent_of(&change.path).unwrap_or_else(|| "/".to_string());
@@ -1271,6 +1358,148 @@ impl Cache {
         self.delete_branch_files_and_rows(user_id, branch, &name).await?;
         Ok(CommitReport { committed: true, applied, conflicts })
     }
+}
+
+/// A file being uploaded to the account (or into a branch) a piece at a time — from the webview's
+/// pieces or from a file on disk. Each piece goes to Filen and, at the same moment, to a temporary
+/// file that becomes the cached copy when the upload is finished; nothing is held in memory but the
+/// piece. See Cache::upload_begin / upload_push / upload_finish. Dropping an unfinished job deletes
+/// its temporary file.
+pub struct UploadJob<U> {
+    user_id: i64,
+    branch: Option<i64>,
+    path: String,
+    parent: String,
+    /// Filen's side of it — none for an upload into a branch, which stays local until it is committed.
+    remote: Option<U>,
+    tmp: PathBuf,
+    file: Option<std::fs::File>,
+    written: u64,
+}
+
+impl<U> UploadJob<U> {
+    /// How many bytes have been pushed so far.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+}
+
+impl<U> Drop for UploadJob<U> {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = std::fs::remove_file(&self.tmp);
+    }
+}
+
+impl Cache {
+    /// Where an account's uploads are assembled (see UPLOADS_FOLDER).
+    async fn uploads_root(&self, user_id: i64) -> Result<PathBuf, String> {
+        let content = self.content_root(user_id).await?;
+        Ok(content.parent().ok_or("The account's folder is missing.")?.join(UPLOADS_FOLDER))
+    }
+
+    /// Starts uploading a file to path — in the account itself, or in a branch.
+    pub async fn upload_begin<R: Remote>(&self, remote: &R, user_id: i64, branch: Option<i64>, path: &str) -> Result<UploadJob<R::Upload>, String> {
+        let path = norm_path(path)?;
+        let parent = parent_of(&path).ok_or("The root folder can't be written to.")?;
+        let _guard = self.lock(user_id).await;
+        let upstream = match branch {
+            Some(branch) => {
+                self.branch_exists(user_id, branch).await?;
+                self.require_folder(remote, user_id, branch, &parent).await?;
+                None
+            }
+            None => {
+                self.list_account(remote, user_id, &parent, false).await?;
+                Some(remote.begin_upload(&path).await?)
+            }
+        };
+        let dir = self.uploads_root(user_id).await?;
+        std::fs::create_dir_all(&dir).map_err(io)?;
+        let tmp = dir.join(format!("{}.part", uuid::Uuid::new_v4().simple()));
+        let file = std::fs::File::create(&tmp).map_err(io)?;
+        Ok(UploadJob { user_id, branch, path, parent, remote: upstream, tmp, file: Some(file), written: 0 })
+    }
+
+    /// Adds the next piece of the file.
+    pub async fn upload_push<R: Remote>(&self, remote: &R, job: &mut UploadJob<R::Upload>, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        if let Some(upload) = job.remote.as_mut() {
+            remote.upload_bytes(upload, bytes).await?;
+        }
+        job.file.as_mut().ok_or("That upload is already finished.")?.write_all(bytes).map_err(io)?;
+        job.written += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Finishes the upload: the file now exists (in Filen, or in the branch), and what was assembled
+    /// on disk is its cached copy.
+    pub async fn upload_finish<R: Remote>(&self, remote: &R, mut job: UploadJob<R::Upload>) -> Result<(), String> {
+        let _guard = self.lock(job.user_id).await;
+        drop(job.file.take());
+        let (user_id, path, parent) = (job.user_id, job.path.clone(), job.parent.clone());
+        let local = match job.branch {
+            Some(branch) => self.begin_put(remote, user_id, branch, &path, &parent).await?,
+            None => {
+                let upstream = job.remote.take().ok_or("That upload is already finished.")?;
+                remote.finish_upload(upstream).await?;
+                self.list_account(remote, user_id, &parent, true).await?; // Filen's own idea of the new file
+                let local = self.mirror_path(user_id, &path).await?;
+                if let Some(dir) = local.parent() {
+                    std::fs::create_dir_all(dir).map_err(io)?;
+                }
+                local
+            }
+        };
+        if std::fs::rename(&job.tmp, &local).is_err() {
+            std::fs::copy(&job.tmp, &local).map_err(io)?;
+        }
+        if job.branch.is_none() {
+            self.mark_cached(user_id, &path).await?;
+        }
+        Ok(())
+    }
+
+    /// Uploads the file at src (a real file on disk — the caller has judged it may be read) to path,
+    /// piece by piece.
+    pub async fn upload_from_file<R: Remote>(&self, remote: &R, user_id: i64, branch: Option<i64>, path: &str, src: &Path) -> Result<(), String> {
+        use std::io::Read;
+        let mut input = std::fs::File::open(src).map_err(io)?;
+        let mut job = self.upload_begin(remote, user_id, branch, path).await?;
+        let mut piece = vec![0u8; READ_PIECE];
+        loop {
+            let n = input.read(&mut piece).map_err(io)?;
+            if n == 0 {
+                break;
+            }
+            self.upload_push(remote, &mut job, &piece[..n]).await?;
+        }
+        self.upload_finish(remote, job).await
+    }
+}
+
+/// Puts bytes (small ones — the caller has them all) at path in Filen.
+async fn write_remote<R: Remote>(remote: &R, path: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut upload = remote.begin_upload(path).await?;
+    remote.upload_bytes(&mut upload, bytes).await?;
+    remote.finish_upload(upload).await
+}
+
+/// Uploads the file at src to path in Filen, piece by piece.
+async fn upload_local_file<R: Remote>(remote: &R, path: &str, src: &Path) -> Result<(), String> {
+    use std::io::Read;
+    let mut input = std::fs::File::open(src).map_err(io)?;
+    let mut upload = remote.begin_upload(path).await?;
+    let mut piece = vec![0u8; READ_PIECE];
+    loop {
+        let n = input.read(&mut piece).map_err(io)?;
+        if n == 0 {
+            break;
+        }
+        remote.upload_bytes(&mut upload, &piece[..n]).await?;
+    }
+    remote.finish_upload(upload).await
 }
 
 /// Folders first, then by name (case-insensitively).
@@ -1321,6 +1550,8 @@ mod tests {
     }
 
     impl Remote for MemoryRemote {
+        type Upload = (String, Vec<u8>);
+
         async fn readdir(&self, path: &str) -> Result<Vec<RemoteEntry>, String> {
             self.check_online()?;
             self.listings.fetch_add(1, Ordering::SeqCst);
@@ -1345,14 +1576,27 @@ mod tests {
             }
             Ok(out)
         }
-        async fn read_file(&self, path: &str) -> Result<Vec<u8>, String> {
+        async fn download(&self, path: &str, sink: &mut (dyn FnMut(&[u8]) -> Result<(), String> + Send)) -> Result<(), String> {
             self.check_online()?;
             self.reads.fetch_add(1, Ordering::SeqCst);
-            self.files.lock().unwrap().get(path).cloned().ok_or_else(|| format!("{path} not found"))
+            let bytes = self.files.lock().unwrap().get(path).cloned().ok_or_else(|| format!("{path} not found"))?;
+            for piece in bytes.chunks(3) {
+                sink(piece)?; // small pieces, like Filen's chunks are small compared with a big file
+            }
+            Ok(())
         }
-        async fn write_file(&self, path: &str, content: &[u8]) -> Result<(), String> {
+        async fn begin_upload(&self, path: &str) -> Result<Self::Upload, String> {
             self.check_online()?;
-            self.put(path, &String::from_utf8_lossy(content));
+            Ok((path.to_string(), Vec::new()))
+        }
+        async fn upload_bytes(&self, upload: &mut Self::Upload, bytes: &[u8]) -> Result<(), String> {
+            self.check_online()?;
+            upload.1.extend_from_slice(bytes);
+            Ok(())
+        }
+        async fn finish_upload(&self, upload: Self::Upload) -> Result<(), String> {
+            self.check_online()?;
+            self.put(&upload.0, &String::from_utf8_lossy(&upload.1));
             Ok(())
         }
         async fn mkdir(&self, path: &str) -> Result<(), String> {
@@ -1711,6 +1955,117 @@ mod tests {
             assert!(f.cache.branches(7).await.unwrap().is_empty());
             assert!(f.cache.discard_branch(7, second.index).await.is_err());
             assert!(!f.base.join("b").join("001").exists());
+        });
+    }
+
+    /// Every file under dir whose name ends with suffix.
+    fn files_ending(dir: &Path, suffix: &str) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files_ending(&path, suffix));
+            } else if path.to_string_lossy().ends_with(suffix) {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_file_is_streamed_into_the_cache_and_an_interrupted_download_leaves_nothing() {
+        run(async {
+            let f = Fixture::new("stream-down").await;
+            f.remote.put("/a.txt", "hello streamed world");
+            f.cache.list(&f.remote, 7, None, "/", false).await.unwrap();
+
+            // Cut off: the download fails, and nothing looks cached afterwards.
+            f.remote.offline.store(true, Ordering::SeqCst);
+            assert!(f.cache.cached_file(&f.remote, 7, None, "/a.txt").await.is_err());
+            assert!(files_ending(&f.base, ".part").is_empty(), "no partial file is left");
+            assert!(!f.cache.list(&f.remote, 7, None, "/", false).await.unwrap().entries[0].cached);
+
+            // Back online: it arrives, in place, and is served from the cache from then on.
+            f.remote.offline.store(false, Ordering::SeqCst);
+            let local = f.cache.cached_file(&f.remote, 7, None, "/a.txt").await.unwrap();
+            assert_eq!(std::fs::read_to_string(&local).unwrap(), "hello streamed world");
+            assert!(local.starts_with(&f.base) && !local.to_string_lossy().ends_with(".part"));
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1);
+            f.cache.cached_file(&f.remote, 7, None, "/a.txt").await.unwrap();
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1, "the second time it is not downloaded again");
+            assert!(f.cache.list(&f.remote, 7, None, "/", false).await.unwrap().entries[0].cached);
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/a.txt").await.unwrap(), b"hello streamed world", "and the bytes API agrees");
+            assert!(files_ending(&f.base, ".part").is_empty());
+        });
+    }
+
+    #[test]
+    fn an_upload_in_pieces_goes_to_filen_and_the_cache_together() {
+        run(async {
+            let f = Fixture::new("upload-pieces").await;
+            let mut job = f.cache.upload_begin(&f.remote, 7, None, "/up.txt").await.unwrap();
+            for piece in ["hel", "lo ", "pie", "ces"] {
+                f.cache.upload_push(&f.remote, &mut job, piece.as_bytes()).await.unwrap();
+            }
+            assert_eq!(job.written(), 12);
+            assert!(f.remote.text("/up.txt").is_none(), "nothing exists in Filen until the upload is finished");
+            f.cache.upload_finish(&f.remote, job).await.unwrap();
+
+            assert_eq!(f.remote.text("/up.txt").as_deref(), Some("hello pieces"));
+            let local = f.cache.cached_file(&f.remote, 7, None, "/up.txt").await.unwrap();
+            assert_eq!(std::fs::read_to_string(local).unwrap(), "hello pieces");
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 0, "what was assembled is the cached copy: no download");
+            assert!(files_ending(&f.base, ".part").is_empty(), "the temporary file became the cached one");
+        });
+    }
+
+    #[test]
+    fn a_file_on_disk_uploads_to_the_account_and_into_a_branch_and_a_commit_streams_it_too() {
+        run(async {
+            let f = Fixture::new("upload-file").await;
+            let src = f.base.join("source.txt");
+            let content = "from disk ".repeat(10);
+            std::fs::write(&src, &content).unwrap();
+
+            f.cache.upload_from_file(&f.remote, 7, None, "/disk.txt", &src).await.unwrap();
+            assert_eq!(f.remote.text("/disk.txt").as_deref(), Some(content.as_str()));
+
+            // Into a branch, Filen is untouched until the commit.
+            let branch = f.cache.create_branch(7, "b").await.unwrap();
+            f.cache.upload_from_file(&f.remote, 7, Some(branch.index), "/branchy.txt", &src).await.unwrap();
+            assert!(f.remote.text("/branchy.txt").is_none());
+            assert_eq!(f.cache.read(&f.remote, 7, Some(branch.index), "/branchy.txt").await.unwrap(), content.as_bytes());
+            let report = f.cache.commit_branch(&f.remote, 7, branch.index, false).await.unwrap();
+            assert!(report.committed);
+            assert_eq!(f.remote.text("/branchy.txt").as_deref(), Some(content.as_str()));
+            assert!(files_ending(&f.base, ".part").is_empty());
+
+            // Replacing a file that is there already works the same way.
+            std::fs::write(&src, "replaced").unwrap();
+            f.cache.upload_from_file(&f.remote, 7, None, "/disk.txt", &src).await.unwrap();
+            assert_eq!(f.remote.text("/disk.txt").as_deref(), Some("replaced"));
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/disk.txt").await.unwrap(), b"replaced");
+        });
+    }
+
+    #[test]
+    fn an_abandoned_upload_leaves_nothing_behind() {
+        run(async {
+            let f = Fixture::new("upload-abandon").await;
+            let mut job = f.cache.upload_begin(&f.remote, 7, None, "/x.txt").await.unwrap();
+            f.cache.upload_push(&f.remote, &mut job, b"partial").await.unwrap();
+            assert_eq!(files_ending(&f.base, ".part").len(), 1);
+            drop(job);
+            assert!(files_ending(&f.base, ".part").is_empty(), "dropping an unfinished upload deletes its temporary file");
+            assert!(f.remote.text("/x.txt").is_none());
+
+            // And one cut off by the app stopping (nothing ran a destructor) is cleared at the next start.
+            let mut cut_off = f.cache.upload_begin(&f.remote, 7, None, "/y.txt").await.unwrap();
+            f.cache.upload_push(&f.remote, &mut cut_off, b"partial").await.unwrap();
+            std::mem::forget(cut_off);
+            assert_eq!(files_ending(&f.base, ".part").len(), 1);
+            f.cache.remove_leftover_uploads();
+            assert!(files_ending(&f.base, ".part").is_empty());
         });
     }
 

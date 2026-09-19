@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import Database from '../lib/sqlite'
 import { Database as DatabaseIcon, Eye, Play, Plus, RefreshCw, Table2, X } from 'lucide-react'
 import IconButton from './IconButton'
-import { joinRelative, listUserDir, userAbsolutePath } from '../lib/localFs'
+import { joinRelative, listUserDir } from '../lib/localFs'
 
 const DB_EXTENSIONS = new Set(['db', 'sqlite', 'sqlite3', 'db3'])
 
@@ -73,8 +73,7 @@ export default function SqliteTab() {
   async function openDatabase(rel: string) {
     setError(null)
     try {
-      const abs = await userAbsolutePath(rel)
-      const database = await Database.load(abs)
+      const database = await Database.load('user', rel)
       setDb(database)
       setSelectedRel(rel)
       setActiveTable(null)

@@ -79,14 +79,6 @@ pub fn protected_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     ])
 }
 
-/// Absolute path of the folder holding user-authored content (`layout::USER_FOLDER`
-/// inside the data folder in use right now). Available to every window: it's how a
-/// web app finds where to point the fs commands.
-#[tauri::command]
-pub fn get_user_folder(app: AppHandle) -> Result<String, String> {
-    Ok(crate::layout::user_dir(&effective_data_dir(&app)?).display().to_string())
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataFolderInfo {

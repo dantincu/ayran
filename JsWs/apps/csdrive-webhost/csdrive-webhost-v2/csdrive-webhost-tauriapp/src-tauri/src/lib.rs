@@ -183,7 +183,6 @@ pub fn run() {
             app_state::get_app_state,
             app_state::set_app_state,
             code_snippets::get_code_snippets,
-            data_location::get_user_folder,
             device_files::save_to_device,
             fs_commands::fs_read_dir,
             fs_commands::fs_stat,
@@ -193,6 +192,7 @@ pub fn run() {
             fs_commands::fs_mkdir,
             fs_commands::fs_remove,
             fs_commands::fs_rename,
+            fs_commands::fs_root_path,
             device_files::choose_save_location,
             filen_cache::filen_cache_account,
             filen_cache::filen_cache_set_interval,
@@ -208,6 +208,14 @@ pub fn run() {
             filen_cache::filen_cache_branch_changes,
             filen_cache::filen_cache_commit_branch,
             filen_cache::filen_cache_discard_branch,
+            filen_cache::filen_cache_upload_begin,
+            filen_cache::filen_cache_upload_chunk,
+            filen_cache::filen_cache_upload_finish,
+            filen_cache::filen_cache_upload_abort,
+            filen_cache::filen_cache_upload_from_path,
+            filen_cache::filen_cache_download_to,
+            filen_cache::filen_cache_export,
+            device_files::export_local_file,
             picked_roots::pick_folder,
             picked_roots::list_picked_roots,
             picked_roots::remove_picked_root,
@@ -256,6 +264,7 @@ pub fn run() {
             app.manage(filen::FilenState::default());
             app.manage(window_host::HostState::default());
             app.manage(device_files::ExportState::default());
+            app.manage(filen_cache::UploadSessions::default());
             // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
             app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
             #[cfg(target_os = "android")]
@@ -266,7 +275,7 @@ pub fn run() {
             // What the file commands and SQLite may touch (see `fs_scope.rs`): the user folder, always;
             // never the app's own database and secrets; and the folders picked in earlier sessions.
             let fs_scope = fs_scope::FsScope::new();
-            fs_scope.allow_fixed(&user_dir);
+            fs_scope.allow_fixed_as("user", &user_dir);
             for protected in data_location::protected_paths(app.handle())? {
                 fs_scope.deny(&protected);
             }

@@ -7,10 +7,51 @@
 //! The account's own `files/` folder is not reachable through the file commands (it is a protected
 //! path in the file scope), so this is the only way in.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
+
 use tauri::ipc::{Request, Response};
 use tauri::{AppHandle, State};
 
-use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FilenRemote, Listing};
+use crate::device_files::ExportState;
+use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FilenRemote, Listing, UploadJob};
+use crate::fs_scope::FsScope;
+
+/// An upload that a window feeds piece by piece (`filen_cache_upload_begin` … `_finish`).
+type Job = UploadJob<crate::filen::ops::UploadSession>;
+
+struct Upload {
+    /// Who began it: only that window may push to it.
+    owner: String,
+    user_id: u64,
+    started: Instant,
+    job: Arc<tokio::sync::Mutex<Job>>,
+}
+
+/// The uploads in progress, by a random id. One that is never finished is dropped (and its temporary
+/// file with it) an hour after it began, the next time another begins.
+#[derive(Default)]
+pub struct UploadSessions {
+    open: StdMutex<HashMap<String, Upload>>,
+}
+
+impl UploadSessions {
+    fn get(&self, id: &str, owner: &str) -> Result<(u64, Arc<tokio::sync::Mutex<Job>>), String> {
+        let open = self.open.lock().unwrap();
+        let upload = open.get(id).filter(|u| u.owner == owner).ok_or("That upload isn't open.")?;
+        Ok((upload.user_id, upload.job.clone()))
+    }
+
+    fn remove(&self, id: &str, owner: &str) -> Option<Upload> {
+        let mut open = self.open.lock().unwrap();
+        if open.get(id).is_some_and(|u| u.owner == owner) {
+            open.remove(id)
+        } else {
+            None
+        }
+    }
+}
 
 /// The account's Filen session as a `Remote`, after making sure the account has its cache folders.
 async fn prepare(app: &AppHandle, cache: &Cache, user_id: u64) -> Result<FilenRemote, String> {
@@ -139,4 +180,140 @@ pub async fn filen_cache_commit_branch(
 #[tauri::command]
 pub async fn filen_cache_discard_branch(cache: State<'_, Cache>, user_id: u64, branch: i64) -> Result<(), String> {
     cache.discard_branch(user_id as i64, branch).await
+}
+
+// ── Big files: nothing here holds a whole file ─────────────────────────────────
+
+/// Starts uploading a file to `path` (in the account, or in `branch`); returns the upload's id. The
+/// window then sends the file in pieces with `filen_cache_upload_chunk` and ends with
+/// `filen_cache_upload_finish` (or gives up with `filen_cache_upload_abort`).
+#[tauri::command]
+pub async fn filen_cache_upload_begin(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    sessions: State<'_, UploadSessions>,
+    user_id: u64,
+    branch: Option<i64>,
+    path: String,
+) -> Result<String, String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    let job = cache.upload_begin(&remote, user_id as i64, branch, &path).await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut open = sessions.open.lock().unwrap();
+    open.retain(|_, u| u.started.elapsed() < Duration::from_secs(3600));
+    open.insert(
+        id.clone(),
+        Upload { owner: crate::window_host::caller_key(&window), user_id, started: Instant::now(), job: Arc::new(tokio::sync::Mutex::new(job)) },
+    );
+    Ok(id)
+}
+
+/// The next piece of an upload: its bytes are the request body and `id` an argument (see
+/// `ipc::body_bytes`/`field`). Any size will do — Filen's own 1 MiB chunks are cut from what arrives.
+/// A piece that fails ends the upload.
+#[tauri::command]
+pub async fn filen_cache_upload_chunk(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    sessions: State<'_, UploadSessions>,
+    request: Request<'_>,
+) -> Result<(), String> {
+    let id = crate::ipc::field(&request, "id")?;
+    let bytes = crate::ipc::body_bytes(&request)?;
+    let owner = crate::window_host::caller_key(&window);
+    let (user_id, job) = sessions.get(&id, &owner)?;
+    let remote = prepare(&app, &cache, user_id).await?;
+    let pushed = cache.upload_push(&remote, &mut *job.lock().await, &bytes).await;
+    if pushed.is_err() {
+        sessions.remove(&id, &owner);
+    }
+    pushed
+}
+
+/// Ends an upload: the file now exists, and what was sent is its cached copy.
+#[tauri::command]
+pub async fn filen_cache_upload_finish(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    sessions: State<'_, UploadSessions>,
+    id: String,
+) -> Result<(), String> {
+    let upload = sessions.remove(&id, &crate::window_host::caller_key(&window)).ok_or("That upload isn't open.")?;
+    let remote = prepare(&app, &cache, upload.user_id).await?;
+    let job = Arc::try_unwrap(upload.job).map_err(|_| "That upload is still busy.".to_string())?.into_inner();
+    cache.upload_finish(&remote, job).await
+}
+
+/// Gives up an upload: nothing is left of it.
+#[tauri::command]
+pub fn filen_cache_upload_abort(window: tauri::WebviewWindow, sessions: State<'_, UploadSessions>, id: String) -> Result<(), String> {
+    sessions.remove(&id, &crate::window_host::caller_key(&window));
+    Ok(())
+}
+
+/// Uploads a file that is already on this device — the file at `source` inside `root` (a folder the
+/// app may use, named as the file commands name it) — to `path` in the account or in `branch`. Rust
+/// reads it piece by piece; the file never goes through the window.
+#[tauri::command]
+pub async fn filen_cache_upload_from_path(
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    scope: State<'_, FsScope>,
+    user_id: u64,
+    branch: Option<i64>,
+    path: String,
+    root: String,
+    source: String,
+) -> Result<(), String> {
+    let real = scope.check_in(&root, &source, true)?;
+    if !real.is_file() {
+        return Err("That isn't a file.".to_string());
+    }
+    let remote = prepare(&app, &cache, user_id).await?;
+    cache.upload_from_file(&remote, user_id as i64, branch, &path, &real).await
+}
+
+/// Copies a file from the account (or a branch) to `dest` inside `root` — a folder the app may use.
+/// The file is fetched into the cache as a stream if it isn't there, then copied on this side.
+#[tauri::command]
+pub async fn filen_cache_download_to(
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    scope: State<'_, FsScope>,
+    user_id: u64,
+    branch: Option<i64>,
+    path: String,
+    root: String,
+    dest: String,
+) -> Result<(), String> {
+    let target = scope.check_in(&root, &dest, true)?;
+    let remote = prepare(&app, &cache, user_id).await?;
+    let cached = cache.cached_file(&remote, user_id as i64, branch, &path).await?;
+    tauri::async_runtime::spawn_blocking(move || std::fs::copy(cached, target).map(|_| ()).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Exports a file from the account (or a branch) to the person's device — see `device_files`; the
+/// desktop's `token` comes from `choose_save_location`. Fetched into the cache as a stream if need be,
+/// then copied: it never goes through the window. Trusted windows only, like every export.
+#[tauri::command]
+pub async fn filen_cache_export(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    exports: State<'_, ExportState>,
+    user_id: u64,
+    branch: Option<i64>,
+    path: String,
+    name: String,
+    token: Option<String>,
+) -> Result<String, String> {
+    crate::window_host::require_trusted(&window)?;
+    let remote = prepare(&app, &cache, user_id).await?;
+    let cached = cache.cached_file(&remote, user_id as i64, branch, &path).await?;
+    crate::device_files::export_file(exports.inner(), name, token, cached).await
 }

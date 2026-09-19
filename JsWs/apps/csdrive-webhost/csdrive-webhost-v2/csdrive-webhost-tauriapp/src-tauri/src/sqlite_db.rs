@@ -1,14 +1,15 @@
 //! SQLite access for the admin-app's SQLite studio and for user-provided web apps —
 //! in place of `tauri-plugin-sql`, which will open *any* path on disk. Every
-//! database is opened through `authorize`, so only files inside the user folder or
-//! inside a folder the user has picked (both of which are in `fs_scope` — the same scope the
-//! file commands obey) can be reached.
+//! database is named by a root (`user`, or a picked folder's id) and a path inside it and opened
+//! through `authorize`, so only files inside the user folder or inside a folder the user has picked
+//! (both of which are in `fs_scope` — the same scope the file commands obey) can be reached. The
+//! handle a window gets back is that same virtual name, never the file's real location.
 //!
 //! SQLite has its own ways to name files — `ATTACH DATABASE`, `VACUUM INTO`,
 //! `PRAGMA temp_store_directory` — which would sidestep that check, so every connection
-//! also runs under an authorizer that applies the same rule to them (see
-//! `install_authorizer`), and `VACUUM INTO` (which SQLite doesn't route through the
-//! authorizer) is refused by `reject_forbidden_statements`.
+//! also runs under an authorizer (see `install_authorizer`) that refuses them (`ATTACH` of anything
+//! but an in-memory or temporary database, since SQL can't name a root), and `VACUUM INTO` (which
+//! SQLite doesn't route through the authorizer) is refused by `reject_forbidden_statements`.
 //!
 //! Values cross the boundary as JSON: `null`, booleans, numbers, strings (binds), and
 //! rows come back as `{column: value}` objects with BLOBs as arrays of byte values
@@ -17,7 +18,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -28,8 +29,6 @@ use sqlx::{Column, Row, SqlitePool, TypeInfo, ValueRef};
 use tauri::{AppHandle, Manager};
 
 use crate::fs_scope::FsScope;
-
-use crate::data_location;
 
 /// Open databases, per window: a handle is only usable by the window that loaded it.
 #[derive(Default)]
@@ -71,65 +70,34 @@ pub struct ExecuteResult {
     pub last_insert_id: i64,
 }
 
-/// Resolves symlinks and `..` in `requested` (so neither can escape the scope). A file
-/// that doesn't exist yet is resolved via the nearest folder that does.
-fn resolve_for_scope(requested: &Path) -> Option<PathBuf> {
-    crate::fs_scope::resolve(requested, true).ok()
+/// Resolves `path` inside `root` to the real file it names and checks it's somewhere the user has
+/// made available. Also returns the *handle* by which windows name the database: the root and the
+/// tidied relative path — never the real location.
+fn authorize(app: &AppHandle, root: &str, path: &str) -> Result<(PathBuf, String), String> {
+    let real = app.state::<FsScope>().check_in(root, path, true)?;
+    let tidy: Vec<&str> = path.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    Ok((real, format!("{root}/{}", tidy.join("/"))))
 }
 
-/// Resolves `path` (absolute, or relative to the user folder) to the real file it
-/// names and checks it's somewhere the user has made available.
-fn authorize(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
-    let requested = PathBuf::from(path);
-    let requested = if requested.is_absolute() {
-        requested
-    } else {
-        crate::layout::user_dir(&data_location::effective_data_dir(app)?).join(requested)
-    };
-
-    let resolved = resolve_for_scope(&requested).ok_or_else(|| format!("\"{path}\" isn't in a folder that exists."))?;
-    if app.state::<FsScope>().is_allowed(&resolved) {
-        Ok(resolved)
-    } else {
-        Err(format!(
-            "\"{path}\" is outside the user folder and the folders you've chosen, so it can't be opened."
-        ))
-    }
-}
-
-type PathCheck = Arc<dyn Fn(&Path) -> bool + Send + Sync>;
-
-/// Whether SQLite may `ATTACH` the database file named `name`: an in-memory or temporary
-/// database, or a file (given as an absolute path — SQLite would resolve a relative one
-/// against the process's working directory, not the user folder) that `is_allowed`.
-fn attach_target_allowed(name: &str, is_allowed: &dyn Fn(&Path) -> bool) -> bool {
-    if name.is_empty() || name == ":memory:" {
-        return true;
-    }
-    if name.starts_with("file:") {
-        return false; // URI filenames can carry their own path and options
-    }
-    let path = Path::new(name);
-    path.is_absolute() && resolve_for_scope(path).is_some_and(|resolved| is_allowed(&resolved))
-}
-
-struct AuthContext {
-    is_allowed: PathCheck,
+/// Whether SQLite may `ATTACH` the database named `name`: only an in-memory or temporary one. A file
+/// can't be named safely from SQL — a window doesn't know real paths, and a root can't be spoken
+/// there — so none is allowed.
+fn attach_target_allowed(name: &str) -> bool {
+    name.is_empty() || name == ":memory:"
 }
 
 unsafe extern "C" fn authorizer(
-    context: *mut c_void,
+    _context: *mut c_void,
     action: c_int,
     arg1: *const c_char,
     arg2: *const c_char,
     _database: *const c_char,
     _trigger: *const c_char,
 ) -> c_int {
-    let context = &*(context as *const AuthContext);
     let text = |p: *const c_char| if p.is_null() { None } else { CStr::from_ptr(p).to_str().ok() };
 
     let allowed = match action {
-        ffi::SQLITE_ATTACH => text(arg1).is_some_and(|name| attach_target_allowed(name, &*context.is_allowed)),
+        ffi::SQLITE_ATTACH => text(arg1).is_some_and(attach_target_allowed),
         ffi::SQLITE_PRAGMA => !text(arg1)
             .is_some_and(|name| ["temp_store_directory", "data_store_directory"].iter().any(|p| name.eq_ignore_ascii_case(p))),
         ffi::SQLITE_FUNCTION => !text(arg2).is_some_and(|name| name.eq_ignore_ascii_case("load_extension")),
@@ -138,23 +106,17 @@ unsafe extern "C" fn authorizer(
     if allowed { ffi::SQLITE_OK } else { ffi::SQLITE_DENY }
 }
 
-/// Makes SQLite consult `authorizer` for everything the connection prepares. The
-/// context is leaked on purpose — SQLite holds the pointer for the connection's whole
-/// life and there's no hook to free it — at a cost of a few bytes per connection opened.
-async fn install_authorizer(connection: &mut SqliteConnection, is_allowed: PathCheck) -> Result<(), sqlx::Error> {
+/// Makes SQLite consult `authorizer` for everything the connection prepares.
+async fn install_authorizer(connection: &mut SqliteConnection) -> Result<(), sqlx::Error> {
     let mut handle = connection.lock_handle().await?;
-    let context = Box::into_raw(Box::new(AuthContext { is_allowed })) as *mut c_void;
     unsafe {
-        ffi::sqlite3_set_authorizer(handle.as_raw_handle().as_ptr(), Some(authorizer), context);
+        ffi::sqlite3_set_authorizer(handle.as_raw_handle().as_ptr(), Some(authorizer), std::ptr::null_mut());
     }
     Ok(())
 }
 
-fn guarded_pool_options(is_allowed: PathCheck) -> SqlitePoolOptions {
-    SqlitePoolOptions::new().after_connect(move |connection, _meta| {
-        let is_allowed = is_allowed.clone();
-        Box::pin(async move { install_authorizer(connection, is_allowed).await })
-    })
+fn guarded_pool_options() -> SqlitePoolOptions {
+    SqlitePoolOptions::new().after_connect(|connection, _meta| Box::pin(async move { install_authorizer(connection).await }))
 }
 
 /// Statements SQLite doesn't put through the authorizer but that write to a path the
@@ -208,25 +170,26 @@ fn reject_forbidden_statements(sql: &str) -> Result<(), String> {
     Ok(())
 }
 
-async fn connect(path: &Path, is_allowed: PathCheck) -> Result<SqlitePool, sqlx::Error> {
+async fn connect(path: &Path) -> Result<SqlitePool, sqlx::Error> {
     let options = SqliteConnectOptions::new().filename(path).create_if_missing(true);
-    guarded_pool_options(is_allowed).connect_with(options).await
+    guarded_pool_options().connect_with(options).await
 }
 
+/// Opens (creating it if need be) the SQLite database at `path` inside `root` (`user`, or a picked
+/// folder's id) and returns its handle — `<root>/<path>`, which is only valid in this window.
 #[tauri::command]
 pub async fn sqlite_load(
     app: AppHandle,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, SqliteState>,
+    root: String,
     path: String,
 ) -> Result<String, String> {
-    let resolved = authorize(&app, &path)?;
-    let handle = resolved.to_string_lossy().to_string();
+    let (real, handle) = authorize(&app, &root, &path)?;
     let key = (crate::window_host::caller_key(&window), handle.clone());
 
     if !state.pools.lock().unwrap().contains_key(&key) {
-        let scope = app.state::<FsScope>().inner().clone();
-        let pool = connect(&resolved, Arc::new(move |p: &Path| scope.is_allowed(p))).await.map_err(|e| e.to_string())?;
+        let pool = connect(&real).await.map_err(|e| e.to_string())?;
         state.pools.lock().unwrap().insert(key, pool);
     }
     Ok(handle)
@@ -390,14 +353,12 @@ mod tests {
 
             // A database with a secret in it, outside the allowed folder.
             let secret = outside.join("secret.db");
-            let plain = connect(&secret, Arc::new(|_: &Path| true)).await.unwrap();
+            let plain = connect(&secret).await.unwrap();
             run_execute(&plain, "CREATE TABLE t (x)", &[]).await.unwrap();
             run_execute(&plain, "INSERT INTO t VALUES ('top secret')", &[]).await.unwrap();
             plain.close().await;
 
-            let inside_allowed = allowed.clone();
-            let guard: PathCheck = Arc::new(move |p: &Path| p.starts_with(&inside_allowed));
-            let db = connect(&allowed.join("mine.db"), guard).await.unwrap();
+            let db = connect(&allowed.join("mine.db")).await.unwrap();
 
             let attach = |p: &Path| format!("ATTACH DATABASE '{}' AS x", p.display());
             assert!(run_execute(&db, &attach(&secret), &[]).await.is_err(), "attaching an outside database must fail");
@@ -405,8 +366,11 @@ mod tests {
             assert!(run_execute(&db, &attach(&outside.join("new.db")), &[]).await.is_err(), "nor may it create one there");
             assert!(!outside.join("new.db").exists());
 
-            assert!(run_execute(&db, &attach(&allowed.join("other.db")), &[]).await.is_ok(), "attaching inside is fine");
+            // No file can be attached at all — a window can't name one safely, inside or out.
+            assert!(run_execute(&db, &attach(&allowed.join("other.db")), &[]).await.is_err(), "not even inside the allowed folder");
+            assert!(!allowed.join("other.db").exists());
             assert!(run_execute(&db, "ATTACH DATABASE 'relative.db' AS r", &[]).await.is_err(), "relative names are refused");
+            assert!(run_execute(&db, "ATTACH DATABASE 'file:x.db?mode=rwc' AS u", &[]).await.is_err(), "URI names are refused");
             assert!(run_execute(&db, "ATTACH DATABASE ':memory:' AS m", &[]).await.is_ok(), "in-memory is fine");
             assert!(
                 run_execute(&db, &format!("PRAGMA temp_store_directory = '{}'", outside.display()), &[]).await.is_err(),

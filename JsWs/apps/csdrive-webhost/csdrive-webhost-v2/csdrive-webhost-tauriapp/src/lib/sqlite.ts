@@ -1,9 +1,10 @@
 import { invoke } from '@tauri-apps/api/core'
 
 /** Thin wrapper over the backend's `sqlite_*` commands (see `sqlite_db.rs`), shaped like
- * the `tauri-plugin-sql` `Database` class this app used before. The backend only opens
- * files inside the user folder or folders the user has picked, and a handle is only
- * valid in the window that loaded it. */
+ * the `tauri-plugin-sql` `Database` class this app used before. A database is named by a root
+ * (`user`, or the id of a folder the person picked) and a path inside it; the backend only opens
+ * files inside those, and a handle is only valid in the window that loaded it (and is that same
+ * virtual name — never a real path). */
 
 export interface ExecuteResult {
   rowsAffected: number
@@ -17,9 +18,9 @@ export default class Database {
     this.handle = handle
   }
 
-  /** `path` is absolute, or relative to the user folder. Creates the file if missing. */
-  static async load(path: string): Promise<Database> {
-    return new Database(await invoke<string>('sqlite_load', { path }))
+  /** `path` is relative to `root`. Creates the file if missing. */
+  static async load(root: string, path: string): Promise<Database> {
+    return new Database(await invoke<string>('sqlite_load', { root, path }))
   }
 
   async execute(query: string, values: unknown[] = []): Promise<ExecuteResult> {

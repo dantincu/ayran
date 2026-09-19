@@ -14,7 +14,7 @@ import { invoke } from '@tauri-apps/api/core'
  * cloning it, brings the same place back. */
 
 export interface Location {
-  /** `local:user`, `local:ext:<path>`, `filen:<userId>` */
+  /** `local:user`, `local:<picked folder's root id>`, `filen:<userId>` */
   sourceId: string
   /** The Filen branch (its index) being worked in, or null for the account itself. */
   branch: number | null

@@ -1,15 +1,15 @@
 //! The file commands available to every window — the admin-app's file manager and web apps alike
-//! — replacing the fs plugin's. Each takes an absolute path and runs it past the app's own scope
-//! (`fs_scope.rs`) before touching anything, and then operates on the *resolved* path the scope
-//! judged, not on what the caller typed. A web app finds the user folder with `get_user_folder`
-//! and the picked folders with `list_picked_roots`.
+//! — replacing the fs plugin's. Each names a **root** (`user`, or the id of a folder the person
+//! picked) and a **path relative to it**, and runs that past the app's own scope (`fs_scope.rs`)
+//! before touching anything; it then operates on the *resolved* location the scope judged, not on
+//! what the caller typed. A window never sees a real path: it finds the picked folders with
+//! `list_picked_roots` (ids and labels) and everything it is told about a refusal names the relative
+//! path.
 //!
 //! Small on purpose: what the Files tab and web apps need, no more. Text and byte reads/writes
 //! share one pair of commands (`fs_read_file`, `fs_write_file`); the JS side decodes.
 //! Uploading bytes goes through `ipc::body_bytes`/`field` like the other upload commands (see
 //! `invokeWithBytes` in the admin-app).
-
-use std::path::Path;
 
 use serde::Serialize;
 use tauri::ipc::{Request, Response};
@@ -47,8 +47,8 @@ async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + 
 
 // ── The operations (plain functions, so they can be tested without an app) ────
 
-fn read_dir(scope: &FsScope, path: &Path) -> Result<Vec<DirEntryInfo>, String> {
-    let real = scope.check(path, true)?;
+fn read_dir(scope: &FsScope, root: &str, rel: &str) -> Result<Vec<DirEntryInfo>, String> {
+    let real = scope.check_in(root, rel, true)?;
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(&real).map_err(io)? {
         let entry = entry.map_err(io)?;
@@ -66,11 +66,11 @@ fn read_dir(scope: &FsScope, path: &Path) -> Result<Vec<DirEntryInfo>, String> {
     Ok(entries)
 }
 
-fn stat(scope: &FsScope, path: &Path) -> Result<FileInfo, String> {
-    let real = scope.check(path, true)?;
+fn stat(scope: &FsScope, root: &str, rel: &str) -> Result<FileInfo, String> {
+    let real = scope.check_in(root, rel, true)?;
     let meta = std::fs::metadata(&real).map_err(io)?;
     let is_symlink = scope
-        .check(path, false)
+        .check_in(root, rel, false)
         .ok()
         .and_then(|own| std::fs::symlink_metadata(own).ok())
         .is_some_and(|m| m.file_type().is_symlink());
@@ -82,28 +82,28 @@ fn stat(scope: &FsScope, path: &Path) -> Result<FileInfo, String> {
     Ok(FileInfo { is_file: meta.is_file(), is_directory: meta.is_dir(), is_symlink, size: meta.len(), mtime_ms })
 }
 
-fn exists(scope: &FsScope, path: &Path) -> Result<bool, String> {
-    Ok(scope.check(path, true)?.exists())
+fn exists(scope: &FsScope, root: &str, rel: &str) -> Result<bool, String> {
+    Ok(scope.check_in(root, rel, true)?.exists())
 }
 
-fn read_file(scope: &FsScope, path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read(scope.check(path, true)?).map_err(io)
+fn read_file(scope: &FsScope, root: &str, rel: &str) -> Result<Vec<u8>, String> {
+    std::fs::read(scope.check_in(root, rel, true)?).map_err(io)
 }
 
 /// Creates or replaces the file; its folder must exist already (`mkdir` makes it).
-fn write_file(scope: &FsScope, path: &Path, data: &[u8]) -> Result<(), String> {
-    std::fs::write(scope.check(path, true)?, data).map_err(io)
+fn write_file(scope: &FsScope, root: &str, rel: &str, data: &[u8]) -> Result<(), String> {
+    std::fs::write(scope.check_in(root, rel, true)?, data).map_err(io)
 }
 
-fn mkdir(scope: &FsScope, path: &Path, recursive: bool) -> Result<(), String> {
-    let real = scope.check(path, true)?;
+fn mkdir(scope: &FsScope, root: &str, rel: &str, recursive: bool) -> Result<(), String> {
+    let real = scope.check_in(root, rel, true)?;
     let made = if recursive { std::fs::create_dir_all(real) } else { std::fs::create_dir(real) };
     made.map_err(io)
 }
 
 /// Deletes a file, a link (itself, never what it points to), or a folder — with its contents only if `recursive`.
-fn remove(scope: &FsScope, path: &Path, recursive: bool) -> Result<(), String> {
-    let entry = scope.check(path, false)?; // the entry itself, not what a link at the end leads to
+fn remove(scope: &FsScope, root: &str, rel: &str, recursive: bool) -> Result<(), String> {
+    let entry = scope.check_in(root, rel, false)?; // the entry itself, not what a link at the end leads to
     let meta = std::fs::symlink_metadata(&entry).map_err(io)?;
     if meta.file_type().is_symlink() {
         // A link to a folder is removed like a folder on Windows and like a file elsewhere.
@@ -117,64 +117,77 @@ fn remove(scope: &FsScope, path: &Path, recursive: bool) -> Result<(), String> {
     }
 }
 
-/// Renames or moves an entry (a link is moved itself). An existing target is replaced, as with `std::fs::rename`.
-fn rename(scope: &FsScope, from: &Path, to: &Path) -> Result<(), String> {
-    std::fs::rename(scope.check(from, false)?, scope.check(to, false)?).map_err(io)
+/// Renames or moves an entry within a root (a link is moved itself). An existing target is
+/// replaced, as with `std::fs::rename`.
+fn rename(scope: &FsScope, root: &str, from: &str, to: &str) -> Result<(), String> {
+    std::fs::rename(scope.check_in(root, from, false)?, scope.check_in(root, to, false)?).map_err(io)
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn fs_read_dir(scope: State<'_, FsScope>, path: String) -> Result<Vec<DirEntryInfo>, String> {
+pub async fn fs_read_dir(scope: State<'_, FsScope>, root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
     let scope = scope.inner().clone();
-    blocking(move || read_dir(&scope, Path::new(&path))).await
+    blocking(move || read_dir(&scope, &root, &path)).await
 }
 
 #[tauri::command]
-pub async fn fs_stat(scope: State<'_, FsScope>, path: String) -> Result<FileInfo, String> {
+pub async fn fs_stat(scope: State<'_, FsScope>, root: String, path: String) -> Result<FileInfo, String> {
     let scope = scope.inner().clone();
-    blocking(move || stat(&scope, Path::new(&path))).await
+    blocking(move || stat(&scope, &root, &path)).await
 }
 
 #[tauri::command]
-pub async fn fs_exists(scope: State<'_, FsScope>, path: String) -> Result<bool, String> {
+pub async fn fs_exists(scope: State<'_, FsScope>, root: String, path: String) -> Result<bool, String> {
     let scope = scope.inner().clone();
-    blocking(move || exists(&scope, Path::new(&path))).await
+    blocking(move || exists(&scope, &root, &path)).await
 }
 
 /// The file's bytes as a raw binary response (an `ArrayBuffer` in JS).
 #[tauri::command]
-pub async fn fs_read_file(scope: State<'_, FsScope>, path: String) -> Result<Response, String> {
+pub async fn fs_read_file(scope: State<'_, FsScope>, root: String, path: String) -> Result<Response, String> {
     let scope = scope.inner().clone();
-    blocking(move || read_file(&scope, Path::new(&path))).await.map(Response::new)
+    blocking(move || read_file(&scope, &root, &path)).await.map(Response::new)
 }
 
-/// Creates or replaces a file: its bytes are the request body and `path` an argument (see
-/// `ipc::body_bytes`/`field`; from JS, `invokeWithBytes('fs_write_file', bytes, { path })`).
+/// Creates or replaces a file: its bytes are the request body; `root` and `path` are arguments (see
+/// `ipc::body_bytes`/`field`; from JS, `invokeWithBytes('fs_write_file', bytes, { root, path })`).
 #[tauri::command]
 pub async fn fs_write_file(scope: State<'_, FsScope>, request: Request<'_>) -> Result<(), String> {
+    let root = crate::ipc::field(&request, "root")?;
     let path = crate::ipc::field(&request, "path")?;
     let data = crate::ipc::body_bytes(&request)?;
     let scope = scope.inner().clone();
-    blocking(move || write_file(&scope, Path::new(&path), &data)).await
+    blocking(move || write_file(&scope, &root, &path, &data)).await
 }
 
 #[tauri::command]
-pub async fn fs_mkdir(scope: State<'_, FsScope>, path: String, recursive: Option<bool>) -> Result<(), String> {
+pub async fn fs_mkdir(scope: State<'_, FsScope>, root: String, path: String, recursive: Option<bool>) -> Result<(), String> {
     let scope = scope.inner().clone();
-    blocking(move || mkdir(&scope, Path::new(&path), recursive.unwrap_or(false))).await
+    blocking(move || mkdir(&scope, &root, &path, recursive.unwrap_or(false))).await
 }
 
 #[tauri::command]
-pub async fn fs_remove(scope: State<'_, FsScope>, path: String, recursive: Option<bool>) -> Result<(), String> {
+pub async fn fs_remove(scope: State<'_, FsScope>, root: String, path: String, recursive: Option<bool>) -> Result<(), String> {
     let scope = scope.inner().clone();
-    blocking(move || remove(&scope, Path::new(&path), recursive.unwrap_or(false))).await
+    blocking(move || remove(&scope, &root, &path, recursive.unwrap_or(false))).await
 }
 
 #[tauri::command]
-pub async fn fs_rename(scope: State<'_, FsScope>, from: String, to: String) -> Result<(), String> {
+pub async fn fs_rename(scope: State<'_, FsScope>, root: String, from: String, to: String) -> Result<(), String> {
     let scope = scope.inner().clone();
-    blocking(move || rename(&scope, Path::new(&from), Path::new(&to))).await
+    blocking(move || rename(&scope, &root, &from, &to)).await
+}
+
+/// Where a root really is — **the admin-app only**, for showing the person which folder a root is.
+/// (A window learns nothing of the kind: see `fs_scope.rs`.)
+#[tauri::command]
+pub fn fs_root_path(window: tauri::WebviewWindow, scope: State<'_, FsScope>, root: String) -> Result<String, String> {
+    crate::window_host::require_admin(&window)?;
+    let real = scope.root_real(&root).ok_or_else(|| "That folder isn't available.".to_string())?;
+    let shown = real.display().to_string();
+    // Windows' canonical form carries a `\\?\` prefix that means nothing to a person.
+    Ok(shown.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(shown))
 }
 
 #[cfg(test)]
@@ -182,6 +195,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// A scope whose `user` root is a scratch folder, with a sibling folder outside it.
     fn scoped(name: &str) -> (FsScope, PathBuf, PathBuf) {
         let base = std::env::temp_dir().join(format!("csdrive-fs-commands-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -190,26 +204,29 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         let (root, outside) = (root.canonicalize().unwrap(), outside.canonicalize().unwrap());
         let scope = FsScope::new();
-        scope.allow_fixed(&root);
+        scope.allow_fixed_as("user", &root);
         (scope, root, outside)
     }
+
+    const U: &str = "user";
 
     #[test]
     fn files_and_folders_can_be_created_read_listed_renamed_and_removed() {
         let (scope, root, _) = scoped("crud");
 
-        write_file(&scope, &root.join("a.txt"), b"hello").unwrap();
-        assert_eq!(read_file(&scope, &root.join("a.txt")).unwrap(), b"hello");
-        write_file(&scope, &root.join("a.txt"), b"hi").unwrap();
-        assert_eq!(read_file(&scope, &root.join("a.txt")).unwrap(), b"hi", "replaced, not appended");
-        assert!(write_file(&scope, &root.join("no-such-folder/b.txt"), b"x").is_err(), "the folder must exist");
+        write_file(&scope, U, "a.txt", b"hello").unwrap();
+        assert_eq!(read_file(&scope, U, "a.txt").unwrap(), b"hello");
+        assert!(root.join("a.txt").exists(), "in the root's real folder");
+        write_file(&scope, U, "a.txt", b"hi").unwrap();
+        assert_eq!(read_file(&scope, U, "a.txt").unwrap(), b"hi", "replaced, not appended");
+        assert!(write_file(&scope, U, "no-such-folder/b.txt", b"x").is_err(), "the folder must exist");
 
-        mkdir(&scope, &root.join("x/y/z"), true).unwrap();
-        assert!(mkdir(&scope, &root.join("p/q"), false).is_err(), "non-recursive needs the parent");
-        assert!(exists(&scope, &root.join("x/y")).unwrap());
-        assert!(!exists(&scope, &root.join("nope")).unwrap());
+        mkdir(&scope, U, "x/y/z", true).unwrap();
+        assert!(mkdir(&scope, U, "p/q", false).is_err(), "non-recursive needs the parent");
+        assert!(exists(&scope, U, "x/y").unwrap());
+        assert!(!exists(&scope, U, "nope").unwrap());
 
-        let mut listed = read_dir(&scope, &root).unwrap();
+        let mut listed = read_dir(&scope, U, "").unwrap();
         listed.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(
             listed,
@@ -218,42 +235,49 @@ mod tests {
                 DirEntryInfo { name: "x".into(), is_directory: true, is_file: false, is_symlink: false },
             ]
         );
-        let info = stat(&scope, &root.join("a.txt")).unwrap();
+        let info = stat(&scope, U, "a.txt").unwrap();
         assert!(info.is_file && !info.is_directory && !info.is_symlink);
         assert_eq!(info.size, 2);
         assert!(info.mtime_ms.is_some());
 
-        rename(&scope, &root.join("a.txt"), &root.join("x/moved.txt")).unwrap();
-        assert!(!exists(&scope, &root.join("a.txt")).unwrap());
-        assert_eq!(read_file(&scope, &root.join("x/moved.txt")).unwrap(), b"hi");
+        rename(&scope, U, "a.txt", "x/moved.txt").unwrap();
+        assert!(!exists(&scope, U, "a.txt").unwrap());
+        assert_eq!(read_file(&scope, U, "x/moved.txt").unwrap(), b"hi");
 
-        assert!(remove(&scope, &root.join("x"), false).is_err(), "a folder with things in it needs recursive");
-        remove(&scope, &root.join("x"), true).unwrap();
-        assert!(!exists(&scope, &root.join("x")).unwrap());
-        assert!(remove(&scope, &root.join("x"), true).is_err(), "already gone");
+        assert!(remove(&scope, U, "x", false).is_err(), "a folder with things in it needs recursive");
+        remove(&scope, U, "x", true).unwrap();
+        assert!(!exists(&scope, U, "x").unwrap());
+        assert!(remove(&scope, U, "x", true).is_err(), "already gone");
+        assert!(remove(&scope, U, "", true).is_err(), "the root itself is never removed");
+        assert!(root.is_dir());
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     #[test]
-    fn nothing_outside_the_scope_is_touched_by_any_command() {
+    fn nothing_outside_the_scope_is_touched_by_any_command_and_no_real_path_is_ever_said() {
         let (scope, root, outside) = scoped("outside");
         std::fs::write(outside.join("secret.txt"), "s").unwrap();
         let (secret, fresh) = (outside.join("secret.txt"), outside.join("new.txt"));
-
-        assert!(read_dir(&scope, &outside).is_err());
-        assert!(stat(&scope, &secret).is_err());
-        assert!(exists(&scope, &secret).is_err(), "even whether it exists isn't revealed");
-        assert!(read_file(&scope, &secret).is_err());
-        assert!(write_file(&scope, &fresh, b"x").is_err());
-        assert!(!fresh.exists());
-        assert!(mkdir(&scope, &outside.join("d"), true).is_err());
-        assert!(remove(&scope, &secret, false).is_err());
-        assert!(secret.exists());
         std::fs::write(root.join("mine.txt"), "m").unwrap();
-        assert!(rename(&scope, &root.join("mine.txt"), &fresh).is_err(), "moving out");
-        assert!(rename(&scope, &secret, &root.join("stolen.txt")).is_err(), "moving in");
-        assert!(root.join("mine.txt").exists() && secret.exists());
-        assert!(read_file(&scope, &root.join("../outside/secret.txt")).is_err(), "`..`");
+
+        // The only way to say "outside" is `..`, which can't be said; and an unknown root has no folder.
+        let real = root.parent().unwrap().to_string_lossy().to_string();
+        let refusals = [
+            read_dir(&scope, U, "../outside").unwrap_err(),
+            stat(&scope, U, "../outside/secret.txt").unwrap_err(),
+            exists(&scope, U, "../outside/secret.txt").unwrap_err(),
+            read_file(&scope, U, "../outside/secret.txt").unwrap_err(),
+            write_file(&scope, U, "../outside/new.txt", b"x").unwrap_err(),
+            mkdir(&scope, U, "../outside/d", true).unwrap_err(),
+            remove(&scope, U, "../outside/secret.txt", false).unwrap_err(),
+            rename(&scope, U, "mine.txt", "../outside/new.txt").unwrap_err(),
+            rename(&scope, U, "../outside/secret.txt", "stolen.txt").unwrap_err(),
+            read_file(&scope, "not-a-root", "mine.txt").unwrap_err(),
+        ];
+        for message in refusals {
+            assert!(!message.contains(&real), "a real path leaked: {message}");
+        }
+        assert!(!fresh.exists() && secret.exists() && root.join("mine.txt").exists());
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
@@ -272,12 +296,12 @@ mod tests {
             return;
         }
 
-        assert!(read_dir(&scope, &link).is_err(), "can't look through it");
-        assert!(write_file(&scope, &link.join("x.txt"), b"x").is_err(), "or write through it");
-        let listed = read_dir(&scope, &root).unwrap();
+        assert!(read_dir(&scope, U, "link").is_err(), "can't look through it");
+        assert!(write_file(&scope, U, "link/x.txt", b"x").is_err(), "or write through it");
+        let listed = read_dir(&scope, U, "").unwrap();
         assert!(listed.iter().any(|e| e.name == "link" && e.is_symlink));
 
-        remove(&scope, &link, true).unwrap();
+        remove(&scope, U, "link", true).unwrap();
         assert!(!link.exists() && std::fs::symlink_metadata(&link).is_err(), "the link is gone");
         assert!(outside.join("keep.txt").exists(), "what it pointed to is untouched");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());

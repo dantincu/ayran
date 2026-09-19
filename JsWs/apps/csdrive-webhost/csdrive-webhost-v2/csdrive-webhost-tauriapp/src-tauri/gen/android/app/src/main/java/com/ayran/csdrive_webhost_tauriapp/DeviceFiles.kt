@@ -17,7 +17,14 @@ import java.io.IOException
  */
 object DeviceFiles {
   @JvmStatic
-  fun saveToDownloads(context: Context, name: String, data: ByteArray): String {
+  fun saveToDownloads(context: Context, name: String, data: ByteArray): String = store(context, name) { it.write(data) }
+
+  /** Like [saveToDownloads], but copies the file at [path] as a stream: nothing is held in memory. */
+  @JvmStatic
+  fun saveFileToDownloads(context: Context, name: String, path: String): String =
+    store(context, name) { out -> java.io.FileInputStream(path).use { it.copyTo(out) } }
+
+  private fun store(context: Context, name: String, write: (java.io.OutputStream) -> Unit): String {
     return try {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
         throw IOException("Saving to Downloads needs Android 10 or newer.")
@@ -36,7 +43,7 @@ object DeviceFiles {
         ?: throw IOException("Android refused to create the file.")
 
       try {
-        resolver.openOutputStream(uri)?.use { it.write(data) } ?: throw IOException("Couldn't open the new file.")
+        resolver.openOutputStream(uri)?.use { write(it) } ?: throw IOException("Couldn't open the new file.")
         values.clear()
         values.put(MediaStore.Downloads.IS_PENDING, 0)
         resolver.update(uri, values, null, null)

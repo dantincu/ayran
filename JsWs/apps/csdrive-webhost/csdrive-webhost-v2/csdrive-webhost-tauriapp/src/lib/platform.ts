@@ -23,36 +23,46 @@ export interface PickedFile {
   data: Uint8Array
 }
 
-/** Lets the user choose files from the device to bring into the app. Uses the webview's
- * own file chooser (an `<input type="file">`), which works the same on every platform —
- * including Android, where the native dialog returns content URIs the fs scope can't
- * cover. Resolves to an empty list if the chooser is dismissed. */
-export function pickFilesFromDevice(): Promise<PickedFile[]> {
-  return new Promise((resolve, reject) => {
+/** Exports a file that is already on this device — one Rust copies itself (`export_local_file`,
+ * `filen_cache_export`), so its bytes never pass through the page. On desktop this asks where to save
+ * first (`run` gets the one-time token for the backend to use), on Android the file goes to
+ * Downloads (`run` gets null). Resolves to the name it was saved as, or null if the person cancelled. */
+export async function exportPathToDevice(name: string, run: (token: string | null) => Promise<string>): Promise<string | null> {
+  if (isMobile) return run(null)
+  const token = await invoke<string | null>('choose_save_location', { name })
+  return token ? run(token) : null
+}
+
+/** Opens the webview's own file chooser (an `<input type="file">`), which works the same on every
+ * platform — including Android, where the native dialog returns content URIs the fs scope can't
+ * cover. Resolves to the chosen `File`s *unread* (none if it is dismissed), so a big one can be read
+ * and sent on in pieces. The page never learns where a file came from: a `File` has a name, not a path. */
+export function pickDeviceFiles(): Promise<File[]> {
+  return new Promise((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
     input.multiple = true
     input.style.display = 'none'
 
     let settled = false
-    const finish = (run: () => void) => {
+    const finish = (files: File[]) => {
       if (settled) return
       settled = true
       input.remove()
-      run()
+      resolve(files)
     }
 
-    input.addEventListener('change', () => {
-      const files = Array.from(input.files ?? [])
-      Promise.all(files.map(async (file) => ({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) }))).then(
-        (picked) => finish(() => resolve(picked)),
-        (e) => finish(() => reject(e)),
-      )
-    })
+    input.addEventListener('change', () => finish(Array.from(input.files ?? [])))
     // Fires (where supported) when the chooser is dismissed without a choice.
-    input.addEventListener('cancel', () => finish(() => resolve([])))
+    input.addEventListener('cancel', () => finish([]))
 
     document.body.appendChild(input)
     input.click()
   })
+}
+
+/** Like `pickDeviceFiles`, but reads each file whole into memory — for small ones. */
+export async function pickFilesFromDevice(): Promise<PickedFile[]> {
+  const files = await pickDeviceFiles()
+  return Promise.all(files.map(async (file) => ({ name: file.name, data: new Uint8Array(await file.arrayBuffer()) })))
 }

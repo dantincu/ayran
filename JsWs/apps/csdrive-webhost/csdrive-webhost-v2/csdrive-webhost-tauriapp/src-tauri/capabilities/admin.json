@@ -13,6 +13,7 @@
     "allow-delete-app-data",
     "allow-list-deployable-apps",
     "allow-get-deployable-app-html",
+    "allow-fs-root-path",
     "allow-filen-login",
     "allow-filen-logout"
   ]

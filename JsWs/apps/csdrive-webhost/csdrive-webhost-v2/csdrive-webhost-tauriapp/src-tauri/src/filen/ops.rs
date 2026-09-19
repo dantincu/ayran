@@ -220,7 +220,13 @@ fn file_metadata(s: &Session, info: &FileInfoResponse) -> Result<FileMetadata, S
     serde_json::from_str(&plain).map_err(|e| e.to_string())
 }
 
-pub async fn read_file(s: &Session, path: &str) -> Result<Vec<u8>, String> {
+/// Streams the file's decrypted content to `sink`, one Filen chunk (up to 1 MiB) at a time — the
+/// whole file is never held here. An error from `sink` (say, a full disk) stops the download.
+pub async fn read_file_chunks(
+    s: &Session,
+    path: &str,
+    sink: &mut (dyn FnMut(&[u8]) -> Result<(), String> + Send),
+) -> Result<(), String> {
     let names = split_path(path)?;
     let located = locate(s, &names).await?;
     if located.child.is_dir() {
@@ -229,11 +235,21 @@ pub async fn read_file(s: &Session, path: &str) -> Result<Vec<u8>, String> {
 
     let info = file_info(s, &located.child.uuid).await?;
     let meta = file_metadata(s, &info)?;
-    let mut content = Vec::with_capacity(meta.size as usize);
     for index in 0..info.chunks {
         let encrypted = api::download_chunk(&s.client, &info.region, &info.bucket, &located.child.uuid, index).await?;
-        content.extend_from_slice(&crypto::decrypt_chunk(&encrypted, &meta.key, info.version)?);
+        sink(&crypto::decrypt_chunk(&encrypted, &meta.key, info.version)?)?;
     }
+    Ok(())
+}
+
+/// The whole file in memory — for small files; anything that can be big streams with `read_file_chunks`.
+pub async fn read_file(s: &Session, path: &str) -> Result<Vec<u8>, String> {
+    let mut content = Vec::new();
+    read_file_chunks(s, path, &mut |chunk: &[u8]| {
+        content.extend_from_slice(chunk);
+        Ok(())
+    })
+    .await?;
     Ok(content)
 }
 
@@ -243,55 +259,100 @@ pub async fn read_file(s: &Session, path: &str) -> Result<Vec<u8>, String> {
 /// uploads the new content as a fresh file and then trashes the old one, since Filen
 /// files are immutable.
 pub async fn write_file(s: &Session, path: &str, content: &[u8]) -> Result<(), String> {
+    let mut upload = begin_upload(s, path).await?;
+    upload_bytes(s, &mut upload, content).await?;
+    finish_upload(s, upload).await
+}
+
+/// A file being uploaded a piece at a time (`begin_upload` → `upload_bytes`… → `finish_upload`). What
+/// is pushed in is cut into Filen's own 1 MiB chunks, whatever size the pieces are, encrypted and sent
+/// as it goes; at most one chunk is held here. Nothing exists in the account until `finish_upload`.
+pub struct UploadSession {
+    parent_uuid: String,
+    name: String,
+    /// The file this one replaces: trashed once the new one is confirmed readable.
+    replaces: Option<String>,
+    file_uuid: String,
+    file_key: String,
+    upload_key: String,
+    hasher: Sha512,
+    chunks: u32,
+    total: u64,
+    pending: Vec<u8>,
+}
+
+/// Starts uploading to `path`: its folder must exist, and it can't be a folder.
+pub async fn begin_upload(s: &Session, path: &str) -> Result<UploadSession, String> {
     let names = split_path(path)?;
     let (name, parent_names) = names.split_last().ok_or_else(|| "The root folder can't be written to.".to_string())?;
     let parent_uuid = resolve_dir(s, parent_names).await?;
     let children = list_children(s, &parent_uuid).await?;
-
-    match find(&children, name) {
-        Some(existing) if existing.is_dir() => Err(format!("{} is a folder.", display(&names))),
-        Some(existing) => {
-            let new_uuid = upload_new(s, &parent_uuid, &existing.name, content).await?;
-            // Only discard the old version once the new one is confirmed readable.
-            if file_info(s, &new_uuid).await.is_ok() {
-                let _ = api::post_ok(&s.client, "/v3/file/trash", &serde_json::json!({ "uuid": existing.uuid }), &s.api_key).await;
-            }
-            Ok(())
-        }
-        None => upload_new(s, &parent_uuid, name, content).await.map(|_| ()),
-    }
+    let (name, replaces) = match find(&children, name) {
+        Some(existing) if existing.is_dir() => return Err(format!("{} is a folder.", display(&names))),
+        Some(existing) => (existing.name.clone(), Some(existing.uuid.clone())),
+        None => (name.clone(), None),
+    };
+    Ok(UploadSession {
+        parent_uuid,
+        name,
+        replaces,
+        file_uuid: uuid::Uuid::new_v4().to_string(),
+        file_key: crypto::generate_file_key_v2(),
+        upload_key: crypto::generate_random_string(32),
+        hasher: Sha512::new(),
+        chunks: 0,
+        total: 0,
+        pending: Vec::new(),
+    })
 }
 
-async fn upload_new(s: &Session, parent_uuid: &str, name: &str, content: &[u8]) -> Result<String, String> {
-    let master_key = s.master_keys.last().ok_or("The account has no master key.")?;
-    let file_uuid = uuid::Uuid::new_v4().to_string();
-    let file_key = crypto::generate_file_key_v2();
-    let upload_key = crypto::generate_random_string(32);
-    let mime = mime_from_name(name);
-    let last_modified = now_ms();
-    let total_size = content.len() as u64;
-
-    let mut content_hasher = Sha512::new();
-    let mut chunks: u32 = 0;
-    for chunk in content.chunks(CHUNK_SIZE) {
-        content_hasher.update(chunk);
-        let encrypted = crypto::encrypt_chunk_v2(chunk, &file_key)?;
-        let chunk_hash = hex::encode(Sha512::digest(&encrypted));
-        api::upload_chunk(&s.client, &file_uuid, chunks, parent_uuid, &upload_key, &chunk_hash, &encrypted, &s.api_key).await?;
-        chunks += 1;
+/// Adds the next bytes of the file, sending every full chunk they complete.
+pub async fn upload_bytes(s: &Session, upload: &mut UploadSession, bytes: &[u8]) -> Result<(), String> {
+    upload.pending.extend_from_slice(bytes);
+    while let Some(chunk) = next_full_chunk(&mut upload.pending) {
+        send_chunk(s, upload, &chunk).await?;
     }
+    Ok(())
+}
 
-    let name_enc = crypto::encrypt_metadata(name, &file_key)?;
-    let name_hashed = s.hash_name(name)?;
-    let size_enc = crypto::encrypt_metadata(&total_size.to_string(), &file_key)?;
+/// Cuts one full Filen chunk (1 MiB) off the front of what has been pushed so far, if there is one.
+fn next_full_chunk(pending: &mut Vec<u8>) -> Option<Vec<u8>> {
+    (pending.len() >= CHUNK_SIZE).then(|| pending.drain(..CHUNK_SIZE).collect())
+}
+
+async fn send_chunk(s: &Session, upload: &mut UploadSession, chunk: &[u8]) -> Result<(), String> {
+    upload.hasher.update(chunk);
+    let encrypted = crypto::encrypt_chunk_v2(chunk, &upload.file_key)?;
+    let chunk_hash = hex::encode(Sha512::digest(&encrypted));
+    api::upload_chunk(&s.client, &upload.file_uuid, upload.chunks, &upload.parent_uuid, &upload.upload_key, &chunk_hash, &encrypted, &s.api_key)
+        .await?;
+    upload.chunks += 1;
+    upload.total += chunk.len() as u64;
+    Ok(())
+}
+
+/// Sends what is left, then makes the file exist (and trashes the one it replaces).
+pub async fn finish_upload(s: &Session, mut upload: UploadSession) -> Result<(), String> {
+    if !upload.pending.is_empty() {
+        let rest = std::mem::take(&mut upload.pending);
+        send_chunk(s, &mut upload, &rest).await?;
+    }
+    let UploadSession { parent_uuid, name, replaces, file_uuid, file_key, upload_key, hasher, chunks, total, .. } = upload;
+
+    let master_key = s.master_keys.last().ok_or("The account has no master key.")?;
+    let mime = mime_from_name(&name);
+    let last_modified = now_ms();
+    let name_enc = crypto::encrypt_metadata(&name, &file_key)?;
+    let name_hashed = s.hash_name(&name)?;
+    let size_enc = crypto::encrypt_metadata(&total.to_string(), &file_key)?;
     let mime_enc = crypto::encrypt_metadata(mime, &file_key)?;
     let rm = crypto::generate_random_string(32);
 
     let mut metadata = serde_json::json!({
-        "name": name, "size": total_size, "mime": mime, "key": file_key, "lastModified": last_modified
+        "name": name, "size": total, "mime": mime, "key": file_key, "lastModified": last_modified
     });
     if chunks > 0 {
-        metadata["hash"] = serde_json::Value::String(hex::encode(content_hasher.finalize()));
+        metadata["hash"] = serde_json::Value::String(hex::encode(hasher.finalize()));
     }
     let metadata_enc = crypto::encrypt_metadata(&metadata.to_string(), master_key)?;
 
@@ -319,7 +380,14 @@ async fn upload_new(s: &Session, parent_uuid: &str, name: &str, content: &[u8]) 
         )
         .await?;
     }
-    Ok(file_uuid)
+
+    // Only discard the old version once the new one is confirmed readable.
+    if let Some(old) = replaces {
+        if file_info(s, &file_uuid).await.is_ok() {
+            let _ = api::post_ok(&s.client, "/v3/file/trash", &serde_json::json!({ "uuid": old }), &s.api_key).await;
+        }
+    }
+    Ok(())
 }
 
 async fn create_dir(s: &Session, parent_uuid: &str, name: &str) -> Result<String, String> {
@@ -509,5 +577,26 @@ mod tests {
         assert_eq!(dir.entry(), Entry { name: "d".into(), is_directory: true, size: None, mtime_ms: Some(5) });
         let file = Child { uuid: "u".into(), name: "f".into(), kind: Kind::File { size: 9, modified_ms: 7 } };
         assert_eq!(file.entry(), Entry { name: "f".into(), is_directory: false, size: Some(9), mtime_ms: Some(7) });
+    }
+
+    #[test]
+    fn pieces_of_any_size_are_cut_into_exact_filen_chunks() {
+        // Pieces of 300 000, 2 000 000 and 500 000 bytes make 2 800 000 = two full chunks and a rest.
+        let (mut pending, mut chunks) = (Vec::new(), Vec::new());
+        for (n, fill) in [(300_000usize, 1u8), (2_000_000, 2), (500_000, 3)] {
+            pending.extend(std::iter::repeat_n(fill, n));
+            while let Some(chunk) = next_full_chunk(&mut pending) {
+                chunks.push(chunk);
+            }
+        }
+        assert_eq!(chunks.len(), 2);
+        assert!(chunks.iter().all(|c| c.len() == CHUNK_SIZE), "every chunk but the last is exactly 1 MiB");
+        assert_eq!(pending.len(), 2_800_000 - 2 * CHUNK_SIZE, "the rest waits for the finish");
+        // And the bytes stay in order across the cuts.
+        let joined: Vec<u8> = chunks.iter().flatten().chain(pending.iter()).copied().collect();
+        assert_eq!(joined.len(), 2_800_000);
+        assert!(joined[..300_000].iter().all(|b| *b == 1) && joined[300_000..2_300_000].iter().all(|b| *b == 2));
+        assert!(joined[2_300_000..].iter().all(|b| *b == 3));
+        assert!(next_full_chunk(&mut Vec::new()).is_none());
     }
 }
