@@ -1,5 +1,5 @@
 fn main() {
-    // main.rs embeds this file directly (`include_str!`) as the default
+    // lib.rs embeds this file directly (`include_str!`) as the default
     // `admin/dist/index.html` — give a clear error instead of a cryptic include_str!
     // failure if it's missing, since it lives in a sibling package this crate
     // doesn't otherwise build.
@@ -40,7 +40,20 @@ fn main() {
             "move_tab_to_group",
             "get_app_state",
             "set_app_state",
+            "get_code_snippets",
             "get_user_folder",
+            "save_to_device",
+            "pick_device_root",
+            "list_device_roots",
+            "remove_device_root",
+            "device_readdir",
+            "device_stat",
+            "device_exists",
+            "device_read_file",
+            "device_write_file",
+            "device_mkdir",
+            "device_rm",
+            "device_rename",
             "get_data_folder_info",
             "pick_and_set_custom_data_folder",
             "reset_data_folder_to_default",

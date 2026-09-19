@@ -116,8 +116,9 @@ export default function SettingsTab() {
 
       <p className="muted">
         This is where the <code>user</code> folder, the <code>data.db</code> database, and any
-        stored Filen.io session tokens live. Moving it does not move any existing files or
-        folders — it only changes where the app looks next time it starts.
+        stored Filen.io session tokens live.
+        {info?.canRelocate &&
+          ' Moving it does not move any existing files or folders — it only changes where the app looks next time it starts.'}
       </p>
 
       {info && (
@@ -126,10 +127,12 @@ export default function SettingsTab() {
             <div className="muted">Default location</div>
             <div className="path">{info.defaultPath}</div>
           </div>
-          <div>
-            <div className="muted">Custom location {info.customPath ? '(active)' : '(not set)'}</div>
-            <div className="path">{info.customPath ?? '—'}</div>
-          </div>
+          {info.canRelocate && (
+            <div>
+              <div className="muted">Custom location {info.customPath ? '(active)' : '(not set)'}</div>
+              <div className="path">{info.customPath ?? '—'}</div>
+            </div>
+          )}
           <div>
             <div className="muted">Currently in use</div>
             <div className="path">{info.effectivePath}</div>
@@ -137,15 +140,17 @@ export default function SettingsTab() {
         </div>
       )}
 
-      <div className="toolbar-actions" style={{ marginTop: 16 }}>
-        <IconButton icon={FolderOpen} label="Change data folder…" onClick={changeFolder} disabled={busy} />
-        <IconButton
-          icon={RotateCcw}
-          label="Reset to default"
-          onClick={resetFolder}
-          disabled={busy || !info?.customPath}
-        />
-      </div>
+      {info?.canRelocate && (
+        <div className="toolbar-actions" style={{ marginTop: 16 }}>
+          <IconButton icon={FolderOpen} label="Change data folder…" onClick={changeFolder} disabled={busy} />
+          <IconButton
+            icon={RotateCcw}
+            label="Reset to default"
+            onClick={resetFolder}
+            disabled={busy || !info?.customPath}
+          />
+        </div>
+      )}
 
       {changed && (
         <div className="error-banner" style={{ marginTop: 12 }}>
@@ -159,17 +164,19 @@ export default function SettingsTab() {
       <p className="muted">
         These delete files immediately and cannot be undone. Before deleting, the app closes
         every open secondary window, any open SQLite connections, and its own browser
-        storage, then closes its database connection — and restarts itself automatically
-        once the deletion finishes.
+        storage, then closes its database connection — and restarts itself once the deletion
+        finishes{info && !info.canRelocate ? ' (on this device it just closes — open it again)' : ''}.
       </p>
       <div className="toolbar-actions">
-        <IconButton
-          icon={Trash2}
-          label="Delete custom folder contents"
-          variant="danger"
-          onClick={clearCustomFolder}
-          disabled={busy || !info?.customPath}
-        />
+        {info?.canRelocate && (
+          <IconButton
+            icon={Trash2}
+            label="Delete custom folder contents"
+            variant="danger"
+            onClick={clearCustomFolder}
+            disabled={busy || !info?.customPath}
+          />
+        )}
         <IconButton
           icon={Trash2}
           label="Delete app data"

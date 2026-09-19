@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Row, SqlitePool};
-use tauri::{AppHandle, Emitter, Manager, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, Url};
 
 /// Emitted whenever a secondary window (or one of its tab groups/tabs) is opened,
 /// closed, suspended, reopened, or edited, so the "Apps" tab in the main window
@@ -102,6 +102,9 @@ pub struct TabRecord {
 pub struct TabInitResponse {
     pub tab_guid: String,
     pub resource_id: String,
+    /// Snippets of css/html/javascript every web app should apply (see `code_snippets`).
+    /// Filled in by the `init_window_tab` command, not by the database logic.
+    pub code_snippets: Vec<crate::code_snippets::CodeSnippet>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,35 +292,6 @@ fn validate_relative_html_path(app: &AppHandle, relative_path: &str) -> Result<(
     Ok(())
 }
 
-/// Builds the `csuser://localhost/<relative_path>` window and wires up the close
-/// handler that deletes (or, if suspending, preserves) its `data.db` row. The window's
-/// own label is its guid — that's how `init_window_tab` knows which window called it,
-/// without needing to pass the guid through the URL.
-fn build_window(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), String> {
-    let base = Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).map_err(|e| e.to_string())?;
-    let url = base.join(relative_path).map_err(|e| e.to_string())?;
-
-    let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, WebviewUrl::CustomProtocol(url)))
-        .title(relative_path)
-        .inner_size(1024.0, 768.0)
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let app_for_event = app.clone();
-    let guid_for_event = guid.to_string();
-    window.on_window_event(move |event| {
-        if let WindowEvent::Destroyed = event {
-            let app_handle = app_for_event.clone();
-            let guid = guid_for_event.clone();
-            tauri::async_runtime::spawn(async move {
-                handle_window_destroyed(&app_handle, &guid).await;
-            });
-        }
-    });
-
-    Ok(())
-}
-
 /// If `window_guid` has no tab groups yet, creates one ("Tab Group 1") with a
 /// single blank placeholder tab inside it (empty resource id, no text) and
 /// returns that tab's guid — so the caller can mark it pending (see
@@ -389,7 +363,13 @@ async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) {
     let _ = sqlx::query("DELETE FROM window_tags WHERE guid = ?1").bind(guid).execute(pool).await;
 }
 
-async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
+/// Marks an entry's window as being *suspended*, so that when it goes away its entry is kept.
+#[cfg_attr(desktop, allow(dead_code))] // used by the mobile window host
+pub(crate) fn mark_suspending(app: &AppHandle, guid: &str) {
+    app.state::<SecondaryWindowsState>().pending_suspend.lock().unwrap().insert(guid.to_string());
+}
+
+pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
     // Release any SQLite databases the window still had open.
     app.state::<crate::sqlite_db::SqliteState>().close(guid, None).await;
 
@@ -612,7 +592,7 @@ pub async fn list_secondary_windows(
     Ok(rows
         .into_iter()
         .map(|(guid, relative_path, created_at)| {
-            let is_open = app.get_webview_window(&guid).is_some();
+            let is_open = crate::window_host::is_open(&app, &guid);
             let tags = all_tags.iter().filter(|t| t.guid == guid).cloned().collect();
             let tab_groups = all_groups.iter().filter(|g| g.window_guid == guid).cloned().collect();
             SecondaryWindowRecord {
@@ -798,7 +778,7 @@ pub async fn open_new_secondary_window(
         state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
     }
 
-    build_window(&app, &guid, &relative_path)?;
+    crate::window_host::open(&app, &guid, &relative_path)?;
     let _ = app.emit(EVENT_CHANGED, ());
 
     let tab_groups = fetch_tab_groups(&state.pool, &[guid.clone()]).await.map_err(|e| e.to_string())?;
@@ -859,7 +839,7 @@ pub async fn reopen_secondary_window(
 ) -> Result<(), String> {
     validate_relative_html_path(&app, &relative_path)?;
 
-    if app.get_webview_window(&guid).is_some() {
+    if crate::window_host::is_open(&app, &guid) {
         return Ok(());
     }
 
@@ -869,16 +849,14 @@ pub async fn reopen_secondary_window(
         state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
     }
 
-    build_window(&app, &guid, &relative_path)?;
+    crate::window_host::open(&app, &guid, &relative_path)?;
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
 }
 
 #[tauri::command]
 pub fn close_secondary_window(app: AppHandle, guid: String) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window(&guid) {
-        w.close().map_err(|e| e.to_string())?;
-    }
+    crate::window_host::request_close(&app, &guid);
     Ok(())
 }
 
@@ -888,26 +866,11 @@ pub fn suspend_secondary_window(
     state: tauri::State<'_, SecondaryWindowsState>,
     guid: String,
 ) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window(&guid) {
-        state.pending_suspend.lock().unwrap().insert(guid);
-        w.close().map_err(|e| e.to_string())?;
+    if crate::window_host::is_open(&app, &guid) {
+        state.pending_suspend.lock().unwrap().insert(guid.clone());
+        crate::window_host::request_close(&app, &guid);
     }
     Ok(())
-}
-
-/// Polls until none of `guids` are still open, or 5 seconds pass. `.close()` only
-/// *requests* a close — the window isn't actually gone until its `Destroyed` event
-/// fires on a later event-loop tick — so callers that need to know a window's file
-/// handles have truly been released (e.g. before deleting the data folder) must
-/// wait for this rather than assuming `.close()` was enough.
-async fn wait_for_windows_to_close(app: &AppHandle, guids: &[String]) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while guids.iter().any(|g| app.get_webview_window(g).is_some()) {
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
 }
 
 /// Closes every open secondary window matching `relative_path` (or all of them, if
@@ -927,16 +890,15 @@ pub async fn close_all_secondary_windows(
 
     let mut closing = Vec::new();
     for (guid, _, _) in &rows {
-        if let Some(w) = app.get_webview_window(guid) {
-            // Destroyed handler deletes the row (and its tags) once the window actually closes.
-            let _ = w.close();
+        if crate::window_host::request_close(&app, guid) {
+            // The window-destroyed handler deletes the row (and its tags) once the window actually closes.
             closing.push(guid.clone());
         } else {
             delete_window_and_tags(&state.pool, guid).await;
         }
     }
 
-    wait_for_windows_to_close(&app, &closing).await;
+    crate::window_host::wait_until_closed(&app, &closing).await;
 
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
@@ -953,9 +915,9 @@ pub async fn suspend_all_secondary_windows(
         .map_err(|e| e.to_string())?;
 
     for (guid, _, _) in rows {
-        if let Some(w) = app.get_webview_window(&guid) {
+        if crate::window_host::is_open(&app, &guid) {
             state.pending_suspend.lock().unwrap().insert(guid.clone());
-            let _ = w.close();
+            crate::window_host::request_close(&app, &guid);
         }
     }
 
@@ -965,12 +927,7 @@ pub async fn suspend_all_secondary_windows(
 
 #[tauri::command]
 pub fn focus_secondary_window(app: AppHandle, guid: String) -> Result<(), String> {
-    if let Some(w) = app.get_webview_window(&guid) {
-        let _ = w.unminimize();
-        w.set_focus().map_err(|e| e.to_string())?;
-        w.show().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    crate::window_host::focus(&app, &guid)
 }
 
 /// Splits a page's full `location.href` into the window's own html-file relative
@@ -1080,6 +1037,7 @@ async fn init_window_tab_impl(
                 TabInitResponse {
                     tab_guid: tab_guid.to_string(),
                     resource_id: response_resource_id,
+                    code_snippets: Vec::new(),
                 },
                 is_new_or_newer_version,
             ));
@@ -1134,6 +1092,7 @@ async fn init_window_tab_impl(
         TabInitResponse {
             tab_guid,
             resource_id: resource_id.to_string(),
+            code_snippets: Vec::new(),
         },
         is_new_or_newer_version,
     ))
@@ -1153,11 +1112,12 @@ pub async fn init_window_tab(
     url: String,
     resource_type: Option<String>,
 ) -> Result<TabInitResponse, String> {
+    let window_guid = crate::window_host::caller_guid(&window).ok_or("Only web apps can register tabs.")?;
     let (relative_path, resource_id) = split_url_into_path_and_resource_id(&url)?;
-    let reuse = state.pending_tab_activation.lock().unwrap().remove(window.label());
-    let (result, needs_icons) = init_window_tab_impl(
+    let reuse = state.pending_tab_activation.lock().unwrap().remove(&window_guid);
+    let (mut result, needs_icons) = init_window_tab_impl(
         &state.pool,
-        window.label(),
+        &window_guid,
         &relative_path,
         &resource_id,
         resource_type.as_deref(),
@@ -1171,6 +1131,7 @@ pub async fn init_window_tab(
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
+    result.code_snippets = crate::code_snippets::code_snippets();
     Ok(result)
 }
 
@@ -1220,7 +1181,7 @@ pub async fn update_tab_resource(
         .await
         .map_err(|e| e.to_string())?;
     let owner_window_guid = owner_window_guid.ok_or_else(|| "Tab not found.".to_string())?;
-    if owner_window_guid != window.label() {
+    if Some(owner_window_guid.as_str()) != crate::window_host::caller_guid(&window).as_deref() {
         return Err("Tab does not belong to this window.".to_string());
     }
 
@@ -1242,7 +1203,7 @@ pub async fn submit_resource_icons(
     icons: std::collections::HashMap<String, String>,
 ) -> Result<(), String> {
     let relative_path: Option<String> = sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
-        .bind(window.label())
+        .bind(crate::window_host::caller_guid(&window))
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -1456,12 +1417,8 @@ pub async fn activate_tab(
 
     state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid, true));
 
-    if let Some(w) = app.get_webview_window(&window_guid) {
-        let base = Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).map_err(|e| e.to_string())?;
-        let url = base.join(&relative_path).map_err(|e| e.to_string())?;
-        w.navigate(url).map_err(|e| e.to_string())?;
-    } else {
-        build_window(&app, &window_guid, &relative_path)?;
+    if !crate::window_host::reload_if_open(&app, &window_guid, &relative_path)? {
+        crate::window_host::open(&app, &window_guid, &relative_path)?;
     }
 
     let _ = app.emit(EVENT_CHANGED, ());

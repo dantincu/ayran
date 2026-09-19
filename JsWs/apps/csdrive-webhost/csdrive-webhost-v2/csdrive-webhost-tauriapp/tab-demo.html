@@ -48,11 +48,23 @@
       url.search = ''
       for (const key in params) url.searchParams.set(key, String(params[key]))
       history.pushState(null, '', url)
-      return window.__TAURI__.core.invoke('init_window_tab', {
+      const response = await window.__TAURI__.core.invoke('init_window_tab', {
         appVersion: appVersion || 1,
         url: location.href,
         resourceType: resourceType || null,
       })
+      // The response also carries code every web app should apply (see code_snippets.rs):
+      // { code, type } entries, type being 'css', 'html' or 'javascript'.
+      for (const snippet of response.codeSnippets || []) {
+        const el = document.createElement(snippet.type === 'css' ? 'style' : 'script')
+        if (snippet.type === 'html') {
+          document.body.insertAdjacentHTML('beforeend', snippet.code)
+        } else {
+          el.textContent = snippet.code
+          document.head.appendChild(el)
+        }
+      }
+      return response
     },
     async updateTab(tabGuid, firstRow, secondRow, resourceType, resourceId) {
       return window.__TAURI__.core.invoke('update_tab_resource', {

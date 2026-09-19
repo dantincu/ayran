@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
-import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
+import { confirm } from '@tauri-apps/plugin-dialog'
+import { exportToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
 import {
   Copy,
   Download,
@@ -29,16 +29,18 @@ import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from
 import { joinRelative } from '../lib/localFs'
 import {
   copyRootPath,
-  type DirEntry,
+  forgetRoot,
   type FileRoot,
   getUserRoot,
   listRootDir,
+  loadDeviceRoots,
   mkdirRoot,
   pickNewRoot,
   readRootFile,
   readRootTextFile,
   removeRootPath,
   renameRootPath,
+  type RootEntry,
   rootPathExists,
   statRootPath,
   uniqueRootName,
@@ -64,9 +66,7 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(1)} ${units[unit]}`
 }
 
-interface EntryRow extends DirEntry {
-  size?: number
-}
+type EntryRow = RootEntry
 
 interface ClipboardItem {
   rootId: string
@@ -186,10 +186,14 @@ export default function FilesTab() {
       // in the same render — otherwise an intermediate render with the root but not
       // yet the restored path would kick off a wasted (and potentially racy) fetch.
       const root = await getUserRoot()
+      // Folders picked on Android in an earlier session (none elsewhere: there they last one session).
+      const deviceRoots = await loadDeviceRoots().catch(() => [])
       const saved = await getAppState<SavedLocation>(LOCATION_KEY)
       const savedPageSize = await getGlobalPageSize()
-      setRoots([root])
-      if (saved && saved.rootId === USER_ROOT_ID && typeof saved.path === 'string') {
+      const all = [root, ...deviceRoots]
+      setRoots(all)
+      if (saved && typeof saved.path === 'string' && all.some((r) => r.id === saved.rootId)) {
+        setActiveRootId(saved.rootId)
         setPath(saved.path)
       }
       setPageSizeState(savedPageSize)
@@ -240,7 +244,8 @@ export default function FilesTab() {
       const list = await listRootDir(activeRoot, path)
       const withSizes = await Promise.all(
         list.map(async (e) => {
-          if (e.isDirectory) return { ...e }
+          // Some roots hand the size over with the listing, so it needs no further call.
+          if (e.isDirectory || e.size !== undefined) return { ...e }
           try {
             const info = await statRootPath(activeRoot, joinRelative(path, e.name))
             return { ...e, size: info.size }
@@ -280,9 +285,15 @@ export default function FilesTab() {
     }
   }
 
-  function removeRoot(id: string) {
-    setRoots((prev) => prev.filter((r) => r.id !== id))
-    if (activeRootId === id) switchRoot(USER_ROOT_ID)
+  async function removeRoot(root: FileRoot) {
+    try {
+      await forgetRoot(root)
+    } catch (e) {
+      setError(String(e))
+      return
+    }
+    setRoots((prev) => prev.filter((r) => r.id !== root.id))
+    if (activeRootId === root.id) switchRoot(USER_ROOT_ID)
   }
 
   async function openEntry(entry: EntryRow) {
@@ -429,14 +440,11 @@ export default function FilesTab() {
   async function uploadFiles() {
     if (!activeRoot) return
     try {
-      const selected = await openDialog({ multiple: true })
-      const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
-      for (const absPath of paths) {
-        const name = absPath.split(/[\\/]/).pop() ?? 'file'
-        const data = await readAbsoluteFile(absPath)
-        await writeRootFile(activeRoot, joinRelative(path, name), data)
+      const picked = await pickFilesFromDevice()
+      for (const file of picked) {
+        await writeRootFile(activeRoot, joinRelative(path, file.name), file.data)
       }
-      if (paths.length) await refresh()
+      if (picked.length) await refresh()
     } catch (e) {
       setError(String(e))
     }
@@ -453,10 +461,8 @@ export default function FilesTab() {
   async function downloadEntry(entry: EntryRow) {
     if (!activeRoot) return
     try {
-      const dest = await saveDialog({ defaultPath: entry.name })
-      if (!dest) return
-      const data = await readRootFile(activeRoot, joinRelative(path, entry.name))
-      await writeAbsoluteFile(dest, data)
+      const saved = await exportToDevice(entry.name, () => readRootFile(activeRoot, joinRelative(path, entry.name)))
+      if (saved && isMobile) window.alert(`Saved to ${saved}`)
     } catch (e) {
       setError(String(e))
     }
@@ -500,11 +506,11 @@ export default function FilesTab() {
         {roots.map((root) => (
           <div key={root.id} className="root-item">
             <span className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
-              <button className="link-button" onClick={() => switchRoot(root.id)} title={root.absolutePath}>
+              <button className="link-button" onClick={() => switchRoot(root.id)} title={root.absolutePath || root.label}>
                 <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
               </button>
               {root.id !== USER_ROOT_ID && (
-                <button className="root-pill-remove" onClick={() => removeRoot(root.id)} title="Stop browsing this folder">
+                <button className="root-pill-remove" onClick={() => removeRoot(root)} title="Stop browsing this folder">
                   <X size={12} strokeWidth={2} aria-hidden="true" />
                 </button>
               )}

@@ -30,9 +30,6 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// The label of the admin-app's own (main) window; every other window is a
-/// secondary one hosting a user-provided html file, labelled by its guid.
-const MAIN_WINDOW_LABEL: &str = "main";
 /// The admin-app's `app_id`: the path it's served at, i.e. its bundle's file name (`layout::ADMIN_BUNDLE_PATH`).
 fn admin_app_id() -> &'static str {
     crate::layout::admin_bundle_url_path()
@@ -42,12 +39,12 @@ fn admin_app_id() -> &'static str {
 /// window's own identity, never taken from the caller: otherwise any user-provided
 /// web app could read or overwrite the admin-app's (or another app's) state just by
 /// naming its `app_id`.
-async fn caller_app_id(pool: &SqlitePool, window_label: &str) -> Result<String, String> {
-    if window_label == MAIN_WINDOW_LABEL {
+async fn caller_app_id(pool: &SqlitePool, caller_guid: Option<&str>) -> Result<String, String> {
+    let Some(guid) = caller_guid else {
         return Ok(admin_app_id().to_string());
-    }
+    };
     sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
-        .bind(window_label)
+        .bind(guid)
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?
@@ -60,7 +57,7 @@ pub async fn get_app_state(
     state: tauri::State<'_, AppDbState>,
     key: String,
 ) -> Result<Option<String>, String> {
-    let app_id = caller_app_id(&state.pool, window.label()).await?;
+    let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref()).await?;
     sqlx::query_scalar("SELECT value FROM app_state WHERE app_id = ?1 AND key = ?2")
         .bind(&app_id)
         .bind(&key)
@@ -76,7 +73,7 @@ pub async fn set_app_state(
     key: String,
     value: String,
 ) -> Result<(), String> {
-    let app_id = caller_app_id(&state.pool, window.label()).await?;
+    let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref()).await?;
     sqlx::query(
         "INSERT INTO app_state (app_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT(app_id, key) DO UPDATE SET value = excluded.value",
@@ -149,9 +146,9 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(caller_app_id(&pool, "main").await.unwrap(), crate::layout::admin_bundle_url_path());
-            assert_eq!(caller_app_id(&pool, "win-1").await.unwrap(), "qwer/index1.html");
-            assert!(caller_app_id(&pool, "unknown").await.is_err());
+            assert_eq!(caller_app_id(&pool, None).await.unwrap(), crate::layout::admin_bundle_url_path());
+            assert_eq!(caller_app_id(&pool, Some("win-1")).await.unwrap(), "qwer/index1.html");
+            assert!(caller_app_id(&pool, Some("unknown")).await.is_err());
         });
     }
 

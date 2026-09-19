@@ -224,7 +224,7 @@ pub async fn sqlite_load(
 ) -> Result<String, String> {
     let resolved = authorize(&app, &path)?;
     let handle = resolved.to_string_lossy().to_string();
-    let key = (window.label().to_string(), handle.clone());
+    let key = (crate::window_host::caller_key(&window), handle.clone());
 
     if !state.pools.lock().unwrap().contains_key(&key) {
         let scope = app.fs_scope();
@@ -240,7 +240,7 @@ pub async fn sqlite_close(
     state: tauri::State<'_, SqliteState>,
     db: Option<String>,
 ) -> Result<(), String> {
-    state.close(window.label(), db.as_deref()).await;
+    state.close(&crate::window_host::caller_key(&window), db.as_deref()).await;
     Ok(())
 }
 
@@ -253,7 +253,7 @@ pub async fn sqlite_execute(
     values: Option<Vec<Value>>,
 ) -> Result<ExecuteResult, String> {
     reject_forbidden_statements(&query)?;
-    let pool = state.get(window.label(), &db)?;
+    let pool = state.get(&crate::window_host::caller_key(&window), &db)?;
     run_execute(&pool, &query, &values.unwrap_or_default()).await
 }
 
@@ -266,7 +266,7 @@ pub async fn sqlite_select(
     values: Option<Vec<Value>>,
 ) -> Result<Vec<Map<String, Value>>, String> {
     reject_forbidden_statements(&query)?;
-    let pool = state.get(window.label(), &db)?;
+    let pool = state.get(&crate::window_host::caller_key(&window), &db)?;
     run_select(&pool, &query, &values.unwrap_or_default()).await
 }
 

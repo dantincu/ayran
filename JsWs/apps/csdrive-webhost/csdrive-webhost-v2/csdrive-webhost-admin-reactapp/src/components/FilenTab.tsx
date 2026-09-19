@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { confirm, open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog'
-import { readFile as readAbsoluteFile, writeFile as writeAbsoluteFile } from '@tauri-apps/plugin-fs'
+import { confirm } from '@tauri-apps/plugin-dialog'
+import { exportToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
 import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import IconButton from './IconButton'
 import Pagination from './Pagination'
@@ -162,11 +162,8 @@ export default function FilenTab() {
 
   async function uploadFromComputer() {
     await act(async (userId) => {
-      const selected = await openDialog({ multiple: true })
-      const paths = Array.isArray(selected) ? selected : selected ? [selected] : []
-      for (const absPath of paths) {
-        const name = absPath.split(/[\\/]/).pop() ?? 'file'
-        await filenWriteFile(userId, joinFilenPath(path, name), await readAbsoluteFile(absPath))
+      for (const file of await pickFilesFromDevice()) {
+        await filenWriteFile(userId, joinFilenPath(path, file.name), file.data)
       }
     })
   }
@@ -174,9 +171,8 @@ export default function FilenTab() {
   async function downloadToComputer(entry: FilenEntry) {
     if (activeId == null) return
     try {
-      const dest = await saveDialog({ defaultPath: entry.name })
-      if (!dest) return
-      await writeAbsoluteFile(dest, await filenReadFile(activeId, joinFilenPath(path, entry.name)))
+      const saved = await exportToDevice(entry.name, () => filenReadFile(activeId, joinFilenPath(path, entry.name)))
+      if (saved && isMobile) window.alert(`Saved to ${saved}`)
     } catch (e) {
       setError(String(e))
     }

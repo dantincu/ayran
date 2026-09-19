@@ -3,7 +3,7 @@
 //! apps" action there. Each one's source lives under `csdrive-webhost-userapps/`
 //! (a sibling of this crate and of `csdrive-webhost-admin-reactapp`), and its
 //! `index.html` is embedded into this binary at compile time (same as the
-//! admin-app's own bundle — see `ADMIN_APP_INDEX_HTML` in `main.rs`), so
+//! admin-app's own bundle — see `ADMIN_APP_INDEX_HTML` in `lib.rs`), so
 //! deploying one never needs network access or an external file.
 //!
 //! Adding a new deployable app: create its source folder under
@@ -27,15 +27,16 @@ pub struct DeployableAppInfo {
 const REGISTRY: &[(&str, &str, &str, &str)] = &[];
 
 #[tauri::command]
-pub fn list_deployable_apps() -> Vec<DeployableAppInfo> {
-    REGISTRY
+pub fn list_deployable_apps(window: tauri::WebviewWindow) -> Result<Vec<DeployableAppInfo>, String> {
+    crate::window_host::require_admin(&window)?;
+    Ok(REGISTRY
         .iter()
         .map(|(id, name, default_folder_name, _)| DeployableAppInfo {
             id: id.to_string(),
             name: name.to_string(),
             default_folder_name: default_folder_name.to_string(),
         })
-        .collect()
+        .collect())
 }
 
 /// The embedded `index.html` content for a deployable app, so the frontend can
@@ -43,7 +44,8 @@ pub fn list_deployable_apps() -> Vec<DeployableAppInfo> {
 /// it's deploying into (whichever root/path that is — this command doesn't need
 /// to know).
 #[tauri::command]
-pub fn get_deployable_app_html(app_id: String) -> Result<String, String> {
+pub fn get_deployable_app_html(window: tauri::WebviewWindow, app_id: String) -> Result<String, String> {
+    crate::window_host::require_admin(&window)?;
     REGISTRY
         .iter()
         .find(|(id, ..)| *id == app_id)

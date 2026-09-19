@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
+import { invokeWithBytes } from './ipcBytes'
 
 /** Thin wrappers around the backend's `filen_*` commands. Everything Filen — login,
  * session keys, encryption, network — happens in Rust (`src/filen/` in the tauri
@@ -48,7 +49,7 @@ export async function filenReadFile(userId: number, path: string): Promise<Uint8
 
 /** Creates the file, or replaces it if it exists. Its folder must already exist. */
 export async function filenWriteFile(userId: number, path: string, data: Uint8Array): Promise<void> {
-  await invoke('filen_write_file', data, { headers: { userId: String(userId), path: encodeURIComponent(path) } })
+  await invokeWithBytes('filen_write_file', data, { userId: String(userId), path })
 }
 
 /** Creates the folder and any missing folders above it. */

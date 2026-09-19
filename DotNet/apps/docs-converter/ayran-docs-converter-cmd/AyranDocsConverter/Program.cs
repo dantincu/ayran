@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using AyranDocsConverter;
 
 var inputOption = new Option<string>(
@@ -11,7 +12,8 @@ var inputOption = new Option<string>(
 
 var outputOption = new Option<string>(
     aliases: ["--output", "-o"],
-    description: "Path to the output file. The extension determines the output format (.html, .odt, .pdf).")
+    description: "Path to the output file. The extension determines the output format (.html, .odt, .pdf). " +
+        "Give just an extension (e.g. pdf or .pdf) to write next to the input file, with the same name.")
 {
     IsRequired = true
 };
@@ -44,13 +46,23 @@ rootCommand.SetHandler(async (
     string? browserPath,
     FileInfo? postFile) =>
 {
-    var outputFile = new FileInfo(output);
     var converter = new DocumentConverter(libreOfficePath, browserPath);
 
     try
     {
         if (input.StartsWith(':'))
         {
+            if (IsExtensionOnly(output))
+            {
+                Console.Error.WriteLine(
+                    $"Output '{output}' is only an extension, which needs an input file to take the name from. " +
+                    "Give a file path for URL inputs.");
+                Environment.Exit(1);
+                return;
+            }
+
+            var outputFile = new FileInfo(output);
+
             int secondColon = input.IndexOf(':', 1);
 
             string urlId = secondColon >= 0 ? input[1..secondColon] : input[1..];
@@ -84,6 +96,10 @@ rootCommand.SetHandler(async (
                 return;
             }
 
+            var outputFile = new FileInfo(IsExtensionOnly(output)
+                ? Path.ChangeExtension(inputFile.FullName, output.TrimStart('.'))
+                : output);
+
             await converter.ConvertAsync(inputFile, outputFile);
             Console.WriteLine($"Converted: {inputFile.FullName} -> {outputFile.FullName}");
         }
@@ -97,6 +113,9 @@ rootCommand.SetHandler(async (
 inputOption, outputOption, libreOfficeOption, browserOption, postOption);
 
 return await rootCommand.InvokeAsync(args);
+
+static bool IsExtensionOnly(string output) =>
+    Regex.IsMatch(output, @"^\.?[A-Za-z0-9]+$");
 
 static (string Url, bool WindowsAuth) GetBaseUrl(string urlId)
 {

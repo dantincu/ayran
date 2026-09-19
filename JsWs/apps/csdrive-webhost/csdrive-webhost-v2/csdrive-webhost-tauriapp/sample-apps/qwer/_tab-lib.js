@@ -6,6 +6,34 @@ window.TabLib = (function () {
     return window.__TAURI__.core.invoke(cmd, args)
   }
 
+  // Applies the css/html/javascript snippets the backend hands every web app (platform
+  // fixes such as keeping clear of Android's system bars): { code, type } entries,
+  // type being "css", "html" or "javascript". Safe to call repeatedly with the same
+  // snippets. openTab does this for the ones in the init_window_tab response; the
+  // call below also fetches them as soon as the page loads, so the page is right even
+  // before its first tab is registered.
+  function applySnippets(snippets) {
+    ;(snippets || []).forEach(function (snippet) {
+      var hash = 0
+      var text = snippet.type + snippet.code
+      for (var i = 0; i < text.length; i++) hash = (hash * 31 + text.charCodeAt(i)) | 0
+      var id = 'csdrive-snippet-' + (hash >>> 0).toString(36)
+      if (document.getElementById(id)) return
+      if (snippet.type === 'css' || snippet.type === 'javascript') {
+        var el = document.createElement(snippet.type === 'css' ? 'style' : 'script')
+        el.id = id
+        el.textContent = snippet.code
+        document.head.appendChild(el)
+      } else {
+        var box = document.createElement('div')
+        box.id = id
+        box.innerHTML = snippet.code
+        document.body.appendChild(box)
+      }
+    })
+  }
+  invoke('get_code_snippets').then(applySnippets, function () {})
+
   // One span of text inside a tab label row: { text, bold?, italic? }.
   function span(text, opts) {
     opts = opts || {}
@@ -27,11 +55,13 @@ window.TabLib = (function () {
   // is optional here — it can be set later (or changed) via updateTab instead.
   async function openTab(params, appVersion, resourceType) {
     setQuery(params)
-    return invoke('init_window_tab', {
+    const response = await invoke('init_window_tab', {
       appVersion: appVersion || 1,
       url: location.href,
       resourceType: resourceType || null,
     })
+    applySnippets(response.codeSnippets)
+    return response
   }
 
   // Sets (or replaces) a tab's two-line label, and optionally its resource type
@@ -60,5 +90,5 @@ window.TabLib = (function () {
     })
   }
 
-  return { span: span, openTab: openTab, updateTab: updateTab, registerIcons: registerIcons }
+  return { span: span, openTab: openTab, updateTab: updateTab, registerIcons: registerIcons, applySnippets: applySnippets }
 })()

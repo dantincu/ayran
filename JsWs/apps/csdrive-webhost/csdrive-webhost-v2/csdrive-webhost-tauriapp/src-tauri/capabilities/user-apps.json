@@ -59,6 +59,18 @@
     "allow-filen-mkdir",
     "allow-filen-rm",
     "allow-filen-rename",
-    "allow-get-user-folder"
+    "allow-get-user-folder",
+    "allow-pick-device-root",
+    "allow-list-device-roots",
+    "allow-remove-device-root",
+    "allow-device-readdir",
+    "allow-device-stat",
+    "allow-device-exists",
+    "allow-device-read-file",
+    "allow-device-write-file",
+    "allow-device-mkdir",
+    "allow-device-rm",
+    "allow-device-rename",
+    "allow-get-code-snippets"
   ]
 }

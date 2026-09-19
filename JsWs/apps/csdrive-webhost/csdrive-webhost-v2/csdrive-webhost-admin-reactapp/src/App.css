@@ -44,7 +44,8 @@ body {
 .app-shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  /* Not 100vh: <html> may carry padding (safe-area insets, see code_snippets.rs). */
+  height: 100%;
 }
 
 .tab-nav {

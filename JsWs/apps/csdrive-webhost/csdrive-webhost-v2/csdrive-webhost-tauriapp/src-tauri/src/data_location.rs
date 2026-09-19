@@ -3,27 +3,18 @@
 //! from the default machine app-data location, via a native folder picker.
 //!
 //! Where the custom location is recorded: a single small file, always at a fixed
-//! path inside the *default* app-data folder, encrypted with a key held in the OS
-//! keychain (the same way Filen.io session tokens are protected). This file is the
+//! path inside the *default* app-data folder, encrypted with the app key (see
+//! `secure_store`, which also protects the Filen.io sessions). This file is the
 //! only thing that always stays put, regardless of where the rest of the app's data
 //! currently lives. Changing the location never moves any files — it only rewrites
 //! this one pointer file; the change takes effect on the next launch.
 
 use std::path::{Path, PathBuf};
 
-use aes_gcm::aead::{Aead, Generate, KeyInit};
-use aes_gcm::{Aes256Gcm, Key, Nonce};
-use base64::Engine;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 const CONFIG_FILE_NAME: &str = "data-location.enc";
-const KEYCHAIN_KEY_NAME: &str = "data-location-encryption-key";
-const NONCE_LEN: usize = 12;
-
-fn base64_engine() -> base64::engine::general_purpose::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
 
 /// The default data folder (see `layout::DEFAULT_DATA_FOLDER`).
 fn default_app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
@@ -35,58 +26,13 @@ fn config_file_path(default_dir: &Path) -> PathBuf {
     default_dir.join(CONFIG_FILE_NAME)
 }
 
-fn get_or_create_key() -> Result<Vec<u8>, String> {
-    let entry =
-        keyring::Entry::new(crate::layout::keychain_service(), KEYCHAIN_KEY_NAME).map_err(|e| e.to_string())?;
-
-    match entry.get_password() {
-        Ok(existing) => base64_engine()
-            .decode(existing)
-            .map_err(|e| e.to_string()),
-        Err(keyring::Error::NoEntry) => {
-            let key = Key::<Aes256Gcm>::generate();
-            let encoded = base64_engine().encode(key.as_slice());
-            entry.set_password(&encoded).map_err(|e| e.to_string())?;
-            Ok(key.to_vec())
-        }
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn encrypt(key_bytes: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    let key = Key::<Aes256Gcm>::try_from(key_bytes).map_err(|e| e.to_string())?;
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::generate();
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|e| e.to_string())?;
-
-    let mut out = Vec::with_capacity(NONCE_LEN + ciphertext.len());
-    out.extend_from_slice(nonce.as_slice());
-    out.extend_from_slice(&ciphertext);
-    Ok(out)
-}
-
-fn decrypt(key_bytes: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
-    if data.len() < NONCE_LEN {
-        return Err("data-location config file is corrupt".to_string());
-    }
-    let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
-    let key = Key::<Aes256Gcm>::try_from(key_bytes).map_err(|e| e.to_string())?;
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::try_from(nonce_bytes).map_err(|e| e.to_string())?;
-    cipher.decrypt(&nonce, ciphertext).map_err(|e| e.to_string())
-}
-
 /// Reads the custom data folder from the encrypted pointer file, if one is set.
 /// Returns `None` on any failure (missing file, corrupt/undecryptable content, or
 /// a path that no longer exists on disk) so the app can fall back to the default
 /// location rather than fail to start.
 fn read_custom_dir(default_dir: &Path) -> Option<PathBuf> {
     let path = config_file_path(default_dir);
-    let bytes = std::fs::read(&path).ok()?;
-    let key = get_or_create_key().ok()?;
-    let plaintext = decrypt(&key, &bytes).ok()?;
+    let plaintext = crate::secure_store::read_bytes(&path).ok()??;
     let text = String::from_utf8(plaintext).ok()?;
     let trimmed = text.trim();
     if trimmed.is_empty() {
@@ -110,13 +56,7 @@ fn write_custom_dir(default_dir: &Path, path: Option<&Path>) -> Result<(), Strin
                 Err(e) => Err(e.to_string()),
             }
         }
-        Some(p) => {
-            std::fs::create_dir_all(default_dir).map_err(|e| e.to_string())?;
-            let key = get_or_create_key()?;
-            let plaintext = p.to_string_lossy().into_owned();
-            let encrypted = encrypt(&key, plaintext.as_bytes())?;
-            std::fs::write(&config_path, encrypted).map_err(|e| e.to_string())
-        }
+        Some(p) => crate::secure_store::write_bytes(&config_path, p.to_string_lossy().as_bytes()),
     }
 }
 
@@ -141,10 +81,14 @@ pub struct DataFolderInfo {
     pub default_path: String,
     pub custom_path: Option<String>,
     pub effective_path: String,
+    /// Whether the data folder can be moved somewhere else on this platform (mobile
+    /// folder pickers hand back opaque URIs, not paths the app could keep a database in).
+    pub can_relocate: bool,
 }
 
 #[tauri::command]
-pub fn get_data_folder_info(app: AppHandle) -> Result<DataFolderInfo, String> {
+pub fn get_data_folder_info(window: tauri::WebviewWindow, app: AppHandle) -> Result<DataFolderInfo, String> {
+    crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
     let effective_dir = custom_dir.clone().unwrap_or_else(|| default_dir.clone());
@@ -153,6 +97,7 @@ pub fn get_data_folder_info(app: AppHandle) -> Result<DataFolderInfo, String> {
         default_path: default_dir.display().to_string(),
         custom_path: custom_dir.map(|p| p.display().to_string()),
         effective_path: effective_dir.display().to_string(),
+        can_relocate: cfg!(desktop),
     })
 }
 
@@ -160,30 +105,57 @@ pub fn get_data_folder_info(app: AppHandle) -> Result<DataFolderInfo, String> {
 /// folder, records it as the new custom data location. Does not move or touch any
 /// existing files — the change only takes effect after the app is restarted.
 #[tauri::command]
-pub fn pick_and_set_custom_data_folder(app: AppHandle) -> Result<Option<String>, String> {
-    use tauri_plugin_dialog::DialogExt;
+pub fn pick_and_set_custom_data_folder(window: tauri::WebviewWindow, app: AppHandle) -> Result<Option<String>, String> {
+    crate::window_host::require_admin(&window)?;
 
-    let default_dir = default_app_data_dir(&app)?;
+    // Mobile folder pickers hand back opaque URIs, not paths the app could keep its
+    // database in, so the data folder can't be relocated there.
+    #[cfg(mobile)]
+    {
+        let _ = app;
+        Err("Choosing a different data folder isn't available on this platform.".to_string())
+    }
 
-    let picked = app
-        .dialog()
-        .file()
-        .set_title("Choose a folder to store CsDrive WebHost's data in")
-        .blocking_pick_folder();
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_dialog::DialogExt;
 
-    let Some(picked) = picked else {
-        return Ok(None);
-    };
-    let picked_path = picked.into_path().map_err(|e| e.to_string())?;
+        let default_dir = default_app_data_dir(&app)?;
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("Choose a folder to store CsDrive WebHost's data in")
+            .blocking_pick_folder();
 
-    write_custom_dir(&default_dir, Some(&picked_path))?;
-    Ok(Some(picked_path.display().to_string()))
+        let Some(picked) = picked else {
+            return Ok(None);
+        };
+        let picked_path = picked.into_path().map_err(|e| e.to_string())?;
+
+        write_custom_dir(&default_dir, Some(&picked_path))?;
+        Ok(Some(picked_path.display().to_string()))
+    }
 }
 
 #[tauri::command]
-pub fn reset_data_folder_to_default(app: AppHandle) -> Result<(), String> {
+pub fn reset_data_folder_to_default(window: tauri::WebviewWindow, app: AppHandle) -> Result<(), String> {
+    crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     write_custom_dir(&default_dir, None)
+}
+
+/// Starts the app over after its data was wiped. Mobile OSes have no "relaunch this
+/// process" — on Android `app.restart()` would try to spawn the system's app_process
+/// binary — so the app just ends and starts fresh the next time it's opened.
+fn restart_app(app: &AppHandle) -> ! {
+    #[cfg(desktop)]
+    app.restart();
+
+    #[cfg(mobile)]
+    {
+        app.exit(0);
+        std::process::exit(0)
+    }
 }
 
 /// Retries `op` a few times with a short, increasing delay before giving up.
@@ -268,21 +240,21 @@ fn clear_directory_contents(dir: &Path, exclude: Option<&Path>) -> Result<(), St
 /// empty) folder instead of continuing to run with a closed one.
 #[tauri::command]
 pub async fn clear_custom_data_folder_contents(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
 ) -> Result<(), String> {
+    crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir =
         read_custom_dir(&default_dir).ok_or_else(|| "No custom data folder is set.".to_string())?;
 
     crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
-    // The account list lives in the folder being wiped, so drop the keychain secrets too.
-    crate::filen::forget_all_accounts(&app).await;
     db_state.pool.close().await;
 
     clear_directory_contents(&custom_dir, None)?;
-    app.restart();
+    restart_app(&app)
 }
 
 /// Deletes everything inside the default app-data folder — the `user` folder,
@@ -293,22 +265,22 @@ pub async fn clear_custom_data_folder_contents(
 /// restarts the app afterward.
 #[tauri::command]
 pub async fn delete_app_data(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
 ) -> Result<(), String> {
+    crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
 
     crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
-    if custom_dir.is_none() {
-        // `data.db` (and so the account list) is inside the folder being wiped.
-        crate::filen::forget_all_accounts(&app).await;
-    }
+    // The list of picked device folders is about to be wiped, so hand back Android's access to them.
+    crate::device_roots::release_all(&app, &db_state.pool).await;
     db_state.pool.close().await;
 
     clear_directory_contents(&default_dir, custom_dir.as_deref())?;
-    app.restart();
+    restart_app(&app)
 }
 
 #[cfg(test)]

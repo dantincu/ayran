@@ -13,9 +13,6 @@
 
 use std::path::PathBuf;
 
-use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
-use base64::Engine;
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::SqlitePool;
 
@@ -23,40 +20,17 @@ use sqlx::SqlitePool;
 #[allow(dead_code)]
 #[path = "../src/layout.rs"]
 mod layout;
+#[allow(dead_code)]
+#[path = "../src/secure_store.rs"]
+mod secure_store;
 
-const KEYCHAIN_KEY_NAME: &str = "data-location-encryption-key";
 const CONFIG_FILE_NAME: &str = "data-location.enc";
-const NONCE_LEN: usize = 12;
 
 const SEED_TAG: &str = "seeded:qwer-demo-data";
-
-fn base64_engine() -> base64::engine::general_purpose::GeneralPurpose {
-    base64::engine::general_purpose::STANDARD
-}
 
 fn default_app_data_dir() -> PathBuf {
     let appdata = std::env::var("APPDATA").expect("%APPDATA% is not set");
     layout::default_data_dir(&PathBuf::from(appdata))
-}
-
-/// Reads (never creates) the encryption key from the OS keychain — if it isn't
-/// there, no custom data folder was ever set, so falling back to the default is
-/// the correct behavior anyway.
-fn get_key() -> Option<Vec<u8>> {
-    let entry = keyring::Entry::new(layout::keychain_service(), KEYCHAIN_KEY_NAME).ok()?;
-    let encoded = entry.get_password().ok()?;
-    base64_engine().decode(encoded).ok()
-}
-
-fn decrypt(key_bytes: &[u8], data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() < NONCE_LEN {
-        return None;
-    }
-    let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
-    let key = Key::<Aes256Gcm>::try_from(key_bytes).ok()?;
-    let cipher = Aes256Gcm::new(&key);
-    let nonce = Nonce::try_from(nonce_bytes).ok()?;
-    cipher.decrypt(&nonce, ciphertext).ok()
 }
 
 /// Mirrors `data_location::effective_data_dir`, duplicated here since this script
@@ -66,9 +40,10 @@ fn effective_data_dir() -> PathBuf {
     let default_dir = default_app_data_dir();
     let config_path = default_dir.join(CONFIG_FILE_NAME);
 
-    let custom = std::fs::read(&config_path)
+    // Reads (never creates) the key: with no pointer file, the key store isn't touched.
+    let custom = secure_store::read_bytes(&config_path)
         .ok()
-        .and_then(|bytes| get_key().and_then(|key| decrypt(&key, &bytes)))
+        .flatten()
         .and_then(|plain| String::from_utf8(plain).ok())
         .map(|s| PathBuf::from(s.trim().to_string()))
         .filter(|p| p.is_dir());

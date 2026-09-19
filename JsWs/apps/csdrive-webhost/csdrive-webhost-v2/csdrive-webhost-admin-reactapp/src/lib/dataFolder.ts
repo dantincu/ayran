@@ -9,6 +9,8 @@ export interface DataFolderInfo {
   defaultPath: string
   customPath: string | null
   effectivePath: string
+  /** False where the data folder can't be moved (Android/iOS). */
+  canRelocate: boolean
 }
 
 export async function getDataFolderInfo(): Promise<DataFolderInfo> {

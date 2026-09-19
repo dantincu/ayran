@@ -7,8 +7,9 @@
 //! - `ops`: path-based operations (list, read, write, mkdir, remove, rename).
 //!
 //! Where things live: the list of connected accounts (user id + email) is a table in
-//! `data.db`; each account's session secrets (API key, master keys, ...) are in the
-//! OS keychain, one entry per account.
+//! `data.db`; every account's session secrets (API key, master keys, ...) are in one
+//! AES-256-GCM encrypted file in the data folder (`layout::FILEN_SESSIONS_FILE`),
+//! encrypted with the app key that `secure_store` keeps in the platform key store.
 
 mod api;
 mod crypto;
@@ -80,31 +81,60 @@ impl StoredSession {
     }
 }
 
-fn keychain_entry(user_id: u64) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(crate::layout::keychain_service(), &format!("filen-session:{user_id}")).map_err(|e| e.to_string())
+// ── Session storage: one encrypted file in the data folder ────────────────────
+
+fn read_sessions(path: &std::path::Path) -> Result<Vec<StoredSession>, String> {
+    Ok(crate::secure_store::read_json(path)?.unwrap_or_default())
 }
 
-fn save_session(stored: &StoredSession) -> Result<(), String> {
-    let json = serde_json::to_string(stored).map_err(|e| e.to_string())?;
-    keychain_entry(stored.user_id)?.set_password(&json).map_err(|e| e.to_string())
+fn write_sessions(path: &std::path::Path, sessions: &[StoredSession]) -> Result<(), String> {
+    crate::secure_store::write_json(path, &sessions)
 }
 
-fn load_session(user_id: u64) -> Result<Option<StoredSession>, String> {
-    match keychain_entry(user_id)?.get_password() {
-        Ok(json) => serde_json::from_str(&json).map(Some).map_err(|e| e.to_string()),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
+fn save_session_at(path: &std::path::Path, stored: &StoredSession) -> Result<(), String> {
+    let mut sessions = read_sessions(path)?;
+    sessions.retain(|s| s.user_id != stored.user_id);
+    sessions.push(stored.clone());
+    write_sessions(path, &sessions)
+}
+
+fn load_session_at(path: &std::path::Path, user_id: u64) -> Result<Option<StoredSession>, String> {
+    Ok(read_sessions(path)?.into_iter().find(|s| s.user_id == user_id))
+}
+
+fn delete_session_at(path: &std::path::Path, user_id: u64) -> Result<(), String> {
+    let mut sessions = read_sessions(path)?;
+    let before = sessions.len();
+    sessions.retain(|s| s.user_id != user_id);
+    if sessions.len() != before {
+        write_sessions(path, &sessions)?;
     }
+    Ok(())
 }
 
-fn delete_session(user_id: u64) -> Result<(), String> {
-    match keychain_entry(user_id)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+/// Serializes read-modify-write of the sessions file.
+static SESSIONS_FILE_LOCK: Mutex<()> = Mutex::new(());
+
+fn sessions_file(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(crate::layout::filen_sessions_file(&crate::data_location::effective_data_dir(app)?))
 }
 
-/// Sessions already loaded from the keychain this run.
+fn save_session(app: &AppHandle, stored: &StoredSession) -> Result<(), String> {
+    let _guard = SESSIONS_FILE_LOCK.lock().unwrap();
+    save_session_at(&sessions_file(app)?, stored)
+}
+
+fn load_session(app: &AppHandle, user_id: u64) -> Result<Option<StoredSession>, String> {
+    let _guard = SESSIONS_FILE_LOCK.lock().unwrap();
+    load_session_at(&sessions_file(app)?, user_id)
+}
+
+fn delete_session(app: &AppHandle, user_id: u64) -> Result<(), String> {
+    let _guard = SESSIONS_FILE_LOCK.lock().unwrap();
+    delete_session_at(&sessions_file(app)?, user_id)
+}
+
+/// Sessions already loaded from the encrypted file this run.
 #[derive(Default)]
 pub struct FilenState {
     sessions: Mutex<HashMap<u64, Session>>,
@@ -150,7 +180,7 @@ fn pool(app: &AppHandle) -> SqlitePool {
     app.state::<AppDbState>().pool.clone()
 }
 
-/// The session for a connected account, loading it from the keychain the first time.
+/// The session for a connected account, loading it from the encrypted file the first time.
 async fn session_for(app: &AppHandle, user_id: u64) -> Result<Session, String> {
     if let Some(session) = app.state::<FilenState>().sessions.lock().unwrap().get(&user_id).cloned() {
         return Ok(session);
@@ -160,22 +190,11 @@ async fn session_for(app: &AppHandle, user_id: u64) -> Result<Session, String> {
     if !connected {
         return Err("No connected Filen account has that user id.".to_string());
     }
-    let stored = load_session(user_id)?
+    let stored = load_session(app, user_id)?
         .ok_or_else(|| "The saved Filen session is missing — reconnect this account.".to_string())?;
     let session = stored.into_session()?;
     app.state::<FilenState>().sessions.lock().unwrap().insert(user_id, session.clone());
     Ok(session)
-}
-
-/// Forgets every connected account's session — for when the data folder (and with it
-/// the account list) is about to be wiped, so no orphaned secrets are left in the keychain.
-pub async fn forget_all_accounts(app: &AppHandle) {
-    if let Ok(accounts) = list_accounts(&pool(app)).await {
-        for account in accounts {
-            let _ = delete_session(account.user_id);
-        }
-    }
-    app.state::<FilenState>().sessions.lock().unwrap().clear();
 }
 
 // ── Login / logout (admin window only) ────────────────────────────────────────
@@ -208,11 +227,13 @@ struct KeyPairResponse {
 
 #[tauri::command]
 pub async fn filen_login(
+    window: tauri::WebviewWindow,
     app: AppHandle,
     email: String,
     password: String,
     two_factor_code: Option<String>,
 ) -> Result<FilenAccount, String> {
+    crate::window_host::require_admin(&window)?;
     let client = reqwest::Client::new();
 
     let info: AuthInfoResponse =
@@ -266,7 +287,7 @@ pub async fn filen_login(
         auth_version: info.auth_version,
         hmac_key_hex: hmac_key.map(hex::encode),
     };
-    save_session(&stored)?;
+    save_session(&app, &stored)?;
     upsert_account(&pool(&app), info.id, &email).await.map_err(|e| e.to_string())?;
 
     let session = stored.into_session()?;
@@ -275,8 +296,9 @@ pub async fn filen_login(
 }
 
 #[tauri::command]
-pub async fn filen_logout(app: AppHandle, user_id: u64) -> Result<(), String> {
-    delete_session(user_id)?;
+pub async fn filen_logout(window: tauri::WebviewWindow, app: AppHandle, user_id: u64) -> Result<(), String> {
+    crate::window_host::require_admin(&window)?;
+    delete_session(&app, user_id)?;
     app.state::<FilenState>().sessions.lock().unwrap().remove(&user_id);
     sqlx::query("DELETE FROM filen_accounts WHERE user_id = ?1")
         .bind(user_id as i64)
@@ -310,29 +332,16 @@ pub async fn filen_read_file(app: AppHandle, user_id: u64, path: String) -> Resu
     Ok(tauri::ipc::Response::new(content))
 }
 
-/// Takes the file's bytes as the raw request body, with `userId` and a
+/// Takes the file's bytes as the request body (see `ipc::body_bytes`), with `userId` and a
 /// percent-encoded `path` as request headers:
 /// `invoke('filen_write_file', bytes, { headers: { userId, path: encodeURIComponent(path) } })`.
 #[tauri::command]
 pub async fn filen_write_file(app: AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
-    let tauri::ipc::InvokeBody::Raw(content) = request.body() else {
-        return Err("filen_write_file expects the file's bytes as the request body.".to_string());
-    };
-    let header = |name: &str| -> Result<String, String> {
-        request
-            .headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-            .ok_or_else(|| format!("Missing \"{name}\" header."))
-    };
-    let user_id: u64 = header("userId")?.parse().map_err(|_| "\"userId\" must be a number.".to_string())?;
-    let path = percent_encoding::percent_decode_str(&header("path")?)
-        .decode_utf8()
-        .map_err(|_| "\"path\" must be percent-encoded UTF-8.".to_string())?
-        .to_string();
+    let content = crate::ipc::body_bytes(&request)?;
+    let user_id: u64 = crate::ipc::field(&request, "userId")?.parse().map_err(|_| "\"userId\" must be a number.".to_string())?;
+    let path = crate::ipc::field(&request, "path")?;
 
-    ops::write_file(&session_for(&app, user_id).await?, &path, content).await
+    ops::write_file(&session_for(&app, user_id).await?, &path, &content).await
 }
 
 #[tauri::command]
@@ -395,29 +404,44 @@ mod tests {
         assert_eq!(serde_json::from_str::<StoredSession>(old).unwrap().auth_version, 2);
     }
 
-    /// Uses the real OS keychain (with an id no account will ever have) — including a
-    /// session as large as a long-lived account's could be, since some keychains cap entry size.
-    #[test]
-    fn sessions_round_trip_through_the_os_keychain() {
-        let user_id = 999_999_999_001u64;
-        let stored = StoredSession {
-            api_key: "a".repeat(64),
+    fn stored(user_id: u64, marker: &str) -> StoredSession {
+        StoredSession {
+            api_key: format!("api-key-{marker}"),
             master_keys: (0..12).map(|i| format!("{i:0>64}")).collect(),
             base_folder_uuid: uuid::Uuid::new_v4().to_string(),
             user_id,
-            email: "someone.with.a.long.address@example-domain.com".into(),
+            email: format!("{marker}@example.com"),
             auth_version: 3,
             hmac_key_hex: Some("ab".repeat(32)),
-        };
+        }
+    }
 
-        save_session(&stored).unwrap();
-        let loaded = load_session(user_id).unwrap().expect("saved session should be found");
-        assert_eq!(loaded.master_keys, stored.master_keys);
-        assert_eq!(loaded.hmac_key_hex, stored.hmac_key_hex);
+    /// Uses the real key from the OS keychain (as the app does) on a file in a temp folder.
+    #[test]
+    fn sessions_are_kept_encrypted_in_one_file_and_can_be_added_replaced_and_removed() {
+        let dir = std::env::temp_dir().join(format!("csdrive-filen-sessions-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("admin").join("filen-sessions.enc");
 
-        delete_session(user_id).unwrap();
-        assert!(load_session(user_id).unwrap().is_none());
-        delete_session(user_id).unwrap(); // deleting what's already gone is fine
+        assert!(load_session_at(&path, 1).unwrap().is_none(), "no file yet");
+        save_session_at(&path, &stored(1, "alice")).unwrap();
+        save_session_at(&path, &stored(2, "bob")).unwrap();
+        assert_eq!(load_session_at(&path, 1).unwrap().unwrap().email, "alice@example.com");
+        assert_eq!(load_session_at(&path, 2).unwrap().unwrap().master_keys.len(), 12);
+
+        let on_disk = std::fs::read(&path).unwrap();
+        assert!(!String::from_utf8_lossy(&on_disk).contains("api-key-alice"), "secrets must not be readable in the file");
+
+        save_session_at(&path, &stored(1, "alice-again")).unwrap();
+        assert_eq!(read_sessions(&path).unwrap().len(), 2, "saving an existing account replaces it");
+        assert_eq!(load_session_at(&path, 1).unwrap().unwrap().api_key, "api-key-alice-again");
+
+        delete_session_at(&path, 1).unwrap();
+        assert!(load_session_at(&path, 1).unwrap().is_none());
+        assert!(load_session_at(&path, 2).unwrap().is_some(), "other accounts are untouched");
+        delete_session_at(&path, 1).unwrap(); // removing what's already gone is fine
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
