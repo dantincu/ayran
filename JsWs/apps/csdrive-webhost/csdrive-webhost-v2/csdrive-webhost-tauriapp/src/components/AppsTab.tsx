@@ -18,9 +18,11 @@ import {
   Plus,
   RefreshCw,
   Scissors,
+  Trash2,
   X,
   XCircle,
 } from 'lucide-react'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import IconButton from './IconButton'
 import Modal from './Modal'
 import { TagList } from './Tags'
@@ -36,6 +38,7 @@ import {
   closeSecondaryWindow,
   closeTab,
   createTabGroup,
+  deleteTabGroup,
   focusSecondaryWindow,
   listSecondaryWindows,
   listSystemApps,
@@ -55,6 +58,12 @@ import {
   type TagRecord,
   type WindowKind,
 } from '../lib/secondaryWindows'
+
+/** What the two ways of getting rid of a window do — the buttons say so in their tooltips. */
+const SUSPEND_HINT = 'Suspend — closes the window, keeps its entry in this list'
+const CLOSE_HINT = 'Close — closes the window and removes its entry from this list'
+const SUSPEND_ALL_HINT = 'Suspend all — closes the windows, keeps their entries in this list'
+const CLOSE_ALL_HINT = 'Close all — closes the windows and removes their entries from this list'
 
 type View = 'apps' | 'windows' | 'groups' | 'tabs'
 const VIEW_DEPTH: Record<View, number> = { apps: 0, windows: 1, groups: 2, tabs: 3 }
@@ -636,6 +645,20 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     }
   }
 
+  async function handleDeleteTabGroup(group: TabGroupRecord) {
+    const what = group.name ?? 'this tab group'
+    const tabs = group.tabs.length
+    if (tabs > 0 && !(await confirm(`Delete "${what}" and its ${tabs} tab${tabs === 1 ? '' : 's'}?`))) return
+    try {
+      await deleteTabGroup(group.guid)
+      // Nothing may keep pointing at a tab that's gone.
+      setCutTab((cut) => (cut?.groupGuid === group.guid ? null : cut))
+      setMovingTab((moving) => (moving?.groupGuid === group.guid ? null : moving))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function handleCreateTabGroup(windowGuid: string) {
     try {
       await createTabGroup(windowGuid)
@@ -788,8 +811,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
         <div className="toolbar-actions">
           {view === 'apps' && (
             <>
-              <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
-              <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
+              <IconButton icon={PauseCircle} label={SUSPEND_ALL_HINT} onClick={() => handleSuspendAll()} disabled={records.length === 0} />
+              <IconButton icon={XCircle} label={CLOSE_ALL_HINT} variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
             </>
           )}
           <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
@@ -847,8 +870,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                     <div className="row-actions">
                       {isSystem && <IconButton icon={ExternalLink} label="Open in a new window" onClick={() => handleOpenNew(g.relativePath)} />}
                       <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(g.relativePath)} />
-                      <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(g.relativePath)} />
-                      <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(g.relativePath)} />
+                      <IconButton icon={PauseCircle} label={SUSPEND_ALL_HINT} onClick={() => handleSuspendAll(g.relativePath)} />
+                      <IconButton icon={XCircle} label={CLOSE_ALL_HINT} variant="danger" onClick={() => handleCloseAll(g.relativePath)} />
                     </div>
                   </div>
                 </div>
@@ -868,8 +891,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
             <div className="toolbar-actions">
               {isSystem && <IconButton icon={ExternalLink} label="Open in a new window" onClick={() => handleOpenNew(currentApp!)} />}
               <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(currentApp!)} />
-              <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(currentApp!)} />
-              <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(currentApp!)} />
+              <IconButton icon={PauseCircle} label={SUSPEND_ALL_HINT} onClick={() => handleSuspendAll(currentApp!)} />
+              <IconButton icon={XCircle} label={CLOSE_ALL_HINT} variant="danger" onClick={() => handleCloseAll(currentApp!)} />
               <IconButton
                 icon={ArrowUpDown}
                 label={reordering ? 'Stop sorting' : 'Sort'}
@@ -908,11 +931,14 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       {w.isOpen ? (
                         <>
                           <IconButton icon={ExternalLink} label="Focus" onClick={() => handleFocus(w.guid)} />
-                          <IconButton icon={Pause} label="Suspend" onClick={() => handleSuspend(w.guid)} />
-                          <IconButton icon={X} label="Close" variant="danger" onClick={() => handleClose(w.guid)} />
+                          <IconButton icon={Pause} label={SUSPEND_HINT} onClick={() => handleSuspend(w.guid)} />
+                          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(w.guid)} />
                         </>
                       ) : (
-                        <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(w)} />
+                        <>
+                          <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(w)} />
+                          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(w.guid)} />
+                        </>
                       )}
                     </div>
                   </div>
@@ -929,6 +955,12 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           <div className="toolbar">
             <span className="muted">Tab groups</span>
             <div className="toolbar-actions">
+              {currentWindow.isOpen ? (
+                <IconButton icon={Pause} label={SUSPEND_HINT} onClick={() => handleSuspend(currentWindow.guid)} />
+              ) : (
+                <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(currentWindow)} />
+              )}
+              <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(currentWindow.guid)} />
               <IconButton icon={Plus} label="New tab group" onClick={() => handleCreateTabGroup(currentWindow.guid)} />
               <IconButton
                 icon={ArrowUpDown}
@@ -964,6 +996,12 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                     </button>
                     <div className="row-actions">
                       <IconButton icon={Pencil} label="Rename tab group" onClick={() => setRenamingGroup(g)} />
+                      <IconButton
+                        icon={Trash2}
+                        label="Delete tab group (and its tabs)"
+                        variant="danger"
+                        onClick={() => handleDeleteTabGroup(g)}
+                      />
                     </div>
                   </div>
                   <TagList guid={g.guid} tags={g.tags} className="window-item-tags" onError={setError} />

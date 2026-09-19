@@ -35,6 +35,7 @@ fn main() {
             "clone_tab",
             "activate_tab",
             "close_tab",
+            "delete_tab_group",
             "move_tab_to_group",
             "get_global_setting",
             "set_global_setting",

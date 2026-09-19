@@ -42,6 +42,9 @@ use crate::folder_pairs;
 /// The default cache interval: one hour.
 pub const DEFAULT_TTL_SECS: i64 = 3600;
 const PROVIDER: &str = "filen";
+/// Accounts' and branches' folder pairs take the lowest free index, so deleting one (disconnecting an
+/// account, committing or discarding a branch) leaves no permanent gap in the numbering.
+const INDEXING: folder_pairs::Indexing = folder_pairs::Indexing::FillGaps;
 /// Local file names are cut to this many characters (the pair strategy keeps the folders above short).
 const MAX_LOCAL_NAME: usize = 120;
 
@@ -386,7 +389,7 @@ impl Cache {
                 std::fs::create_dir_all(&pair.short_dir).map_err(io)?;
                 folder_pairs::find(&a, &part).map_err(io)?.ok_or("The account's folder disappeared.")?
             }
-            None => folder_pairs::create(&a, &part).map_err(io)?,
+            None => folder_pairs::create(&a, &part, INDEXING).map_err(io)?,
         };
 
         sqlx::query(
@@ -849,8 +852,8 @@ impl Cache {
         if self.branches(user_id).await?.iter().any(|b| b.name.to_lowercase() == name.to_lowercase()) {
             return Err(format!("There is a branch called \"{name}\" already."));
         }
-        let account = folder_pairs::ensure(&self.b_dir(), &account_part(&info.email, user_id)).map_err(io)?;
-        let pair = folder_pairs::create(&account.short_dir, name).map_err(io)?;
+        let account = folder_pairs::ensure(&self.b_dir(), &account_part(&info.email, user_id), INDEXING).map_err(io)?;
+        let pair = folder_pairs::create(&account.short_dir, name, INDEXING).map_err(io)?;
         sqlx::query("INSERT INTO branches (user_id, pair_index, name, created_at) VALUES (?1, ?2, ?3, ?4)")
             .bind(user_id)
             .bind(pair.index as i64)
@@ -1720,7 +1723,9 @@ mod tests {
             assert_eq!((one.index, two.index), (1, 2));
             f.cache.discard_branch(7, one.index).await.unwrap();
             assert!(f.base.join("b/001/002-second").is_dir() && !f.base.join("b/001/001-first").exists());
-            assert_eq!(f.cache.create_branch(7, "third").await.unwrap().index, 3, "the largest index seen on disk plus one");
+            assert_eq!(f.cache.create_branch(7, "third").await.unwrap().index, 1, "the gap the discarded branch left is filled");
+            assert!(f.base.join("b/001/001-third").is_dir());
+            assert_eq!(f.cache.create_branch(7, "fourth").await.unwrap().index, 3, "and with no gap left: the largest plus one");
         });
     }
 }

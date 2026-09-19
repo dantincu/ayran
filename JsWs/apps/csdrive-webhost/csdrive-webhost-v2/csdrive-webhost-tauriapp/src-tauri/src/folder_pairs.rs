@@ -10,13 +10,15 @@
 //!   description of what the pair is for. It stays empty: it exists so a person browsing the disk
 //!   can tell which short folder is which.
 //!
-//! The index is **auto-incremented by looking at the disk**: list the parent's entries, take those
-//! whose name starts with digits and a dash (only the *full* folders do), parse the digits, take the
-//! largest and add one; with none, start at 1. So there's no counter to keep in sync — deleting a
-//! pair is just deleting its two folders — and an index freed by deleting the newest pair is reused.
+//! The index is **worked out by looking at the disk**: list the parent's entries, take those whose
+//! name starts with digits and a dash (only the *full* folders do), and parse the digits. Then, by the
+//! caller's choice (`Indexing`), the new pair gets either one more than the largest of them
+//! (`AfterLargest`, or 1 if there are none) or the lowest index nobody uses (`FillGaps`). Either
+//! way there's no counter to keep in sync — deleting a pair is just deleting its two folders.
 //!
 //! Uses only `std`, so anything can call it.
 
+use std::collections::BTreeSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -63,28 +65,58 @@ fn make_pair(parent: &Path, index: u32, part: &str) -> FolderPair {
     FolderPair { index, short_dir: parent.join(&short), full_dir: parent.join(&full), short_name: short, full_name: full }
 }
 
-/// The index the next pair in `parent` gets: one more than the largest index among its full folders,
-/// or 1 if there are none (or `parent` doesn't exist yet).
-pub fn next_index(parent: &Path) -> io::Result<u32> {
-    let entries = match std::fs::read_dir(parent) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(1),
-        Err(e) => return Err(e),
-    };
-    let mut largest = 0;
-    for entry in entries {
-        if let Some((index, _)) = parse_full_name(&entry?.file_name().to_string_lossy()) {
-            largest = largest.max(index);
-        }
-    }
-    Ok(largest + 1)
+/// How a new pair's index is chosen among the indexes already in use in the parent folder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Indexing {
+    /// One more than the largest index in use (1 if none): `001` and `003` are followed by `004`. An
+    /// index freed by deleting the *newest* pair comes back, but gaps further down are left alone.
+    #[allow(dead_code)] // the strategy's other policy: nothing in the app uses it now (everything fills gaps), the tests do
+    AfterLargest,
+    /// The lowest index (from 1) that isn't in use: `001` and `003` are followed by `002`, then `004`.
+    /// Deleted pairs' indexes are all reused, so the numbers stay as small as they can be. (A bare
+    /// short folder `NNN` with no full folder beside it counts as in use, so the new pair's short
+    /// folder can never collide with it.)
+    FillGaps,
 }
 
-/// Creates a new pair for `part` in `parent` (creating `parent` if need be). The caller makes sure
-/// there isn't one for `part` already (see `find`, `ensure`); callers that can race must serialise.
-pub fn create(parent: &Path, part: &str) -> io::Result<FolderPair> {
+/// The indexes in use in `parent`: those of its full folders — and, when `count_short_folders`, also
+/// of any folder that is just `NNN` (a pair whose full folder went missing).
+fn indexes_in_use(parent: &Path, count_short_folders: bool) -> io::Result<BTreeSet<u32>> {
+    let mut used = BTreeSet::new();
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(used),
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if let Some((index, _)) = parse_full_name(&name) {
+            used.insert(index);
+        } else if count_short_folders && name.len() >= MIN_DIGITS && name.bytes().all(|b| b.is_ascii_digit()) {
+            if let Ok(index) = name.parse() {
+                used.insert(index);
+            }
+        }
+    }
+    Ok(used)
+}
+
+/// The index the next pair in `parent` gets, per `indexing` — 1 if `parent` has no pairs (or doesn't
+/// exist yet).
+pub fn next_index(parent: &Path, indexing: Indexing) -> io::Result<u32> {
+    let used = indexes_in_use(parent, indexing == Indexing::FillGaps)?;
+    Ok(match indexing {
+        Indexing::AfterLargest => used.last().map_or(1, |largest| largest + 1),
+        Indexing::FillGaps => (1..).find(|index| !used.contains(index)).expect("fewer than u32::MAX pairs"),
+    })
+}
+
+/// Creates a new pair for `part` in `parent` (creating `parent` if need be), its index chosen per
+/// `indexing`. The caller makes sure there isn't one for `part` already (see `find`, `ensure`);
+/// callers that can race must serialise.
+pub fn create(parent: &Path, part: &str, indexing: Indexing) -> io::Result<FolderPair> {
     std::fs::create_dir_all(parent)?;
-    let pair = make_pair(parent, next_index(parent)?, part);
+    let pair = make_pair(parent, next_index(parent, indexing)?, part);
     std::fs::create_dir(&pair.short_dir)?;
     std::fs::create_dir(&pair.full_dir)?;
     Ok(pair)
@@ -114,14 +146,14 @@ pub fn find(parent: &Path, part: &str) -> io::Result<Option<FolderPair>> {
     Ok(list(parent)?.into_iter().find(|(_, p)| p == part).map(|(pair, _)| pair))
 }
 
-/// The pair for `part`, creating it (and repairing a missing short folder) if needed.
-pub fn ensure(parent: &Path, part: &str) -> io::Result<FolderPair> {
+/// The pair for `part`, creating it (with `indexing`) or repairing a missing short folder if needed.
+pub fn ensure(parent: &Path, part: &str, indexing: Indexing) -> io::Result<FolderPair> {
     match find(parent, part)? {
         Some(pair) => {
             std::fs::create_dir_all(&pair.short_dir)?;
             Ok(pair)
         }
-        None => create(parent, part),
+        None => create(parent, part, indexing),
     }
 }
 
@@ -206,24 +238,53 @@ mod tests {
     #[test]
     fn the_next_index_is_one_more_than_the_largest_seen_on_disk() {
         let parent = scratch("next");
-        assert_eq!(next_index(&parent).unwrap(), 1, "a parent that doesn't exist yet");
+        let after = Indexing::AfterLargest;
+        assert_eq!(next_index(&parent, after).unwrap(), 1, "a parent that doesn't exist yet");
         std::fs::create_dir_all(&parent).unwrap();
-        assert_eq!(next_index(&parent).unwrap(), 1, "an empty parent");
+        assert_eq!(next_index(&parent, after).unwrap(), 1, "an empty parent");
 
         for name in ["001", "001-a", "003-c", "notes.txt", "12-ignored", "002"] {
             std::fs::create_dir(parent.join(name)).unwrap();
         }
-        assert_eq!(next_index(&parent).unwrap(), 4, "gaps aren't filled; short folders and others don't count");
+        assert_eq!(next_index(&parent, after).unwrap(), 4, "gaps aren't filled; short folders and others don't count");
         std::fs::remove_dir(parent.join("003-c")).unwrap();
-        assert_eq!(next_index(&parent).unwrap(), 2, "an index freed by deleting the newest pair is reused");
+        assert_eq!(next_index(&parent, after).unwrap(), 2, "an index freed by deleting the newest pair is reused");
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn filling_gaps_takes_the_lowest_index_nobody_uses() {
+        let parent = scratch("gaps");
+        let fill = Indexing::FillGaps;
+        assert_eq!(next_index(&parent, fill).unwrap(), 1, "a parent that doesn't exist yet");
+        std::fs::create_dir_all(&parent).unwrap();
+        assert_eq!(next_index(&parent, fill).unwrap(), 1, "an empty parent");
+
+        for name in ["001-a", "003-c", "notes.txt", "12-ignored"] {
+            std::fs::create_dir(parent.join(name)).unwrap();
+        }
+        assert_eq!(next_index(&parent, fill).unwrap(), 2, "the gap between 001 and 003");
+        std::fs::create_dir(parent.join("002-b")).unwrap();
+        assert_eq!(next_index(&parent, fill).unwrap(), 4, "no gap left: one more than the largest");
+        std::fs::remove_dir(parent.join("001-a")).unwrap();
+        assert_eq!(next_index(&parent, fill).unwrap(), 1, "a gap at the very start");
+
+        // A bare short folder (its full folder is gone) still holds its index.
+        std::fs::create_dir(parent.join("001")).unwrap();
+        assert_eq!(next_index(&parent, fill).unwrap(), 4);
+        assert_eq!(next_index(&parent, Indexing::AfterLargest).unwrap(), 4, "and the other policy agrees here");
+        std::fs::remove_dir(parent.join("002-b")).unwrap();
+        assert_eq!(next_index(&parent, fill).unwrap(), 2);
+        assert_eq!(next_index(&parent, Indexing::AfterLargest).unwrap(), 4, "which ignores gaps, as before");
         let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]
     fn a_pair_is_created_found_repaired_and_deleted() {
         let parent = scratch("pair");
-        let first = create(&parent, "filen@@a@x.com@@1").unwrap();
-        let second = create(&parent, "filen@@b@x.com@@2").unwrap();
+        let after = Indexing::AfterLargest;
+        let first = create(&parent, "filen@@a@x.com@@1", after).unwrap();
+        let second = create(&parent, "filen@@b@x.com@@2", after).unwrap();
         assert_eq!((first.index, second.index), (1, 2));
         assert!(first.short_dir.is_dir() && first.full_dir.is_dir());
         assert_eq!(first.full_name, "001-filen@@a@x.com@@1");
@@ -235,7 +296,7 @@ mod tests {
 
         // `ensure` reuses a pair and repairs a missing short folder.
         std::fs::remove_dir(&first.short_dir).unwrap();
-        assert_eq!(ensure(&parent, "filen@@a@x.com@@1").unwrap(), first);
+        assert_eq!(ensure(&parent, "filen@@a@x.com@@1", after).unwrap(), first);
         assert!(first.short_dir.is_dir());
         assert_eq!(list(&parent).unwrap().len(), 2, "no duplicate");
 
@@ -244,7 +305,15 @@ mod tests {
         assert!(!second.short_dir.exists() && !second.full_dir.exists(), "both folders, and what was in them");
         assert!(!delete(&parent, "filen@@b@x.com@@2").unwrap(), "already gone");
 
-        assert_eq!(create(&parent, "again").unwrap().index, 2, "the freed index is reused");
+        assert_eq!(create(&parent, "again", after).unwrap().index, 2, "the freed index is reused");
+
+        // Filling gaps: 001 and 003 exist, so the new pair is 002 — created, whole, in the gap.
+        let third = create(&parent, "third", after).unwrap();
+        assert_eq!(third.index, 3);
+        assert!(delete(&parent, "again").unwrap());
+        let filled = create(&parent, "filled", Indexing::FillGaps).unwrap();
+        assert_eq!((filled.index, filled.short_name.as_str()), (2, "002"));
+        assert!(filled.short_dir.is_dir() && filled.full_dir.is_dir());
         let _ = std::fs::remove_dir_all(&parent);
     }
 

@@ -30,14 +30,25 @@ There is **no counter to keep in sync**. The disk is the source of truth:
 
 1. list the entry names in the parent folder;
 2. keep those that start with **three or more digits and a dash** — that is, only the *full* folders (a short folder has no dash);
-3. parse the digits as integers;
-4. take the **largest** and add 1 — or use **1** if there were none (or the parent doesn't exist yet).
+3. parse the digits as integers — these are the indexes **in use**;
+4. pick the new index from them, by the **`Indexing`** option the caller passes:
+
+| `Indexing` | the new pair gets | with `001` and `003` in use | with none in use |
+|---|---|---|---|
+| `AfterLargest` | the largest index in use **plus one** | `004` | `001` |
+| `FillGaps` | the **lowest index, from 1, that isn't in use** | `002` (then `004`) | `001` |
+
+**Everything the app creates today uses `FillGaps`** — accounts and branches — so deleting a pair leaves no permanent hole in the
+numbering. (`AfterLargest` remains for callers that want indexes never to be reused below the newest pair.)
 
 Consequences worth knowing:
 
 - deleting a pair is just deleting its two folders — nothing else to update;
-- gaps are **not** filled: with `001` and `003`, the next index is `004`;
-- an index freed by deleting the *newest* pair is reused (`001`, `002` → delete `002` → the next is `002` again);
+- with `AfterLargest`, gaps are **not** filled, and an index freed by deleting the *newest* pair is the only one that comes back;
+- with `FillGaps`, **every** freed index comes back, so an index is *not* a permanent name for one thing: anything that remembers
+  an index (for instance a Notes tab's resource id naming a branch by its index) can end up pointing at a *newer* pair that took it;
+- with `FillGaps`, a bare short folder `NNN` with no full folder beside it (a pair whose marker went missing) also counts as in
+  use, so the new pair's short folder can never collide with it;
 - above 999 the index simply gets longer (`1000`); the rule "three or more digits" keeps parsing correct.
 
 ## Choosing the full name part
@@ -55,10 +66,10 @@ no control characters, no trailing dot or space, at most **100 characters**, and
 
 | function | does |
 |---|---|
-| `next_index(parent)` | the index the next pair would get |
-| `create(parent, part)` | creates the parent if needed, then both folders |
+| `next_index(parent, indexing)` | the index the next pair would get |
+| `create(parent, part, indexing)` | creates the parent if needed, then both folders |
 | `find(parent, part)` | the pair whose full name part is exactly `part`, if any |
-| `ensure(parent, part)` | `find`, or `create`; also repairs a missing short folder |
+| `ensure(parent, part, indexing)` | `find`, or `create`; also repairs a missing short folder |
 | `list(parent)` | every pair, by index |
 | `delete(parent, part)` | deletes both folders and everything in the short one |
 | `sanitize_part(text)` / `validate_part(name)` | see above |
@@ -66,6 +77,8 @@ no control characters, no trailing dot or space, at most **100 characters**, and
 Callers that could race must serialise their use (the Filen cache does, with one lock).
 
 ## Where it is used
+
+All with `FillGaps` (`files_cache::INDEXING`):
 
 - `files/a/` — one pair per connected Filen account. Inside the short folder, `c/` mirrors the account's files and folders
   (only what has been opened or exported — a cache, not a sync). The pair is deleted when the account is disconnected.

@@ -100,10 +100,15 @@ export async function reopenSecondaryWindow(guid: string): Promise<void> {
   await invoke('reopen_secondary_window', { guid })
 }
 
+/** Closes a window: the window goes away *and so does its entry* in the list (with its tab groups and
+ * tabs). It works on a suspended window too — that is how one is removed. Compare
+ * `suspendSecondaryWindow`, which closes only the window itself and keeps the entry. */
 export async function closeSecondaryWindow(guid: string): Promise<void> {
   await invoke('close_secondary_window', { guid })
 }
 
+/** Suspends a window: only the actual window is closed; its entry, tab groups and tabs stay in the list,
+ * and `reopenSecondaryWindow` brings it back. */
 export async function suspendSecondaryWindow(guid: string): Promise<void> {
   await invoke('suspend_secondary_window', { guid })
 }
@@ -249,6 +254,12 @@ export async function cloneTab(tabGuid: string): Promise<TabRecord> {
  * decide what to show for it. */
 export async function activateTab(tabGuid: string): Promise<void> {
   await invoke('activate_tab', { tabGuid })
+}
+
+/** Deletes a tab group with its tabs (and the tags on all of them). If one of the tabs is the one an open
+ * window is showing, that window is suspended. */
+export async function deleteTabGroup(groupGuid: string): Promise<void> {
+  await invoke('delete_tab_group', { groupGuid })
 }
 
 /** Closes a tab (deleting it, and its tags). If it is the tab an open window is showing, that window

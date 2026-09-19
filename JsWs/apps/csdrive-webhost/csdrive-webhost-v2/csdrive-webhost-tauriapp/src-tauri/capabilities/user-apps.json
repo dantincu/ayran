@@ -44,6 +44,7 @@
     "allow-clone-tab",
     "allow-activate-tab",
     "allow-close-tab",
+    "allow-delete-tab-group",
     "allow-move-tab-to-group",
     "allow-get-global-setting",
     "allow-set-global-setting",

@@ -905,9 +905,19 @@ pub async fn reopen_secondary_window(
     Ok(())
 }
 
+/// Closes a window entry. An open one is asked to close (and its entry goes when it has); one that is
+/// suspended has nothing to close, so its entry — with its tab groups, tabs and tags — is removed.
 #[tauri::command]
-pub fn close_secondary_window(app: AppHandle, guid: String) -> Result<(), String> {
-    crate::window_host::request_close(&app, &guid);
+pub async fn close_secondary_window(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    guid: String,
+) -> Result<(), String> {
+    if !crate::window_host::request_close(&app, &guid) {
+        state.pending_tab_activation.lock().unwrap().remove(&guid);
+        delete_window_and_tags(&state.pool, &guid).await;
+        let _ = app.emit(EVENT_CHANGED, ());
+    }
     Ok(())
 }
 
@@ -1494,6 +1504,51 @@ pub async fn activate_tab(
     Ok(())
 }
 
+/// Deletes a tab group, its tabs and the tags on all of them. Resolves to the guid of the window the
+/// group belonged to and the guids of the tabs that went with it.
+async fn delete_tab_group_impl(pool: &SqlitePool, group_guid: &str) -> Result<(String, Vec<String>), String> {
+    let window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tab_groups WHERE guid = ?1")
+        .bind(group_guid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let window_guid = window_guid.ok_or_else(|| "Tab group not found.".to_string())?;
+
+    let tab_guids: Vec<String> = sqlx::query_scalar("SELECT guid FROM tabs WHERE group_guid = ?1")
+        .bind(group_guid)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    for guid in tab_guids.iter().map(String::as_str).chain(std::iter::once(group_guid)) {
+        sqlx::query("DELETE FROM window_tags WHERE guid = ?1").bind(guid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
+    sqlx::query("DELETE FROM tabs WHERE group_guid = ?1").bind(group_guid).execute(pool).await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM tab_groups WHERE guid = ?1").bind(group_guid).execute(pool).await.map_err(|e| e.to_string())?;
+    Ok((window_guid, tab_guids))
+}
+
+/// Deletes a tab group with its tabs and their tags. As with `close_tab`, if one of them is the tab an
+/// open window is showing right now, that window is **suspended**; otherwise windows are left alone.
+#[tauri::command]
+pub async fn delete_tab_group(
+    app: AppHandle,
+    state: tauri::State<'_, SecondaryWindowsState>,
+    group_guid: String,
+) -> Result<(), String> {
+    let (window_guid, tab_guids) = delete_tab_group_impl(&state.pool, &group_guid).await?;
+
+    state.pending_tab_activation.lock().unwrap().retain(|_, (pending_tab, _)| !tab_guids.contains(pending_tab));
+
+    let showing_one = state.current_tabs.lock().unwrap().get(&window_guid).is_some_and(|current| tab_guids.contains(current));
+    if showing_one && crate::window_host::is_open(&app, &window_guid) {
+        state.pending_suspend.lock().unwrap().insert(window_guid.clone());
+        crate::window_host::request_close(&app, &window_guid);
+    }
+
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
+}
+
 /// Deletes a tab and the tags on it. Resolves to the guid of the window it belonged to.
 async fn close_tab_impl(pool: &SqlitePool, tab_guid: &str) -> Result<String, String> {
     let window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
@@ -1802,6 +1857,42 @@ mod tests {
             assert_eq!(payload.code_snippets.len(), crate::code_snippets::code_snippets().len());
 
             assert!(navigation_payload(&pool, "nope").await.unwrap_err().contains("not found"));
+        });
+    }
+
+    #[test]
+    fn deleting_a_tab_group_takes_its_tabs_and_all_their_tags_but_nothing_else() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("delete-group").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+
+            let staying = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+            let going = init_tab(&pool, "win1", "asdf/index.html", "res-b", 1).await;
+            let other = init_tab(&pool, "win1", "asdf/index.html", "res-c", 1).await;
+            sqlx::query("INSERT INTO tab_groups (guid, window_guid, created_at, name) VALUES ('g2', 'win1', ?1, 'Second')")
+                .bind(current_millis())
+                .execute(&pool)
+                .await
+                .unwrap();
+            move_tab_to_group_impl(&pool, &going.tab_guid, "g2").await.unwrap();
+            move_tab_to_group_impl(&pool, &other.tab_guid, "g2").await.unwrap();
+            for guid in [staying.tab_guid.as_str(), going.tab_guid.as_str(), other.tab_guid.as_str(), "g2"] {
+                add_tag_impl(&pool, guid, "t", "#fff", "#000").await.unwrap();
+            }
+
+            let (window, tabs) = delete_tab_group_impl(&pool, "g2").await.unwrap();
+            assert_eq!(window, "win1");
+            assert_eq!(tabs.len(), 2);
+
+            let groups = fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap();
+            assert_eq!(groups.len(), 1, "only the other group is left");
+            assert_eq!(groups[0].tabs.len(), 1);
+            assert_eq!(groups[0].tabs[0].guid, staying.tab_guid);
+            assert_eq!(groups[0].tabs[0].tags.len(), 1, "the tab that stayed keeps its tag");
+            let gone = ["g2".to_string(), going.tab_guid.clone(), other.tab_guid.clone()];
+            assert!(fetch_tags(&pool, &gone).await.unwrap().is_empty(), "the tags of the group and its tabs went too");
+
+            assert!(delete_tab_group_impl(&pool, "g2").await.unwrap_err().contains("not found"));
         });
     }
 
