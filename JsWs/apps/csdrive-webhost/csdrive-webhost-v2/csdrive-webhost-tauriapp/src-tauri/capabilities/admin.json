@@ -1,12 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "admin-app",
-  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, deploy bundled apps, save files to the device's Downloads folder (Android), and join paths.",
+  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, and deploy bundled apps.",
   "windows": [
     "main"
   ],
   "permissions": [
-    "core:path:allow-join",
     "allow-get-data-folder-info",
     "allow-pick-and-set-custom-data-folder",
     "allow-reset-data-folder-to-default",
@@ -15,8 +14,6 @@
     "allow-list-deployable-apps",
     "allow-get-deployable-app-html",
     "allow-filen-login",
-    "allow-filen-logout",
-    "allow-save-to-device",
-    "allow-choose-save-location"
+    "allow-filen-logout"
   ]
 }

@@ -27,6 +27,10 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    sqlx::query("CREATE TABLE IF NOT EXISTS global_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        .execute(pool)
+        .await?;
+
     Ok(())
 }
 
@@ -40,6 +44,29 @@ async fn caller_app_id(pool: &SqlitePool, caller_guid: Option<&str>) -> Result<S
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This window isn't a registered app window.".to_string())
+}
+
+/// A setting that belongs to no one app but to the whole app — e.g. the page size every list uses, in
+/// the admin-app and the system apps alike — so unlike `get_app_state` it isn't kept apart per caller.
+/// For preferences only: every window, web apps included, can read and write these.
+#[tauri::command]
+pub async fn get_global_setting(state: tauri::State<'_, AppDbState>, key: String) -> Result<Option<String>, String> {
+    sqlx::query_scalar("SELECT value FROM global_settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_global_setting(state: tauri::State<'_, AppDbState>, key: String, value: String) -> Result<(), String> {
+    sqlx::query("INSERT INTO global_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .bind(key)
+        .bind(value)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -77,6 +104,12 @@ pub async fn set_app_state(
     .map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+/// For other modules' tests: the app id state is kept under for a window.
+#[cfg(test)]
+pub(crate) async fn caller_app_id_for_test(pool: &SqlitePool, guid: &str) -> String {
+    caller_app_id(pool, Some(guid)).await.unwrap()
 }
 
 #[cfg(test)]

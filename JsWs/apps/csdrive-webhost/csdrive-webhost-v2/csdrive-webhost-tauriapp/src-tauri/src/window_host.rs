@@ -37,6 +37,80 @@ pub fn user_page_url(relative_path: &str) -> Result<Url, String> {
     base.join(relative_path).map_err(|e| e.to_string())
 }
 
+/// Which of the two sets of windows an entry belongs to: web apps from the user folder, or the
+/// system apps that ship inside this one (see `system_apps.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    User,
+    System,
+}
+
+impl Kind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Kind::User => "user",
+            Kind::System => "system",
+        }
+    }
+
+    /// `None` means the user apps (what every caller had before there were two kinds).
+    pub fn parse(text: Option<&str>) -> Result<Self, String> {
+        match text {
+            None | Some("user") => Ok(Kind::User),
+            Some("system") => Ok(Kind::System),
+            Some(other) => Err(format!("Unknown kind of window: \"{other}\".")),
+        }
+    }
+}
+
+/// What a window shows: a web app in the user folder (`relative_path` is its html file) or a system
+/// app (`relative_path` is `system:<id>`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Page {
+    pub kind: Kind,
+    pub relative_path: String,
+}
+
+impl Page {
+    pub fn new(kind: Kind, relative_path: impl Into<String>) -> Self {
+        Self { kind, relative_path: relative_path.into() }
+    }
+
+    /// The page's URL, in the form `navigation_url` expects.
+    pub fn url(&self) -> Result<Url, String> {
+        match self.kind {
+            Kind::User => user_page_url(&self.relative_path),
+            Kind::System => crate::system_apps::page_url(
+                crate::system_apps::app_of_relative_path(&self.relative_path).ok_or("That system app doesn't exist.")?,
+            ),
+        }
+    }
+
+    /// The window's title.
+    #[cfg_attr(mobile, allow(dead_code))]
+    pub fn title(&self) -> String {
+        match self.kind {
+            Kind::User => self.relative_path.clone(),
+            Kind::System => crate::system_apps::app_of_relative_path(&self.relative_path).map_or_else(|| self.relative_path.clone(), |app| app.name.to_string()),
+        }
+    }
+}
+
+/// Which pages a window may be at (see `lock_down_navigation`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Allowed {
+    pub user: bool,
+    pub system: bool,
+    pub admin: bool,
+}
+
+impl Allowed {
+    /// The pages of one kind of secondary window.
+    pub fn for_kind(kind: Kind) -> Self {
+        Self { user: kind == Kind::User, system: kind == Kind::System, admin: false }
+    }
+}
+
 /// The URL a webview must be *navigated* to for a custom-protocol `url`. (`WebviewUrl::CustomProtocol`
 /// converts it for you when a window is built; `navigate` does not.) On Windows and
 /// Android a custom scheme `x` is served as `http://x.localhost/...`.
@@ -94,12 +168,26 @@ pub fn is_user_url(url: &Url) -> bool {
     url_is_on(url, USER_PROTOCOL)
 }
 
-/// Whether `url` is one of the admin-app's pages.
-pub fn is_admin_url(url: &Url) -> bool {
+/// Whether `url` is on the app's own frontend origin (`tauri://localhost`, `http://tauri.localhost`,
+/// or the dev server's under `tauri dev`).
+fn is_app_origin(url: &Url) -> bool {
     url_is_on(url, "tauri")
         || ADMIN_URL.get().is_some_and(|admin| {
             url.scheme() == admin.scheme() && url.host_str() == admin.host_str() && url.port_or_known_default() == admin.port_or_known_default()
         })
+}
+
+/// Whether `url` is the admin-app's page. The frontend has more than one page — each system app is
+/// its own — so the origin isn't enough: only the root page is the admin-app, and only it has
+/// admin privileges.
+pub fn is_admin_url(url: &Url) -> bool {
+    is_app_origin(url) && matches!(url.path(), "" | "/" | "/index.html")
+}
+
+/// Whether `url` is a system app's page (under `/system/`). These are ordinary pages of the same
+/// frontend and get the privileges of a user app, nothing more.
+pub fn is_system_url(url: &Url) -> bool {
+    is_app_origin(url) && url.path().starts_with("/system/")
 }
 
 // ── Who is calling ────────────────────────────────────────────────────────────
@@ -132,21 +220,39 @@ pub fn require_admin(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
+/// Whether the calling page is one of the app's own system apps (Notes...). Read from the page's
+/// address, which a window can't change to a system page's unless it is one (navigation is confined
+/// per kind of window — see `lock_down_navigation`).
+pub fn is_system_page(window: &WebviewWindow) -> bool {
+    window.url().is_ok_and(|url| is_system_url(&url))
+}
+
+/// For the few commands that reach beyond what a web app may do and that the app's own code —
+/// the admin-app and the system apps — needs (today: exporting a file to the device, see
+/// `device_files`). A user web app is refused.
+pub fn require_trusted(window: &WebviewWindow) -> Result<(), String> {
+    if is_admin_page(window) || is_system_page(window) {
+        Ok(())
+    } else {
+        Err("Only the admin-app and the system apps can do that.".to_string())
+    }
+}
+
 // ── Opening, closing, focusing ────────────────────────────────────────────────
 
 pub fn is_open(app: &AppHandle, guid: &str) -> bool {
     platform::is_open(app, guid)
 }
 
-/// Shows the web app for entry `guid`.
-pub fn open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), String> {
-    platform::open(app, guid, relative_path)
+/// Shows the page for entry `guid`.
+pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
+    platform::open(app, guid, page)
 }
 
 /// If entry `guid` is showing, reloads it at its base URL (discarding whatever in-app
 /// view it drifted to) and returns `true`; otherwise does nothing and returns `false`.
-pub fn reload_if_open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<bool, String> {
-    platform::reload_if_open(app, guid, relative_path)
+pub fn reload_if_open(app: &AppHandle, guid: &str, page: &Page) -> Result<bool, String> {
+    platform::reload_if_open(app, guid, page)
 }
 
 /// Asks entry `guid`'s window to close. Once it has, `secondary_windows` deletes the
@@ -187,11 +293,17 @@ mod platform {
     /// handler that deletes (or, if suspending, preserves) its `data.db` row. The
     /// window's own label is its guid — that's how `init_window_tab` knows which
     /// window called it, without needing to pass the guid through the URL.
-    pub fn open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), String> {
-        let url = user_page_url(relative_path)?;
+    pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
+        // A web app is served by our own protocol; a system app is a page of the frontend Tauri embeds.
+        let url = match page.kind {
+            Kind::User => WebviewUrl::CustomProtocol(page.url()?),
+            Kind::System => WebviewUrl::App(
+                crate::system_apps::app_of_relative_path(&page.relative_path).ok_or("That system app doesn't exist.")?.entry.into(),
+            ),
+        };
 
-        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, WebviewUrl::CustomProtocol(url)), false)
-            .title(relative_path)
+        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, url), Allowed::for_kind(page.kind))
+            .title(page.title())
             .inner_size(1024.0, 768.0)
             .build()
             .map_err(|e| e.to_string())?;
@@ -210,10 +322,10 @@ mod platform {
         Ok(())
     }
 
-    pub fn reload_if_open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<bool, String> {
+    pub fn reload_if_open(app: &AppHandle, guid: &str, page: &Page) -> Result<bool, String> {
         match app.get_webview_window(guid) {
             Some(window) => {
-                window.navigate(navigation_url(&user_page_url(relative_path)?)).map_err(|e| e.to_string())?;
+                window.navigate(navigation_url(&page.url()?)).map_err(|e| e.to_string())?;
                 Ok(true)
             }
             None => Ok(false),
@@ -289,19 +401,19 @@ mod platform {
         });
     }
 
-    pub fn open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<(), String> {
+    pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
         let previous = app.state::<HostState>().active.lock().unwrap().replace(guid.to_string());
         if let Some(previous) = previous.filter(|p| p != guid) {
             retire(app, previous, true); // only one app can be showing; the old one is kept, suspended
         }
-        navigate(app, user_page_url(relative_path)?)
+        navigate(app, page.url()?)
     }
 
-    pub fn reload_if_open(app: &AppHandle, guid: &str, relative_path: &str) -> Result<bool, String> {
+    pub fn reload_if_open(app: &AppHandle, guid: &str, page: &Page) -> Result<bool, String> {
         if !is_open(app, guid) {
             return Ok(false);
         }
-        navigate(app, user_page_url(relative_path)?)?;
+        navigate(app, page.url()?)?;
         Ok(true)
     }
 
@@ -348,12 +460,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn urls_are_recognised_by_origin_on_every_platform() {
+    fn urls_are_recognised_by_origin_and_path_on_every_platform() {
         let admin = |u: &str| is_admin_url(&Url::parse(u).unwrap());
+        let system = |u: &str| is_system_url(&Url::parse(u).unwrap());
         let user = |u: &str| is_user_url(&Url::parse(u).unwrap());
         assert!(admin("tauri://localhost/index.html"));
         assert!(admin("http://tauri.localhost/index.html"));
         assert!(admin("https://tauri.localhost/"));
+        assert!(admin("http://tauri.localhost/index.html?x=1#top"));
         assert!(!admin("csuser://localhost/x.html"));
         assert!(!admin("http://csuser.localhost/x.html"));
         assert!(!admin("http://tauri.localhost.evil.com/index.html"));
@@ -362,11 +476,35 @@ mod tests {
         // Only the development server's own origin is added while developing.
         assert!(!admin("http://localhost:1420/"));
 
+        // A system app is a page of the same frontend, but it is not the admin-app.
+        assert!(system("tauri://localhost/system/notes/index.html"));
+        assert!(system("http://tauri.localhost/system/notes/index.html?root=1"));
+        assert!(!admin("tauri://localhost/system/notes/index.html"), "a system app never has admin privileges");
+        assert!(!admin("http://tauri.localhost/system/notes/index.html"));
+        assert!(!system("tauri://localhost/index.html"));
+        assert!(!system("tauri://localhost/systemx/notes.html"));
+        assert!(!system("http://csuser.localhost/system/notes/index.html"), "a user app's file at that path isn't a system app");
+        assert!(!system("http://tauri.localhost.evil.com/system/notes/index.html"));
+
         assert!(user("csuser://localhost/x.html"));
         assert!(user("http://csuser.localhost/x.html"));
         assert!(!user("tauri://localhost/index.html"));
         assert!(!user("http://csuser.localhost.evil.com/"));
         assert!(!user("csuser://evil/x.html"));
+    }
+
+    #[test]
+    fn a_page_knows_its_url_and_title() {
+        let user = Page::new(Kind::User, "qwer/index1.html");
+        assert_eq!(user.url().unwrap().as_str(), "csuser://localhost/qwer/index1.html");
+        assert_eq!(user.title(), "qwer/index1.html");
+        let system = Page::new(Kind::System, "system:notes");
+        assert_eq!(system.url().unwrap().as_str(), "tauri://localhost/system/notes/index.html");
+        assert_eq!(system.title(), "Notes");
+        assert!(Page::new(Kind::System, "system:nope").url().is_err());
+        assert_eq!(Kind::parse(None).unwrap(), Kind::User);
+        assert_eq!(Kind::parse(Some("system")).unwrap(), Kind::System);
+        assert!(Kind::parse(Some("other")).is_err());
     }
 
     #[test]

@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "system-apps",
+  "description": "What the admin-app and the system apps (Notes...) may do beyond a user web app: save a file to the device. Granted to every window because the capability files cannot tell a system app from a web app (both are secondary windows on desktop, and one shared webview on Android); the commands themselves check the caller (window_host::require_trusted) and refuse a user web app.",
+  "windows": [
+    "*"
+  ],
+  "permissions": [
+    "allow-save-to-device",
+    "allow-choose-save-location"
+  ]
+}

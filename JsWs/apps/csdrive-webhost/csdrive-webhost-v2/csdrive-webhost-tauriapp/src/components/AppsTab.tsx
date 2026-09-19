@@ -36,16 +36,20 @@ import {
   createTabGroup,
   focusSecondaryWindow,
   listSecondaryWindows,
+  listSystemApps,
   moveTabToGroup,
   onSecondaryWindowsChanged,
+  openNewSecondaryWindow,
   renameTabGroup,
   reopenSecondaryWindow,
   suspendAllSecondaryWindows,
   suspendSecondaryWindow,
   type SecondaryWindowRecord,
+  type SystemAppInfo,
   type TabGroupRecord,
   type TabRecord,
   type TabTextSpan,
+  type WindowKind,
 } from '../lib/secondaryWindows'
 
 type View = 'apps' | 'windows' | 'groups' | 'tabs'
@@ -56,8 +60,11 @@ interface Group {
   windows: SecondaryWindowRecord[]
 }
 
-function groupByPath(records: SecondaryWindowRecord[]): Group[] {
+/** `catalog` is the fixed list of system apps (empty for user apps, which exist only through their
+ * windows): each is listed even before it has a window. */
+function groupByPath(records: SecondaryWindowRecord[], catalog: SystemAppInfo[]): Group[] {
   const map = new Map<string, SecondaryWindowRecord[]>()
+  for (const app of catalog) map.set(app.relativePath, [])
   for (const record of records) {
     const list = map.get(record.relativePath) ?? []
     list.push(record)
@@ -95,11 +102,8 @@ function formatDateTime(ms: number): string {
   return new Date(ms).toLocaleString()
 }
 
-const USE_CUSTOM_ORDER_KEY = 'windowsTab.useCustomOrder'
-const GROUP_ORDER_KEY = 'windowsTab.groupOrder'
-const ITEM_ORDER_KEY = 'windowsTab.itemOrder'
-const TAB_GROUP_ORDER_KEY = 'windowsTab.tabGroupOrder'
-const TAB_ORDER_KEY = 'windowsTab.tabOrder'
+/** The two tabs (User Apps, System Apps) are this same component and each keeps its own saved order. */
+const STATE_PREFIX: Record<WindowKind, string> = { user: 'windowsTab', system: 'systemAppsTab' }
 
 /** Synchronous, no permission prompt involved — the reliable path in a desktop
  * webview. Tried first so a slow/hanging clipboard permission negotiation (seen with
@@ -373,8 +377,19 @@ function LevelPanel<T>({
   )
 }
 
-export default function AppsTab() {
+/** Manages the windows, tab groups and tabs of one kind of app: the web apps in the user folder
+ * (`user`) or the app's own system apps (`system`, whose list is fixed — nothing can be added). */
+export default function AppsTab({ kind }: { kind: WindowKind }) {
+  const statePrefix = STATE_PREFIX[kind]
+  const USE_CUSTOM_ORDER_KEY = `${statePrefix}.useCustomOrder`
+  const GROUP_ORDER_KEY = `${statePrefix}.groupOrder`
+  const ITEM_ORDER_KEY = `${statePrefix}.itemOrder`
+  const TAB_GROUP_ORDER_KEY = `${statePrefix}.tabGroupOrder`
+  const TAB_ORDER_KEY = `${statePrefix}.tabOrder`
+  const isSystem = kind === 'system'
+
   const [records, setRecords] = useState<SecondaryWindowRecord[]>([])
+  const [catalog, setCatalog] = useState<SystemAppInfo[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -394,6 +409,8 @@ export default function AppsTab() {
   const [itemOrder, setItemOrderState] = useState<Record<string, string[]>>({})
   const [tabGroupOrder, setTabGroupOrderState] = useState<Record<string, string[]>>({})
   const [tabOrder, setTabOrderState] = useState<Record<string, string[]>>({})
+
+  const appName = (relativePath: string) => catalog.find((a) => a.relativePath === relativePath)?.name ?? relativePath
 
   useEffect(() => {
     getAppState<boolean>(USE_CUSTOM_ORDER_KEY).then((saved) => setUseCustomOrderState(saved ?? false))
@@ -462,13 +479,14 @@ export default function AppsTab() {
     setLoading(true)
     setError(null)
     try {
-      setRecords(await listSecondaryWindows())
+      if (isSystem) setCatalog(await listSystemApps())
+      setRecords(await listSecondaryWindows(kind))
     } catch (e) {
       setError(String(e))
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [kind, isSystem])
 
   useEffect(() => {
     refresh()
@@ -504,7 +522,7 @@ export default function AppsTab() {
 
   async function handleReopen(record: SecondaryWindowRecord) {
     try {
-      await reopenSecondaryWindow(record.guid, record.relativePath)
+      await reopenSecondaryWindow(record.guid)
     } catch (e) {
       setError(String(e))
     }
@@ -512,7 +530,7 @@ export default function AppsTab() {
 
   async function handleCloseAll(relativePath?: string) {
     try {
-      await closeAllSecondaryWindows(relativePath)
+      await closeAllSecondaryWindows(kind, relativePath)
     } catch (e) {
       setError(String(e))
     }
@@ -520,7 +538,7 @@ export default function AppsTab() {
 
   async function handleSuspendAll(relativePath?: string) {
     try {
-      await suspendAllSecondaryWindows(relativePath)
+      await suspendAllSecondaryWindows(kind, relativePath)
     } catch (e) {
       setError(String(e))
     }
@@ -528,11 +546,19 @@ export default function AppsTab() {
 
   async function handleAddEntry(relativePath: string): Promise<boolean> {
     try {
-      await addSecondaryWindowEntry(relativePath)
+      await addSecondaryWindowEntry(kind, relativePath)
       return true
     } catch (e) {
       setError(String(e))
       return false
+    }
+  }
+
+  async function handleOpenNew(relativePath: string) {
+    try {
+      await openNewSecondaryWindow(kind, relativePath)
+    } catch (e) {
+      setError(String(e))
     }
   }
 
@@ -602,7 +628,7 @@ export default function AppsTab() {
     }
   }
 
-  const apps = applyOrder(groupByPath(records), (g) => g.relativePath, useCustomOrder, groupOrder)
+  const apps = applyOrder(groupByPath(records, catalog), (g) => g.relativePath, useCustomOrder, groupOrder)
   const currentAppGroup = currentApp ? apps.find((g) => g.relativePath === currentApp) ?? null : null
   const windowsOfCurrentApp = currentAppGroup
     ? applyOrder(currentAppGroup.windows, (w) => w.guid, useCustomOrder, itemOrder[currentApp!])
@@ -657,14 +683,14 @@ export default function AppsTab() {
         <div className="breadcrumbs">
           <span>
             <button className={`link-button ${view === 'apps' ? 'active' : ''}`} onClick={() => navigate('apps')}>
-              User Apps
+              {isSystem ? 'System Apps' : 'User Apps'}
             </button>
           </span>
           {depth >= 1 && currentApp && (
             <span>
               <span className="crumb-sep">/</span>
               <button className={`link-button ${view === 'windows' ? 'active' : ''}`} onClick={() => navigate('windows')}>
-                {currentApp}
+                {appName(currentApp)}
               </button>
             </span>
           )}
@@ -696,7 +722,7 @@ export default function AppsTab() {
       {view === 'apps' && (
         <>
           <div className="toolbar">
-            <strong>Web apps</strong>
+            <strong>{isSystem ? 'System apps' : 'Web apps'}</strong>
             <div className="toolbar-actions">
               <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll()} disabled={records.length === 0} />
               <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll()} disabled={records.length === 0} />
@@ -718,7 +744,7 @@ export default function AppsTab() {
             </div>
           </div>
 
-          <AddGroupRow onAdd={handleAddEntry} />
+          {!isSystem && <AddGroupRow onAdd={handleAddEntry} />}
 
           <div className="window-group">
             <LevelPanel
@@ -727,10 +753,10 @@ export default function AppsTab() {
               reordering={reordering}
               onDoneReordering={() => setReordering(false)}
               onReorder={(newApps) => saveGroupOrder(newApps.map((g) => g.relativePath))}
-              emptyMessage="No web apps open yet. Open an .html file from the Files tab as a web app to see it here."
+              emptyMessage={isSystem ? 'No system apps.' : 'No web apps open yet. Open an .html file from the Files tab as a web app to see it here.'}
               renderReorderLabel={(g) => (
                 <span>
-                  <span className="window-group-path">{g.relativePath}</span>{' '}
+                  <span className="window-group-path">{appName(g.relativePath)}</span>{' '}
                   <span className="muted">
                     ({g.windows.length} window{g.windows.length === 1 ? '' : 's'})
                   </span>
@@ -740,12 +766,13 @@ export default function AppsTab() {
                 <div className={`window-item ${g.relativePath === currentApp ? 'recently-visited' : ''}`}>
                   <div className="window-item-row">
                     <button className="link-button window-item-main" onClick={() => openApp(g.relativePath)}>
-                      <span className="window-group-path">{g.relativePath}</span>
+                      <span className="window-group-path">{appName(g.relativePath)}</span>
                       <span className="muted window-item-state">
                         {g.windows.length} window{g.windows.length === 1 ? '' : 's'}
                       </span>
                     </button>
                     <div className="row-actions">
+                      {isSystem && <IconButton icon={ExternalLink} label="Open in a new window" onClick={() => handleOpenNew(g.relativePath)} />}
                       <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(g.relativePath)} />
                       <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(g.relativePath)} />
                       <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(g.relativePath)} />
@@ -766,6 +793,7 @@ export default function AppsTab() {
               Use custom order
             </label>
             <div className="toolbar-actions">
+              {isSystem && <IconButton icon={ExternalLink} label="Open in a new window" onClick={() => handleOpenNew(currentApp!)} />}
               <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(currentApp!)} />
               <IconButton icon={PauseCircle} label="Suspend all" onClick={() => handleSuspendAll(currentApp!)} />
               <IconButton icon={XCircle} label="Close all" variant="danger" onClick={() => handleCloseAll(currentApp!)} />

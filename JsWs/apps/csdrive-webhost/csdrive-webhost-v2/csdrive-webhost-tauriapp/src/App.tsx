@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import { AppWindow, Cloud, Database, Folder, HardDrive, Settings, type LucideIcon } from 'lucide-react'
+import { AppWindow, Blocks, Cloud, Database, Folder, HardDrive, Settings, type LucideIcon } from 'lucide-react'
 import AppsTab from './components/AppsTab'
 import FilesTab from './components/FilesTab'
 import FilenTab from './components/FilenTab'
@@ -11,9 +11,10 @@ import Splash from './components/Splash'
 import { hideNativeSplash } from './lib/nativeSplash'
 import { getAppState, setAppState } from './lib/appState'
 
-type Tab = 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
+type Tab = 'system' | 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
 
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
+  { id: 'system', label: 'System Apps', icon: Blocks },
   { id: 'apps', label: 'User Apps', icon: AppWindow },
   { id: 'files', label: 'Files', icon: Folder },
   { id: 'filen', label: 'Filen.io', icon: Cloud },
@@ -22,7 +23,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'settings', label: 'Settings', icon: Settings },
 ]
 
-const DEFAULT_TAB: Tab = 'apps'
+const DEFAULT_TAB: Tab = 'system'
 const ACTIVE_TAB_KEY = 'activeTab'
 
 function isTab(value: unknown): value is Tab {
@@ -73,7 +74,8 @@ export default function App() {
         })}
       </nav>
       <main className="tab-content">
-        {tab === 'apps' && <AppsTab />}
+        {tab === 'system' && <AppsTab key="system" kind="system" />}
+        {tab === 'apps' && <AppsTab key="user" kind="user" />}
         {tab === 'files' && <FilesTab />}
         {tab === 'filen' && <FilenTab />}
         {tab === 'sqlite' && <SqliteTab />}

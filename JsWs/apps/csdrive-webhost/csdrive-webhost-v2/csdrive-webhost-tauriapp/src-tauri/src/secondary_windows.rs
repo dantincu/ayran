@@ -44,6 +44,8 @@ impl SecondaryWindowsState {
 #[serde(rename_all = "camelCase")]
 pub struct SecondaryWindowRecord {
     pub guid: String,
+    /// `user` (a web app from the user folder) or `system` (one of our own apps).
+    pub kind: String,
     pub relative_path: String,
     pub created_at: i64,
     pub is_open: bool,
@@ -138,6 +140,15 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
     )
     .execute(&pool)
     .await?;
+
+    // Which set the entry belongs to: web apps from the user folder, or our own system apps.
+    let has_kind_column: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('secondary_windows') WHERE name = 'kind'")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    if has_kind_column == 0 {
+        sqlx::query("ALTER TABLE secondary_windows ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'").execute(&pool).await?;
+    }
 
     // Tags are generic: `guid` names whatever they're attached to — a window, a tab
     // group, or a tab — with no foreign key tying it to one specific table.
@@ -257,6 +268,55 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
     .await?;
 
     Ok(pool)
+}
+
+use crate::window_host::{Kind, Page};
+
+/// Checks that `page` names something that can be shown: an html file in the user folder, or a system app.
+fn validate_page(app: &AppHandle, page: &Page) -> Result<(), String> {
+    match page.kind {
+        Kind::User => validate_relative_html_path(app, &page.relative_path),
+        Kind::System => crate::system_apps::app_of_relative_path(&page.relative_path)
+            .map(|_| ())
+            .ok_or_else(|| "That system app doesn't exist.".to_string()),
+    }
+}
+
+/// The page a window entry shows, from its row.
+async fn page_of(pool: &SqlitePool, guid: &str) -> Result<Page, String> {
+    let row = sqlx::query("SELECT kind, relative_path FROM secondary_windows WHERE guid = ?1")
+        .bind(guid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Window not found.".to_string())?;
+    let kind: String = row.get("kind");
+    Ok(Page::new(Kind::parse(Some(&kind))?, row.get::<String, _>("relative_path")))
+}
+
+/// The page a caller means: a web app is named by its html file, a system app by `system:<id>` — or
+/// just its id.
+fn page_from_request(kind: Kind, relative_path: &str) -> Page {
+    match kind {
+        Kind::User => Page::new(kind, relative_path),
+        Kind::System if relative_path.starts_with("system:") => Page::new(kind, relative_path),
+        Kind::System => Page::new(kind, crate::system_apps::relative_path_of(relative_path)),
+    }
+}
+
+/// Adds the row for a new window entry.
+async fn insert_entry(pool: &SqlitePool, page: &Page) -> Result<(String, i64), String> {
+    let guid = uuid::Uuid::new_v4().to_string();
+    let created_at = current_millis();
+    sqlx::query("INSERT INTO secondary_windows (guid, relative_path, kind, created_at) VALUES (?1, ?2, ?3, ?4)")
+        .bind(&guid)
+        .bind(&page.relative_path)
+        .bind(page.kind.as_str())
+        .bind(created_at)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok((guid, created_at))
 }
 
 fn current_millis() -> i64 {
@@ -547,26 +607,21 @@ async fn fetch_tab_groups(pool: &SqlitePool, window_guids: &[String]) -> Result<
         .collect())
 }
 
+/// The window entries — of one kind (or, with `None`, both) and, optionally, of one app.
 async fn fetch_rows(
     pool: &SqlitePool,
+    kind: Option<&str>,
     relative_path: Option<&str>,
 ) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
-    let rows = if let Some(rp) = relative_path {
-        sqlx::query(
-            "SELECT guid, relative_path, created_at FROM secondary_windows
-             WHERE relative_path = ?1 ORDER BY created_at DESC",
-        )
-        .bind(rp)
-        .fetch_all(pool)
-        .await?
-    } else {
-        sqlx::query(
-            "SELECT guid, relative_path, created_at FROM secondary_windows
-             ORDER BY relative_path ASC, created_at DESC",
-        )
-        .fetch_all(pool)
-        .await?
-    };
+    let rows = sqlx::query(
+        "SELECT guid, relative_path, created_at FROM secondary_windows
+         WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR relative_path = ?2)
+         ORDER BY relative_path ASC, created_at DESC",
+    )
+    .bind(kind)
+    .bind(relative_path)
+    .fetch_all(pool)
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -583,8 +638,10 @@ async fn fetch_rows(
 pub async fn list_secondary_windows(
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
+    kind: Option<String>,
 ) -> Result<Vec<SecondaryWindowRecord>, String> {
-    let rows = fetch_rows(&state.pool, None).await.map_err(|e| e.to_string())?;
+    let kind = Kind::parse(kind.as_deref())?;
+    let rows = fetch_rows(&state.pool, Some(kind.as_str()), None).await.map_err(|e| e.to_string())?;
     let guids: Vec<String> = rows.iter().map(|(guid, _, _)| guid.clone()).collect();
     let all_tags = fetch_tags(&state.pool, &guids).await.map_err(|e| e.to_string())?;
     let all_groups = fetch_tab_groups(&state.pool, &guids).await.map_err(|e| e.to_string())?;
@@ -597,6 +654,7 @@ pub async fn list_secondary_windows(
             let tab_groups = all_groups.iter().filter(|g| g.window_guid == guid).cloned().collect();
             SecondaryWindowRecord {
                 guid,
+                kind: kind.as_str().to_string(),
                 relative_path,
                 created_at,
                 is_open,
@@ -760,31 +818,24 @@ pub async fn open_new_secondary_window(
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     relative_path: String,
+    kind: Option<String>,
 ) -> Result<SecondaryWindowRecord, String> {
-    validate_relative_html_path(&app, &relative_path)?;
+    let page = page_from_request(Kind::parse(kind.as_deref())?, &relative_path);
+    validate_page(&app, &page)?;
+    let (guid, created_at) = insert_entry(&state.pool, &page).await?;
 
-    let guid = uuid::Uuid::new_v4().to_string();
-    let created_at = current_millis();
-
-    sqlx::query("INSERT INTO secondary_windows (guid, relative_path, created_at) VALUES (?1, ?2, ?3)")
-        .bind(&guid)
-        .bind(&relative_path)
-        .bind(created_at)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &relative_path).await? {
+    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &page.relative_path).await? {
         state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
     }
 
-    crate::window_host::open(&app, &guid, &relative_path)?;
+    crate::window_host::open(&app, &guid, &page)?;
     let _ = app.emit(EVENT_CHANGED, ());
 
     let tab_groups = fetch_tab_groups(&state.pool, &[guid.clone()]).await.map_err(|e| e.to_string())?;
     Ok(SecondaryWindowRecord {
         guid,
-        relative_path,
+        kind: page.kind.as_str().to_string(),
+        relative_path: page.relative_path,
         created_at,
         is_open: true,
         tags: Vec::new(),
@@ -799,21 +850,13 @@ pub async fn add_secondary_window_entry(
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     relative_path: String,
+    kind: Option<String>,
 ) -> Result<SecondaryWindowRecord, String> {
-    validate_relative_html_path(&app, &relative_path)?;
+    let page = page_from_request(Kind::parse(kind.as_deref())?, &relative_path);
+    validate_page(&app, &page)?;
+    let (guid, created_at) = insert_entry(&state.pool, &page).await?;
 
-    let guid = uuid::Uuid::new_v4().to_string();
-    let created_at = current_millis();
-
-    sqlx::query("INSERT INTO secondary_windows (guid, relative_path, created_at) VALUES (?1, ?2, ?3)")
-        .bind(&guid)
-        .bind(&relative_path)
-        .bind(created_at)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &relative_path).await? {
+    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &page.relative_path).await? {
         state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
     }
 
@@ -822,7 +865,8 @@ pub async fn add_secondary_window_entry(
     let tab_groups = fetch_tab_groups(&state.pool, &[guid.clone()]).await.map_err(|e| e.to_string())?;
     Ok(SecondaryWindowRecord {
         guid,
-        relative_path,
+        kind: page.kind.as_str().to_string(),
+        relative_path: page.relative_path,
         created_at,
         is_open: false,
         tags: Vec::new(),
@@ -830,14 +874,15 @@ pub async fn add_secondary_window_entry(
     })
 }
 
+/// Opens an entry's window again (it was suspended). What it shows comes from its own row.
 #[tauri::command]
 pub async fn reopen_secondary_window(
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     guid: String,
-    relative_path: String,
 ) -> Result<(), String> {
-    validate_relative_html_path(&app, &relative_path)?;
+    let page = page_of(&state.pool, &guid).await?;
+    validate_page(&app, &page)?;
 
     if crate::window_host::is_open(&app, &guid) {
         return Ok(());
@@ -845,11 +890,11 @@ pub async fn reopen_secondary_window(
 
     // Defensive: a row from before this feature existed could have zero tab
     // groups; a normal reopen otherwise already has some from its original open.
-    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &relative_path).await? {
+    if let Some(tab_guid) = ensure_default_tab_group(&state.pool, &guid, &page.relative_path).await? {
         state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, false));
     }
 
-    crate::window_host::open(&app, &guid, &relative_path)?;
+    crate::window_host::open(&app, &guid, &page)?;
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
 }
@@ -873,7 +918,7 @@ pub fn suspend_secondary_window(
     Ok(())
 }
 
-/// Closes every open secondary window matching `relative_path` (or all of them, if
+/// Closes every open secondary window matching `relative_path` and `kind` (or all of them, if
 /// `None`) and waits for them to actually finish closing before returning. Also
 /// called directly (not just as a command) by the data-folder deletion flow in
 /// `data_location`, which must not proceed while a window might still be reading
@@ -883,8 +928,10 @@ pub async fn close_all_secondary_windows(
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     relative_path: Option<String>,
+    kind: Option<String>,
 ) -> Result<(), String> {
-    let rows = fetch_rows(&state.pool, relative_path.as_deref())
+    let kind = kind.as_deref().map(|k| Kind::parse(Some(k))).transpose()?;
+    let rows = fetch_rows(&state.pool, kind.map(Kind::as_str), relative_path.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -909,8 +956,10 @@ pub async fn suspend_all_secondary_windows(
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     relative_path: Option<String>,
+    kind: Option<String>,
 ) -> Result<(), String> {
-    let rows = fetch_rows(&state.pool, relative_path.as_deref())
+    let kind = kind.as_deref().map(|k| Kind::parse(Some(k))).transpose()?;
+    let rows = fetch_rows(&state.pool, kind.map(Kind::as_str), relative_path.as_deref())
         .await
         .map_err(|e| e.to_string())?;
 
@@ -936,7 +985,12 @@ pub fn focus_secondary_window(app: AppHandle, guid: String) -> Result<(), String
 /// that actually distinguishes one open resource from another within that app).
 fn split_url_into_path_and_resource_id(url: &str) -> Result<(String, String), String> {
     let parsed = Url::parse(url).map_err(|e| e.to_string())?;
-    let relative_path = parsed.path().trim_start_matches('/').to_string();
+    // A system app's page is a page of our own frontend; its windows and tabs are known as `system:<id>`.
+    let system_app = crate::window_host::is_system_url(&parsed).then(|| crate::system_apps::app_of_entry_path(parsed.path())).flatten();
+    let relative_path = match system_app {
+        Some(app) => crate::system_apps::relative_path_of(app.id),
+        None => parsed.path().trim_start_matches('/').to_string(),
+    };
     let resource_id = match parsed.query() {
         Some(q) if !q.is_empty() => format!("{relative_path}?{q}"),
         _ => relative_path.clone(),
@@ -1408,17 +1462,12 @@ pub async fn activate_tab(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Tab not found.".to_string())?;
-    let relative_path: String = sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
-        .bind(&window_guid)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Window not found.".to_string())?;
+    let page = page_of(&state.pool, &window_guid).await?;
 
     state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid, true));
 
-    if !crate::window_host::reload_if_open(&app, &window_guid, &relative_path)? {
-        crate::window_host::open(&app, &window_guid, &relative_path)?;
+    if !crate::window_host::reload_if_open(&app, &window_guid, &page)? {
+        crate::window_host::open(&app, &window_guid, &page)?;
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
@@ -1886,5 +1935,68 @@ mod tests {
             ensure_default_tab_group(&pool, "win1", "asdf/index.html").await.unwrap();
             assert_eq!(next_group_name(&pool, "win1").await.unwrap(), "Tab Group 2");
         });
+    }
+
+    #[test]
+    fn user_apps_and_system_apps_keep_separate_sets_of_windows() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("kinds").await;
+            let user = Page::new(Kind::User, "asdf/index.html");
+            let notes = Page::new(Kind::System, "system:notes");
+            let (user_guid, _) = insert_entry(&pool, &user).await.unwrap();
+            let (notes_guid, _) = insert_entry(&pool, &notes).await.unwrap();
+            let (notes_guid2, _) = insert_entry(&pool, &notes).await.unwrap();
+
+            let guids = |rows: Vec<(String, String, i64)>| rows.into_iter().map(|(g, _, _)| g).collect::<std::collections::HashSet<_>>();
+            assert_eq!(guids(fetch_rows(&pool, Some("user"), None).await.unwrap()), [user_guid.clone()].into());
+            assert_eq!(guids(fetch_rows(&pool, Some("system"), None).await.unwrap()), [notes_guid.clone(), notes_guid2.clone()].into());
+            assert_eq!(fetch_rows(&pool, None, None).await.unwrap().len(), 3, "no kind: both");
+            assert_eq!(fetch_rows(&pool, Some("system"), Some("system:notes")).await.unwrap().len(), 2);
+            assert!(fetch_rows(&pool, Some("user"), Some("system:notes")).await.unwrap().is_empty(), "the same path under the other kind is nothing");
+
+            assert_eq!(page_of(&pool, &user_guid).await.unwrap(), user);
+            assert_eq!(page_of(&pool, &notes_guid).await.unwrap(), notes);
+            assert!(page_of(&pool, "nope").await.is_err());
+
+            // Tabs, tags and saved state key off the relative path, which differs for the two.
+            ensure_default_tab_group(&pool, &notes_guid, "system:notes").await.unwrap();
+            let tab = init_tab(&pool, &notes_guid, "system:notes", "system:notes?root=1", 1).await;
+            assert_eq!(tab.resource_id, "system:notes?root=1");
+            assert_eq!(crate::app_state::caller_app_id_for_test(&pool, &notes_guid).await, "system:notes");
+        });
+    }
+
+    #[test]
+    fn a_database_from_before_system_apps_gets_the_kind_column_and_keeps_its_windows() {
+        tauri::async_runtime::block_on(async {
+            let dir = std::env::temp_dir().join(format!("csdrive-secondary-windows-test-migrate-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let old = SqlitePool::connect_with(SqliteConnectOptions::new().filename(dir.join("data.db")).create_if_missing(true)).await.unwrap();
+            sqlx::query("CREATE TABLE secondary_windows (guid TEXT PRIMARY KEY, relative_path TEXT NOT NULL, created_at INTEGER NOT NULL)").execute(&old).await.unwrap();
+            sqlx::query("INSERT INTO secondary_windows VALUES ('old-window', 'qwer/index1.html', 1)").execute(&old).await.unwrap();
+            old.close().await;
+
+            let pool = init_db(&dir).await.unwrap();
+            assert_eq!(page_of(&pool, "old-window").await.unwrap(), Page::new(Kind::User, "qwer/index1.html"), "an old window is a user app");
+            init_db(&dir).await.unwrap(); // running it again changes nothing
+        });
+    }
+
+    #[test]
+    fn system_app_pages_are_recognised_from_the_url_a_tab_registers_with() {
+        // A system app's page is a page of the app's own frontend; it is known as `system:notes`.
+        for base in ["tauri://localhost", "http://tauri.localhost"] {
+            let (path, resource_id) = split_url_into_path_and_resource_id(&format!("{base}/system/notes/index.html?root=user&path=docs")).unwrap();
+            assert_eq!(path, "system:notes");
+            assert_eq!(resource_id, "system:notes?root=user&path=docs");
+            let (_, plain) = split_url_into_path_and_resource_id(&format!("{base}/system/notes/index.html")).unwrap();
+            assert_eq!(plain, "system:notes");
+        }
+        // A user app's file at the same path is still a user app.
+        let (path, _) = split_url_into_path_and_resource_id("csuser://localhost/system/notes/index.html").unwrap();
+        assert_eq!(path, "system/notes/index.html");
+        let (path, _) = split_url_into_path_and_resource_id("http://csuser.localhost/system/notes/index.html").unwrap();
+        assert_eq!(path, "system/notes/index.html");
     }
 }

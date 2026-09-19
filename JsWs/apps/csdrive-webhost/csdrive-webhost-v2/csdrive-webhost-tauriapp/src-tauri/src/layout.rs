@@ -48,6 +48,23 @@ pub const FILEN_SESSIONS_FILE: &str = "admin/filen-sessions.enc";
 /// Files tab manages.
 pub const USER_FOLDER: &str = "user";
 
+/// The Notes app's cache of Filen accounts and their branches (see `files_cache.rs` and
+/// `docs/strategies/folder-pairs-strategy.md`), a sibling of `admin` and `user`. Nothing in it is
+/// reachable through the file commands; it is only ever used through the cache's own commands.
+pub const FILES_FOLDER: &str = "files";
+
+/// Inside `files`: one folder pair per cached account (its short folder holds `c`, the cached contents).
+pub const FILES_ACCOUNTS_FOLDER: &str = "a";
+
+/// Inside `files`: one folder pair per account with branches (its short folder holds one pair per branch).
+pub const FILES_BRANCHES_FOLDER: &str = "b";
+
+/// Inside an account's short folder in `a`: the mirror of the account's files (only what was opened or exported).
+pub const FILES_CONTENT_FOLDER: &str = "c";
+
+/// The cache's own database: listings, metadata, settings and branch changes, inside `files`.
+pub const FILES_DB: &str = "data.db";
+
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// `os_data_dir` is the OS per-user app-data folder (`%APPDATA%` on Windows).
@@ -68,6 +85,10 @@ pub fn admin_dir(data_dir: &Path) -> PathBuf {
 
 pub fn user_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(USER_FOLDER)
+}
+
+pub fn files_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(FILES_FOLDER)
 }
 
 pub fn filen_sessions_file(data_dir: &Path) -> PathBuf {

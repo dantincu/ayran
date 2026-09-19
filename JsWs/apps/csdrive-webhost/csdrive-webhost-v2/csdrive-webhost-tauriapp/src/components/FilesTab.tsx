@@ -452,7 +452,7 @@ export default function FilesTab() {
 
   async function openAsWebApp(entry: EntryRow) {
     try {
-      await openNewSecondaryWindow(joinRelative(path, entry.name))
+      await openNewSecondaryWindow('user', joinRelative(path, entry.name))
     } catch (e) {
       setError(String(e))
     }

@@ -1,0 +1,76 @@
+# Folder Pairs Strategy
+
+How CsDrive WebHost gives *a thing* — a cached Filen account, a branch, and whatever comes next — a home on disk.
+It is used a lot, and it is central to the Notes app, so it lives in one place:
+`csdrive-webhost-tauriapp/src-tauri/src/folder_pairs.rs`. Everything that needs a pair goes through that module.
+
+## The idea
+
+A thing gets **a pair of sibling folders** inside a parent folder:
+
+| | name | holds | why |
+|---|---|---|---|
+| **short folder** | `NNN` | the thing's actual data | short, so deep paths stay inside the operating systems' length limits (Windows' 260 characters in particular) whatever the readable name is |
+| **full folder** | `NNN-<full name part>` | nothing — it stays empty | so a person browsing the disk can tell which short folder is which |
+
+`NNN` is the pair's **index**: at least three digits, left-padded with zeros — `001`, `042`, `1000`.
+The full name part is chosen by the caller (see below) and is separated from the index by a dash.
+
+Example, for a Filen account with the email `me@example.com` and the id `3141`:
+
+```
+files/a/
+  001/                                  <- data lives in here
+  001-filen@@me@example.com@@3141/      <- empty; only says what 001 is
+```
+
+## Choosing the index
+
+There is **no counter to keep in sync**. The disk is the source of truth:
+
+1. list the entry names in the parent folder;
+2. keep those that start with **three or more digits and a dash** — that is, only the *full* folders (a short folder has no dash);
+3. parse the digits as integers;
+4. take the **largest** and add 1 — or use **1** if there were none (or the parent doesn't exist yet).
+
+Consequences worth knowing:
+
+- deleting a pair is just deleting its two folders — nothing else to update;
+- gaps are **not** filled: with `001` and `003`, the next index is `004`;
+- an index freed by deleting the *newest* pair is reused (`001`, `002` → delete `002` → the next is `002` again);
+- above 999 the index simply gets longer (`1000`); the rule "three or more digits" keeps parsing correct.
+
+## Choosing the full name part
+
+The part is up to the caller, with one rule: it must be a valid file name on every platform (no `< > : " / \ | ? *`,
+no control characters, no trailing dot or space, at most **100 characters**, and not a name Windows reserves such as `CON`).
+
+- **Accounts** (`files/a`, `files/b`) — `filen@@<email>@@<account id>`: the storage provider, the account's email address and the
+  provider's account id, separated by `@@`. It is built by the code, and characters that aren't allowed in a file name are
+  replaced by `_` (`sanitize_part`).
+- **Branches** (inside an account's short folder in `files/b`) — the **name the user gave the branch**, used as it is. It is
+  validated when they type it (`validate_part`) rather than sanitised, so what they see is what is on disk.
+
+## Operations (`folder_pairs.rs`)
+
+| function | does |
+|---|---|
+| `next_index(parent)` | the index the next pair would get |
+| `create(parent, part)` | creates the parent if needed, then both folders |
+| `find(parent, part)` | the pair whose full name part is exactly `part`, if any |
+| `ensure(parent, part)` | `find`, or `create`; also repairs a missing short folder |
+| `list(parent)` | every pair, by index |
+| `delete(parent, part)` | deletes both folders and everything in the short one |
+| `sanitize_part(text)` / `validate_part(name)` | see above |
+
+Callers that could race must serialise their use (the Filen cache does, with one lock).
+
+## Where it is used
+
+- `files/a/` — one pair per connected Filen account. Inside the short folder, `c/` mirrors the account's files and folders
+  (only what has been opened or exported — a cache, not a sync). The pair is deleted when the account is disconnected.
+- `files/b/` — one pair per account that has branches. Inside the account's short folder, one pair per branch, and inside a
+  branch's short folder the files the branch has changed. A branch's pair is deleted when it is committed or discarded; the
+  account's pair goes with the account.
+
+See `CLAUDE.md`, "Notes and the Filen cache", for how those work.

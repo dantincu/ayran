@@ -32,7 +32,7 @@ pub async fn choose_save_location(
     state: tauri::State<'_, ExportState>,
     name: String,
 ) -> Result<Option<String>, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_trusted(&window)?;
     let name = safe_file_name(&name)?;
     let Some(path) = platform::choose(&app, &name).await? else { return Ok(None) };
 
@@ -50,7 +50,7 @@ pub async fn save_to_device(
     state: tauri::State<'_, ExportState>,
     request: Request<'_>,
 ) -> Result<String, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_trusted(&window)?;
 
     let name = safe_file_name(&crate::ipc::field(&request, "name")?)?;
     let data = crate::ipc::body_bytes(&request)?;

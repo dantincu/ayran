@@ -68,11 +68,13 @@ pub fn effective_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// Paths that no file command may ever touch, wherever a picked folder happens to sit: the app's own
-/// folder (database, Filen sessions) and the pointer file that records a relocated data folder.
+/// folder (database, Filen sessions), the Notes cache, and the pointer file that records a relocated data folder.
 pub fn protected_paths(app: &AppHandle) -> Result<Vec<PathBuf>, String> {
     let default_dir = default_app_data_dir(app)?;
     Ok(vec![
         crate::layout::admin_dir(&effective_data_dir(app)?),
+        // The Notes cache: only ever reached through its own commands (see `files_cache.rs`).
+        crate::layout::files_dir(&effective_data_dir(app)?),
         config_file_path(&default_dir),
     ])
 }
@@ -242,7 +244,8 @@ fn clear_directory_contents(dir: &Path, exclude: Option<&Path>) -> Result<(), St
 /// with "used by another process" (os error 32) — in the order the caller can't
 /// get wrong even if it tried: every open secondary window first (closing one can
 /// itself trigger tab/database activity, so windows must be gone before anything
-/// downstream is touched), then the shared `data.db` connection pool. The frontend
+/// downstream is touched), then the shared `data.db` connection pool and the Notes cache's own
+/// database (`files/data.db`, which the wipe would otherwise find still open). The frontend
 /// is responsible for closing any `tauri-plugin-sql` connections onto files under
 /// `user/` and wiping browser storage before calling this — Rust code can't reach
 /// into another plugin's private connection registry, only invoke() from JS can.
@@ -254,14 +257,16 @@ pub async fn clear_custom_data_folder_contents(
     app: AppHandle,
     windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
+    cache: tauri::State<'_, crate::files_cache::Cache>,
 ) -> Result<(), String> {
     crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir =
         read_custom_dir(&default_dir).ok_or_else(|| "No custom data folder is set.".to_string())?;
 
-    crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
+    crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None, None).await?;
     db_state.pool.close().await;
+    cache.close().await;
 
     clear_directory_contents(&custom_dir, None)?;
     restart_app(&app)
@@ -271,7 +276,7 @@ pub async fn clear_custom_data_folder_contents(
 /// `data.db`, and the encrypted data-location pointer file itself — the same way
 /// "clear app data" works from the OS settings. Never touches the custom data
 /// folder, even if one is currently set. Closes secondary windows then the shared
-/// `data.db` connection pool first (see `clear_custom_data_folder_contents`) and
+/// `data.db` connection pool and the Notes cache's database first (see `clear_custom_data_folder_contents`) and
 /// restarts the app afterward.
 #[tauri::command]
 pub async fn delete_app_data(
@@ -279,13 +284,15 @@ pub async fn delete_app_data(
     app: AppHandle,
     windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
+    cache: tauri::State<'_, crate::files_cache::Cache>,
 ) -> Result<(), String> {
     crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
 
-    crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None).await?;
+    crate::secondary_windows::close_all_secondary_windows(app.clone(), windows_state, None, None).await?;
     db_state.pool.close().await;
+    cache.close().await;
 
     clear_directory_contents(&default_dir, custom_dir.as_deref())?;
     restart_app(&app)

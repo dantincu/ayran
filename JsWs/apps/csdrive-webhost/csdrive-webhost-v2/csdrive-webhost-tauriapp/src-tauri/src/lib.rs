@@ -5,7 +5,10 @@ mod code_snippets;
 mod data_location;
 mod deployable_apps;
 mod device_files;
+mod files_cache;
 mod filen;
+mod filen_cache;
+mod folder_pairs;
 mod fs_commands;
 mod fs_scope;
 mod ipc;
@@ -14,6 +17,7 @@ mod picked_roots;
 mod secure_store;
 mod secondary_windows;
 mod sqlite_db;
+mod system_apps;
 mod window_host;
 
 use std::path::{Path, PathBuf};
@@ -46,22 +50,24 @@ fn content_security_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Stri
 
 /// CSP doesn't cover navigating the window itself (`location.href = "https://…"`
 /// would ship data out in the URL, and leave our CSP behind), so windows may only
-/// ever be at our own origins: the web apps' (`csuser`) and — for the main window only —
-/// the admin-app's. (Web app windows never need the admin-app's page.)
-fn is_internal_url(url: &Url, allow_admin: bool) -> bool {
-    window_host::is_user_url(url) || (allow_admin && window_host::is_admin_url(url))
+/// ever be at our own pages, and only those their kind needs: a web app's window at web apps' pages
+/// (`csuser`), a system app's at system apps' pages, and the main window — which on Android is the
+/// only window and moves between all of them — at any.
+fn is_internal_url(url: &Url, allowed: window_host::Allowed) -> bool {
+    (allowed.user && window_host::is_user_url(url))
+        || (allowed.system && window_host::is_system_url(url))
+        || (allowed.admin && window_host::is_admin_url(url))
 }
 
 /// Applies the network lockdown to a window under construction.
 ///
-/// `allow_admin`: whether the window may also show the admin-app (the main window; on
-/// Android it's the only window and moves between the admin-app and web apps).
+/// `allowed`: which pages the window may be at (see `is_internal_url`).
 pub(crate) fn lock_down_navigation<R: tauri::Runtime>(
     builder: WebviewWindowBuilder<'_, R, impl Manager<R>>,
-    allow_admin: bool,
+    allowed: window_host::Allowed,
 ) -> WebviewWindowBuilder<'_, R, impl Manager<R>> {
     let builder = builder
-        .on_navigation(move |url| is_internal_url(url, allow_admin))
+        .on_navigation(move |url| is_internal_url(url, allowed))
         .on_new_window(|_url, _features| NewWindowResponse::Deny);
     // Publishes the Android system-bar insets to the page as CSS variables (see `code_snippets`).
     #[cfg(mobile)]
@@ -168,6 +174,9 @@ pub fn run() {
             secondary_windows::clone_tab,
             secondary_windows::activate_tab,
             secondary_windows::move_tab_to_group,
+            app_state::get_global_setting,
+            app_state::set_global_setting,
+            system_apps::list_system_apps,
             app_state::get_app_state,
             app_state::set_app_state,
             code_snippets::get_code_snippets,
@@ -182,6 +191,20 @@ pub fn run() {
             fs_commands::fs_remove,
             fs_commands::fs_rename,
             device_files::choose_save_location,
+            filen_cache::filen_cache_account,
+            filen_cache::filen_cache_set_interval,
+            filen_cache::filen_cache_clear,
+            filen_cache::filen_cache_list,
+            filen_cache::filen_cache_read,
+            filen_cache::filen_cache_write,
+            filen_cache::filen_cache_mkdir,
+            filen_cache::filen_cache_rm,
+            filen_cache::filen_cache_rename,
+            filen_cache::filen_cache_branches,
+            filen_cache::filen_cache_create_branch,
+            filen_cache::filen_cache_branch_changes,
+            filen_cache::filen_cache_commit_branch,
+            filen_cache::filen_cache_discard_branch,
             picked_roots::pick_folder,
             picked_roots::list_picked_roots,
             picked_roots::remove_picked_root,
@@ -230,6 +253,8 @@ pub fn run() {
             app.manage(filen::FilenState::default());
             app.manage(window_host::HostState::default());
             app.manage(device_files::ExportState::default());
+            // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
+            app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
             #[cfg(target_os = "android")]
             android_jni::init(app.handle().clone());
 
@@ -248,7 +273,7 @@ pub fn run() {
             // The admin-app is the Tauri app's own frontend (`frontendDist`), compiled into the binary.
             let main_window = lock_down_navigation(
                 WebviewWindowBuilder::new(app, window_host::MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into())),
-                true,
+                window_host::Allowed { user: true, system: true, admin: true },
             );
             #[cfg(desktop)]
             let main_window = main_window
@@ -288,31 +313,39 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    fn internal(url: &str, allow_admin: bool) -> bool {
-        is_internal_url(&Url::parse(url).unwrap(), allow_admin)
+    fn internal(url: &str, allowed: window_host::Allowed) -> bool {
+        is_internal_url(&Url::parse(url).unwrap(), allowed)
     }
 
     #[test]
-    fn windows_may_only_navigate_within_our_own_origins() {
-        for allow_admin in [false, true] {
-            assert!(internal("csuser://localhost/qwer/index1.html", allow_admin));
-            assert!(internal("http://csuser.localhost/qwer/index1.html", allow_admin));
+    fn windows_may_only_navigate_within_our_own_pages_of_their_kind() {
+        use window_host::{Allowed, Kind};
+        let user = Allowed::for_kind(Kind::User);
+        let system = Allowed::for_kind(Kind::System);
+        let main = Allowed { user: true, system: true, admin: true };
 
-            assert!(!internal("https://example.com/", allow_admin));
-            assert!(!internal("http://example.com/", allow_admin));
-            assert!(!internal("http://csuser.localhost.evil.com/", allow_admin));
-            assert!(!internal("http://evilcsuser.localhost/", allow_admin));
-            assert!(!internal("http://localhost/", allow_admin));
-            assert!(!internal("data:text/html,<script>alert(1)</script>", allow_admin));
-            assert!(!internal("blob:http://csuser.localhost/1234", allow_admin));
-            assert!(!internal("file:///C:/Windows/win.ini", allow_admin));
-            assert!(!internal("about:blank", allow_admin));
+        for allowed in [user, system, main] {
+            assert!(!internal("https://example.com/", allowed));
+            assert!(!internal("http://example.com/", allowed));
+            assert!(!internal("http://csuser.localhost.evil.com/", allowed));
+            assert!(!internal("http://evilcsuser.localhost/", allowed));
+            assert!(!internal("http://localhost/", allowed));
+            assert!(!internal("data:text/html,<script>alert(1)</script>", allowed));
+            assert!(!internal("blob:http://csuser.localhost/1234", allowed));
+            assert!(!internal("file:///C:/Windows/win.ini", allowed));
+            assert!(!internal("about:blank", allowed));
         }
-        // The admin-app's pages are for the main window only.
-        assert!(internal("tauri://localhost/index.html", true));
-        assert!(internal("http://tauri.localhost/index.html", true));
-        assert!(!internal("tauri://localhost/index.html", false));
-        assert!(!internal("http://tauri.localhost/index.html", false));
+        let (web_app, system_app, admin_app) =
+            ("http://csuser.localhost/qwer/index1.html", "http://tauri.localhost/system/notes/index.html", "http://tauri.localhost/index.html");
+
+        // A web app's window stays with web apps; a system app's with system apps.
+        assert!(internal(web_app, user) && !internal(system_app, user) && !internal(admin_app, user));
+        assert!(internal(system_app, system) && !internal(web_app, system) && !internal(admin_app, system));
+        // The main window (all there is on Android) may be at any of them.
+        assert!(internal(web_app, main) && internal(system_app, main) && internal(admin_app, main));
+        assert!(internal("csuser://localhost/qwer/index1.html", user));
+        assert!(internal("tauri://localhost/system/notes/index.html", system));
+        assert!(!internal("tauri://localhost/index.html", user));
     }
 
     /// The policy lives in `tauri.conf.json`, so that is what's checked.

@@ -101,7 +101,10 @@ export default function FilenTab() {
   async function handleRemove() {
     const account = accounts.find((a) => a.userId === activeId)
     if (!account) return
-    if (!(await confirm(`Disconnect account "${account.email}"? You can reconnect it later.`))) return
+    const question =
+      `Disconnect account "${account.email}"? You can reconnect it later. ` +
+      "Everything the Notes app cached for it goes too — cached files and any branches that haven't been committed. Nothing in the account itself is touched."
+    if (!(await confirm(question))) return
     try {
       await logoutFilen(account.userId)
       setPath('/')

@@ -1,0 +1,82 @@
+/* Notes: what its file manager adds to the admin-app's shared styles (App.css). */
+
+.notes-filen-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+}
+
+.notes-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notes-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.notes-field select {
+  font-size: 13px;
+  max-width: 100%;
+}
+
+.notes-cache-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.notes-badge {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.notes-badge-changed,
+.notes-badge-put,
+.notes-badge-mkdir {
+  color: var(--status-fg);
+  background: var(--status-bg);
+  border-color: transparent;
+}
+
+.notes-badge-delete {
+  color: var(--error-fg);
+  background: var(--error-bg);
+  border-color: transparent;
+}
+
+.notes-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.notes-changes .notes-badge {
+  margin-left: 0;
+}
+
+/* Sizes ("29 B") stay on one line on a narrow screen; the name and the buttons wrap instead. */
+.file-table td.muted {
+  white-space: nowrap;
+}

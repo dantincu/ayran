@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { CodeSnippet } from './codeSnippets'
 
 export interface TagRecord {
   id: number
@@ -44,8 +45,14 @@ export interface TabGroupRecord {
   tabs: TabRecord[]
 }
 
+/** Which set a window belongs to: a web app from the user folder, or one of the app's own
+ * system apps (Notes...). The two sets are listed, opened and closed separately. */
+export type WindowKind = 'user' | 'system'
+
 export interface SecondaryWindowRecord {
   guid: string
+  kind: WindowKind
+  /** The html file (user apps) or `system:<id>` (system apps). */
   relativePath: string
   createdAt: number
   isOpen: boolean
@@ -56,25 +63,40 @@ export interface SecondaryWindowRecord {
 export interface TabInitResponse {
   tabGuid: string
   resourceId: string
+  /** What every page should apply (see `codeSnippets.ts`). */
+  codeSnippets?: CodeSnippet[]
 }
 
 const EVENT_CHANGED = 'secondary-windows-changed'
 
-export async function listSecondaryWindows(): Promise<SecondaryWindowRecord[]> {
-  return invoke<SecondaryWindowRecord[]>('list_secondary_windows')
+export interface SystemAppInfo {
+  id: string
+  name: string
+  /** What its windows store as their relative path (`system:notes`). */
+  relativePath: string
 }
 
-export async function openNewSecondaryWindow(relativePath: string): Promise<SecondaryWindowRecord> {
-  return invoke<SecondaryWindowRecord>('open_new_secondary_window', { relativePath })
+/** The system apps that ship with this app (a fixed list — there is no way to add one). */
+export async function listSystemApps(): Promise<SystemAppInfo[]> {
+  return invoke<SystemAppInfo[]>('list_system_apps')
+}
+
+export async function listSecondaryWindows(kind: WindowKind): Promise<SecondaryWindowRecord[]> {
+  return invoke<SecondaryWindowRecord[]>('list_secondary_windows', { kind })
+}
+
+/** `relativePath` is the html file for a user app, the app's id (or `system:<id>`) for a system app. */
+export async function openNewSecondaryWindow(kind: WindowKind, relativePath: string): Promise<SecondaryWindowRecord> {
+  return invoke<SecondaryWindowRecord>('open_new_secondary_window', { kind, relativePath })
 }
 
 /** Registers a new entry in a group without opening a window for it — open it later with reopenSecondaryWindow. */
-export async function addSecondaryWindowEntry(relativePath: string): Promise<SecondaryWindowRecord> {
-  return invoke<SecondaryWindowRecord>('add_secondary_window_entry', { relativePath })
+export async function addSecondaryWindowEntry(kind: WindowKind, relativePath: string): Promise<SecondaryWindowRecord> {
+  return invoke<SecondaryWindowRecord>('add_secondary_window_entry', { kind, relativePath })
 }
 
-export async function reopenSecondaryWindow(guid: string, relativePath: string): Promise<void> {
-  await invoke('reopen_secondary_window', { guid, relativePath })
+export async function reopenSecondaryWindow(guid: string): Promise<void> {
+  await invoke('reopen_secondary_window', { guid })
 }
 
 export async function closeSecondaryWindow(guid: string): Promise<void> {
@@ -85,12 +107,13 @@ export async function suspendSecondaryWindow(guid: string): Promise<void> {
   await invoke('suspend_secondary_window', { guid })
 }
 
-export async function closeAllSecondaryWindows(relativePath?: string): Promise<void> {
-  await invoke('close_all_secondary_windows', { relativePath: relativePath ?? null })
+/** Closes every window of the kind (all kinds when omitted; or, with `relativePath`, of that one app). */
+export async function closeAllSecondaryWindows(kind?: WindowKind, relativePath?: string): Promise<void> {
+  await invoke('close_all_secondary_windows', { kind: kind ?? null, relativePath: relativePath ?? null })
 }
 
-export async function suspendAllSecondaryWindows(relativePath?: string): Promise<void> {
-  await invoke('suspend_all_secondary_windows', { relativePath: relativePath ?? null })
+export async function suspendAllSecondaryWindows(kind?: WindowKind, relativePath?: string): Promise<void> {
+  await invoke('suspend_all_secondary_windows', { kind: kind ?? null, relativePath: relativePath ?? null })
 }
 
 export async function focusSecondaryWindow(guid: string): Promise<void> {

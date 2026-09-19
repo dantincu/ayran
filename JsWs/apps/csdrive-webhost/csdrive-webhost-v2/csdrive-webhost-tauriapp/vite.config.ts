@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
@@ -26,5 +27,14 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      // One html page per app: the admin-app (`index.html`, the only page with admin privileges — see
+      // `window_host::is_admin_url`) and each system app, which lives under `system/` (see
+      // `system_apps.rs`, whose `entry` paths must match the ones here).
+      input: {
+        main: resolve(__dirname, 'index.html'),
+        notes: resolve(__dirname, 'system/notes/index.html'),
+      },
+    },
   },
 })

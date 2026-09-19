@@ -1,6 +1,5 @@
 import { readDir, readFile, readTextFile, writeFile, writeTextFile, mkdir, remove, rename, stat, exists, type DirEntry, type FileInfo } from './fs'
-import { join } from '@tauri-apps/api/path'
-import { getUserFolder, joinRelative } from './localFs'
+import { getUserFolder, joinPath, joinRelative } from './localFs'
 import { listPickedRoots, pickFolder, removePickedRoot, type PickedRoot } from './pickedRoots'
 
 /** A browsable filesystem root: either the app's own `user` folder, or a folder the user picked
@@ -51,7 +50,7 @@ export async function forgetRoot(root: FileRoot): Promise<void> {
 
 function toAbsolute(root: FileRoot, relativePath: string): Promise<string> {
   const trimmed = relativePath.replace(/^\/+/, '')
-  return trimmed ? join(root.absolutePath, ...trimmed.split('/')) : Promise.resolve(root.absolutePath)
+  return trimmed ? Promise.resolve(joinPath(root.absolutePath, ...trimmed.split('/'))) : Promise.resolve(root.absolutePath)
 }
 
 export async function listRootDir(root: FileRoot, relativePath: string): Promise<RootEntry[]> {

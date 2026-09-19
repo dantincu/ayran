@@ -13,7 +13,7 @@
 
 mod api;
 mod crypto;
-mod ops;
+pub(crate) mod ops;
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -181,7 +181,7 @@ fn pool(app: &AppHandle) -> SqlitePool {
 }
 
 /// The session for a connected account, loading it from the encrypted file the first time.
-async fn session_for(app: &AppHandle, user_id: u64) -> Result<Session, String> {
+pub(crate) async fn session_for(app: &AppHandle, user_id: u64) -> Result<Session, String> {
     if let Some(session) = app.state::<FilenState>().sessions.lock().unwrap().get(&user_id).cloned() {
         return Ok(session);
     }
@@ -289,6 +289,8 @@ pub async fn filen_login(
     };
     save_session(&app, &stored)?;
     upsert_account(&pool(&app), info.id, &email).await.map_err(|e| e.to_string())?;
+    // Give the account its folders in the Notes cache (best effort: it is set up on first use anyway).
+    let _ = app.state::<crate::files_cache::Cache>().ensure_account(info.id as i64, &email).await;
 
     let session = stored.into_session()?;
     app.state::<FilenState>().sessions.lock().unwrap().insert(info.id, session);
@@ -305,7 +307,21 @@ pub async fn filen_logout(window: tauri::WebviewWindow, app: AppHandle, user_id:
         .execute(&pool(&app))
         .await
         .map_err(|e| e.to_string())?;
+    // Everything cached for the account goes with it: both folder pairs (so its cached files and
+    // every branch too) and its rows in the cache's database.
+    app.state::<crate::files_cache::Cache>().forget_account(user_id as i64).await?;
     Ok(())
+}
+
+/// The email of a connected account.
+pub(crate) async fn email_of(app: &AppHandle, user_id: u64) -> Result<String, String> {
+    list_accounts(&pool(app))
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|a| a.user_id == user_id)
+        .map(|a| a.email)
+        .ok_or_else(|| "No connected Filen account has that user id.".to_string())
 }
 
 // ── File operations (any window) ──────────────────────────────────────────────

@@ -1,5 +1,4 @@
 import { invoke } from '@tauri-apps/api/core'
-import { join } from '@tauri-apps/api/path'
 import {
   readDir,
   readFile,
@@ -14,6 +13,14 @@ import {
   type DirEntry,
   type FileInfo,
 } from './fs'
+
+/** Joins a folder's absolute path and the segments below it, with the separator the folder's own
+ * path uses. (Not Tauri's `path.join`: that is a permission only the admin-app has, and this is
+ * used by the system apps too.) */
+export function joinPath(base: string, ...segments: string[]): string {
+  const separator = base.includes('\\') ? '\\' : '/'
+  return [base.replace(/[\\/]+$/, ''), ...segments].join(separator)
+}
 
 let cachedUserFolder: string | null = null
 
@@ -30,7 +37,7 @@ export async function getUserFolder(): Promise<string> {
 export async function userAbsolutePath(relativePath: string): Promise<string> {
   const base = await getUserFolder()
   const trimmed = relativePath.replace(/^\/+/, '')
-  return trimmed ? join(base, ...trimmed.split('/')) : base
+  return trimmed ? joinPath(base, ...trimmed.split('/')) : base
 }
 
 export async function listUserDir(relativePath: string): Promise<DirEntry[]> {
