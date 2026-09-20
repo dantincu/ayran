@@ -1298,3 +1298,8 @@ select {
   font-size: 12px;
   align-self: center;
 }
+
+.resource-id {
+  word-break: break-all;
+  user-select: all;
+}

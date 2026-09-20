@@ -11,7 +11,7 @@ import { invoke } from '@tauri-apps/api/core'
 
 /** How the Notes app takes part in the window manager (see the User Apps / System Apps tabs of the
  * admin-app): each tab it registers is one place in the file manager, its resource id naming the
- * place — `system:notes?s=<source>&b=<branch>&p=<path>&o=<records skipped>` — so that activating the tab later, or
+ * place — `system:notes?s=<source>&b=<branch>&p=<path>&o=<records skipped>&e=<file being edited>` — so that activating the tab later, or
  * cloning it, brings the same place back. */
 
 export interface Location {
@@ -24,12 +24,15 @@ export interface Location {
   /** How many records of the folder's listing were skipped (see lib/pagedPosition.ts) — not a page
    * number, which would mean other records under another page size. Absent: the start. */
   offset?: number
+  /** The file open in the editor, as a path relative to the source's root; absent: none. Part of the place,
+   * so the tab shows that it is being edited, and activating or reloading it opens the editor again. */
+  edit?: string
 }
 
 /** Bumped when the icon set below changes: the backend then asks the page for it again. */
-const APP_VERSION = 1
+const APP_VERSION = 2
 
-const RESOURCE_TYPES = { local: 'local', filen: 'filen', branch: 'branch' } as const
+const RESOURCE_TYPES = { local: 'local', filen: 'filen', branch: 'branch', editing: 'editing' } as const
 
 const svg = (paths: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
@@ -38,10 +41,12 @@ const svg = (paths: string) =>
 const ICONS: Record<string, string> = {
   local: svg('<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>'),
   filen: svg('<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>'),
+  editing: svg('<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'),
   branch: svg('<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
 }
 
 export function resourceTypeOf(location: Location): string {
+  if (location.edit) return RESOURCE_TYPES.editing
   if (location.sourceId.startsWith('filen:')) return location.branch === null ? RESOURCE_TYPES.filen : RESOURCE_TYPES.branch
   return RESOURCE_TYPES.local
 }
@@ -50,6 +55,7 @@ export function encodeLocation(location: Location): string {
   const params = new URLSearchParams({ s: location.sourceId, p: location.path })
   if (location.branch !== null) params.set('b', String(location.branch))
   if (location.offset) params.set('o', String(location.offset))
+  if (location.edit) params.set('e', location.edit)
   return params.toString()
 }
 
@@ -61,11 +67,13 @@ export function decodeLocation(resourceId: string): Location | null {
   if (!sourceId) return null
   const branch = Number(params.get('b'))
   const offset = validOffset(Number(params.get('o')))
+  const edit = params.get('e')
   return {
     sourceId,
     branch: params.has('b') && Number.isInteger(branch) ? branch : null,
     path: params.get('p') ?? '',
     ...(offset !== null ? { offset } : {}),
+    ...(edit ? { edit } : {}),
   }
 }
 
@@ -125,12 +133,22 @@ export async function registerTab(): Promise<Tab | null> {
 
 /** Tells the window manager which place the tab is at now, and how to label it. Also puts the place
  * in this page's address, so a plain reload comes back to it. */
-export async function reportLocation(tab: Tab, location: Location, label: string, branchName: string | null): Promise<void> {
+export async function reportLocation(
+  tab: Tab,
+  location: Location,
+  label: string,
+  branchName: string | null,
+  /** The file in the editor has changes that aren't saved. */
+  unsaved = false,
+): Promise<void> {
   const query = encodeLocation(location)
   history.replaceState(null, '', `${window.location.pathname}?${query}`)
   const firstRow: TabText['firstRow'] = [{ text: label, bold: true }]
   if (branchName) firstRow.push({ text: ` · ${branchName}`, italic: true })
-  const secondRow: TabText['secondRow'] = [{ text: location.path ? `/${location.path}` : '/' }]
+  // A tab that is editing a file says so — and whether there is something not saved yet.
+  const secondRow: TabText['secondRow'] = location.edit
+    ? [{ text: `Editing /${location.edit}`, bold: true }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]
+    : [{ text: location.path ? `/${location.path}` : '/' }]
   try {
     await updateTabResource(tab.tabGuid, { firstRow, secondRow }, resourceTypeOf(location), `system:notes?${query}`)
   } catch {

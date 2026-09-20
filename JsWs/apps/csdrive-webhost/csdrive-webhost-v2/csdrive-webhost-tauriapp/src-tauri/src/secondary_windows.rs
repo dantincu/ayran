@@ -117,11 +117,46 @@ pub struct TabRecord {
     pub external_pages: Vec<crate::external_sites::ExternalPageRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// The Filen account (and branch) a page was opened from — see `Origin`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilenOrigin {
+    pub account_id: i64,
+    pub email: String,
+    /// The name of the branch the page was opened in, when it was opened in one.
+    pub branch: Option<String>,
+}
+
+/// How a window's page came to be opened, kept on its entry (`secondary_windows.origin`, JSON): what a
+/// page is told about itself in `init_window_tab`. Anything not recorded is the ordinary case — a web app
+/// of the user folder opened from the admin-app.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Origin {
+    /// `AdminApp` (opened from the admin-app itself) or `NotesApp` (from Notes' file manager).
+    pub opened_by: Option<String>,
+    /// Where the file is: `UserFolder`, `DeviceFolder` (a folder the person picked), `FilenCloud`, or
+    /// `Bundled` (a system app).
+    pub storage: Option<String>,
+    /// The file's path in that storage (for Filen: its path in the drive). Absent: the entry's own path.
+    pub path: Option<String>,
+    pub filen: Option<FilenOrigin>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TabInitResponse {
     pub tab_guid: String,
     pub resource_id: String,
+    /// The page's own path — from the user folder for a web app, `system:<id>` for a system app, the
+    /// path in the drive for a file opened from Filen. (Filled in by the command, not the database logic.)
+    pub relative_path: String,
+    /// `AdminApp` or `NotesApp`: who opened the page (the value is an enum member's name).
+    pub opened_by: String,
+    /// `UserFolder`, `DeviceFolder`, `FilenCloud` or `Bundled`.
+    pub storage: String,
+    /// When `storage` is `FilenCloud`: the account, and the branch if there is one.
+    pub filen: Option<FilenOrigin>,
     /// Snippets of css/html/javascript every web app should apply (see `code_snippets`).
     /// Filled in by the `init_window_tab` command, not by the database logic.
     pub code_snippets: Vec<crate::code_snippets::CodeSnippet>,
@@ -166,6 +201,15 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
         .unwrap_or(0);
     if has_kind_column == 0 {
         sqlx::query("ALTER TABLE secondary_windows ADD COLUMN kind TEXT NOT NULL DEFAULT 'user'").execute(&pool).await?;
+    }
+
+    // How the window's page came to be opened (see `Origin`), as JSON; NULL is the ordinary case.
+    let has_origin_column: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('secondary_windows') WHERE name = 'origin'")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    if has_origin_column == 0 {
+        sqlx::query("ALTER TABLE secondary_windows ADD COLUMN origin TEXT").execute(&pool).await?;
     }
 
     // Tags are generic: `guid` names whatever they're attached to — a window, a tab
@@ -379,8 +423,8 @@ fn validate_relative_html_path(app: &AppHandle, relative_path: &str) -> Result<(
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext != "html" && ext != "htm" {
-        return Err("Only .html/.htm files can be opened as web apps.".to_string());
+    if !matches!(ext.as_str(), "html" | "htm" | "md" | "markdown") {
+        return Err("Only .html, .htm and markdown (.md) files can be opened as web apps.".to_string());
     }
 
     Ok(())
@@ -560,6 +604,11 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
         state.current_tabs.lock().unwrap().remove(guid);
         let external = delete_window_and_tags(&state.pool, guid).await;
         crate::external_sites::close_windows(app, &external);
+    } else {
+        // Suspending a window suspends the external web sites opened from its tabs: their windows close,
+        // their entries stay.
+        let open = crate::external_sites::guids_of_window(&state.pool, guid).await;
+        crate::external_sites::close_windows(app, &open);
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
@@ -1189,6 +1238,27 @@ async fn next_group_name(pool: &SqlitePool, window_guid: &str) -> Result<String,
 /// deriving the resource id from the URL. The tab starts with no display text — the app fills that in
 /// with a follow-up `update_tab_resource` call once it has something to show. Returns whether this
 /// app_version is new/newer for this html file, alongside the usual response.
+/// Tells a page how it was opened (see `Origin`): its own path, who opened it and where it is stored. The
+/// window it runs in is found from its tab.
+async fn fill_origin(pool: &SqlitePool, response: &mut TabInitResponse) -> Result<(), String> {
+    let row = sqlx::query(
+        "SELECT w.kind AS kind, w.relative_path AS relative_path, w.origin AS origin
+         FROM tabs t JOIN secondary_windows w ON w.guid = t.window_guid WHERE t.guid = ?1",
+    )
+    .bind(&response.tab_guid)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(row) = row else { return Ok(()) };
+    let kind: String = row.get("kind");
+    let origin: Origin = row.get::<Option<String>, _>("origin").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
+    response.relative_path = origin.path.unwrap_or_else(|| row.get("relative_path"));
+    response.opened_by = origin.opened_by.unwrap_or_else(|| "AdminApp".to_string());
+    response.storage = origin.storage.unwrap_or_else(|| if kind == "system" { "Bundled" } else { "UserFolder" }.to_string());
+    response.filen = origin.filen;
+    Ok(())
+}
+
 async fn init_window_tab_impl(
     pool: &SqlitePool,
     window_guid: &str,
@@ -1224,6 +1294,7 @@ async fn init_window_tab_impl(
                     tab_guid: tab_guid.to_string(),
                     resource_id: response_resource_id,
                     code_snippets: Vec::new(),
+                    ..Default::default()
                 },
                 is_new_or_newer_version,
             ));
@@ -1279,6 +1350,7 @@ async fn init_window_tab_impl(
             tab_guid,
             resource_id: resource_id.to_string(),
             code_snippets: Vec::new(),
+            ..Default::default()
         },
         is_new_or_newer_version,
     ))
@@ -1329,6 +1401,7 @@ pub async fn init_window_tab(
 
     let _ = app.emit(EVENT_CHANGED, ());
     result.code_snippets = crate::code_snippets::code_snippets();
+    fill_origin(&state.pool, &mut result).await?;
     Ok(result)
 }
 
@@ -1402,6 +1475,7 @@ pub async fn add_window_tab(
     }
     let _ = app.emit(EVENT_CHANGED, ());
     result.code_snippets = crate::code_snippets::code_snippets();
+    fill_origin(&state.pool, &mut result).await?;
     Ok(result)
 }
 
@@ -1792,11 +1866,14 @@ async fn navigation_payload(pool: &SqlitePool, tab_guid: &str) -> Result<TabInit
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(TabInitResponse {
+    let mut response = TabInitResponse {
         tab_guid: tab_guid.to_string(),
         resource_id: resource_id.ok_or_else(|| "Tab not found.".to_string())?,
         code_snippets: crate::code_snippets::code_snippets(),
-    })
+        ..Default::default()
+    };
+    fill_origin(pool, &mut response).await?;
+    Ok(response)
 }
 
 async fn move_tab_to_group_impl(pool: &SqlitePool, tab_guid: &str, target_group_guid: &str) -> Result<(), String> {

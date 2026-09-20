@@ -379,20 +379,26 @@ pub fn focus_external_site(app: AppHandle, guid: String) -> Result<(), String> {
     host::focus(&app, &guid)
 }
 
-/// Closes the site's window; the entry stays, as closed.
+/// **Suspends** the site: only its window is closed; the entry stays in the list, as suspended, and
+/// `reopen_external_site` brings the window back.
 #[tauri::command]
-pub fn close_external_site(app: AppHandle, guid: String) -> Result<(), String> {
+pub fn suspend_external_site(app: AppHandle, guid: String) -> Result<(), String> {
     host::close(&app, &guid);
     Ok(())
 }
 
-/// Removes the site from the list, closing its window if it is open.
+/// **Closes** the site: its window is closed and its entry is removed from the list (with its tags).
 #[tauri::command]
-pub async fn remove_external_site(app: AppHandle, windows: State<'_, SecondaryWindowsState>, guid: String) -> Result<(), String> {
+pub async fn close_external_site(app: AppHandle, windows: State<'_, SecondaryWindowsState>, guid: String) -> Result<(), String> {
     delete_where(windows.pool(), "guid", &[guid.clone()]).await;
     host::close(&app, &guid);
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
+}
+
+/// The sites opened from the tabs of a window entry — to suspend them when the window is.
+pub async fn guids_of_window(pool: &SqlitePool, window_guid: &str) -> Vec<String> {
+    sqlx::query_scalar("SELECT guid FROM external_pages WHERE window_guid = ?1").bind(window_guid).fetch_all(pool).await.unwrap_or_default()
 }
 
 // ── Windows, per platform ─────────────────────────────────────────────────────

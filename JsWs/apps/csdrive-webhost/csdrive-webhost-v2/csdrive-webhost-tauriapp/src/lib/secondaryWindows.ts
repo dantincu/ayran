@@ -79,9 +79,27 @@ export interface SecondaryWindowRecord {
   tabGroups: TabGroupRecord[]
 }
 
+/** The Filen account (and branch) a page was opened from. */
+export interface FilenOrigin {
+  accountId: number
+  email: string
+  /** The name of the branch it was opened in, when it was opened in one. */
+  branch: string | null
+}
+
 export interface TabInitResponse {
   tabGuid: string
   resourceId: string
+  /** The page's own path: from the user folder for a web app, `system:<id>` for a system app, the path in
+   * the drive for a file opened from Filen. */
+  relativePath: string
+  /** Who opened the page (the value is an enum member's name): the admin-app itself, or Notes' file manager. */
+  openedBy: 'AdminApp' | 'NotesApp'
+  /** Where the file is: the user folder, a folder the person picked on the device, Filen's cloud storage, or
+   * — for a system app — this app itself. */
+  storage: 'UserFolder' | 'DeviceFolder' | 'FilenCloud' | 'Bundled'
+  /** When `storage` is `FilenCloud`: the account, and the branch if there is one. */
+  filen?: FilenOrigin | null
   /** What every page should apply (see `codeSnippets.ts`). */
   codeSnippets?: CodeSnippet[]
 }
@@ -292,14 +310,16 @@ export async function focusExternalSite(guid: string): Promise<void> {
   await invoke('focus_external_site', { guid })
 }
 
-/** Closes the site's window; it stays listed, as closed. */
-export async function closeExternalSite(guid: string): Promise<void> {
-  await invoke('close_external_site', { guid })
+/** **Suspends** the site: only its window is closed; the entry stays in the list, as suspended. (Suspending
+ * the window of the tab it was opened from does this to all its sites.) */
+export async function suspendExternalSite(guid: string): Promise<void> {
+  await invoke('suspend_external_site', { guid })
 }
 
-/** Removes the site from the list, closing its window if it is open. */
-export async function removeExternalSite(guid: string): Promise<void> {
-  await invoke('remove_external_site', { guid })
+/** **Closes** the site: its window is closed and its entry is removed from the list. (Closing its tab,
+ * deleting the tab's group or closing the tab's window does this to all its sites.) */
+export async function closeExternalSite(guid: string): Promise<void> {
+  await invoke('close_external_site', { guid })
 }
 
 const EVENT_REQUEST_RESOURCE_ICONS = 'request-resource-icons'

@@ -15,6 +15,7 @@ mod fs_scope;
 mod fs_upload;
 mod ipc;
 mod layout;
+mod markdown;
 mod picked_roots;
 mod secure_store;
 mod secondary_windows;
@@ -94,6 +95,12 @@ fn respond_text(status: StatusCode, message: &str, csp: &str) -> Response<Vec<u8
 fn serve_file(base_dir: &Path, request_path: &str, default_document: &str, csp: &str) -> Response<Vec<u8>> {
     match resolve_file_in(base_dir, request_path, default_document) {
         Some(file_path) => match std::fs::read(&file_path) {
+            // A markdown file is not served as it is: it becomes a page (see markdown.rs).
+            Ok(data) if markdown::is_markdown(&file_path) => {
+                let name = file_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let page = markdown::render_page(&String::from_utf8_lossy(&data), &name);
+                respond(StatusCode::OK, "text/html; charset=utf-8", page.into_bytes(), csp)
+            }
             Ok(data) => respond(StatusCode::OK, content_type_for(&file_path), data, csp),
             Err(_) => respond_text(StatusCode::NOT_FOUND, "File not found", csp),
         },
@@ -182,8 +189,8 @@ pub fn run() {
             external_sites::open_external_site,
             external_sites::reopen_external_site,
             external_sites::focus_external_site,
+            external_sites::suspend_external_site,
             external_sites::close_external_site,
-            external_sites::remove_external_site,
             app_state::get_global_setting,
             app_state::set_global_setting,
             system_apps::list_system_apps,

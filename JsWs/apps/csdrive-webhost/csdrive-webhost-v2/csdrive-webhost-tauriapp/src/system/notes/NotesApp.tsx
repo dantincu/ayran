@@ -60,6 +60,25 @@ import {
 import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
 
 const LAST_LOCATION_KEY = 'notes.lastLocation'
+/** Unsaved text of files being edited, kept per tab so that it survives switching tabs and restarting the
+ * app: tab guid → the draft. (Only while there is something unsaved; saved, discarded or closed, it goes.) */
+const DRAFTS_KEY = 'notes.drafts'
+
+interface Draft {
+  sourceId: string
+  branch: number | null
+  path: string
+  content: string
+  version: FileVersion | null
+}
+
+/** A place without the file being edited: for a tab that names no place of its own, the last place is only
+ * a fallback for where to be — not for what to be doing. */
+const withoutEdit = (location: Location | null | undefined): Location | null => {
+  if (!location) return null
+  if (!location.edit) return location
+  return { sourceId: location.sourceId, branch: location.branch, path: location.path, ...(location.offset ? { offset: location.offset } : {}) }
+}
 const MAX_BRANCH_NAME_CHARS = 100
 /** Bigger than this isn't opened in the text editor (export it instead). */
 const MAX_EDIT_BYTES = 2 * 1024 * 1024
@@ -152,6 +171,12 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   const [changes, setChanges] = useState<BranchChange[] | null>(null)
 
   const [editing, setEditing] = useState<Editing | null>(null)
+  // The file a place says is being edited (path in the source), waiting for the source to be there to open it.
+  const [editToRestore, setEditToRestore] = useState<string | null>(null)
+  const editingRef = useRef<Editing | null>(null)
+  editingRef.current = editing
+  const tabRef = useRef<Tab | null>(initialTab)
+  tabRef.current = tab
   // Filen has another version of the file being saved than the one being edited: what it found, until
   // the person has chosen what to do.
   const [conflict, setConflict] = useState<VersionCheck | null>(null)
@@ -183,6 +208,10 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       allRoots.some((r) => `${LOCAL_PREFIX}${r.id}` === id) || filen.some((a) => `${FILEN_PREFIX}${a.userId}` === id)
     restoredOffsetRef.current = null
     setRestoringPage(false)
+    // The editor follows the place: a tab that was editing a file opens it again, any other closes it (what
+    // was unsaved has been kept as a draft — see flushDraft).
+    setEditToRestore(target && exists(target.sourceId) ? (target.edit ?? null) : null)
+    if (!target?.edit) setEditing(null)
     if (target && exists(target.sourceId)) {
       setSourceId(target.sourceId)
       setBranch(target.branch ?? null)
@@ -220,7 +249,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       earlyNavigationRef.current = null
       if (early) setTab(early)
       sourcesRef.current = { roots: allRoots, accounts: filen }
-      showLocation((early ? (decodeLocation(early.resourceId) ?? last) : (initial ?? last)) ?? null, allRoots, filen)
+      showLocation((early ? (decodeLocation(early.resourceId) ?? withoutEdit(last)) : (initial ?? withoutEdit(last))) ?? null, allRoots, filen)
       setReady(true)
     })()
   }, [])
@@ -238,8 +267,9 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
           earlyNavigationRef.current = next
           return
         }
+        flushDraft() // the tab being left keeps what it hadn't saved
         setTab(next)
-        showLocation(decodeLocation(next.resourceId) ?? lastRef.current, sources.roots, sources.accounts)
+        showLocation(decodeLocation(next.resourceId) ?? withoutEdit(lastRef.current), sources.roots, sources.accounts)
       }),
     [],
   )
@@ -326,11 +356,71 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   // folder's listing, as the number of records skipped so it means the same under any page size.
   useEffect(() => {
     if (!ready || !source || restoringPage) return
-    const location: Location = { sourceId, branch, path, ...(currentPage > 0 ? { offset: offsetOfPage(currentPage, pageSize) } : {}) }
+    const location: Location = {
+      sourceId,
+      branch,
+      path,
+      ...(currentPage > 0 ? { offset: offsetOfPage(currentPage, pageSize) } : {}),
+      ...(editing ? { edit: editing.path } : {}),
+    }
     lastRef.current = location
     setAppState(LAST_LOCATION_KEY, location).catch(() => {})
-    if (tab) reportLocation(tab, location, source.label, currentBranch?.name ?? null)
-  }, [ready, source, sourceId, branch, path, currentPage, pageSize, restoringPage, tab, currentBranch])
+    if (tab) reportLocation(tab, location, source.label, currentBranch?.name ?? null, !!editing?.dirty)
+  }, [ready, source, sourceId, branch, path, currentPage, pageSize, restoringPage, tab, currentBranch, editing?.path, editing?.dirty])
+
+  // ── Editing that outlives the editor: the place names the file, a draft keeps the unsaved text ──
+
+  const draftKey = () => tabRef.current?.tabGuid ?? 'window'
+
+  async function readDrafts(): Promise<Record<string, Draft>> {
+    return (await getAppState<Record<string, Draft>>(DRAFTS_KEY).catch(() => undefined)) ?? {}
+  }
+
+  async function writeDraft(key: string, draft: Draft | null) {
+    const drafts = await readDrafts()
+    if (draft) drafts[key] = draft
+    else delete drafts[key]
+    await setAppState(DRAFTS_KEY, drafts).catch(() => {})
+  }
+
+  /** Keeps the editor's unsaved text as this tab's draft (right away, e.g. before another tab is shown). */
+  function flushDraft() {
+    const now = editingRef.current
+    if (now?.dirty) writeDraft(draftKey(), { sourceId: now.source.id, branch: now.source.branch ?? null, path: now.path, content: now.content, version: now.version })
+  }
+
+  // While there are unsaved changes, the draft follows them (a moment after the last key).
+  useEffect(() => {
+    if (!editing?.dirty) return
+    const timer = window.setTimeout(flushDraft, 500)
+    return () => window.clearTimeout(timer)
+  }, [editing?.content, editing?.dirty, editing?.path])
+
+  // A place that says a file is being edited: open it in the editor, with the tab's draft if it has one for it.
+  useEffect(() => {
+    if (!ready || !source || editToRestore === null) return
+    const wanted = editToRestore
+    setEditToRestore(null)
+    ;(async () => {
+      try {
+        const [bytes, drafts] = await Promise.all([source.read(wanted), readDrafts()])
+        const saved = decodeText(bytes)
+        if (saved === null) throw new Error(`"${wanted}" isn't a text file this small any more.`)
+        const version = (await source.version?.(wanted).catch(() => null)) ?? null
+        const draft = drafts[draftKey()]
+        const mine = draft && draft.sourceId === source.id && (draft.branch ?? null) === (source.branch ?? null) && draft.path === wanted
+        setEditing({
+          source,
+          path: wanted,
+          content: mine ? draft.content : saved,
+          dirty: !!mine && draft.content !== saved,
+          version: mine ? (draft.version ?? version) : version,
+        })
+      } catch (e) {
+        setError(String(e))
+      }
+    })()
+  }, [ready, source, editToRestore])
 
   // A position restored for the place shown (a tab switched to, or the start): go to the page that holds
   // the record it was at, as soon as the listing of that very place is in.
@@ -473,6 +563,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       if (overwrite) await editedSource.rebase?.(filePath)
       const saved = (await editedSource.version?.(filePath).catch(() => null)) ?? null
       setEditing((e) => (e && e.path === filePath ? { ...e, dirty: false, version: saved ?? e.version } : e))
+      writeDraft(draftKey(), null)
       await load(false)
       if (account) await reloadBranches()
     } catch (e) {
@@ -492,6 +583,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       if (text === null) throw new Error(`"${filePath}" isn't a text file this small any more — export it instead.`)
       const fresh = (await editedSource.version?.(filePath).catch(() => null)) ?? null
       setEditing((e) => (e && e.path === filePath ? { ...e, content: text, dirty: false, version: fresh ?? e.version } : e))
+      writeDraft(draftKey(), null)
       setNotice('Your changes were discarded; this is the file as it is now.')
     } catch (e) {
       setEditing(null) // it is gone (or isn't text now): there is nothing to go on editing
@@ -529,6 +621,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
 
   async function closeEditor() {
     if (editing?.dirty && !(await confirm('Close without saving your changes?'))) return
+    writeDraft(draftKey(), null)
     setEditing(null)
   }
 

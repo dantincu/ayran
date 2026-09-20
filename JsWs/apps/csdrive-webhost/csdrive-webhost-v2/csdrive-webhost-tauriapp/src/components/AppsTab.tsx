@@ -11,6 +11,7 @@ import {
   FilePlus,
   Fingerprint,
   Globe,
+  Hash,
   FolderPlus,
   Link,
   Pause,
@@ -52,11 +53,11 @@ import {
   moveTabToGroup,
   onSecondaryWindowsChanged,
   openNewSecondaryWindow,
-  removeExternalSite,
   renameTabGroup,
   reopenExternalSite,
   reopenSecondaryWindow,
   suspendAllSecondaryWindows,
+  suspendExternalSite,
   suspendSecondaryWindow,
   type ExternalPageRecord,
   type SecondaryWindowRecord,
@@ -168,6 +169,28 @@ function copyViaExecCommand(text: string): boolean {
 async function copyToClipboard(text: string): Promise<void> {
   if (copyViaExecCommand(text)) return
   await navigator.clipboard.writeText(text)
+}
+
+/** A tab's resource identifier — what identifies the resource the tab shows, inside its app (a file, a
+ * folder, an address…; for a Notes tab, `system:notes?s=…&p=…`) — to read and to copy. */
+function ResourceIdModal({ tab, onClose, onError }: { tab: TabRecord; onClose: () => void; onError: (message: string) => void }) {
+  const id = tab.resourceId
+  return (
+    <Modal title="Resource identifier" onClose={onClose}>
+      <div className="modal-field-label">Identifies what this tab shows, within its app</div>
+      <div className="modal-guid-row">
+        <code className="window-item-guid resource-id">{id || '(none yet — the app hasn\'t said)'}</code>
+        <IconButton
+          icon={Copy}
+          label="Copy the resource identifier"
+          disabled={!id}
+          onClick={() => copyToClipboard(id).catch((e) => onError(String(e)))}
+        />
+      </div>
+      <div className="modal-field-label">The app's page</div>
+      <code className="window-item-guid">{tab.relativePath}</code>
+    </Modal>
+  )
 }
 
 function WindowDetailsModal({
@@ -347,6 +370,7 @@ function TabRow({
   onActivate,
   onClose,
   onOpenExternal,
+  onShowResourceId,
 }: {
   tab: TabRecord
   /** The tags of every root the listed tabs show (see `rootOfTab`); this tab's are picked out by guid. */
@@ -361,6 +385,8 @@ function TabRow({
   onClose: () => void
   /** Shows the external web sites opened from this tab. */
   onOpenExternal: () => void
+  /** Shows the tab's resource identifier (to read and copy). */
+  onShowResourceId: () => void
 }) {
   // A tab that shows a root (a folder, a Filen account) has two sets of tags: the root's — the same
   // wherever that root appears — and its own. When both are shown each line says which it is.
@@ -390,6 +416,7 @@ function TabRow({
             onClick={onOpenExternal}
           />
           {tab.externalPages.length > 0 && <span className="muted tab-row-external-count">{tab.externalPages.length}</span>}
+          <IconButton icon={Hash} label="Resource identifier — view and copy" onClick={onShowResourceId} />
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
           <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
           <IconButton icon={CopyPlus} label="Clone tab" onClick={onClone} />
@@ -433,16 +460,16 @@ function ExternalRow({
   onCopy,
   onOpen,
   onFocus,
-  onCloseWindow,
-  onRemove,
+  onSuspend,
+  onClose,
 }: {
   page: ExternalPageRecord
   onError: (message: string) => void
   onCopy: (text: string) => void
   onOpen: () => void
   onFocus: () => void
-  onCloseWindow: () => void
-  onRemove: () => void
+  onSuspend: () => void
+  onClose: () => void
 }) {
   const redirected = page.url !== page.initialUrl
   return (
@@ -458,7 +485,7 @@ function ExternalRow({
           </div>
         </button>
         <div className="row-actions">
-          <span className={`status-dot ${page.isOpen ? 'status-open' : 'status-suspended'}`} title={page.isOpen ? 'Open' : 'Closed'} />
+          <span className={`status-dot ${page.isOpen ? 'status-open' : 'status-suspended'}`} title={page.isOpen ? 'Open' : 'Suspended'} />
           <IconButton icon={Copy} label="Copy the address to the clipboard" onClick={() => onCopy(page.url)} />
           <IconButton
             icon={Link}
@@ -468,12 +495,12 @@ function ExternalRow({
           {page.isOpen ? (
             <>
               <IconButton icon={ExternalLink} label="Bring its window to the front" onClick={onFocus} />
-              <IconButton icon={X} label="Close its window (it stays listed)" onClick={onCloseWindow} />
+              <IconButton icon={Pause} label={SUSPEND_HINT} onClick={onSuspend} />
             </>
           ) : (
-            <IconButton icon={Play} label="Open its window again" onClick={onOpen} />
+            <IconButton icon={Play} label="Reopen its window" onClick={onOpen} />
           )}
-          <IconButton icon={Trash2} label="Remove it from this list" variant="danger" onClick={onRemove} />
+          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={onClose} />
         </div>
       </div>
       <TagList guid={page.guid} tags={page.tags} className="window-item-tags" onError={onError} />
@@ -569,6 +596,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
   const [cutTab, setCutTab] = useState<TabRecord | null>(null)
   const [renamingGroup, setRenamingGroup] = useState<TabGroupRecord | null>(null)
+  const [resourceIdFor, setResourceIdFor] = useState<TabRecord | null>(null)
 
   const [useCustomOrder, setUseCustomOrderState] = useState(false)
   const [groupOrder, setGroupOrderState] = useState<string[]>([])
@@ -953,7 +981,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     count: levelIds.length,
     focused: kbdFocus,
     setFocused: setKbdFocus,
-    enabled: !reordering && !detailsFor && !movingTab && !renamingGroup,
+    enabled: !reordering && !detailsFor && !movingTab && !renamingGroup && !resourceIdFor,
     // Right: into the item — and on an external web site, which has nothing below it, to its window.
     onOpen: (i) => {
       if (view === 'external') {
@@ -1307,6 +1335,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                     setCurrentTabGuid(t.guid)
                     navigate('external')
                   }}
+                  onShowResourceId={() => setResourceIdFor(t)}
                 />
               )}
             />
@@ -1351,14 +1380,16 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                   onCopy={handleCopy}
                   onOpen={() => handleExternal(() => reopenExternalSite(p.guid))}
                   onFocus={() => handleExternal(() => focusExternalSite(p.guid))}
-                  onCloseWindow={() => handleExternal(() => closeExternalSite(p.guid))}
-                  onRemove={() => handleExternal(() => removeExternalSite(p.guid))}
+                  onSuspend={() => handleExternal(() => suspendExternalSite(p.guid))}
+                  onClose={() => handleExternal(() => closeExternalSite(p.guid))}
                 />
               )}
             />
           </div>
         </>
       )}
+
+      {resourceIdFor && <ResourceIdModal tab={resourceIdFor} onClose={() => setResourceIdFor(null)} onError={setError} />}
 
       {liveDetailsFor && (
         <WindowDetailsModal record={liveDetailsFor} onClose={() => setDetailsFor(null)} onError={setError} />

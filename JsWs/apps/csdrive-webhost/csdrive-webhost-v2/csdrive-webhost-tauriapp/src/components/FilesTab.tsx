@@ -54,8 +54,9 @@ import {
 import { rootTagGuid } from '../lib/rootTags'
 import { listTags, openNewSecondaryWindow, type TagRecord } from '../lib/secondaryWindows'
 
+/** A file that can be opened as a web app: a page, or a markdown document (rendered to a page by the backend). */
 function isHtmlFile(name: string): boolean {
-  return /\.html?$/i.test(name)
+  return /\.(html?|md|markdown)$/i.test(name)
 }
 
 function formatBytes(bytes: number): string {
