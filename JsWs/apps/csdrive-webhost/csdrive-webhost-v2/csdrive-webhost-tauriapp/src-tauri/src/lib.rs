@@ -5,6 +5,7 @@ mod code_snippets;
 mod data_location;
 mod deployable_apps;
 mod device_files;
+mod external_sites;
 mod files_cache;
 mod filen;
 mod filen_cache;
@@ -178,6 +179,11 @@ pub fn run() {
             secondary_windows::close_tab,
             secondary_windows::delete_tab_group,
             secondary_windows::move_tab_to_group,
+            external_sites::open_external_site,
+            external_sites::reopen_external_site,
+            external_sites::focus_external_site,
+            external_sites::close_external_site,
+            external_sites::remove_external_site,
             app_state::get_global_setting,
             app_state::set_global_setting,
             system_apps::list_system_apps,
@@ -275,6 +281,7 @@ pub fn run() {
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
             app.manage(window_host::HostState::default());
+            app.manage(external_sites::ExternalSites::default());
             app.manage(device_files::ExportState::default());
             app.manage(filen_cache::UploadSessions::default());
             app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));

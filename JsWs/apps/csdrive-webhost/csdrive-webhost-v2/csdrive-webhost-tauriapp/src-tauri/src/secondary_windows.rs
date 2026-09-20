@@ -36,6 +36,16 @@ pub struct SecondaryWindowsState {
 }
 
 impl SecondaryWindowsState {
+    /// The database (for the modules that keep their own tables in it, like `external_sites`).
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
+    }
+
+    /// The tab a window is showing (or showed when it was suspended).
+    pub(crate) fn current_tab_of(&self, window_guid: &str) -> Option<String> {
+        self.current_tabs.lock().unwrap().get(window_guid).cloned()
+    }
+
     pub fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
@@ -103,6 +113,8 @@ pub struct TabRecord {
     pub tab_text: Option<TabText>,
     pub created_at: i64,
     pub tags: Vec<TagRecord>,
+    /// The external web sites opened from this tab's page, oldest first (see `external_sites`).
+    pub external_pages: Vec<crate::external_sites::ExternalPageRecord>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,6 +285,22 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
     .execute(&pool)
     .await?;
 
+    // External web sites opened from a tab's page (see `external_sites`): children of that tab, not tabs.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS external_pages (
+            guid TEXT PRIMARY KEY,
+            tab_guid TEXT NOT NULL,
+            window_guid TEXT NOT NULL,
+            initial_url TEXT NOT NULL,
+            url TEXT NOT NULL,
+            title TEXT,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS external_pages_tab ON external_pages (tab_guid)").execute(&pool).await?;
+
     Ok(pool)
 }
 
@@ -289,7 +317,7 @@ fn validate_page(app: &AppHandle, page: &Page) -> Result<(), String> {
 }
 
 /// The page a window entry shows, from its row.
-async fn page_of(pool: &SqlitePool, guid: &str) -> Result<Page, String> {
+pub(crate) async fn page_of(pool: &SqlitePool, guid: &str) -> Result<Page, String> {
     let row = sqlx::query("SELECT kind, relative_path FROM secondary_windows WHERE guid = ?1")
         .bind(guid)
         .fetch_optional(pool)
@@ -487,7 +515,9 @@ async fn tab_for_init(
 
 /// Deletes a secondary window's row along with its tab groups, tabs, and every tag
 /// attached to any of them.
-async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) {
+/// Resolves to the guids of the external web sites that went with it, whose windows the caller closes.
+async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) -> Vec<String> {
+    let external = crate::external_sites::delete_for_window(pool, guid).await;
     let tab_guids: Vec<String> = sqlx::query_scalar("SELECT guid FROM tabs WHERE window_guid = ?1")
         .bind(guid)
         .fetch_all(pool)
@@ -507,6 +537,7 @@ async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) {
 
     let _ = sqlx::query("DELETE FROM secondary_windows WHERE guid = ?1").bind(guid).execute(pool).await;
     let _ = sqlx::query("DELETE FROM window_tags WHERE guid = ?1").bind(guid).execute(pool).await;
+    external
 }
 
 /// Marks an entry's window as being *suspended*, so that when it goes away its entry is kept.
@@ -527,13 +558,14 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
 
     if !was_suspended {
         state.current_tabs.lock().unwrap().remove(guid);
-        delete_window_and_tags(&state.pool, guid).await;
+        let external = delete_window_and_tags(&state.pool, guid).await;
+        crate::external_sites::close_windows(app, &external);
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
 }
 
-async fn fetch_tags(pool: &SqlitePool, guids: &[String]) -> Result<Vec<TagRecord>, sqlx::Error> {
+pub(crate) async fn fetch_tags(pool: &SqlitePool, guids: &[String]) -> Result<Vec<TagRecord>, sqlx::Error> {
     if guids.is_empty() {
         return Ok(Vec::new());
     }
@@ -614,6 +646,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
 
     let tab_guids: Vec<String> = rows.iter().map(|row| row.get::<String, _>("guid")).collect();
     let all_tags = fetch_tags(pool, &tab_guids).await?;
+    let all_external = crate::external_sites::fetch_for_tabs(pool, &tab_guids).await?;
 
     let relative_paths: Vec<String> = rows
         .iter()
@@ -629,6 +662,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
             let guid: String = row.get("guid");
             let relative_path: String = row.get("relative_path");
             let tags = all_tags.iter().filter(|t| t.guid == guid).cloned().collect();
+            let external_pages = all_external.iter().filter(|p| p.tab_guid == guid).cloned().collect();
             let tab_text_json: Option<String> = row.get("tab_text");
             let tab_text = tab_text_json.and_then(|json| serde_json::from_str::<TabText>(&json).ok());
             let resource_type: Option<String> = row.get("resource_type");
@@ -648,6 +682,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
                 tab_text,
                 created_at: row.get("created_at"),
                 tags,
+                external_pages,
             }
         })
         .collect())
@@ -732,7 +767,7 @@ pub async fn list_secondary_windows(
     let all_tags = fetch_tags(&state.pool, &guids).await.map_err(|e| e.to_string())?;
     let all_groups = fetch_tab_groups(&state.pool, &guids).await.map_err(|e| e.to_string())?;
 
-    Ok(rows
+    let mut records: Vec<SecondaryWindowRecord> = rows
         .into_iter()
         .map(|(guid, relative_path, created_at)| {
             let is_open = crate::window_host::is_open(&app, &guid);
@@ -748,7 +783,11 @@ pub async fn list_secondary_windows(
                 tab_groups,
             }
         })
-        .collect())
+        .collect();
+    for external in records.iter_mut().flat_map(|w| w.tab_groups.iter_mut()).flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.external_pages.iter_mut()) {
+        external.is_open = crate::external_sites::is_open(&app, &external.guid);
+    }
+    Ok(records)
 }
 
 /// Tags attached to arbitrary guids — e.g. a file-manager root, which isn't a
@@ -994,7 +1033,8 @@ pub async fn close_secondary_window(
     if !crate::window_host::request_close(&app, &guid) {
         state.pending_tab_activation.lock().unwrap().remove(&guid);
         state.current_tabs.lock().unwrap().remove(&guid);
-        delete_window_and_tags(&state.pool, &guid).await;
+        let external = delete_window_and_tags(&state.pool, &guid).await;
+        crate::external_sites::close_windows(&app, &external);
         let _ = app.emit(EVENT_CHANGED, ());
     }
     Ok(())
@@ -1036,7 +1076,8 @@ pub async fn close_all_secondary_windows(
             // The window-destroyed handler deletes the row (and its tags) once the window actually closes.
             closing.push(guid.clone());
         } else {
-            delete_window_and_tags(&state.pool, guid).await;
+            let external = delete_window_and_tags(&state.pool, guid).await;
+            crate::external_sites::close_windows(&app, &external);
         }
     }
 
@@ -1562,6 +1603,7 @@ pub async fn add_blank_tab(
         tab_text: None,
         created_at,
         tags: Vec::new(),
+        external_pages: Vec::new(),
     })
 }
 
@@ -1615,6 +1657,7 @@ pub async fn clone_tab(
         tab_text: None,
         created_at,
         tags: Vec::new(),
+        external_pages: Vec::new(),
     })
 }
 
@@ -1686,6 +1729,8 @@ pub async fn delete_tab_group(
     group_guid: String,
 ) -> Result<(), String> {
     let (window_guid, tab_guids) = delete_tab_group_impl(&state.pool, &group_guid).await?;
+    let external = crate::external_sites::delete_for_tabs(&state.pool, &tab_guids).await;
+    crate::external_sites::close_windows(&app, &external);
 
     state.pending_tab_activation.lock().unwrap().retain(|_, (pending_tab, _)| !tab_guids.contains(pending_tab));
 
@@ -1723,6 +1768,8 @@ pub async fn close_tab(
     tab_guid: String,
 ) -> Result<(), String> {
     let window_guid = close_tab_impl(&state.pool, &tab_guid).await?;
+    let external = crate::external_sites::delete_for_tabs(&state.pool, std::slice::from_ref(&tab_guid)).await;
+    crate::external_sites::close_windows(&app, &external);
 
     // An activation still waiting for this tab's page would find it gone; nothing is left to wait for.
     state.pending_tab_activation.lock().unwrap().retain(|_, (pending_tab, _)| *pending_tab != tab_guid);
@@ -1787,6 +1834,7 @@ async fn move_tab_to_group_impl(pool: &SqlitePool, tab_guid: &str, target_group_
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+    crate::external_sites::follow_tab(pool, tab_guid, &target_window_guid).await.map_err(|e| e.to_string())?;
 
     Ok(())
 }

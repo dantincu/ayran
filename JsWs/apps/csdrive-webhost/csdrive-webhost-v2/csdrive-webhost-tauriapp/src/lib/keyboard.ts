@@ -49,6 +49,9 @@ export interface ListKeyboard {
   onOpen?: (index: number) => void
   /** Left arrow: go up to the parent. */
   onParent?: () => void
+  /** Enter: the focused item's own action (a tab is shown, a site's window comes to the front…); without
+   * it Enter does what Right does. Not heard while a button or link has the focus — Enter presses that. */
+  onActivate?: (index: number) => void
   /** Off while something else owns the keys (a list being sorted, another list on top). */
   enabled?: boolean
 }
@@ -65,7 +68,7 @@ export function useListKeyboard(options: ListKeyboard) {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      const { count, focused, setFocused, onOpen, onParent, enabled } = latest.current
+      const { count, focused, setFocused, onOpen, onParent, onActivate, enabled } = latest.current
       if (enabled === false || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
       if (isTypingTarget(e.target) || overlayOpen()) return
       const from = Math.max(focused, 0)
@@ -101,6 +104,14 @@ export function useListKeyboard(options: ListKeyboard) {
             onOpen(focused)
           }
           return
+        case 'Enter': {
+          const act = onActivate ?? onOpen
+          if (!act || focused < 0 || focused >= count) return
+          if (e.target instanceof HTMLElement && e.target.closest('button, a, summary, [role="button"]')) return
+          e.preventDefault()
+          act(focused)
+          return
+        }
         default:
           return
       }

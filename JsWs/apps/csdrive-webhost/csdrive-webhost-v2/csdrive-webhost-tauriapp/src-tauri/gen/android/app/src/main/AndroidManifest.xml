@@ -32,6 +32,13 @@
             </intent-filter>
         </activity>
 
+        <!-- An external web site (ExternalSiteActivity.kt): a plain WebView with no bridge to the backend. -->
+        <activity
+            android:name=".ExternalSiteActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:exported="false"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+
         <provider
           android:name="androidx.core.content.FileProvider"
           android:authorities="${applicationId}.fileprovider"

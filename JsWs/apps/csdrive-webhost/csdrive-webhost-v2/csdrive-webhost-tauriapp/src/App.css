@@ -1281,3 +1281,20 @@ select {
   margin-top: 8px;
   font-size: 12px;
 }
+
+/* ── External web sites in the window manager ────────────────────────────────── */
+
+.external-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--muted);
+}
+
+.external-url {
+  word-break: break-all;
+}
+
+.tab-row-external-count {
+  font-size: 12px;
+  align-self: center;
+}

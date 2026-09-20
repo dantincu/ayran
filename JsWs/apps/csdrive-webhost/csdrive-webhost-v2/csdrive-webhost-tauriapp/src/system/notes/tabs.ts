@@ -6,11 +6,12 @@ import {
   type TabText,
 } from '../../lib/secondaryWindows'
 import { applyCodeSnippets } from '../../lib/codeSnippets'
+import { validOffset } from '../../lib/pagedPosition'
 import { invoke } from '@tauri-apps/api/core'
 
 /** How the Notes app takes part in the window manager (see the User Apps / System Apps tabs of the
  * admin-app): each tab it registers is one place in the file manager, its resource id naming the
- * place — `system:notes?s=<source>&b=<branch>&p=<path>` — so that activating the tab later, or
+ * place — `system:notes?s=<source>&b=<branch>&p=<path>&o=<records skipped>` — so that activating the tab later, or
  * cloning it, brings the same place back. */
 
 export interface Location {
@@ -20,6 +21,9 @@ export interface Location {
   branch: number | null
   /** Relative to the source's root, `/`-separated; `''` is the root. */
   path: string
+  /** How many records of the folder's listing were skipped (see lib/pagedPosition.ts) — not a page
+   * number, which would mean other records under another page size. Absent: the start. */
+  offset?: number
 }
 
 /** Bumped when the icon set below changes: the backend then asks the page for it again. */
@@ -45,6 +49,7 @@ export function resourceTypeOf(location: Location): string {
 export function encodeLocation(location: Location): string {
   const params = new URLSearchParams({ s: location.sourceId, p: location.path })
   if (location.branch !== null) params.set('b', String(location.branch))
+  if (location.offset) params.set('o', String(location.offset))
   return params.toString()
 }
 
@@ -55,7 +60,13 @@ export function decodeLocation(resourceId: string): Location | null {
   const sourceId = params.get('s')
   if (!sourceId) return null
   const branch = Number(params.get('b'))
-  return { sourceId, branch: params.has('b') && Number.isInteger(branch) ? branch : null, path: params.get('p') ?? '' }
+  const offset = validOffset(Number(params.get('o')))
+  return {
+    sourceId,
+    branch: params.has('b') && Number.isInteger(branch) ? branch : null,
+    path: params.get('p') ?? '',
+    ...(offset !== null ? { offset } : {}),
+  }
 }
 
 export interface Tab {

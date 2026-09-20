@@ -7,6 +7,7 @@ import Pagination from './Pagination'
 import { getAppState, setAppState } from '../lib/appState'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
 import { isObject } from '../lib/tabState'
+import { offsetOfPage, pageOfOffset, validOffset } from '../lib/pagedPosition'
 import {
   filenMkdir,
   filenReadFile,
@@ -50,6 +51,12 @@ export default function FilenTab() {
   const [locationLoaded, setLocationLoaded] = useState(false)
   const locationLoadedRef = useRef(false)
   const restoredPathRef = useRef(false)
+  // The position in the folder's listing (the number of records skipped, see lib/pagedPosition.ts),
+  // restored once the listing is there; until then nothing is saved over it.
+  const restoredOffsetRef = useRef<number | null>(null)
+  const [restoringPage, setRestoringPage] = useState(false)
+  const pageSizeRef = useRef(pageSize)
+  pageSizeRef.current = pageSize
   // The item the arrow keys are on (an index into all the entries), and which item of a folder that was
   // opened or left with the keys to start from.
   const [kbdFocus, setKbdFocus] = useState(-1)
@@ -75,7 +82,7 @@ export default function FilenTab() {
     const saved = locationLoadedRef.current ? undefined : await getAppState<unknown>(LOCATION_KEY)
     const place =
       isObject(saved) && typeof saved.userId === 'number' && typeof saved.path === 'string' && saved.path.startsWith('/')
-        ? { userId: saved.userId, path: saved.path }
+        ? { userId: saved.userId, path: saved.path, offset: validOffset(saved.offset) }
         : null
     setActiveId((current) => {
       if (current != null && list.some((a) => a.userId === current)) return current
@@ -88,6 +95,8 @@ export default function FilenTab() {
       if (place && list.some((a) => a.userId === place.userId)) {
         setPath(place.path)
         restoredPathRef.current = place.path !== '/'
+        restoredOffsetRef.current = place.offset
+        setRestoringPage(place.offset !== null)
       }
       setLocationLoaded(true)
     }
@@ -103,7 +112,14 @@ export default function FilenTab() {
     try {
       setEntries(await filenReaddir(userId, dirPath))
       restoredPathRef.current = false
+      if (restoredOffsetRef.current !== null) {
+        setPage(pageOfOffset(restoredOffsetRef.current, pageSizeRef.current)) // the page that holds the record it was at
+        restoredOffsetRef.current = null
+        setRestoringPage(false)
+      }
     } catch (e) {
+      restoredOffsetRef.current = null
+      setRestoringPage(false)
       if (restoredPathRef.current && dirPath !== '/') {
         restoredPathRef.current = false
         setPath('/') // the folder of the last visit is gone: start at the top
@@ -124,8 +140,10 @@ export default function FilenTab() {
   }, [activeId, path, refreshDir])
 
   useEffect(() => {
-    if (locationLoaded && activeId != null) setAppState(LOCATION_KEY, { userId: activeId, path }).catch(() => {})
-  }, [locationLoaded, activeId, path])
+    if (locationLoaded && activeId != null && !restoringPage) {
+      setAppState(LOCATION_KEY, { userId: activeId, path, offset: offsetOfPage(page, pageSize) }).catch(() => {})
+    }
+  }, [locationLoaded, activeId, path, page, pageSize, restoringPage])
 
   function switchAccount(userId: number) {
     setActiveId(userId)

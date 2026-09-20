@@ -178,6 +178,13 @@ fn is_app_origin(url: &Url) -> bool {
         })
 }
 
+/// Whether `url` is one of this app's own origins — its frontend, the web apps' custom protocol, or any
+/// `*.localhost` name (`ipc.localhost`, `asset.localhost`…, which is how the platform serves them). Pages
+/// there have access to the backend, so an external web site must never be sent to one.
+pub fn is_own_origin(url: &Url) -> bool {
+    is_app_origin(url) || is_user_url(url) || url.host_str().is_some_and(|host| host.ends_with(".localhost"))
+}
+
 /// Whether `url` is the admin-app's page. The frontend has more than one page — each system app is
 /// its own — so the origin isn't enough: only the root page is the admin-app, and only it has
 /// admin privileges.

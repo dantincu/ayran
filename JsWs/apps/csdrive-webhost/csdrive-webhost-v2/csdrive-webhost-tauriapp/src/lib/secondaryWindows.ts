@@ -35,6 +35,24 @@ export interface TabRecord {
   tabText: TabText | null
   createdAt: number
   tags: TagRecord[]
+  /** The external web sites opened from this tab's page, oldest first. */
+  externalPages: ExternalPageRecord[]
+}
+
+/** An external web site opened from a tab's page: not a tab, a child of the tab that asked for it. */
+export interface ExternalPageRecord {
+  guid: string
+  /** The tab whose page asked for it — it stays under that tab. */
+  tabGuid: string
+  windowGuid: string
+  /** Where it was opened, and where it is now (it may have redirected, or been navigated). */
+  initialUrl: string
+  url: string
+  /** The page's title, when it has one. */
+  title: string | null
+  createdAt: number
+  isOpen: boolean
+  tags: TagRecord[]
 }
 
 export interface TabGroupRecord {
@@ -212,6 +230,76 @@ export async function updateTabResource(
   resourceId?: string,
 ): Promise<void> {
   await invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType ?? null, resourceId: resourceId ?? null })
+}
+
+// ── External web sites ────────────────────────────────────────────────────────
+
+/** Asks to open an external web site (http/https) in a window of this app. Nothing opens until the
+ * person has answered an OS native box that shows the address; only one such box shows at a time, and
+ * a request made while one is up is refused (this rejects) — requests are never queued. Resolves to the
+ * request's id; the answer comes as an `external-site-response` event (see `onExternalSite`), and the
+ * site — listed in the window manager under the tab this page is showing, not as a tab — reports its
+ * address and title with `external-site-changed` events and its window closing with
+ * `external-site-closed`. */
+export async function openExternalSite(url: string): Promise<string> {
+  return invoke<string>('open_external_site', { url })
+}
+
+export interface ExternalSiteResponse {
+  requestId: string
+  url: string
+  /** The person said yes, and the site's window is open. */
+  confirmed: boolean
+  /** The site that was opened (it names it in the later events). */
+  pageGuid: string | null
+  /** Why it wasn't opened, when the person said yes but it couldn't be. */
+  error: string | null
+}
+
+export interface ExternalSiteChange {
+  pageGuid: string
+  /** Where the site is now, and where it was opened. */
+  url: string
+  initialUrl: string
+  /** The page's title, once it has one. */
+  title: string | null
+}
+
+export interface ExternalSiteHandlers {
+  onResponse?: (response: ExternalSiteResponse) => void
+  onChanged?: (change: ExternalSiteChange) => void
+  onClosed?: (pageGuid: string) => void
+}
+
+/** Listens for what happens to the external web sites this window asked for — on this window only, like
+ * `onTabNavigate`. Start listening before calling `openExternalSite`. Returns how to stop. */
+export async function onExternalSite(handlers: ExternalSiteHandlers): Promise<UnlistenFn> {
+  const window = getCurrentWebviewWindow()
+  const stops = await Promise.all([
+    window.listen<ExternalSiteResponse>('external-site-response', (e) => handlers.onResponse?.(e.payload)),
+    window.listen<ExternalSiteChange>('external-site-changed', (e) => handlers.onChanged?.(e.payload)),
+    window.listen<{ pageGuid: string }>('external-site-closed', (e) => handlers.onClosed?.(e.payload.pageGuid)),
+  ])
+  return () => stops.forEach((stop) => stop())
+}
+
+/** Opens a listed site's window again, at the address it was at (no box: the person asked, here). */
+export async function reopenExternalSite(guid: string): Promise<void> {
+  await invoke('reopen_external_site', { guid })
+}
+
+export async function focusExternalSite(guid: string): Promise<void> {
+  await invoke('focus_external_site', { guid })
+}
+
+/** Closes the site's window; it stays listed, as closed. */
+export async function closeExternalSite(guid: string): Promise<void> {
+  await invoke('close_external_site', { guid })
+}
+
+/** Removes the site from the list, closing its window if it is open. */
+export async function removeExternalSite(guid: string): Promise<void> {
+  await invoke('remove_external_site', { guid })
 }
 
 const EVENT_REQUEST_RESOURCE_ICONS = 'request-resource-icons'

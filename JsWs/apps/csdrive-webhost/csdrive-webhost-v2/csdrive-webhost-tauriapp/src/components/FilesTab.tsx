@@ -25,6 +25,7 @@ import Modal from './Modal'
 import Pagination from './Pagination'
 import { TagList } from './Tags'
 import { getAppState, setAppState } from '../lib/appState'
+import { offsetOfPage, pageOfOffset, validOffset } from '../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
@@ -88,6 +89,8 @@ const LOCATION_KEY = 'filesTab.location'
 interface SavedLocation {
   rootId: string
   path: string
+  /** How many records of the folder's listing were skipped (see lib/pagedPosition.ts) — not a page number. */
+  offset?: number
 }
 
 function DeployAppsModal({
@@ -186,6 +189,12 @@ export default function FilesTab() {
   // The folder was restored from the last visit and hasn't been listed yet: if it can't be, go to the
   // root's top instead of showing an error about somewhere the person never asked to be.
   const restoredPathRef = useRef(false)
+  // The position in the folder's listing, restored from the last visit once the listing is there; until
+  // then nothing is saved over it (the page would still say 0).
+  const restoredOffsetRef = useRef<number | null>(null)
+  const [restoringPage, setRestoringPage] = useState(false)
+  const pageSizeRef = useRef(pageSize)
+  pageSizeRef.current = pageSize
 
   useEffect(() => {
     ;(async () => {
@@ -203,6 +212,8 @@ export default function FilesTab() {
         setActiveRootId(saved.rootId)
         setPath(saved.path)
         restoredPathRef.current = saved.path !== ''
+        restoredOffsetRef.current = validOffset(saved.offset)
+        setRestoringPage(restoredOffsetRef.current !== null)
       }
       setPageSizeState(savedPageSize)
       setHydrated(true)
@@ -221,8 +232,9 @@ export default function FilesTab() {
 
   useEffect(() => {
     if (!hydrated) return
-    setAppState<SavedLocation>(LOCATION_KEY, { rootId: activeRootId, path })
-  }, [hydrated, activeRootId, path])
+    if (restoringPage) return
+    setAppState<SavedLocation>(LOCATION_KEY, { rootId: activeRootId, path, offset: offsetOfPage(page, pageSize) })
+  }, [hydrated, activeRootId, path, page, pageSize, restoringPage])
 
   useEffect(() => {
     let cancelled = false
@@ -275,8 +287,15 @@ export default function FilesTab() {
       if (requestId !== latestRequestRef.current) return
       restoredPathRef.current = false
       setEntries(withSizes)
+      if (restoredOffsetRef.current !== null) {
+        setPage(pageOfOffset(restoredOffsetRef.current, pageSizeRef.current)) // the page that holds the record it was at
+        restoredOffsetRef.current = null
+        setRestoringPage(false)
+      }
     } catch (e) {
       if (requestId === latestRequestRef.current) {
+        restoredOffsetRef.current = null // the folder isn't there (or can't be read): its position means nothing
+        setRestoringPage(false)
         if (restoredPathRef.current && path !== '') {
           restoredPathRef.current = false
           setPath('')

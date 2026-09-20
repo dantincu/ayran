@@ -113,6 +113,35 @@ window.TabLib = (function () {
     })
   }
 
+  // ── External web sites ──
+  // openExternalSite(url) asks to open an http/https address in a window of the app: the person is
+  // shown the address in an OS native box first, and only one such box shows at a time — a request made
+  // while one is up is rejected, never queued. It resolves to a request id. What follows arrives through
+  // onExternalSite(handlers), which is heard on this window only (like onNavigate) and should be called
+  // *before* openExternalSite:
+  //   onResponse({ requestId, url, confirmed, pageGuid, error })   the person's answer
+  //   onChanged({ pageGuid, url, initialUrl, title })              the site's address or title changed
+  //   onClosed(pageGuid)                                           its window was closed
+  // The site is listed in the window manager under the tab this page is showing (not as a tab).
+  var externalHandlers = {}
+  var externalListening = null
+  function onExternalSite(handlers) {
+    externalHandlers = handlers || {}
+    if (!externalListening) {
+      var win = window.__TAURI__.webviewWindow.getCurrentWebviewWindow()
+      externalListening = Promise.all([
+        win.listen('external-site-response', function (e) { if (externalHandlers.onResponse) externalHandlers.onResponse(e.payload) }),
+        win.listen('external-site-changed', function (e) { if (externalHandlers.onChanged) externalHandlers.onChanged(e.payload) }),
+        win.listen('external-site-closed', function (e) { if (externalHandlers.onClosed) externalHandlers.onClosed(e.payload.pageGuid) }),
+      ])
+    }
+    return externalListening
+  }
+  async function openExternalSite(url) {
+    if (externalListening) await externalListening
+    return invoke('open_external_site', { url: url })
+  }
+
   // Registers this app's icon set (a plain object of resourceType -> SVG markup)
   // and arranges to report it whenever the backend asks — which happens once per
   // app_version this app ever passes to openTab/init_window_tab (including the
@@ -131,6 +160,8 @@ window.TabLib = (function () {
     openTab: openTab,
     addTab: addTab,
     onNavigate: onNavigate,
+    openExternalSite: openExternalSite,
+    onExternalSite: onExternalSite,
     updateTab: updateTab,
     registerIcons: registerIcons,
     applySnippets: applySnippets,

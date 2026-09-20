@@ -36,6 +36,7 @@ import { joinRelative } from '../../lib/localFs'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
 import { getAppState, setAppState } from '../../lib/appState'
+import { offsetOfPage, pageOfOffset } from '../../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
 import {
   copyTree,
@@ -167,6 +168,12 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   // Where the person last was (the fallback for a tab that names no place), and — for a switch of tab
   // that arrives before the sources are loaded — the tab to show once they are.
   const lastRef = useRef<Location | null>(null)
+  // The position in the listing (records skipped, see lib/pagedPosition.ts) to go to once it has loaded;
+  // until then the place isn't reported, or it would be reported at the start of the folder.
+  const restoredOffsetRef = useRef<number | null>(null)
+  const [restoringPage, setRestoringPage] = useState(false)
+  const pageSizeRef = useRef(DEFAULT_PAGE_SIZE)
+  const loadedForRef = useRef<string | null>(null)
   const earlyNavigationRef = useRef<Tab | null>(null)
   const sourcesRef = useRef<{ roots: FileRoot[]; accounts: FilenAccountInfo[] } | null>(null)
 
@@ -174,10 +181,17 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   function showLocation(target: Location | null, allRoots: FileRoot[], filen: FilenAccountInfo[]) {
     const exists = (id: string) =>
       allRoots.some((r) => `${LOCAL_PREFIX}${r.id}` === id) || filen.some((a) => `${FILEN_PREFIX}${a.userId}` === id)
+    restoredOffsetRef.current = null
+    setRestoringPage(false)
     if (target && exists(target.sourceId)) {
       setSourceId(target.sourceId)
       setBranch(target.branch ?? null)
       setPath(target.path ?? '')
+      // Where in the folder's listing it was, restored when the listing is there (see load).
+      if (target.offset) {
+        restoredOffsetRef.current = target.offset
+        setRestoringPage(true)
+      }
     } else {
       setSourceId(`${LOCAL_PREFIX}user`)
       setBranch(null)
@@ -239,15 +253,6 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
 
   const currentBranch = branches.find((b) => b.index === branch) ?? null
 
-  // Tell the window manager (and the address, and next start) where we are.
-  useEffect(() => {
-    if (!ready || !source) return
-    const location: Location = { sourceId, branch, path }
-    lastRef.current = location
-    setAppState(LAST_LOCATION_KEY, location).catch(() => {})
-    if (tab) reportLocation(tab, location, source.label, currentBranch?.name ?? null)
-  }, [ready, source, sourceId, branch, path, tab, currentBranch])
-
   // ── Filen account settings and branches ──
 
   const reloadBranches = useCallback(async () => {
@@ -289,8 +294,11 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
         if (requestId !== latestRequest.current) return
         setListing(result)
         setMeta({})
+        loadedForRef.current = `${source.viewKey}|${path}` // (an effect below then applies a restored position)
       } catch (e) {
         if (requestId !== latestRequest.current) return
+        restoredOffsetRef.current = null
+        setRestoringPage(false)
         setListing(null)
         setError(String(e))
       } finally {
@@ -312,6 +320,27 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
   const currentPage = Math.min(page, pageCount - 1)
   const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+  pageSizeRef.current = pageSize
+
+  // Tell the window manager (and the address, and next start) where we are — including how far into the
+  // folder's listing, as the number of records skipped so it means the same under any page size.
+  useEffect(() => {
+    if (!ready || !source || restoringPage) return
+    const location: Location = { sourceId, branch, path, ...(currentPage > 0 ? { offset: offsetOfPage(currentPage, pageSize) } : {}) }
+    lastRef.current = location
+    setAppState(LAST_LOCATION_KEY, location).catch(() => {})
+    if (tab) reportLocation(tab, location, source.label, currentBranch?.name ?? null)
+  }, [ready, source, sourceId, branch, path, currentPage, pageSize, restoringPage, tab, currentBranch])
+
+  // A position restored for the place shown (a tab switched to, or the start): go to the page that holds
+  // the record it was at, as soon as the listing of that very place is in.
+  useEffect(() => {
+    if (!restoringPage || restoredOffsetRef.current === null || !listing || !source) return
+    if (loadedForRef.current !== `${source.viewKey}|${path}`) return // that is another folder's listing
+    setPage(pageOfOffset(restoredOffsetRef.current, pageSizeRef.current))
+    restoredOffsetRef.current = null
+    setRestoringPage(false)
+  }, [restoringPage, listing, source, path])
 
   // Sizes and dates of a local folder aren't in its listing: fetch them for the page shown only.
   useEffect(() => {
