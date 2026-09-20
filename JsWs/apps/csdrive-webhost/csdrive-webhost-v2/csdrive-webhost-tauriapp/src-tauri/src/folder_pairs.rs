@@ -7,8 +7,8 @@
 //!   `042`, `1000`). It holds the thing's actual data. Being short, it keeps deep paths inside the
 //!   operating systems' length limits, whatever the human-readable name is.
 //! - the **full folder**, `NNN-<full name part>` — the same index, a dash, then a human-readable
-//!   description of what the pair is for. It stays empty: it exists so a person browsing the disk
-//!   can tell which short folder is which.
+//!   description of what the pair is for. It holds nothing but a `.keep` file (see [`KEEP_FILE`]): it
+//!   exists so a person browsing the disk can tell which short folder is which.
 //!
 //! The index is **worked out by looking at the disk**: list the parent's entries, take those whose
 //! name starts with digits and a dash (only the *full* folders do), and parse the digits. Then, by the
@@ -24,6 +24,13 @@ use std::path::{Path, PathBuf};
 
 /// Indexes are padded to at least this many digits.
 const MIN_DIGITS: usize = 3;
+
+/// The file every full folder holds, so that it is never an *empty* folder: copying or mirroring folders to and from
+/// cloud storage, and archiving them, tend to lose empty folders — and the pair must stay side by side wherever it goes.
+pub const KEEP_FILE: &str = ".keep";
+
+/// What `KEEP_FILE` holds: one dash — not nothing, because some cloud storage systems ignore empty files too.
+pub const KEEP_CONTENT: &str = "-";
 
 /// The longest full-folder-name part we'll create (in characters): keeps the whole name well inside
 /// the 255-byte limit of common file systems.
@@ -111,6 +118,30 @@ pub fn next_index(parent: &Path, indexing: Indexing) -> io::Result<u32> {
     })
 }
 
+/// Makes sure `full_dir` (which is made if it is missing) holds its `KEEP_FILE`, with the right content. Returns whether
+/// it had to write it.
+fn mark_full_dir(full_dir: &Path) -> io::Result<bool> {
+    std::fs::create_dir_all(full_dir)?;
+    let keep = full_dir.join(KEEP_FILE);
+    if std::fs::read(&keep).is_ok_and(|content| content == KEEP_CONTENT.as_bytes()) {
+        return Ok(false);
+    }
+    std::fs::write(&keep, KEEP_CONTENT)?;
+    Ok(true)
+}
+
+/// Gives every pair in `parent` its `KEEP_FILE` if it lacks one — the pairs made before the rule existed, or whose marker was
+/// lost on the way somewhere. Returns how many it wrote. (`ensure` does the same for the one pair it is asked about.)
+pub fn repair(parent: &Path) -> io::Result<usize> {
+    let mut written = 0;
+    for (pair, _) in list(parent)? {
+        if mark_full_dir(&pair.full_dir)? {
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
 /// Creates a new pair for `part` in `parent` (creating `parent` if need be), its index chosen per
 /// `indexing`. The caller makes sure there isn't one for `part` already (see `find`, `ensure`);
 /// callers that can race must serialise.
@@ -119,6 +150,7 @@ pub fn create(parent: &Path, part: &str, indexing: Indexing) -> io::Result<Folde
     let pair = make_pair(parent, next_index(parent, indexing)?, part);
     std::fs::create_dir(&pair.short_dir)?;
     std::fs::create_dir(&pair.full_dir)?;
+    mark_full_dir(&pair.full_dir)?;
     Ok(pair)
 }
 
@@ -146,11 +178,12 @@ pub fn find(parent: &Path, part: &str) -> io::Result<Option<FolderPair>> {
     Ok(list(parent)?.into_iter().find(|(_, p)| p == part).map(|(pair, _)| pair))
 }
 
-/// The pair for `part`, creating it (with `indexing`) or repairing a missing short folder if needed.
+/// The pair for `part`, creating it (with `indexing`) or repairing a missing short folder or `KEEP_FILE` if needed.
 pub fn ensure(parent: &Path, part: &str, indexing: Indexing) -> io::Result<FolderPair> {
     match find(parent, part)? {
         Some(pair) => {
             std::fs::create_dir_all(&pair.short_dir)?;
+            mark_full_dir(&pair.full_dir)?;
             Ok(pair)
         }
         None => create(parent, part, indexing),
@@ -288,7 +321,9 @@ mod tests {
         assert_eq!((first.index, second.index), (1, 2));
         assert!(first.short_dir.is_dir() && first.full_dir.is_dir());
         assert_eq!(first.full_name, "001-filen@@a@x.com@@1");
-        assert_eq!(std::fs::read_dir(&first.full_dir).unwrap().count(), 0, "the full folder stays empty");
+        let held: Vec<_> = std::fs::read_dir(&first.full_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(held, [KEEP_FILE], "the full folder holds only its .keep");
+        assert_eq!(std::fs::read_to_string(first.full_dir.join(KEEP_FILE)).unwrap(), "-", "with one dash in it");
 
         assert_eq!(find(&parent, "filen@@b@x.com@@2").unwrap(), Some(second.clone()));
         assert_eq!(find(&parent, "filen@@c@x.com@@3").unwrap(), None);
@@ -314,6 +349,33 @@ mod tests {
         let filled = create(&parent, "filled", Indexing::FillGaps).unwrap();
         assert_eq!((filled.index, filled.short_name.as_str()), (2, "002"));
         assert!(filled.short_dir.is_dir() && filled.full_dir.is_dir());
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn a_full_folder_made_before_the_rule_gets_its_keep_file_and_a_lost_one_comes_back() {
+        let parent = scratch("keep");
+        // Two pairs as older versions made them: the full folder empty.
+        for name in ["001", "001-old@@a", "002", "002-old@@b"] {
+            std::fs::create_dir_all(parent.join(name)).unwrap();
+        }
+        std::fs::write(parent.join("002").join("data.txt"), "data").unwrap();
+        assert_eq!(repair(&parent).unwrap(), 2, "both got one");
+        for full in ["001-old@@a", "002-old@@b"] {
+            assert_eq!(std::fs::read_to_string(parent.join(full).join(KEEP_FILE)).unwrap(), "-", "{full}");
+        }
+        assert!(!parent.join("001").join(KEEP_FILE).exists() && !parent.join("002").join(KEEP_FILE).exists(), "the short folders are the data's and stay as they are");
+        assert_eq!(std::fs::read_to_string(parent.join("002").join("data.txt")).unwrap(), "data");
+        assert_eq!(repair(&parent).unwrap(), 0, "nothing more to do");
+        assert_eq!(repair(&parent.join("nowhere")).unwrap(), 0, "a parent that isn't there has no pairs");
+
+        // A marker with the wrong content, or one that got lost, is put right — by `repair` and by `ensure`.
+        std::fs::write(parent.join("001-old@@a").join(KEEP_FILE), "").unwrap();
+        std::fs::remove_file(parent.join("002-old@@b").join(KEEP_FILE)).unwrap();
+        assert_eq!(repair(&parent).unwrap(), 2);
+        std::fs::remove_file(parent.join("002-old@@b").join(KEEP_FILE)).unwrap();
+        ensure(&parent, "old@@b", Indexing::FillGaps).unwrap();
+        assert_eq!(std::fs::read_to_string(parent.join("002-old@@b").join(KEEP_FILE)).unwrap(), "-");
         let _ = std::fs::remove_dir_all(&parent);
     }
 

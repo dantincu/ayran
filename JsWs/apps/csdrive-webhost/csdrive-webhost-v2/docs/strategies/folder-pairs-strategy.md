@@ -11,7 +11,7 @@ A thing gets **a pair of sibling folders** inside a parent folder:
 | | name | holds | why |
 |---|---|---|---|
 | **short folder** | `NNN` | the thing's actual data | short, so deep paths stay inside the operating systems' length limits (Windows' 260 characters in particular) whatever the readable name is |
-| **full folder** | `NNN-<full name part>` | nothing — it stays empty | so a person browsing the disk can tell which short folder is which |
+| **full folder** | `NNN-<full name part>` | only a `.keep` file (see "Preserving empty folders") | so a person browsing the disk can tell which short folder is which |
 
 `NNN` is the pair's **index**: at least three digits, left-padded with zeros — `001`, `042`, `1000`.
 The full name part is chosen by the caller (see below) and is separated from the index by a dash.
@@ -21,7 +21,8 @@ Example, for a Filen account with the email `me@example.com` and the id `3141`:
 ```
 files/a/
   001/                                  <- data lives in here
-  001-filen@@me@example.com@@3141/      <- empty; only says what 001 is
+  001-filen@@me@example.com@@3141/      <- only says what 001 is
+    .keep                               <- the one-dash file that keeps the folder from being empty
 ```
 
 ## Choosing the index
@@ -62,6 +63,17 @@ no control characters, no trailing dot or space, at most **100 characters**, and
 - **Branches** (inside an account's short folder in `files/b`) — the **name the user gave the branch**, used as it is. It is
   validated when they type it (`validate_part`) rather than sanitised, so what they see is what is on disk.
 
+## Preserving empty folders
+
+The whole idea behind creating such pairs of folders is based on the idea that the 2 folders will always be visible and sitted next to each other in any file manager / file browser view. That includes mapping and mirroring pairs of folders from cloud storage to local disk and vice versa, or when archiving the pairs of folder then unarchiving them elsewhere. In both cases empty folders could be lost at the destination. In our case the full name folder would normally be left empty. To avoid that, we'll always add inside the full name folder a text file called ".keep". Even an empty text file is problematic (some cloud storage systems ignore them). So let's put a constant string in these .keep files: "-" (yes, 1 character: the dash).
+
+**How it is done.** `folder_pairs::KEEP_FILE` (`.keep`) and `KEEP_CONTENT` (`-`, one character, no line break). `create` writes it into the
+full folder it makes; `ensure` puts it back if a pair lacks it (or holds anything else); `repair(parent)` gives it to every pair in a
+parent that lacks one and says how many it wrote. **Retroactively:** pairs made before the rule have empty full folders, so the Filen cache
+runs `repair` over `files/a`, `files/b` and each account's branches every time it opens (at each start) — the rule is *always* true, not
+only for new pairs. (The one pair already on the development machine, in the default app data folder, was also marked by hand.) The short
+folders are never touched: they are the data's.
+
 ## Operations (`folder_pairs.rs`)
 
 | function | does |
@@ -69,7 +81,8 @@ no control characters, no trailing dot or space, at most **100 characters**, and
 | `next_index(parent, indexing)` | the index the next pair would get |
 | `create(parent, part, indexing)` | creates the parent if needed, then both folders |
 | `find(parent, part)` | the pair whose full name part is exactly `part`, if any |
-| `ensure(parent, part, indexing)` | `find`, or `create`; also repairs a missing short folder |
+| `ensure(parent, part, indexing)` | `find`, or `create`; also repairs a missing short folder or `.keep` |
+| `repair(parent)` | gives every pair in `parent` its `.keep` if it lacks one; returns how many it wrote |
 | `list(parent)` | every pair, by index |
 | `delete(parent, part)` | deletes both folders and everything in the short one |
 | `sanitize_part(text)` / `validate_part(name)` | see above |

@@ -405,7 +405,19 @@ impl Cache {
         let pool = SqlitePool::connect_with(options).await.map_err(sql)?;
         let cache = Self::with_pool(pool, files_dir.to_path_buf(), Arc::new(now_real)).await?;
         cache.remove_leftover_uploads();
+        cache.keep_pairs_marked();
         Ok(cache)
+    }
+
+    /// Every full folder holds its `.keep` (see `folder_pairs::KEEP_FILE`) — including the ones made before that rule
+    /// existed, which get theirs at the next start. Best effort: a folder that can't be written to is left for next time.
+    fn keep_pairs_marked(&self) {
+        let _ = folder_pairs::repair(&self.a_dir());
+        let b = self.b_dir();
+        for (account, _) in folder_pairs::list(&b).unwrap_or_default() {
+            let _ = folder_pairs::repair(&account.short_dir); // the account's branches
+        }
+        let _ = folder_pairs::repair(&b);
     }
 
     /// An upload in flight when the app stopped left its temporary file behind: they all go.
