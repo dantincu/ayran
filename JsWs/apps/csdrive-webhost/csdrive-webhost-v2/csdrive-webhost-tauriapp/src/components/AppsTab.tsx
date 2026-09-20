@@ -771,6 +771,19 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
         .filter((c) => c.group.guid !== movingTab.groupGuid)
     : []
 
+  // What can be done with the window being browsed — shown in its tab groups view and in the tabs view of
+  // one of its groups (suspend/close there act on the whole window, not on the group or the tab).
+  const currentWindowActions = currentWindow && (
+    <>
+      {currentWindow.isOpen ? (
+        <IconButton icon={Pause} label={SUSPEND_HINT} onClick={() => handleSuspend(currentWindow.guid)} />
+      ) : (
+        <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(currentWindow)} />
+      )}
+      <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(currentWindow.guid)} />
+    </>
+  )
+
   const depth = VIEW_DEPTH[view]
   const canPaste = !!(cutTab && currentGroup && cutTab.relativePath === currentApp && cutTab.groupGuid !== currentGroup.guid)
 
@@ -955,12 +968,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           <div className="toolbar">
             <span className="muted">Tab groups</span>
             <div className="toolbar-actions">
-              {currentWindow.isOpen ? (
-                <IconButton icon={Pause} label={SUSPEND_HINT} onClick={() => handleSuspend(currentWindow.guid)} />
-              ) : (
-                <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(currentWindow)} />
-              )}
-              <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(currentWindow.guid)} />
+              {currentWindowActions}
               <IconButton icon={Plus} label="New tab group" onClick={() => handleCreateTabGroup(currentWindow.guid)} />
               <IconButton
                 icon={ArrowUpDown}
@@ -1017,6 +1025,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           <div className="toolbar">
             <span className="muted">Tabs</span>
             <div className="toolbar-actions">
+              {currentWindowActions}
               <IconButton icon={Plus} label="New tab" onClick={() => handleAddBlankTab(currentGroup.guid)} />
               {canPaste && <IconButton icon={ClipboardPaste} label="Paste tab into this group" onClick={handlePasteTab} />}
               <IconButton

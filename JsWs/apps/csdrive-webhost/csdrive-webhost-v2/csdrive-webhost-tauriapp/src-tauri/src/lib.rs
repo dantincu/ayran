@@ -11,6 +11,7 @@ mod filen_cache;
 mod folder_pairs;
 mod fs_commands;
 mod fs_scope;
+mod fs_upload;
 mod ipc;
 mod layout;
 mod picked_roots;
@@ -193,6 +194,11 @@ pub fn run() {
             fs_commands::fs_remove,
             fs_commands::fs_rename,
             fs_commands::fs_root_path,
+            fs_commands::fs_copy,
+            fs_upload::fs_upload_begin,
+            fs_upload::fs_upload_chunk,
+            fs_upload::fs_upload_finish,
+            fs_upload::fs_upload_abort,
             device_files::choose_save_location,
             filen_cache::filen_cache_account,
             filen_cache::filen_cache_set_interval,
@@ -265,6 +271,7 @@ pub fn run() {
             app.manage(window_host::HostState::default());
             app.manage(device_files::ExportState::default());
             app.manage(filen_cache::UploadSessions::default());
+            app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));
             // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
             app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
             #[cfg(target_os = "android")]

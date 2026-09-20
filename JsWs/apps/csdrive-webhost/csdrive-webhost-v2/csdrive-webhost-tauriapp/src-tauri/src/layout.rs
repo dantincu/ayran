@@ -60,6 +60,9 @@ pub const FILES_ACCOUNTS_FOLDER: &str = "a";
 pub const FILES_BRANCHES_FOLDER: &str = "b";
 
 /// Inside an account's short folder in `a`: the mirror of the account's files (only what was opened or exported).
+/// Inside `files`: where uploads from a window into a local folder are assembled (`fs_upload.rs`);
+/// emptied at every start.
+pub const FILES_LOCAL_UPLOADS_FOLDER: &str = "local-uploads";
 pub const FILES_CONTENT_FOLDER: &str = "c";
 
 /// The cache's own database: listings, metadata, settings and branch changes, inside `files`.

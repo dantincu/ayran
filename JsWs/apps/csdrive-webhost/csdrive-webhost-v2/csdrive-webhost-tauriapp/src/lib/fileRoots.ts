@@ -1,4 +1,4 @@
-import { readDir, readFile, writeFile, mkdir, remove, rename, stat, exists, rootRealPath, type DirEntry, type FileInfo } from './fs'
+import { copyFile, readDir, readFile, writeFile, uploadFile, mkdir, remove, rename, stat, exists, rootRealPath, type DirEntry, type FileInfo } from './fs'
 import { joinRelative } from './localFs'
 import { listPickedRoots, pickFolder, removePickedRoot, type PickedRoot } from './pickedRoots'
 
@@ -90,6 +90,11 @@ export async function writeRootFile(root: FileRoot, relativePath: string, data: 
   return writeFile(root.id, relative(relativePath), data)
 }
 
+/** Puts a `File` from the device's file chooser into the root, in pieces (see `uploadFile`). */
+export async function writeRootFileFrom(root: FileRoot, relativePath: string, file: File): Promise<void> {
+  return uploadFile(root.id, relative(relativePath), file)
+}
+
 export async function mkdirRoot(root: FileRoot, relativePath: string): Promise<void> {
   return mkdir(root.id, relative(relativePath), { recursive: true })
 }
@@ -112,8 +117,7 @@ export async function copyRootPath(root: FileRoot, fromRelative: string, toRelat
       await copyRootPath(root, joinRelative(fromRelative, child.name), joinRelative(toRelative, child.name))
     }
   } else {
-    const data = await readRootFile(root, fromRelative)
-    await writeRootFile(root, toRelative, data)
+    await copyFile(root.id, relative(fromRelative), root.id, relative(toRelative))
   }
 }
 

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
 import { invokeWithBytes } from '../../lib/ipcBytes'
+import { copyFile } from '../../lib/fs'
 import { joinRelative } from '../../lib/localFs'
 import {
   type FileRoot,
@@ -10,6 +11,7 @@ import {
   renameRootPath,
   statRootPath,
   writeRootFile,
+  writeRootFileFrom,
 } from '../../lib/fileRoots'
 
 /** The file manager works on *sources* — a folder on this device, or a Filen account (through its
@@ -98,6 +100,7 @@ export function localSource(root: FileRoot): FileSource {
     rootId: root.id,
     read: (path) => readRootFile(root, path),
     write: (path, data) => writeRootFile(root, path, data),
+    writeFromFile: (path, file) => writeRootFileFrom(root, path, file),
     exportFile: (path, name, token) => invoke<string>('export_local_file', { root: root.id, path, name, token }),
     mkdir: (path) => mkdirRoot(root, path),
     remove: (path, isDirectory) => removeRootPath(root, path, isDirectory),
@@ -223,6 +226,8 @@ export async function copyTree(
     for (const child of entries) {
       await copyTree(from, joinRelative(fromPath, child.name), child.isDirectory, to, joinRelative(toPath, child.name))
     }
+  } else if (from.rootId !== undefined && to.rootId !== undefined) {
+    await copyFile(from.rootId, fromPath, to.rootId, toPath) // both on this device: copied on the Rust side
   } else if (from.rootId !== undefined && to.copyFromLocal) {
     await to.copyFromLocal(toPath, from.rootId, fromPath) // read from disk on the Rust side
   } else if (to.rootId !== undefined && from.copyToLocal) {

@@ -41,7 +41,7 @@ fn io(e: std::io::Error) -> String {
 }
 
 /// Runs blocking file work off the async runtime's threads (a big read or delete mustn't hold one).
-async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+pub(crate) async fn blocking<T: Send + 'static>(work: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())?
 }
 
@@ -123,6 +123,20 @@ fn rename(scope: &FsScope, root: &str, from: &str, to: &str) -> Result<(), Strin
     std::fs::rename(scope.check_in(root, from, false)?, scope.check_in(root, to, false)?).map_err(io)
 }
 
+/// Copies a file, from one place the app may use to another (the same root or not), without it
+/// passing through the caller. An existing target is replaced.
+fn copy_file(scope: &FsScope, from_root: &str, from: &str, to_root: &str, to: &str) -> Result<(), String> {
+    let source = scope.check_in(from_root, from, true)?;
+    let target = scope.check_in(to_root, to, true)?;
+    if !source.is_file() {
+        return Err(format!("\"{from}\" isn't a file."));
+    }
+    if source == target {
+        return Err("That is the same file.".to_string()); // copying a file onto itself would empty it
+    }
+    std::fs::copy(source, target).map(|_| ()).map_err(io)
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -177,6 +191,14 @@ pub async fn fs_remove(scope: State<'_, FsScope>, root: String, path: String, re
 pub async fn fs_rename(scope: State<'_, FsScope>, root: String, from: String, to: String) -> Result<(), String> {
     let scope = scope.inner().clone();
     blocking(move || rename(&scope, &root, &from, &to)).await
+}
+
+/// Copies a file, in Rust: from `from` inside `from_root` to `to` inside `to_root` (the destination's
+/// folder must exist). A big file is never read into a window.
+#[tauri::command]
+pub async fn fs_copy(scope: State<'_, FsScope>, from_root: String, from: String, to_root: String, to: String) -> Result<(), String> {
+    let scope = scope.inner().clone();
+    blocking(move || copy_file(&scope, &from_root, &from, &to_root, &to)).await
 }
 
 /// Where a root really is — **the admin-app only**, for showing the person which folder a root is.
@@ -250,6 +272,32 @@ mod tests {
         assert!(remove(&scope, U, "x", true).is_err(), "already gone");
         assert!(remove(&scope, U, "", true).is_err(), "the root itself is never removed");
         assert!(root.is_dir());
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
+    }
+
+    #[test]
+    fn a_file_is_copied_in_rust_between_roots_and_never_onto_itself() {
+        let (scope, root, _) = scoped("copy");
+        let other = root.parent().unwrap().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        scope.allow_picked_as("k3y9", &other).unwrap();
+        write_file(&scope, U, "a.txt", b"content").unwrap();
+
+        copy_file(&scope, U, "a.txt", U, "b.txt").unwrap();
+        assert_eq!(read_file(&scope, U, "b.txt").unwrap(), b"content");
+        copy_file(&scope, U, "a.txt", "k3y9", "c.txt").unwrap();
+        assert_eq!(std::fs::read(other.join("c.txt")).unwrap(), b"content", "into another root");
+        write_file(&scope, U, "a.txt", b"newer").unwrap();
+        copy_file(&scope, U, "a.txt", "k3y9", "c.txt").unwrap();
+        assert_eq!(std::fs::read(other.join("c.txt")).unwrap(), b"newer", "replaced");
+
+        assert!(copy_file(&scope, U, "a.txt", U, "a.txt").is_err(), "onto itself");
+        assert_eq!(read_file(&scope, U, "a.txt").unwrap(), b"newer", "and it is intact");
+        mkdir(&scope, U, "d", false).unwrap();
+        assert!(copy_file(&scope, U, "d", U, "e").is_err(), "a folder isn't copied this way");
+        assert!(copy_file(&scope, U, "a.txt", U, "no/such/f.txt").is_err(), "the destination's folder must exist");
+        assert!(copy_file(&scope, U, "a.txt", "nope", "x.txt").is_err());
+        assert!(copy_file(&scope, U, "../outside/x", U, "y.txt").is_err());
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 

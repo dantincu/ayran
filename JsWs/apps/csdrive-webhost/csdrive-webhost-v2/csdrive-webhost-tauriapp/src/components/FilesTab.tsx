@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
-import { exportPathToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
+import { exportPathToDevice, isMobile, pickDeviceFiles } from '../lib/platform'
 import {
   Copy,
   Download,
@@ -46,7 +46,7 @@ import {
   statRootPath,
   uniqueRootName,
   USER_ROOT_ID,
-  writeRootFile,
+  writeRootFileFrom,
   writeRootTextFile,
 } from '../lib/fileRoots'
 import { rootTagGuid } from '../lib/rootTags'
@@ -449,9 +449,9 @@ export default function FilesTab() {
   async function uploadFiles() {
     if (!activeRoot) return
     try {
-      const picked = await pickFilesFromDevice()
+      const picked = await pickDeviceFiles()
       for (const file of picked) {
-        await writeRootFile(activeRoot, joinRelative(path, file.name), file.data)
+        await writeRootFileFrom(activeRoot, joinRelative(path, file.name), file)
       }
       if (picked.length) await refresh()
     } catch (e) {

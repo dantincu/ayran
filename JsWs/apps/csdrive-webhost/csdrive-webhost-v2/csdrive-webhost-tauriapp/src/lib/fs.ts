@@ -66,6 +66,31 @@ export async function rename(root: string, from: string, to: string): Promise<vo
   await invoke('fs_rename', { root, from, to })
 }
 
+/** Copies a file — within a root or into another — on the backend's side, never through the page. */
+export async function copyFile(fromRoot: string, from: string, toRoot: string, to: string): Promise<void> {
+  await invoke('fs_copy', { fromRoot, from, toRoot, to })
+}
+
+/** How big a piece of a file is read and sent at a time. */
+const UPLOAD_PIECE = 4 * 1024 * 1024
+
+/** Puts a `File` from the device's file chooser at `path` inside `root` (creating or replacing it; its
+ * folder must exist), sending it in pieces so a big one is never held whole — in the page or in the
+ * backend. The file appears only when the last piece is in. */
+export async function uploadFile(root: string, path: string, file: File): Promise<void> {
+  const id = await invoke<string>('fs_upload_begin', { root, path })
+  try {
+    for (let at = 0; at < file.size; at += UPLOAD_PIECE) {
+      const piece = new Uint8Array(await file.slice(at, at + UPLOAD_PIECE).arrayBuffer())
+      await invokeWithBytes('fs_upload_chunk', piece, { id })
+    }
+    await invoke('fs_upload_finish', { id })
+  } catch (e) {
+    await invoke('fs_upload_abort', { id }).catch(() => {})
+    throw e
+  }
+}
+
 /** Where a root really is. **Only the admin-app may ask** (to show the person which folder it is);
  * every other window is refused — web apps never see a real path. */
 export function rootRealPath(root: string): Promise<string> {
