@@ -365,7 +365,7 @@ function TabTextRow({ spans, className }: { spans: TabTextSpan[]; className: str
       {spans.map((span, i) => (
         <span key={i}>
           {i > 0 && <span className="tab-text-bullet">•</span>}
-          <span style={{ fontWeight: span.bold ? 700 : 400, fontStyle: span.italic ? 'italic' : 'normal' }}>
+          <span className={span.mono ? 'tab-text-mono' : undefined} style={{ fontWeight: span.bold ? 700 : 400, fontStyle: span.italic ? 'italic' : 'normal' }}>
             {span.text}
           </span>
         </span>

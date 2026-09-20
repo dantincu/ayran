@@ -144,7 +144,7 @@ export async function reportLocation(
 ): Promise<void> {
   const query = encodeLocation(location)
   const firstRow: TabText['firstRow'] = [{ text: label, bold: true }]
-  if (branchName) firstRow.push({ text: ` · ${branchName}`, italic: true })
+  if (branchName) firstRow.push({ text: branchName, italic: true })
   // A tab that is editing a file says so — and whether there is something not saved yet.
   const secondRow: TabText['secondRow'] = location.edit
     ? [{ text: `Editing /${location.edit}`, bold: true }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]

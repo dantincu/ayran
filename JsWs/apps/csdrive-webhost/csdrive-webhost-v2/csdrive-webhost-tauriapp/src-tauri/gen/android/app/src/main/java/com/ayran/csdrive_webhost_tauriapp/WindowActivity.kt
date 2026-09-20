@@ -66,9 +66,7 @@ class WindowActivity : Activity() {
         }
         attached = true
         val page = JSONObject(answer)
-        val title = page.optString("title", "")
-        @Suppress("DEPRECATION")
-        setTaskDescription(ActivityManager.TaskDescription(title))
+        setWindowTitle(page.optString("title", ""))
 
         val view = WebView(this)
         web = view
@@ -175,6 +173,12 @@ class WindowActivity : Activity() {
         if (names.length() > 2) builder.setNeutralButton(names.getString(2)) { _, _ -> reply(2) }
         builder.setOnCancelListener { reply(-1) }
         builder.show()
+    }
+
+    /** The title of this window's card in the Recents screen (the backend keeps it in step with the tab the page shows). */
+    fun setWindowTitle(title: String) {
+        @Suppress("DEPRECATION")
+        setTaskDescription(ActivityManager.TaskDescription(title))
     }
 
     /** Runs `js` in the page. */

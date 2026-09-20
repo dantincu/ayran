@@ -15,6 +15,8 @@ export interface TabTextSpan {
   text: string
   bold?: boolean
   italic?: boolean
+  /** Written in a monospaced font, like code. */
+  mono?: boolean
 }
 
 export interface TabText {
@@ -24,6 +26,8 @@ export interface TabText {
 
 export interface TabRecord {
   guid: string
+  /** The title the page gave for its window, if it gave one (the window's title is otherwise made from the first row of `tabText`). */
+  appTitle?: string | null
   groupGuid: string
   windowGuid: string
   relativePath: string
@@ -279,8 +283,15 @@ export async function updateTabResource(
   tabText: TabText,
   resourceType?: string,
   resourceId?: string,
+  appTitle?: string,
 ): Promise<void> {
-  await invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType ?? null, resourceId: resourceId ?? null })
+  await invoke('update_tab_resource', {
+    tabGuid,
+    tabText,
+    appTitle: appTitle ?? null,
+    resourceType: resourceType ?? null,
+    resourceId: resourceId ?? null,
+  })
 }
 
 /** **Notes only.** Opens an html or markdown file as a web app, in a window of its own that is listed under the

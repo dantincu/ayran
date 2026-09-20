@@ -99,6 +99,12 @@ object WindowBridge {
         }
     }
 
+    /** The title of the window's card in the Recents screen. */
+    @JvmStatic
+    fun title(guid: String, title: String) {
+        ui.post { windows[guid]?.setWindowTitle(title) }
+    }
+
     /** Runs `js` in the window's page. */
     @JvmStatic
     fun eval(guid: String, js: String) {

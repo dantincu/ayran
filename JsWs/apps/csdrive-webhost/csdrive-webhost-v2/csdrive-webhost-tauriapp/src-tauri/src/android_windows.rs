@@ -109,6 +109,13 @@ pub fn open(_app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
     })
 }
 
+/// The card of the window in the Recents screen shows `title`.
+pub fn set_title(guid: &str, title: &str) {
+    if is_open(guid) {
+        let _ = call_strings("title", &[guid, title]);
+    }
+}
+
 /// Delivers `event` to the window's page (which hands it to the listeners it registered), if the window is showing.
 pub fn emit_if_open<S: serde::Serialize>(guid: &str, event: &str, payload: &S) -> bool {
     if !is_open(guid) {

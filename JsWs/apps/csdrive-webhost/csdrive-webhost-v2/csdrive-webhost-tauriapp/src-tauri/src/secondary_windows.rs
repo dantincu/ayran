@@ -94,6 +94,9 @@ pub struct TabTextSpan {
     pub bold: bool,
     #[serde(default)]
     pub italic: bool,
+    /// Written in a monospaced font, like code.
+    #[serde(default)]
+    pub mono: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +120,8 @@ pub struct TabRecord {
     /// server-side so the window manager doesn't need to look it up itself.
     pub icon: Option<String>,
     pub tab_text: Option<TabText>,
+    /// The title the page gave for its window, if it gave one (see `window_title`).
+    pub app_title: Option<String>,
     pub created_at: i64,
     pub tags: Vec<TagRecord>,
     /// The external web sites opened from this tab's page, oldest first (see `external_sites`).
@@ -309,11 +314,21 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
             resource_id TEXT NOT NULL,
             resource_type TEXT,
             tab_text TEXT,
+            app_title TEXT,
             created_at INTEGER NOT NULL
         )",
     )
     .execute(&pool)
     .await?;
+
+    // `app_title` (the title of the tab's window — see `window_title`) was added later: a plain nullable column.
+    let has_app_title_column: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('tabs') WHERE name = 'app_title'")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    if has_app_title_column == 0 {
+        sqlx::query("ALTER TABLE tabs ADD COLUMN app_title TEXT").execute(&pool).await?;
+    }
 
     // `resource_type` was added after `tabs` first shipped — add it to any table
     // that predates it (a plain nullable column, so existing rows are unaffected).
@@ -821,7 +836,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
 
     let placeholders = (1..=group_guids.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(",");
     let query = format!(
-        "SELECT guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at
+        "SELECT guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, app_title, created_at
          FROM tabs WHERE group_guid IN ({placeholders}) ORDER BY created_at ASC"
     );
 
@@ -869,6 +884,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
                 resource_type,
                 icon,
                 tab_text,
+                app_title: row.get("app_title"),
                 created_at: row.get("created_at"),
                 tags,
                 external_pages,
@@ -1550,6 +1566,7 @@ pub async fn init_window_tab(
     .await?;
 
     state.current_tabs.lock().unwrap().insert(window_guid.clone(), result.tab_guid.clone());
+    refresh_window_title(&app, &window_guid).await;
 
     if needs_icons {
         // To the window that registered — not to every window.
@@ -1626,6 +1643,7 @@ pub async fn add_window_tab(
 
     state.pending_tab_activation.lock().unwrap().remove(&window_guid);
     state.current_tabs.lock().unwrap().insert(window_guid.clone(), result.tab_guid.clone());
+    refresh_window_title(&app, &window_guid).await;
 
     if needs_icons {
         crate::window_host::emit_if_open(&app, &window_guid, EVENT_REQUEST_RESOURCE_ICONS, ());
@@ -1636,21 +1654,25 @@ pub async fn add_window_tab(
     Ok(result)
 }
 
-/// Updates a tab's label and/or resource type/id. `resource_type`/`resource_id`
+/// Updates a tab's label, its window title and/or resource type/id. `resource_type`/`resource_id`
 /// are only changed when the app actually sends one — COALESCE keeps whatever
-/// was already stored otherwise.
+/// was already stored otherwise. The label and the title are replaced as they are sent (no title is
+/// "none": the window's title is then made from the label — see `window_title`).
 async fn update_tab_resource_impl(
     pool: &SqlitePool,
     tab_guid: &str,
     tab_text: &TabText,
+    app_title: Option<&str>,
     resource_type: Option<&str>,
     resource_id: Option<&str>,
 ) -> Result<(), String> {
     let json = serde_json::to_string(tab_text).map_err(|e| e.to_string())?;
+    let app_title = app_title.map(str::trim).filter(|t| !t.is_empty());
     sqlx::query(
-        "UPDATE tabs SET tab_text = ?1, resource_type = COALESCE(?2, resource_type), resource_id = COALESCE(?3, resource_id) WHERE guid = ?4",
+        "UPDATE tabs SET tab_text = ?1, app_title = ?2, resource_type = COALESCE(?3, resource_type), resource_id = COALESCE(?4, resource_id) WHERE guid = ?5",
     )
     .bind(&json)
+    .bind(app_title)
     .bind(resource_type)
     .bind(resource_id)
     .bind(tab_guid)
@@ -1658,6 +1680,48 @@ async fn update_tab_resource_impl(
     .await
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// What a window's title says about the tab it shows: the title the page gave (`appTitle`), or — when it gave none, or an
+/// empty one — the pieces of the first row of the tab's label joined with a bullet (the window manager draws the pieces
+/// of a row with bullets between them too). `None` when there is nothing to say (the window then keeps the title of its
+/// page). The title is one plain line: no styles, and line breaks become spaces.
+pub(crate) fn window_title(app_title: Option<&str>, tab_text: Option<&TabText>) -> Option<String> {
+    let one_line = |text: &str| text.split(['\r', '\n', '\t']).map(str::trim).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ");
+    if let Some(title) = app_title.map(one_line).filter(|t| !t.is_empty()) {
+        return Some(title);
+    }
+    let pieces: Vec<String> = tab_text?.first_row.iter().map(|span| one_line(&span.text)).filter(|t| !t.is_empty()).collect();
+    (!pieces.is_empty()).then(|| pieces.join(" • "))
+}
+
+/// Puts the title of the tab a window is showing on the window (the OS window's title on desktop, the card in the Recents
+/// screen on Android). Called whenever what the window shows, or what its tab says about it, may have changed.
+pub(crate) async fn refresh_window_title(app: &AppHandle, window_guid: &str) {
+    let state = app.state::<SecondaryWindowsState>();
+    let Some(tab) = state.current_tabs.lock().unwrap().get(window_guid).cloned() else {
+        return;
+    };
+    let row = sqlx::query("SELECT app_title, tab_text FROM tabs WHERE guid = ?1 AND window_guid = ?2")
+        .bind(&tab)
+        .bind(window_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten();
+    let title = row.and_then(|row| {
+        let app_title: Option<String> = row.get("app_title");
+        let tab_text = row.get::<Option<String>, _>("tab_text").and_then(|json| serde_json::from_str::<TabText>(&json).ok());
+        window_title(app_title.as_deref(), tab_text.as_ref())
+    });
+    let title = match title {
+        Some(title) => title,
+        None => match page_of(&state.pool, window_guid).await {
+            Ok(page) => page.title(),
+            Err(_) => return,
+        },
+    };
+    crate::window_host::set_title(app, window_guid, &title);
 }
 
 /// Called by an app to set (or replace) the two-line, richly-styled label its tab
@@ -1673,6 +1737,7 @@ pub async fn update_tab_resource(
     state: tauri::State<'_, SecondaryWindowsState>,
     tab_guid: String,
     tab_text: TabText,
+    app_title: Option<String>,
     resource_type: Option<String>,
     resource_id: Option<String>,
 ) -> Result<(), String> {
@@ -1686,8 +1751,9 @@ pub async fn update_tab_resource(
         return Err("Tab does not belong to this window.".to_string());
     }
 
-    update_tab_resource_impl(&state.pool, &tab_guid, &tab_text, resource_type.as_deref(), resource_id.as_deref()).await?;
+    update_tab_resource_impl(&state.pool, &tab_guid, &tab_text, app_title.as_deref(), resource_type.as_deref(), resource_id.as_deref()).await?;
 
+    refresh_window_title(&app, &owner_window_guid).await;
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
 }
@@ -1832,6 +1898,7 @@ pub async fn add_blank_tab(
         resource_type: None,
         icon: None,
         tab_text: None,
+        app_title: None,
         created_at,
         tags: Vec::new(),
         external_pages: Vec::new(),
@@ -1887,6 +1954,7 @@ pub async fn clone_tab(
         resource_type: None,
         icon: None,
         tab_text: None,
+        app_title: None,
         created_at,
         tags: Vec::new(),
         external_pages: Vec::new(),
@@ -1920,7 +1988,8 @@ pub async fn activate_tab(
         // The window shows it now; if its page loads again (it reloads itself in response, or the
         // person presses reload), its init request binds to the window's current tab.
         state.pending_tab_activation.lock().unwrap().remove(&window_guid);
-        state.current_tabs.lock().unwrap().insert(window_guid, tab_guid);
+        state.current_tabs.lock().unwrap().insert(window_guid.clone(), tab_guid);
+        refresh_window_title(&app, &window_guid).await;
     } else {
         state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid, true));
         crate::window_host::open(&app, &window_guid, &page)?;
@@ -2194,7 +2263,7 @@ mod tests {
             let blank_text = TabText { first_row: vec![], second_row: vec![] };
 
             // Given a new resource id, it replaces the old one.
-            update_tab_resource_impl(&pool, &tab.tab_guid, &blank_text, None, Some("res-b"))
+            update_tab_resource_impl(&pool, &tab.tab_guid, &blank_text, None, None, Some("res-b"))
                 .await
                 .unwrap();
             let resource_id: String = sqlx::query_scalar("SELECT resource_id FROM tabs WHERE guid = ?1")
@@ -2205,7 +2274,7 @@ mod tests {
             assert_eq!(resource_id, "res-b");
 
             // Without one, the previous value is left untouched.
-            update_tab_resource_impl(&pool, &tab.tab_guid, &blank_text, None, None).await.unwrap();
+            update_tab_resource_impl(&pool, &tab.tab_guid, &blank_text, None, None, None).await.unwrap();
             let resource_id: String = sqlx::query_scalar("SELECT resource_id FROM tabs WHERE guid = ?1")
                 .bind(&tab.tab_guid)
                 .fetch_one(&pool)
@@ -2224,10 +2293,10 @@ mod tests {
 
             let tab_text = TabText {
                 first_row: vec![
-                    TabTextSpan { text: "asdfasdf".to_string(), bold: true, italic: false },
-                    TabTextSpan { text: "qwerqwer".to_string(), bold: false, italic: false },
+                    TabTextSpan { text: "asdfasdf".to_string(), bold: true, italic: false, mono: false },
+                    TabTextSpan { text: "qwerqwer".to_string(), bold: false, italic: false, mono: true },
                 ],
-                second_row: vec![TabTextSpan { text: "zxczxcv".to_string(), bold: false, italic: true }],
+                second_row: vec![TabTextSpan { text: "zxczxcv".to_string(), bold: false, italic: true, mono: false }],
             };
             let json = serde_json::to_string(&tab_text).unwrap();
             sqlx::query("UPDATE tabs SET tab_text = ?1 WHERE guid = ?2")
@@ -2243,6 +2312,51 @@ mod tests {
             assert!(stored.first_row[0].bold);
             assert!(!stored.first_row[0].italic);
             assert!(stored.second_row[0].italic);
+            assert!(!stored.first_row[0].mono && stored.first_row[1].mono, "the mono flag is kept");
+            // A label stored before there was a `mono` flag has none: it reads as false.
+            let old: TabText = serde_json::from_str(r#"{"firstRow":[{"text":"a","bold":true}],"secondRow":[]}"#).unwrap();
+            assert!(!old.first_row[0].mono);
+        });
+    }
+
+    fn span(text: &str) -> TabTextSpan {
+        TabTextSpan { text: text.to_string(), bold: false, italic: false, mono: false }
+    }
+
+    #[test]
+    fn a_windows_title_is_the_title_the_page_gave_or_the_first_row_of_the_label_joined_with_bullets() {
+        let label = TabText { first_row: vec![span("Report"), span("Q3"), span("  "), span("draft")], second_row: vec![span("/reports/q3.md")] };
+        assert_eq!(window_title(Some("My Reports"), Some(&label)).as_deref(), Some("My Reports"), "the title wins");
+        assert_eq!(window_title(Some("  Padded  "), None).as_deref(), Some("Padded"), "trimmed");
+        for none in [None, Some(""), Some("   ")] {
+            assert_eq!(window_title(none, Some(&label)).as_deref(), Some("Report • Q3 • draft"), "no title: the first row, empty pieces left out, second row not used");
+        }
+        assert_eq!(window_title(None, Some(&TabText { first_row: vec![], second_row: vec![span("only a second row")] })), None, "nothing to say");
+        assert_eq!(window_title(None, None), None);
+        // One plain line.
+        assert_eq!(window_title(Some("two\nlines\there"), None).as_deref(), Some("two lines here"));
+        assert_eq!(window_title(None, Some(&TabText { first_row: vec![span("a\r\nb")], second_row: vec![] })).as_deref(), Some("a b"));
+    }
+
+    #[test]
+    fn a_tabs_title_is_stored_replaced_and_cleared_with_its_label() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("app-title").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+            let title_of = |pool: SqlitePool| async move {
+                fetch_tab_groups(&pool, &["win1".to_string()]).await.unwrap()[0].tabs[0].app_title.clone()
+            };
+            let label = TabText { first_row: vec![span("x")], second_row: vec![] };
+
+            assert_eq!(title_of(pool.clone()).await, None, "none until the page sends one");
+            update_tab_resource_impl(&pool, &tab.tab_guid, &label, Some("  Notes of the day "), None, None).await.unwrap();
+            assert_eq!(title_of(pool.clone()).await.as_deref(), Some("Notes of the day"));
+            update_tab_resource_impl(&pool, &tab.tab_guid, &label, Some("   "), None, None).await.unwrap();
+            assert_eq!(title_of(pool.clone()).await, None, "an empty title is no title");
+            update_tab_resource_impl(&pool, &tab.tab_guid, &label, Some("again"), None, None).await.unwrap();
+            update_tab_resource_impl(&pool, &tab.tab_guid, &label, None, None, None).await.unwrap();
+            assert_eq!(title_of(pool.clone()).await, None, "sending none takes it back: the title is made from the label again");
         });
     }
 

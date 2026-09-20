@@ -103,10 +103,16 @@ window.TabLib = (function () {
   // (the key into this app's icon set — see registerIcons) and/or its resource id
   // — pass this when the tab has navigated to a different view without opening a
   // new tab for it. Omitting either leaves that field as it was.
-  async function updateTab(tabGuid, firstRow, secondRow, resourceType, resourceId) {
+  // A row is a list of pieces: { text, bold, italic, mono } (mono = written like code).
+  // appTitle (optional) is the title of this window (the OS window's title, the card in
+  // Android's Recents screen); without one — or with an empty one — the window's title is
+  // the pieces of the first row joined with " • ". Like the label, it is replaced by
+  // every call, so send it every time.
+  async function updateTab(tabGuid, firstRow, secondRow, resourceType, resourceId, appTitle) {
     return invoke('update_tab_resource', {
       tabGuid,
       tabText: { firstRow: firstRow, secondRow: secondRow },
+      appTitle: appTitle || null,
       resourceType: resourceType || null,
       resourceId: resourceId || null,
     })

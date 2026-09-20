@@ -80,8 +80,7 @@ impl Page {
         }
     }
 
-    /// The window's title.
-    #[cfg_attr(mobile, allow(dead_code))]
+    /// The window's title (until its page says what to show — see `secondary_windows::window_title`).
     pub fn title(&self) -> String {
         match self.kind {
             Kind::User => self.relative_path.clone(),
@@ -327,6 +326,12 @@ pub fn request_close(app: &AppHandle, guid: &str) -> bool {
     platform::request_close(app, guid)
 }
 
+/// Sets the title of entry `guid`'s window, if it is showing: the OS window's title on desktop, the card in the Recents screen
+/// on Android.
+pub fn set_title(app: &AppHandle, guid: &str, title: &str) {
+    platform::set_title(app, guid, title)
+}
+
 /// Waits (briefly) until none of `guids` are open any more.
 pub async fn wait_until_closed(app: &AppHandle, guids: &[String]) {
     platform::wait_until_closed(app, guids).await
@@ -351,6 +356,12 @@ mod platform {
 
     pub fn is_open(app: &AppHandle, guid: &str) -> bool {
         app.get_webview_window(guid).is_some()
+    }
+
+    pub fn set_title(app: &AppHandle, guid: &str, title: &str) {
+        if let Some(window) = app.get_webview_window(guid) {
+            let _ = window.set_title(title);
+        }
     }
 
     /// Builds the `csuser://localhost/<relative_path>` window and wires up the close
@@ -445,6 +456,10 @@ mod platform {
         host::is_open(guid)
     }
 
+    pub fn set_title(_app: &AppHandle, guid: &str, title: &str) {
+        host::set_title(guid, title)
+    }
+
     pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
         host::open(app, guid, page)
     }
@@ -481,6 +496,8 @@ mod platform {
     pub fn is_open(_app: &AppHandle, _guid: &str) -> bool {
         false
     }
+
+    pub fn set_title(_app: &AppHandle, _guid: &str, _title: &str) {}
 
     pub fn open(_app: &AppHandle, _guid: &str, _page: &Page) -> Result<(), String> {
         Err(NOT_IMPLEMENTED.to_string())

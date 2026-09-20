@@ -92,4 +92,4 @@ forward; `location.href` blocked, `pushState` throwing, `#fragment` allowed, `fe
 chooser over a window; an external site as its own task with the confirmation on the asking window, Back closing it, its entry surviving; the suspend cascade
 (Notes → its external site, Notes → the web app it opened); a web app opened from Notes reporting `openedBy: NotesApp`; a process kill with a window open.
 
-Not done: the window title in the Recents card follows the tab's label (it shows the app's name); Android 10-and-older; a real device.
+The card's title follows the tab the window shows (`appTitle`, else the first row of the tab's label — see `CLAUDE.md`, "Tab labels and window titles"). Not done: Android 10-and-older; a real device.
