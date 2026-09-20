@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitBranchPlus,
   GitMerge,
+  House,
   AppWindow,
   ListChecks,
   Lock,
@@ -146,7 +147,7 @@ interface Editing {
 /** The folder a path is in (paths have no leading slash; the root is `''`). */
 const parentPath = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 
-export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null; initial: Location | null }) {
+export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Tab | null; initial: Location | null; onHome: () => void }) {
   // The tab this page is showing: the one it registered as, then whichever the user switches to.
   const [tab, setTab] = useState<Tab | null>(initialTab)
   const [roots, setRoots] = useState<FileRoot[]>([])
@@ -900,6 +901,14 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       <main className="tab-content">
         <div className="tab-panel files-tab">
           <div className="root-switcher">
+            <IconButton
+              icon={House}
+              label="Notes home"
+              onClick={() => {
+                flushDraft() // what wasn't saved is kept as a draft, as when leaving for another tab
+                onHome()
+              }}
+            />
             {roots.map((root) => {
               const id = `${LOCAL_PREFIX}${root.id}`
               return (

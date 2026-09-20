@@ -13,6 +13,7 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.JsPromptResult
 import android.webkit.JsResult
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -21,6 +22,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.window.OnBackInvokedDispatcher
 import org.json.JSONArray
@@ -95,7 +97,7 @@ class WindowActivity : Activity() {
                 return true
             }
 
-            // alert() and confirm() of the page: native dialogs on this window.
+            // alert(), confirm() and prompt() of the page: native dialogs on this window.
             override fun onJsAlert(v: WebView, url: String?, message: String?, result: JsResult): Boolean {
                 AlertDialog.Builder(this@WindowActivity)
                     .setMessage(message)
@@ -109,6 +111,22 @@ class WindowActivity : Activity() {
                 AlertDialog.Builder(this@WindowActivity)
                     .setMessage(message)
                     .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
+                    .setOnCancelListener { result.cancel() }
+                    .show()
+                return true
+            }
+
+            override fun onJsPrompt(v: WebView, url: String?, message: String?, defaultValue: String?, result: JsPromptResult): Boolean {
+                val input = EditText(this@WindowActivity).apply {
+                    setText(defaultValue ?: "")
+                    setSingleLine()
+                    selectAll()
+                }
+                AlertDialog.Builder(this@WindowActivity)
+                    .setMessage(message)
+                    .setView(input)
+                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm(input.text.toString()) }
                     .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
                     .setOnCancelListener { result.cancel() }
                     .show()

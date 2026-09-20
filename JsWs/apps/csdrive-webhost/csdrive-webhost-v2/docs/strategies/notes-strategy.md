@@ -43,3 +43,35 @@ When should the markdown file name and full name folder be updated:
 ## About updating the note indexes
 
 Normally, folder pair index gaps will not be filled, so normalizing the note indexes will be a standard operation that can be performed either on demand by the user or automatically by an Notes app when moving/deleting notes from the child notes of a parent note. Normalizing the indexes should only affect the pairs of folders that will end up having new indexes. To make things easy here, the alternative folder name prefix should be used when swapping indexes. Basically all the affected pairs will have their names applied that prefix instead of the main prefix, then their indexes changed and the main prefix reapplied in 1 single operation (1 operation per pair of folders).
+
+## The root folder of a notebook
+
+Since we only mentioned that a note can have nested child notes, there will also be a root folder containing top level notes and note sections. That folder will be the notebook root folder. It will contain file called `[note-book].json` with the following format:
+
+```
+{
+  "Title": "My Primary Note Book",
+  "CreatedAt": "2026-09-19T07:34:04.0283216Z",
+  "NoteBookGuid": <some-guid>
+}
+```
+
+And it will also contain the notebook pair of folders (again reserved for future use).
+
+### How to user opens or creates a notebook
+
+Just like a .NET solution is identified by a single file with the ".sln" extension, an Ayran Notebook will be identified by a file whose name is either equal to or ends with `[note-book].json` (and of course has a valid structure that matches the one I described above). Then the folder containing this file will be the root folder of the notebook.
+
+## How the Notes app implements notebooks
+
+*(Written as it was built; the code is `src/system/notes/notebooks.ts`, `notebookFile.ts`, `NotebooksPage.tsx`, `LocationPicker.tsx`.)*
+
+**Home.** A Notes tab that names no place opens a **home page** with two links: *Manage notebooks* and *File manager* (the file manager the app always had).
+
+**Listed and found.** The app keeps **a list of the notebooks it knows** (in its own state, `notes.notebooks`): for each, the notebook's GUID, its title as last seen, where it is (a folder of this device, or a Filen account — never a branch, a notebook lives in the account), the folder and the file name. The list is the app's; the notebook is wherever its file is. A notebook is **listed** when it is in that list and **found** when its file exists somewhere and the app hasn't been told — the two are told apart by the `NoteBookGuid`. So *adding an existing notebook* means pointing at its file: the picker shows every notebook file it meets with its title and whether it is **in your list** or **not in your list yet**; a file that is not a valid notebook (not JSON, no title, no date, no GUID) is refused with the reason; a notebook whose GUID is listed already is reported as such, with where it is listed.
+
+**The file is the truth.** Opening the *Manage notebooks* page checks each listed notebook's file: can the place be reached (a Filen account that is not connected, a folder that was forgotten, a file that is gone or no longer a notebook is shown with the reason), and what is its title now — a title changed outside the app replaces the one in the list. Changing a title in the app writes the file first (every other key in it kept) and then the list, so a failure leaves both as they were. *Taking a notebook out of the list* deletes nothing.
+
+**Creating.** The person gives a title and then chooses the notebook's root folder in the picker (any folder of this device or of a Filen account; folders can be made there). Ideally the folder is empty, but that is **not required**. The file written is `[note-book].json` — `Title`, `CreatedAt` (UTC, seven fractional digits like the example above; JavaScript only has milliseconds, so the last four are zeros) and a new `NoteBookGuid`, indented, ending with a line break. **If the folder already has a notebook** — any file whose name is or ends with `[note-book].json`, in any case — the person is warned, both in the picker and in a dialog listing those files with their titles, because a notebook's notes live in its root folder and a second notebook there would share them; they can choose another folder, cancel, or create it anyway. In that case (and whenever `[note-book].json` itself is taken) the new file is named after its title, `<title> [note-book].json` — the title made into a name the way this strategy says for note folders (`namePartFromTitle`) — and nothing is ever overwritten.
+
+**Not built yet:** the notes themselves (the tree of note items and sections under a notebook's root), the notebook's reserved pair of folders (`03-[note-book]`), and opening a notebook (today a listed notebook can be shown in the file manager at its root folder).

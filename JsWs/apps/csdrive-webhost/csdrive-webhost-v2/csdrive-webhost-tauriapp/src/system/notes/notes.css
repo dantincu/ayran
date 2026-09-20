@@ -101,6 +101,165 @@
   font-size: 13px;
 }
 
+/* ── Home, the notebooks page and the place picker ───────────────────────────────────────────────── */
+
+.notes-home {
+  align-items: center;
+}
+
+.notes-home-title {
+  margin: 24px 0 8px;
+  font-size: 22px;
+}
+
+.notes-cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+  width: 100%;
+}
+
+.notes-card,
+.notes-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+}
+
+.notes-card {
+  flex: 1 1 240px;
+  max-width: 340px;
+}
+
+.notes-card:hover,
+.notes-choice:hover {
+  border-color: var(--accent);
+}
+
+.notes-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.notes-page-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.notes-page-header h2 {
+  margin: 0;
+  font-size: 18px;
+  flex: 1;
+}
+
+/* A notebook's buttons stay on one line — the title and where it is wrap instead. */
+.notes-page .file-table td.row-actions {
+  flex-wrap: nowrap;
+}
+
+.notes-empty {
+  padding: 16px 0;
+}
+
+.notebook-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.notebook-where {
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.notebook-problem {
+  font-size: 12px;
+  color: var(--error-fg);
+}
+
+.notes-title-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.notes-title-field input {
+  font: inherit;
+  padding: 6px 8px;
+}
+
+.picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: min(560px, 80vw);
+}
+
+.picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 40vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.picker-list li {
+  padding: 3px 0;
+  word-break: break-all;
+}
+
+.picker-footer {
+  align-items: center;
+}
+
+.picker-info {
+  flex: 1;
+  font-size: 12px;
+}
+
+.warning-banner {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--warning-fg, #7a4b00);
+  background: var(--warning-bg, #fff4d6);
+}
+
+.notes-badge-notebook {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.notes-badge-listed {
+  color: var(--status-fg);
+  background: var(--status-bg);
+  border-color: transparent;
+}
+
 .dialog-actions {
   display: flex;
   flex-wrap: wrap;

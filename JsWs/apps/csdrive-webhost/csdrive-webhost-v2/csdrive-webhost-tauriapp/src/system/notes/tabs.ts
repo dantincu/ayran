@@ -30,9 +30,24 @@ export interface Location {
 }
 
 /** Bumped when the icon set below changes: the backend then asks the page for it again. */
-const APP_VERSION = 2
+const APP_VERSION = 3
 
-const RESOURCE_TYPES = { local: 'local', filen: 'filen', branch: 'branch', editing: 'editing' } as const
+const RESOURCE_TYPES = { local: 'local', filen: 'filen', branch: 'branch', editing: 'editing', home: 'home', notebooks: 'notebooks' } as const
+
+/** What a Notes tab shows: the home page, the page for managing notebooks, or the file manager (at a place; `null`: where
+ * it was last). The resource id names it: `system:notes?v=home`, `system:notes?v=notebooks`, or — for the file manager —
+ * the place's query (see `encodeLocation`). A tab that names nothing shows the home page. */
+export type Place = { view: 'home' } | { view: 'notebooks' } | { view: 'files'; location: Location | null }
+
+/** The place a resource id (or a page's query string) names, if it names one. */
+export function decodePlace(resourceId: string): Place | null {
+  const query = resourceId.includes('?') ? resourceId.slice(resourceId.indexOf('?') + 1) : ''
+  const view = new URLSearchParams(query).get('v')
+  if (view === 'home') return { view: 'home' }
+  if (view === 'notebooks') return { view: 'notebooks' }
+  const location = decodeLocation(resourceId)
+  return location ? { view: 'files', location } : null
+}
 
 const svg = (paths: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`
@@ -42,6 +57,8 @@ const ICONS: Record<string, string> = {
   local: svg('<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>'),
   filen: svg('<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>'),
   editing: svg('<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'),
+  home: svg('<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
+  notebooks: svg('<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M16 2v20"/>'),
   branch: svg('<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
 }
 
@@ -87,25 +104,27 @@ export interface Tab {
 // The window manager tells this page when the user switches to another tab of the window (the
 // `tab-navigate` event). The listener is added before the page registers, so none is missed — but
 // the first can arrive before React has mounted anything to receive it, so it waits here.
-let navigateHandler: ((tab: Tab) => void) | null = null
+// Several parts of the page listen (the page that chooses the view, and the file manager inside it): each gets every
+// switch. One that came before anybody listened goes to the first to listen.
+const navigateHandlers = new Set<(tab: Tab) => void>()
 let navigateBuffered: Tab | null = null
 
 function deliverNavigation(tab: Tab): void {
-  if (navigateHandler) navigateHandler(tab)
+  if (navigateHandlers.size > 0) navigateHandlers.forEach((handler) => handler(tab))
   else navigateBuffered = tab
 }
 
-/** Calls `handler` with each tab the user switches to (first, with one that came before this was
- * called). Returns how to stop. */
+/** Calls `handler` with each tab the user switches to (first, with one that came before anything was
+ * listening). Returns how to stop. */
 export function subscribeNavigate(handler: (tab: Tab) => void): () => void {
-  navigateHandler = handler
+  navigateHandlers.add(handler)
   if (navigateBuffered) {
     const waiting = navigateBuffered
     navigateBuffered = null
     handler(waiting)
   }
   return () => {
-    if (navigateHandler === handler) navigateHandler = null
+    navigateHandlers.delete(handler)
   }
 }
 
@@ -128,6 +147,17 @@ export async function registerTab(): Promise<Tab | null> {
       // Not adjusting the page is better than not showing it.
     }
     return null
+  }
+}
+
+/** Tells the window manager that the tab shows the home page or the page for managing notebooks. */
+export async function reportView(tab: Tab, view: 'home' | 'notebooks'): Promise<void> {
+  const firstRow: TabText['firstRow'] = [{ text: view === 'home' ? 'Notes' : 'Notebooks', bold: true }]
+  const secondRow: TabText['secondRow'] = [{ text: view === 'home' ? 'Home' : 'Manage notebooks' }]
+  try {
+    await updateTabResource(tab.tabGuid, { firstRow, secondRow }, RESOURCE_TYPES[view], `system:notes?v=${view}`)
+  } catch {
+    // The tab may have been closed from the window manager meanwhile — nothing to report to.
   }
 }
 

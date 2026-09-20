@@ -31,7 +31,7 @@ Where the list keys apply:
 
 - **System Apps** and **User Apps** — apps → windows → tab groups → tabs → what was opened from the tab (web apps opened from a Notes tab, and external web sites)
 - **Files** and **Filen.io** — the folder's entries
-- **Notes** — the folder's entries, on this device and in a Filen account (in a branch too)
+- **Notes** — the folder's entries, on this device and in a Filen account (in a branch too); and the list of notebooks (→ / Enter shows the notebook's folder in the file manager, ← goes to the Notes home page)
 - **SQLite** — the databases, then the tables of the open one
 - **Storage → IndexedDB** — databases → object stores → records
 
