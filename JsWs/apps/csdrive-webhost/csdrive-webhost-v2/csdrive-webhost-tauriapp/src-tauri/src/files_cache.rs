@@ -61,7 +61,7 @@ const UPLOADS_FOLDER: &str = "tmp";
 const READ_PIECE: usize = 1_048_576;
 /// Accounts' and branches' folder pairs take the lowest free index, so deleting one (disconnecting an
 /// account, committing or discarding a branch) leaves no permanent gap in the numbering.
-const INDEXING: folder_pairs::Indexing = folder_pairs::Indexing::FillGaps;
+const NUMBERING: folder_pairs::Numbering = folder_pairs::Numbering::DEFAULT;
 /// Local file names are cut to this many characters (the pair strategy keeps the folders above short).
 const MAX_LOCAL_NAME: usize = 120;
 
@@ -412,12 +412,12 @@ impl Cache {
     /// Every full folder holds its `.keep` (see `folder_pairs::KEEP_FILE`) — including the ones made before that rule
     /// existed, which get theirs at the next start. Best effort: a folder that can't be written to is left for next time.
     fn keep_pairs_marked(&self) {
-        let _ = folder_pairs::repair(&self.a_dir());
+        let _ = NUMBERING.repair(&self.a_dir());
         let b = self.b_dir();
-        for (account, _) in folder_pairs::list(&b).unwrap_or_default() {
-            let _ = folder_pairs::repair(&account.short_dir); // the account's branches
+        for (account, _) in NUMBERING.list(&b).unwrap_or_default() {
+            let _ = NUMBERING.repair(&account.short_dir); // the account's branches
         }
-        let _ = folder_pairs::repair(&b);
+        let _ = NUMBERING.repair(&b);
     }
 
     /// An upload in flight when the app stopped left its temporary file behind: they all go.
@@ -484,17 +484,17 @@ impl Cache {
     async fn ensure_account_locked(&self, user_id: i64, email: &str) -> Result<AccountCacheInfo, String> {
         let part = account_part(email, user_id);
         let a = self.a_dir();
-        let existing = folder_pairs::list(&a).map_err(io)?.into_iter().find(|(_, p)| is_account_part_for(p, user_id));
+        let existing = NUMBERING.list(&a).map_err(io)?.into_iter().find(|(_, p)| is_account_part_for(p, user_id));
         let pair = match existing {
             Some((pair, existing_part)) => {
                 if existing_part != part {
-                    let renamed = a.join(folder_pairs::full_name(pair.index, &part));
+                    let renamed = a.join(NUMBERING.full_name(pair.index, &part));
                     std::fs::rename(&pair.full_dir, &renamed).map_err(io)?;
                 }
                 std::fs::create_dir_all(&pair.short_dir).map_err(io)?;
-                folder_pairs::find(&a, &part).map_err(io)?.ok_or("The account's folder disappeared.")?
+                NUMBERING.find(&a, &part).map_err(io)?.ok_or("The account's folder disappeared.")?
             }
-            None => folder_pairs::create(&a, &part, INDEXING).map_err(io)?,
+            None => NUMBERING.create(&a, &part).map_err(io)?,
         };
 
         sqlx::query(
@@ -523,7 +523,7 @@ impl Cache {
             user_id,
             email: row.get("email"),
             ttl_secs: row.get("ttl_secs"),
-            folder: folder_pairs::short_name(row.get::<i64, _>("pair_index") as u32),
+            folder: NUMBERING.short_name(row.get::<i64, _>("pair_index") as u32),
         })
     }
 
@@ -541,9 +541,9 @@ impl Cache {
     pub async fn forget_account(&self, user_id: i64) -> Result<(), String> {
         let _guard = self.lock(user_id).await;
         for parent in [self.a_dir(), self.b_dir()] {
-            for (pair, part) in folder_pairs::list(&parent).map_err(io)? {
+            for (pair, part) in NUMBERING.list(&parent).map_err(io)? {
                 if is_account_part_for(&part, user_id) {
-                    folder_pairs::delete(&parent, &part).map_err(io)?;
+                    NUMBERING.delete(&parent, &part).map_err(io)?;
                     let _ = pair;
                 }
             }
@@ -566,7 +566,7 @@ impl Cache {
             .await
             .map_err(sql)?
             .ok_or("This account isn't set up for caching yet.")?;
-        Ok(self.a_dir().join(folder_pairs::short_name(pair_index as u32)).join(crate::layout::FILES_CONTENT_FOLDER))
+        Ok(self.a_dir().join(NUMBERING.short_name(pair_index as u32)).join(crate::layout::FILES_CONTENT_FOLDER))
     }
 
     /// Throws away everything cached for the account (listings, metadata, contents); branches stay,
@@ -1121,8 +1121,8 @@ impl Cache {
     /// `files/b/NNN/MMM` — the branch's short folder.
     async fn branch_dir(&self, user_id: i64, branch: i64) -> Result<PathBuf, String> {
         let part = self.account_branch_part(user_id).await?;
-        let account = folder_pairs::find(&self.b_dir(), &part).map_err(io)?.ok_or("That branch doesn't exist.")?;
-        Ok(account.short_dir.join(folder_pairs::short_name(branch as u32)))
+        let account = NUMBERING.find(&self.b_dir(), &part).map_err(io)?.ok_or("That branch doesn't exist.")?;
+        Ok(account.short_dir.join(NUMBERING.short_name(branch as u32)))
     }
 
     async fn branch_exists(&self, user_id: i64, branch: i64) -> Result<(), String> {
@@ -1159,8 +1159,8 @@ impl Cache {
         if self.branches(user_id).await?.iter().any(|b| b.name.to_lowercase() == name.to_lowercase()) {
             return Err(format!("There is a branch called \"{name}\" already."));
         }
-        let account = folder_pairs::ensure(&self.b_dir(), &account_part(&info.email, user_id), INDEXING).map_err(io)?;
-        let pair = folder_pairs::create(&account.short_dir, name, INDEXING).map_err(io)?;
+        let account = NUMBERING.ensure(&self.b_dir(), &account_part(&info.email, user_id)).map_err(io)?;
+        let pair = NUMBERING.create(&account.short_dir, name).map_err(io)?;
         sqlx::query("INSERT INTO branches (user_id, pair_index, name, created_at) VALUES (?1, ?2, ?3, ?4)")
             .bind(user_id)
             .bind(pair.index as i64)
@@ -1174,11 +1174,11 @@ impl Cache {
 
     async fn delete_branch_files_and_rows(&self, user_id: i64, branch: i64, name: &str) -> Result<(), String> {
         if let Ok(part) = self.account_branch_part(user_id).await {
-            if let Some(account) = folder_pairs::find(&self.b_dir(), &part).map_err(io)? {
-                folder_pairs::delete(&account.short_dir, name).map_err(io)?;
+            if let Some(account) = NUMBERING.find(&self.b_dir(), &part).map_err(io)? {
+                NUMBERING.delete(&account.short_dir, name).map_err(io)?;
                 // With no branches left, the account's own pair in `b` goes too.
-                if folder_pairs::list(&account.short_dir).map_err(io)?.is_empty() {
-                    folder_pairs::delete(&self.b_dir(), &part).map_err(io)?;
+                if NUMBERING.list(&account.short_dir).map_err(io)?.is_empty() {
+                    NUMBERING.delete(&self.b_dir(), &part).map_err(io)?;
                 }
             }
         }
