@@ -16,6 +16,7 @@ mod fs_upload;
 mod ipc;
 mod layout;
 mod markdown;
+mod notes_pages;
 mod picked_roots;
 mod secure_store;
 mod secondary_windows;
@@ -70,8 +71,18 @@ pub(crate) fn lock_down_navigation<R: tauri::Runtime>(
     allowed: window_host::Allowed,
 ) -> WebviewWindowBuilder<'_, R, impl Manager<R>> {
     let builder = builder
-        .on_navigation(move |url| is_internal_url(url, allowed))
-        .on_new_window(|_url, _features| NewWindowResponse::Deny);
+        .on_navigation(move |url| {
+            if is_internal_url(url, allowed) {
+                return true;
+            }
+            // A click on a link to the web goes to the OS browser; the window stays where it is.
+            external_sites::open_in_browser(url);
+            false
+        })
+        .on_new_window(|url, _features| {
+            external_sites::open_in_browser(&url);
+            NewWindowResponse::Deny
+        });
     // Publishes the Android system-bar insets to the page as CSS variables (see `code_snippets`).
     #[cfg(mobile)]
     let builder = builder.initialization_script(code_snippets::SAFE_AREA_INIT_SCRIPT);
@@ -87,7 +98,17 @@ fn respond(status: StatusCode, content_type: &str, body: Vec<u8>, csp: &str) -> 
         .unwrap()
 }
 
-fn respond_text(status: StatusCode, message: &str, csp: &str) -> Response<Vec<u8>> {
+/// A file's bytes as a response — a markdown file is not sent as it is but as the page it becomes (see markdown.rs).
+pub(crate) fn respond_bytes(name: &Path, data: Vec<u8>, csp: &str) -> Response<Vec<u8>> {
+    if markdown::is_markdown(name) {
+        let file_name = name.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let page = markdown::render_page(&String::from_utf8_lossy(&data), &file_name);
+        return respond(StatusCode::OK, "text/html; charset=utf-8", page.into_bytes(), csp);
+    }
+    respond(StatusCode::OK, content_type_for(name), data, csp)
+}
+
+pub(crate) fn respond_text(status: StatusCode, message: &str, csp: &str) -> Response<Vec<u8>> {
     respond(status, "text/plain; charset=utf-8", message.as_bytes().to_vec(), csp)
 }
 
@@ -95,13 +116,7 @@ fn respond_text(status: StatusCode, message: &str, csp: &str) -> Response<Vec<u8
 fn serve_file(base_dir: &Path, request_path: &str, default_document: &str, csp: &str) -> Response<Vec<u8>> {
     match resolve_file_in(base_dir, request_path, default_document) {
         Some(file_path) => match std::fs::read(&file_path) {
-            // A markdown file is not served as it is: it becomes a page (see markdown.rs).
-            Ok(data) if markdown::is_markdown(&file_path) => {
-                let name = file_path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                let page = markdown::render_page(&String::from_utf8_lossy(&data), &name);
-                respond(StatusCode::OK, "text/html; charset=utf-8", page.into_bytes(), csp)
-            }
-            Ok(data) => respond(StatusCode::OK, content_type_for(&file_path), data, csp),
+            Ok(data) => respond_bytes(&file_path, data, csp),
             Err(_) => respond_text(StatusCode::NOT_FOUND, "File not found", csp),
         },
         None => respond_text(StatusCode::FORBIDDEN, "Forbidden", csp),
@@ -186,6 +201,8 @@ pub fn run() {
             secondary_windows::close_tab,
             secondary_windows::delete_tab_group,
             secondary_windows::move_tab_to_group,
+            notes_pages::open_file_as_web_app,
+            notes_pages::open_related_web_app,
             external_sites::open_external_site,
             external_sites::reopen_external_site,
             external_sites::focus_external_site,
@@ -266,9 +283,35 @@ pub fn run() {
             filen::filen_rm,
             filen::filen_rename,
         ])
-        .register_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>| {
-            let data_dir = data_location::effective_data_dir(ctx.app_handle()).expect("failed to resolve app data dir");
-            serve_file(&layout::user_dir(&data_dir), request.uri().path(), "index.html", &content_security_policy(ctx.app_handle()))
+        .register_asynchronous_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>, responder| {
+            let app = ctx.app_handle().clone();
+            let csp = content_security_policy(&app);
+            let path = percent_encoding::percent_decode_str(request.uri().path()).decode_utf8_lossy().into_owned();
+            match notes_pages::parse_special(&path) {
+                // The user folder, as ever.
+                None => {
+                    let data_dir = data_location::effective_data_dir(&app).expect("failed to resolve app data dir");
+                    responder.respond(serve_file(&layout::user_dir(&data_dir), &path, "index.html", &csp));
+                }
+                Some(Err(())) => responder.respond(respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp)),
+                // A picked folder or a Filen account (which may have to be fetched, so not on this thread).
+                Some(Ok(special)) => {
+                    tauri::async_runtime::spawn(async move {
+                        responder.respond(notes_pages::serve(&app, special, &csp).await);
+                    });
+                }
+            }
+        })
+        .on_window_event(|window, event| {
+            // Closing the main window first suspends every secondary window (see the function).
+            #[cfg(desktop)]
+            if window.label() == window_host::MAIN_WINDOW_LABEL {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    secondary_windows::main_window_close_requested(window.app_handle(), api);
+                }
+            }
+            #[cfg(mobile)]
+            let _ = (window, event);
         })
         .setup(|app| {
             let app_data_dir = data_location::effective_data_dir(app.handle())?;

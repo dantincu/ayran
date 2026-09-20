@@ -21,15 +21,15 @@ These work on every list you can browse — no need to click it first, the keys 
 | **↓** / **↑** | Focus the next / previous item. (With nothing focused yet, either one focuses the first item.) |
 | **Home** / **End** | Focus the first / last item — in a paginated list, of *all* the pages; the page shown follows. |
 | **Page Down** / **Page Up** | Move the focus 10 items down / up. |
-| **←** | Go to the **parent**: up a folder, or up a level (external web site → tab → tab group → window → app), or close the open database / object store. The item you just came from is focused. |
-| **→** | Go into the **focused item**: open a folder, open a file to edit it, open an app's windows, a window's tab groups, a tab group's tabs, a tab's **external web sites**, a database's tables or stores. On an external web site, → brings its window to the front (or opens it again). A folder you enter has its first item focused. |
+| **←** | Go to the **parent**: up a folder, or up a level (opened item → tab → tab group → window → app), or close the open database / object store. The item you just came from is focused. |
+| **→** | Go into the **focused item**: open a folder, open a file to edit it, open an app's windows, a window's tab groups, a tab group's tabs, what was **opened from a tab** (its web apps and external web sites), a database's tables or stores. On an external web site, → brings its window to the front (or opens it again). A folder you enter has its first item focused. |
 | **Enter** | The focused item's own action: on a **tab**, show it (its window opens if need be); on anything else, the same as →. (Not heard while a button or link has the focus — Enter presses that.) |
 
 The focused item is outlined. Pressing on an item with the mouse or a finger moves the focus there, so the keys carry on from where you clicked.
 
 Where the list keys apply:
 
-- **System Apps** and **User Apps** — apps → windows → tab groups → tabs → external web sites
+- **System Apps** and **User Apps** — apps → windows → tab groups → tabs → what was opened from the tab (web apps opened from a Notes tab, and external web sites)
 - **Files** and **Filen.io** — the folder's entries
 - **Notes** — the folder's entries, on this device and in a Filen account (in a branch too)
 - **SQLite** — the databases, then the tables of the open one

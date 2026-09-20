@@ -37,6 +37,37 @@ export interface TabRecord {
   tags: TagRecord[]
   /** The external web sites opened from this tab's page, oldest first. */
   externalPages: ExternalPageRecord[]
+  /** The web apps opened from this tab (a Notes tab): files of a folder or a Filen account, each in a window of
+   * its own that is listed here — not among the apps. */
+  openedApps: OpenedAppRecord[]
+}
+
+/** A web app opened from a Notes tab, as listed under that tab. */
+export interface OpenedAppRecord {
+  /** The window entry's guid — what the window commands (`reopenSecondaryWindow`…) take. */
+  guid: string
+  kind: WindowKind
+  relativePath: string
+  /** The file's path in its storage. */
+  path: string
+  storage: 'UserFolder' | 'DeviceFolder' | 'FilenCloud'
+  createdAt: number
+  isOpen: boolean
+  /** The page's own label (its tab's), once it has given one. */
+  tabText: TabText | null
+  tags: TagRecord[]
+}
+
+/** A file, named the way the Notes app names it (see `open_file_as_web_app`). */
+export interface FileRef {
+  storage: 'UserFolder' | 'DeviceFolder' | 'FilenCloud'
+  /** `DeviceFolder`: the picked folder's root id. */
+  root?: string
+  /** `FilenCloud`: the account, and the branch (its index) when the file is opened in one. */
+  userId?: number
+  branch?: number | null
+  /** Relative to the root, or — for Filen — a path in the drive. */
+  path: string
 }
 
 /** An external web site opened from a tab's page: not a tab, a child of the tab that asked for it. */
@@ -248,6 +279,19 @@ export async function updateTabResource(
   resourceId?: string,
 ): Promise<void> {
   await invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType ?? null, resourceId: resourceId ?? null })
+}
+
+/** **Notes only.** Opens an html or markdown file as a web app, in a window of its own that is listed under the
+ * Notes tab that asked. The page can then open others next to itself with `openRelatedWebApp`. Resolves to the
+ * new window's guid. */
+export async function openFileAsWebApp(file: FileRef): Promise<string> {
+  return invoke<string>('open_file_as_web_app', { file })
+}
+
+/** For a page that was opened from Notes: opens another file next to its own (`path` is relative to the page's),
+ * listed under the same Notes tab. */
+export async function openRelatedWebApp(path: string): Promise<string> {
+  return invoke<string>('open_related_web_app', { path })
 }
 
 // ── External web sites ────────────────────────────────────────────────────────

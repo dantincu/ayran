@@ -7,6 +7,7 @@ import {
   ClipboardPaste,
   Copy,
   CopyPlus,
+  AppWindow,
   ExternalLink,
   FilePlus,
   Fingerprint,
@@ -60,6 +61,7 @@ import {
   suspendExternalSite,
   suspendSecondaryWindow,
   type ExternalPageRecord,
+  type OpenedAppRecord,
   type SecondaryWindowRecord,
   type SystemAppInfo,
   type TabGroupRecord,
@@ -135,6 +137,20 @@ async function fetchRootTags(records: SecondaryWindowRecord[]): Promise<TagRecor
     }
   }
   return guids.size > 0 ? listTags(Array.from(guids)) : []
+}
+
+/** What is listed under a tab: an external web site opened from its page, or a web app opened from it (a Notes
+ * tab's files) — oldest first before any saved order is applied. */
+type Child =
+  | { kind: 'site'; guid: string; createdAt: number; page: ExternalPageRecord }
+  | { kind: 'app'; guid: string; createdAt: number; app: OpenedAppRecord }
+
+function childrenOf(tab: TabRecord): Child[] {
+  const all: Child[] = [
+    ...tab.externalPages.map((page): Child => ({ kind: 'site', guid: page.guid, createdAt: page.createdAt, page })),
+    ...tab.openedApps.map((app): Child => ({ kind: 'app', guid: app.guid, createdAt: app.createdAt, app })),
+  ]
+  return all.sort((a, b) => a.createdAt - b.createdAt)
 }
 
 /** What a tab is called in a breadcrumb: its label's first row, else its resource id. */
@@ -409,13 +425,15 @@ function TabRow({
           <IconButton
             icon={Globe}
             label={
-              tab.externalPages.length > 0
-                ? `External web sites opened from this tab (${tab.externalPages.length})`
-                : 'External web sites opened from this tab (none yet)'
+              tab.externalPages.length + tab.openedApps.length > 0
+                ? `Opened from this tab — web apps and external web sites (${tab.externalPages.length + tab.openedApps.length})`
+                : 'Opened from this tab — web apps and external web sites (none yet)'
             }
             onClick={onOpenExternal}
           />
-          {tab.externalPages.length > 0 && <span className="muted tab-row-external-count">{tab.externalPages.length}</span>}
+          {tab.externalPages.length + tab.openedApps.length > 0 && (
+            <span className="muted tab-row-external-count">{tab.externalPages.length + tab.openedApps.length}</span>
+          )}
           <IconButton icon={Hash} label="Resource identifier — view and copy" onClick={onShowResourceId} />
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
           <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
@@ -504,6 +522,55 @@ function ExternalRow({
         </div>
       </div>
       <TagList guid={page.guid} tags={page.tags} className="window-item-tags" onError={onError} />
+    </div>
+  )
+}
+
+/** A web app opened from a Notes tab: its own window (its file is in a folder or in a Filen account), listed under
+ * the tab that opened it. The page's title and path on two rows, and the window's own commands. */
+function OpenedAppRow({
+  app,
+  onError,
+  onOpen,
+  onFocus,
+  onSuspend,
+  onClose,
+}: {
+  app: OpenedAppRecord
+  onError: (message: string) => void
+  onOpen: () => void
+  onFocus: () => void
+  onSuspend: () => void
+  onClose: () => void
+}) {
+  const title = app.tabText?.firstRow.map((s) => s.text).join('') || app.path.split('/').pop() || app.path
+  const where = app.storage === 'FilenCloud' ? 'Filen' : app.storage === 'DeviceFolder' ? 'This device' : 'User folder'
+  return (
+    <div className={`window-item tab-row ${app.isOpen ? 'open' : 'suspended'}`}>
+      <div className="tab-row-header">
+        <span className="tab-row-icon external-icon" title="A web app opened from this Notes tab">
+          <AppWindow size={18} strokeWidth={2} aria-hidden="true" />
+        </span>
+        <button className="link-button tab-row-title-block" onClick={app.isOpen ? onFocus : onOpen} title={app.isOpen ? 'Bring its window to the front' : 'Reopen its window'}>
+          <div className="tab-row-title">{title}</div>
+          <div className="tab-row-subtitle external-url" title={app.path}>
+            {where} · {app.path}
+          </div>
+        </button>
+        <div className="row-actions">
+          <span className={`status-dot ${app.isOpen ? 'status-open' : 'status-suspended'}`} title={app.isOpen ? 'Open' : 'Suspended'} />
+          {app.isOpen ? (
+            <>
+              <IconButton icon={ExternalLink} label="Bring its window to the front" onClick={onFocus} />
+              <IconButton icon={Pause} label={SUSPEND_HINT} onClick={onSuspend} />
+            </>
+          ) : (
+            <IconButton icon={Play} label="Reopen its window" onClick={onOpen} />
+          )}
+          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={onClose} />
+        </div>
+      </div>
+      <TagList guid={app.guid} tags={app.tags} className="window-item-tags" onError={onError} />
     </div>
   )
 }
@@ -917,7 +984,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   const currentGroup = currentWindow?.tabGroups.find((g) => g.guid === currentGroupGuid) ?? null
   const tabsOfCurrentGroup = currentGroup ? applyOrder(currentGroup.tabs, (t) => t.guid, true, tabOrder[currentGroup.guid]) : []
   const currentTab = currentGroup?.tabs.find((t) => t.guid === currentTabGuid) ?? null
-  const externalOfCurrentTab = currentTab ? applyOrder(currentTab.externalPages, (p) => p.guid, true, externalOrder[currentTab.guid]) : []
+  const externalOfCurrentTab = currentTab ? applyOrder(childrenOf(currentTab), (c) => c.guid, true, externalOrder[currentTab.guid]) : []
 
   // If whatever the user last drilled into has since vanished (window closed,
   // etc.), fall back to the deepest level that's still valid instead of showing
@@ -963,7 +1030,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           ? groupsOfCurrentWindow.map((g) => g.guid)
           : view === 'tabs'
             ? tabsOfCurrentGroup.map((t) => t.guid)
-            : externalOfCurrentTab.map((p) => p.guid)
+            : externalOfCurrentTab.map((c) => c.guid)
   const levelCurrent = view === 'apps' ? currentApp : view === 'windows' ? currentWindowGuid : view === 'groups' ? currentGroupGuid : view === 'tabs' ? currentTabGuid : null
 
   // A new level: the keys start from the item the person came from (going up) or the first one (going
@@ -975,8 +1042,13 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   }, [view, recordsLoaded])
 
   const PARENT_VIEW: Record<View, View | null> = { apps: null, windows: 'apps', groups: 'windows', tabs: 'groups', external: 'tabs' }
-  /** A listed external web site's window: brought to the front if it is open, otherwise opened again. */
-  const showExternal = (page: ExternalPageRecord) => handleExternal(() => (page.isOpen ? focusExternalSite(page.guid) : reopenExternalSite(page.guid)))
+  /** A listed child's window (an external web site, or a web app opened from the tab): brought to the front if it is
+   * open, otherwise opened again. */
+  const showExternal = (child: Child) => {
+    const open = child.kind === 'site' ? child.page.isOpen : child.app.isOpen
+    if (child.kind === 'site') return handleExternal(() => (open ? focusExternalSite(child.guid) : reopenExternalSite(child.guid)))
+    return handleExternal(() => (open ? focusSecondaryWindow(child.guid) : reopenSecondaryWindow(child.guid)))
+  }
   useListKeyboard({
     count: levelIds.length,
     focused: kbdFocus,
@@ -985,8 +1057,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     // Right: into the item — and on an external web site, which has nothing below it, to its window.
     onOpen: (i) => {
       if (view === 'external') {
-        const page = externalOfCurrentTab[i]
-        if (page) showExternal(page)
+        const child = externalOfCurrentTab[i]
+        if (child) showExternal(child)
         return
       }
       keyboardMovedRef.current = true
@@ -1002,8 +1074,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     onActivate: (i) => {
       if (view === 'tabs') handleActivateTab(levelIds[i])
       else if (view === 'external') {
-        const page = externalOfCurrentTab[i]
-        if (page) showExternal(page)
+        const child = externalOfCurrentTab[i]
+        if (child) showExternal(child)
       } else {
         keyboardMovedRef.current = true
         if (view === 'apps') openApp(levelIds[i])
@@ -1080,7 +1152,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
             <span>
               <span className="crumb-sep">/</span>
               <button className={`link-button ${view === 'external' ? 'active' : ''}`} onClick={() => navigate('external')}>
-                External web sites · {tabLabel(currentTab)}
+                Opened from · {tabLabel(currentTab)}
               </button>
             </span>
           )}
@@ -1346,7 +1418,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
       {view === 'external' && currentTab && (
         <>
           <div className="toolbar">
-            <span className="muted">External web sites opened from this tab</span>
+            <span className="muted">Web apps and external web sites opened from this tab</span>
             <div className="toolbar-actions">
               <IconButton
                 icon={ArrowUpDown}
@@ -1361,29 +1433,46 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           <div className="window-group">
             <LevelPanel
               items={externalOfCurrentTab}
-              getId={(p) => p.guid}
+              getId={(c) => c.guid}
               reordering={reordering}
               onDoneReordering={() => setReordering(false)}
-              onReorder={(pages) => saveExternalOrder(currentTab.guid, pages.map((p) => p.guid))}
-              emptyMessage="No external web site has been opened from this tab yet."
+              onReorder={(children) => saveExternalOrder(currentTab.guid, children.map((c) => c.guid))}
+              emptyMessage="Nothing has been opened from this tab yet."
               focusedIndex={kbdFocus}
               onFocusItem={setKbdFocus}
-              renderReorderLabel={(p) => (
-                <span>
-                  {p.title ?? 'No title'} <span className="muted">{p.url}</span>
-                </span>
-              )}
-              renderRow={(p) => (
-                <ExternalRow
-                  page={p}
-                  onError={setError}
-                  onCopy={handleCopy}
-                  onOpen={() => handleExternal(() => reopenExternalSite(p.guid))}
-                  onFocus={() => handleExternal(() => focusExternalSite(p.guid))}
-                  onSuspend={() => handleExternal(() => suspendExternalSite(p.guid))}
-                  onClose={() => handleExternal(() => closeExternalSite(p.guid))}
-                />
-              )}
+              renderReorderLabel={(c) =>
+                c.kind === 'site' ? (
+                  <span>
+                    {c.page.title ?? 'No title'} <span className="muted">{c.page.url}</span>
+                  </span>
+                ) : (
+                  <span>
+                    {c.app.tabText?.firstRow.map((s) => s.text).join('') || c.app.path} <span className="muted">{c.app.path}</span>
+                  </span>
+                )
+              }
+              renderRow={(c) =>
+                c.kind === 'site' ? (
+                  <ExternalRow
+                    page={c.page}
+                    onError={setError}
+                    onCopy={handleCopy}
+                    onOpen={() => handleExternal(() => reopenExternalSite(c.guid))}
+                    onFocus={() => handleExternal(() => focusExternalSite(c.guid))}
+                    onSuspend={() => handleExternal(() => suspendExternalSite(c.guid))}
+                    onClose={() => handleExternal(() => closeExternalSite(c.guid))}
+                  />
+                ) : (
+                  <OpenedAppRow
+                    app={c.app}
+                    onError={setError}
+                    onOpen={() => handleExternal(() => reopenSecondaryWindow(c.guid))}
+                    onFocus={() => handleExternal(() => focusSecondaryWindow(c.guid))}
+                    onSuspend={() => handleExternal(() => suspendSecondaryWindow(c.guid))}
+                    onClose={() => handleExternal(() => closeSecondaryWindow(c.guid))}
+                  />
+                )
+              }
             />
           </div>
         </>

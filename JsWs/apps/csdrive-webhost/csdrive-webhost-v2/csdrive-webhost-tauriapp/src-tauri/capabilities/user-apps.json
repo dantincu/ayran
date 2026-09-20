@@ -52,6 +52,8 @@
     "allow-close-tab",
     "allow-delete-tab-group",
     "allow-move-tab-to-group",
+    "allow-open-file-as-web-app",
+    "allow-open-related-web-app",
     "allow-open-external-site",
     "allow-reopen-external-site",
     "allow-focus-external-site",

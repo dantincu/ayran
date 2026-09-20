@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { invokeWithBytes } from '../../lib/ipcBytes'
 import { copyFile } from '../../lib/fs'
+import { openFileAsWebApp } from '../../lib/secondaryWindows'
 import { joinRelative } from '../../lib/localFs'
 import {
   type FileRoot,
@@ -92,6 +93,9 @@ export interface FileSource {
   remove(path: string, isDirectory: boolean): Promise<void>
   rename(from: string, to: string): Promise<void>
 
+  /** Opens the html or markdown file as a web app (a window of its own, listed under this Notes tab). */
+  openAsWebApp?(path: string): Promise<void>
+
   // Filen only ────────────────────────────────────────────────────────────────
   /** The version of the file as the cache knows it — call it right after opening the file, to know what
    * is being worked on. */
@@ -136,6 +140,9 @@ export function localSource(root: FileRoot): FileSource {
       return { size: info.isDirectory ? null : info.size, mtimeMs: info.mtimeMs }
     },
     rootId: root.id,
+    openAsWebApp: async (path) => {
+      await openFileAsWebApp({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path })
+    },
     read: (path) => readRootFile(root, path),
     write: (path, data) => writeRootFile(root, path, data),
     writeFromFile: (path, file) => writeRootFileFrom(root, path, file),
@@ -244,6 +251,9 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
         await invoke('filen_cache_upload_abort', { id }).catch(() => {})
         throw e
       }
+    },
+    openAsWebApp: async (path) => {
+      await openFileAsWebApp({ storage: 'FilenCloud', userId, branch, path: filenPath(path) })
     },
     exportFile: (path, name, token) => invoke<string>('filen_cache_export', { ...target, path: filenPath(path), name, token }),
     copyFromLocal: (path, root, source) => invoke<void>('filen_cache_upload_from_path', { ...target, path: filenPath(path), root, source }),

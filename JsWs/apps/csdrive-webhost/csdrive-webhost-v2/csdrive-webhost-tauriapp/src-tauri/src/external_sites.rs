@@ -292,6 +292,8 @@ pub async fn open_external_site(
     let url = check_url(&url)?;
     let window_guid = crate::window_host::caller_guid(&window).ok_or("Only web apps can open external web sites.")?;
     let tab_guid = windows.current_tab_of(&window_guid).ok_or("This window hasn't registered a tab yet.")?;
+    // A page that was itself opened from a Notes tab lists its sites directly under that Notes tab.
+    let tab_guid = crate::secondary_windows::origin_row(windows.pool(), &window_guid).await?.2.unwrap_or(tab_guid);
     let app_name = page_of(windows.pool(), &window_guid).await?.title();
 
     if sites.confirming.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
@@ -396,9 +398,45 @@ pub async fn close_external_site(app: AppHandle, windows: State<'_, SecondaryWin
     Ok(())
 }
 
+/// Every listed site (closing the app closes all their windows).
+pub async fn all_guids(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT guid FROM external_pages").fetch_all(pool).await.unwrap_or_default()
+}
+
 /// The sites opened from the tabs of a window entry — to suspend them when the window is.
 pub async fn guids_of_window(pool: &SqlitePool, window_guid: &str) -> Vec<String> {
     sqlx::query_scalar("SELECT guid FROM external_pages WHERE window_guid = ?1").bind(window_guid).fetch_all(pool).await.unwrap_or_default()
+}
+
+// ── Links open in the OS browser ──────────────────────────────────────────────
+
+/// Opens `url` in the person's default browser — what a click on a link to the web does in every window of
+/// this app (web apps, system apps): the page never leaves the app's own pages, and the link goes to the
+/// browser. Only what `check_url` accepts is opened. (An external web site *in* this app is only ever
+/// opened by an app asking for it, with `open_external_site`.)
+pub fn open_in_browser(url: &Url) {
+    let Ok(url) = check_url(url.as_str()) else { return };
+    #[cfg(windows)]
+    let result = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(url.as_str()).spawn();
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url.as_str()).spawn();
+    #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
+    let result = std::process::Command::new("xdg-open").arg(url.as_str()).spawn();
+    #[cfg(any(windows, target_os = "macos", all(unix, not(target_os = "macos"), not(target_os = "android"))))]
+    let _ = result;
+    #[cfg(target_os = "android")]
+    {
+        use jni::objects::JValue;
+        let address = url.to_string();
+        let _ = crate::android_jni::on_activity(move |env, activity| {
+            let class = crate::android_jni::helper_class(env, activity, "com.ayran.csdrive_webhost_tauriapp.ExternalSites")?;
+            let address = env.new_string(&address)?;
+            env.call_static_method(&class, "openInBrowser", "(Landroid/app/Activity;Ljava/lang/String;)V", &[JValue::Object(activity), JValue::Object(&address)])?;
+            Ok(())
+        });
+    }
+    #[cfg(target_os = "ios")]
+    let _ = url;
 }
 
 // ── Windows, per platform ─────────────────────────────────────────────────────

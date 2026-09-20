@@ -53,6 +53,18 @@ object ExternalSites {
         )
     }
 
+    /** A link to the web clicked in one of the app's pages: the person's browser opens it. */
+    @JvmStatic
+    fun openInBrowser(activity: Activity, url: String) {
+        val uri = Uri.parse(url)
+        if (uri.scheme != "http" && uri.scheme != "https") return
+        try {
+            activity.startActivity(Intent(Intent.ACTION_VIEW, uri))
+        } catch (_: Exception) {
+            // No browser to open it: nothing else to do.
+        }
+    }
+
     @JvmStatic
     fun close(id: String) {
         showing[id]?.finish()

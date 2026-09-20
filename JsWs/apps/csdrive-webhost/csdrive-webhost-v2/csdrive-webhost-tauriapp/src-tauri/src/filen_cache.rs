@@ -54,7 +54,7 @@ impl UploadSessions {
 }
 
 /// The account's Filen session as a `Remote`, after making sure the account has its cache folders.
-async fn prepare(app: &AppHandle, cache: &Cache, user_id: u64) -> Result<FilenRemote, String> {
+pub(crate) async fn prepare(app: &AppHandle, cache: &Cache, user_id: u64) -> Result<FilenRemote, String> {
     let email = crate::filen::email_of(app, user_id).await?;
     cache.ensure_account(user_id as i64, &email).await?;
     Ok(FilenRemote(crate::filen::session_for(app, user_id).await?))

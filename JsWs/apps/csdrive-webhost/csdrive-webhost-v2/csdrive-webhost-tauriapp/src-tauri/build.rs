@@ -38,6 +38,8 @@ fn main() {
             "close_tab",
             "delete_tab_group",
             "move_tab_to_group",
+            "open_file_as_web_app",
+            "open_related_web_app",
             "open_external_site",
             "reopen_external_site",
             "focus_external_site",

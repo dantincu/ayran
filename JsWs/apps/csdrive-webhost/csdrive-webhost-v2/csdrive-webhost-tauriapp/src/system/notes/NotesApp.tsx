@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitBranchPlus,
   GitMerge,
+  AppWindow,
   ListChecks,
   Lock,
   Pencil,
@@ -716,6 +717,17 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
     await act(() => source.release!(joinRelative(path, entry.name)))
   }
 
+  /** Opens the html or markdown file as a web app: a window of its own, listed under this tab. */
+  async function openAsWebApp(entry: Entry) {
+    if (!source?.openAsWebApp) return
+    setError(null)
+    try {
+      await source.openAsWebApp(joinRelative(path, entry.name))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   function startRename(entry: Entry) {
     setRenaming(entry.name)
     setRenameValue(entry.name)
@@ -1054,6 +1066,9 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
                       <td className="muted">{!entry.isDirectory && size !== null ? formatBytes(size) : ''}</td>
                       <td className="muted">{mtimeMs !== null ? formatTime(mtimeMs) : ''}</td>
                       <td className="row-actions">
+                        {!entry.isDirectory && source?.openAsWebApp && /\.(html?|md|markdown)$/i.test(entry.name) && (
+                          <IconButton icon={AppWindow} label="Open as web app — in a window of its own, listed under this tab" onClick={() => openAsWebApp(entry)} />
+                        )}
                         {!entry.isDirectory && <IconButton icon={Download} label="Export" onClick={() => exportEntry(entry)} />}
                         {account && !entry.isDirectory && (
                           <IconButton

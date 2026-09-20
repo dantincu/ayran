@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,6 +34,10 @@ pub struct SecondaryWindowsState {
     /// gone when the entry is. It is also what tells `close_tab` that closing a tab must suspend the
     /// window that is showing it (when it is open).
     current_tabs: Mutex<HashMap<String, String>>,
+    /// The app is closing (its main window was asked to close): from now on a secondary window that goes
+    /// away — closed by us, by the person or by the OS — is **suspended**, never removed from the list. Not
+    /// persisted: it only matters until the app is gone, and the next start begins without it.
+    shutting_down: AtomicBool,
 }
 
 impl SecondaryWindowsState {
@@ -52,6 +57,7 @@ impl SecondaryWindowsState {
             pending_suspend: Mutex::new(HashSet::new()),
             pending_tab_activation: Mutex::new(HashMap::new()),
             current_tabs: Mutex::new(HashMap::new()),
+            shutting_down: AtomicBool::new(false),
         }
     }
 }
@@ -115,6 +121,9 @@ pub struct TabRecord {
     pub tags: Vec<TagRecord>,
     /// The external web sites opened from this tab's page, oldest first (see `external_sites`).
     pub external_pages: Vec<crate::external_sites::ExternalPageRecord>,
+    /// The web apps opened from this tab (a Notes tab) — pages of files in a folder or a Filen account — as
+    /// windows of their own that are listed here rather than among the apps (see `notes_pages`).
+    pub opened_apps: Vec<crate::notes_pages::OpenedAppRecord>,
 }
 
 /// The Filen account (and branch) a page was opened from — see `Origin`.
@@ -125,6 +134,8 @@ pub struct FilenOrigin {
     pub email: String,
     /// The name of the branch the page was opened in, when it was opened in one.
     pub branch: Option<String>,
+    /// The branch's index, when there is one (what the Filen commands call it).
+    pub branch_index: Option<i64>,
 }
 
 /// How a window's page came to be opened, kept on its entry (`secondary_windows.origin`, JSON): what a
@@ -140,6 +151,8 @@ pub struct Origin {
     pub storage: Option<String>,
     /// The file's path in that storage (for Filen: its path in the drive). Absent: the entry's own path.
     pub path: Option<String>,
+    /// `DeviceFolder`: the picked folder's root id.
+    pub root: Option<String>,
     pub filen: Option<FilenOrigin>,
 }
 
@@ -210,6 +223,15 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
         .unwrap_or(0);
     if has_origin_column == 0 {
         sqlx::query("ALTER TABLE secondary_windows ADD COLUMN origin TEXT").execute(&pool).await?;
+    }
+
+    // A window opened from a Notes tab belongs to that tab (see `notes_pages`): the tab's guid; NULL for every other.
+    let has_parent_column: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('secondary_windows') WHERE name = 'parent_tab'")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    if has_parent_column == 0 {
+        sqlx::query("ALTER TABLE secondary_windows ADD COLUMN parent_tab TEXT").execute(&pool).await?;
     }
 
     // Tags are generic: `guid` names whatever they're attached to — a window, a tab
@@ -384,17 +406,51 @@ fn page_from_request(kind: Kind, relative_path: &str) -> Page {
 
 /// Adds the row for a new window entry.
 async fn insert_entry(pool: &SqlitePool, page: &Page) -> Result<(String, i64), String> {
+    insert_entry_full(pool, page, None, None).await
+}
+
+/// The same, with how the page came to be opened (`Origin`, as JSON) and the tab it is a child of.
+async fn insert_entry_full(pool: &SqlitePool, page: &Page, origin: Option<&str>, parent_tab: Option<&str>) -> Result<(String, i64), String> {
     let guid = uuid::Uuid::new_v4().to_string();
     let created_at = current_millis();
-    sqlx::query("INSERT INTO secondary_windows (guid, relative_path, kind, created_at) VALUES (?1, ?2, ?3, ?4)")
+    sqlx::query("INSERT INTO secondary_windows (guid, relative_path, kind, created_at, origin, parent_tab) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
         .bind(&guid)
         .bind(&page.relative_path)
         .bind(page.kind.as_str())
         .bind(created_at)
+        .bind(origin)
+        .bind(parent_tab)
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
     Ok((guid, created_at))
+}
+
+/// A window entry's own path, how its page was opened, and the tab it is a child of (if any).
+pub(crate) async fn origin_row(pool: &SqlitePool, window_guid: &str) -> Result<(String, Origin, Option<String>), String> {
+    let row = sqlx::query("SELECT relative_path, origin, parent_tab FROM secondary_windows WHERE guid = ?1")
+        .bind(window_guid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Window not found.".to_string())?;
+    let origin: Origin = row.get::<Option<String>, _>("origin").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
+    Ok((row.get("relative_path"), origin, row.get("parent_tab")))
+}
+
+/// Opens a web app that belongs to `parent_tab` (a Notes tab): its own window entry, listed under that tab.
+/// Resolves to the entry's guid.
+pub(crate) async fn open_child_window(app: &AppHandle, relative_path: String, origin: Origin, parent_tab: String) -> Result<String, String> {
+    let state = app.state::<SecondaryWindowsState>();
+    let page = Page::new(Kind::User, relative_path);
+    validate_page(app, &page)?;
+    let origin_json = serde_json::to_string(&origin).map_err(|e| e.to_string())?;
+    let (guid, _) = insert_entry_full(&state.pool, &page, Some(&origin_json), Some(&parent_tab)).await?;
+    let (tab_guid, created) = tab_for_opening(&state.pool, &guid, &page.relative_path, None).await?;
+    state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, !created));
+    crate::window_host::open(app, &guid, &page)?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(guid)
 }
 
 fn current_millis() -> i64 {
@@ -405,7 +461,12 @@ fn current_millis() -> i64 {
 }
 
 /// Rejects paths that escape the user folder or don't point at an existing .html/.htm file.
-fn validate_relative_html_path(app: &AppHandle, relative_path: &str) -> Result<(), String> {
+pub(crate) fn validate_relative_html_path(app: &AppHandle, relative_path: &str) -> Result<(), String> {
+    // A file of a picked folder or a Filen account (see `notes_pages`): not on disk under the user folder; it is
+    // judged, by the scope or the cache, whenever it is served.
+    if relative_path.starts_with("@device/") || relative_path.starts_with("@filen/") {
+        return if crate::notes_pages::is_page_file(relative_path) { Ok(()) } else { Err("Only .html, .htm and markdown (.md) files can be opened as web apps.".to_string()) };
+    }
     let user_dir = crate::layout::user_dir(&crate::data_location::effective_data_dir(app)?);
     let candidate = user_dir.join(relative_path);
 
@@ -559,8 +620,37 @@ async fn tab_for_init(
 
 /// Deletes a secondary window's row along with its tab groups, tabs, and every tag
 /// attached to any of them.
-/// Resolves to the guids of the external web sites that went with it, whose windows the caller closes.
-async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) -> Vec<String> {
+/// Deletes a window entry with everything under it — and the windows opened from its tabs, and theirs. Resolves to
+/// what the caller must close: those windows, and the external web sites' windows.
+async fn delete_window_and_tags(pool: &SqlitePool, guid: &str) -> crate::notes_pages::Closing {
+    let mut closing = crate::notes_pages::Closing::default();
+    let mut queue = crate::notes_pages::children_of_window(pool, guid).await;
+    let mut descendants = Vec::new();
+    while let Some(window) = queue.pop() {
+        queue.extend(crate::notes_pages::children_of_window(pool, &window).await);
+        descendants.push(window);
+    }
+    for window in descendants {
+        closing.external.extend(delete_window_rows(pool, &window).await);
+        closing.windows.push(window);
+    }
+    closing.external.extend(delete_window_rows(pool, guid).await);
+    closing
+}
+
+/// Deletes the windows opened from these tabs (the tabs are going), each with what is under it.
+async fn delete_children_of_tabs(pool: &SqlitePool, tab_guids: &[String]) -> crate::notes_pages::Closing {
+    let mut closing = crate::notes_pages::Closing::default();
+    for child in crate::notes_pages::children_of_tabs(pool, tab_guids).await {
+        let below = delete_window_and_tags(pool, &child).await;
+        closing.merge(below);
+        closing.windows.push(child);
+    }
+    closing
+}
+
+/// One window entry's own rows: its tabs, groups, tags and external web sites (resolving to their guids).
+async fn delete_window_rows(pool: &SqlitePool, guid: &str) -> Vec<String> {
     let external = crate::external_sites::delete_for_window(pool, guid).await;
     let tab_guids: Vec<String> = sqlx::query_scalar("SELECT guid FROM tabs WHERE window_guid = ?1")
         .bind(guid)
@@ -590,6 +680,47 @@ pub(crate) fn mark_suspending(app: &AppHandle, guid: &str) {
     app.state::<SecondaryWindowsState>().pending_suspend.lock().unwrap().insert(guid.to_string());
 }
 
+/// The main window is being closed (desktop). **The first thing** is to raise the flag that keeps window entries
+/// from being removed as their windows go; then the close is held back while every secondary window is
+/// suspended — their real windows closed, the entries kept — and only then is the main window closed for
+/// real. A second request (the one that closing it for real raises, or a person pressing the button again) is
+/// let through. Even if the OS ends the app before the suspending is done, no entry has been removed.
+#[cfg(desktop)]
+pub(crate) fn main_window_close_requested(app: &AppHandle, api: &tauri::CloseRequestApi) {
+    let state = app.state::<SecondaryWindowsState>();
+    if state.shutting_down.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    api.prevent_close();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        suspend_everything(&app).await;
+        if let Some(main) = app.get_webview_window(crate::window_host::MAIN_WINDOW_LABEL) {
+            let _ = main.close();
+        }
+    });
+}
+
+/// Suspends every secondary window (of both kinds, including the ones opened from tabs) and closes every
+/// external web site's window, waiting for them to be gone.
+#[cfg(desktop)]
+async fn suspend_everything(app: &AppHandle) {
+    let state = app.state::<SecondaryWindowsState>();
+    let rows = fetch_rows_with(&state.pool, None, None, true).await.unwrap_or_default();
+    let mut closing = Vec::new();
+    for (guid, _, _) in rows {
+        if crate::window_host::is_open(app, &guid) {
+            state.pending_suspend.lock().unwrap().insert(guid.clone());
+            crate::window_host::request_close(app, &guid);
+            closing.push(guid);
+        }
+    }
+    let external = crate::external_sites::all_guids(&state.pool).await;
+    crate::external_sites::close_windows(app, &external);
+    closing.extend(external);
+    crate::window_host::wait_until_closed(app, &closing).await;
+}
+
 pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
     // Release any SQLite databases the window still had open.
     app.state::<crate::sqlite_db::SqliteState>().close(guid, None).await;
@@ -597,18 +728,28 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
     let state = app.state::<SecondaryWindowsState>();
     let was_suspended = {
         let mut pending = state.pending_suspend.lock().unwrap();
-        pending.remove(guid)
+        // (Always taken out, so a suspend that was asked for isn't left behind.)
+        let asked = pending.remove(guid);
+        asked || state.shutting_down.load(Ordering::SeqCst)
     };
 
     if !was_suspended {
         state.current_tabs.lock().unwrap().remove(guid);
-        let external = delete_window_and_tags(&state.pool, guid).await;
-        crate::external_sites::close_windows(app, &external);
+        delete_window_and_tags(&state.pool, guid).await.close(app);
     } else {
-        // Suspending a window suspends the external web sites opened from its tabs: their windows close,
-        // their entries stay.
+        // Suspending a window suspends the external web sites opened from its tabs and the web apps opened
+        // from them (which do the same to theirs): their windows close, their entries stay.
         let open = crate::external_sites::guids_of_window(&state.pool, guid).await;
         crate::external_sites::close_windows(app, &open);
+        // (Desktop only: on Android one page is showing at a time, and a parent is suspended *because* its child
+        // took the screen — closing the child then would undo the very thing that suspended the parent.)
+        #[cfg(desktop)]
+        for child in crate::notes_pages::children_of_window(&state.pool, guid).await {
+            if crate::window_host::is_open(app, &child) {
+                state.pending_suspend.lock().unwrap().insert(child.clone());
+                crate::window_host::request_close(app, &child);
+            }
+        }
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
@@ -696,6 +837,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
     let tab_guids: Vec<String> = rows.iter().map(|row| row.get::<String, _>("guid")).collect();
     let all_tags = fetch_tags(pool, &tab_guids).await?;
     let all_external = crate::external_sites::fetch_for_tabs(pool, &tab_guids).await?;
+    let all_opened = crate::notes_pages::fetch_for_tabs(pool, &tab_guids).await?;
 
     let relative_paths: Vec<String> = rows
         .iter()
@@ -712,6 +854,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
             let relative_path: String = row.get("relative_path");
             let tags = all_tags.iter().filter(|t| t.guid == guid).cloned().collect();
             let external_pages = all_external.iter().filter(|p| p.tab_guid == guid).cloned().collect();
+            let opened_apps = all_opened.iter().filter(|(tab, _)| *tab == guid).map(|(_, app)| app.clone()).collect();
             let tab_text_json: Option<String> = row.get("tab_text");
             let tab_text = tab_text_json.and_then(|json| serde_json::from_str::<TabText>(&json).ok());
             let resource_type: Option<String> = row.get("resource_type");
@@ -732,6 +875,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
                 created_at: row.get("created_at"),
                 tags,
                 external_pages,
+                opened_apps,
             }
         })
         .collect())
@@ -783,13 +927,25 @@ async fn fetch_rows(
     kind: Option<&str>,
     relative_path: Option<&str>,
 ) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
+    fetch_rows_with(pool, kind, relative_path, false).await
+}
+
+/// `with_children`: also the windows that are children of a tab (see `notes_pages`) — the listing of the apps
+/// leaves them out (they are listed under their tab), closing and suspending everything does not.
+async fn fetch_rows_with(
+    pool: &SqlitePool,
+    kind: Option<&str>,
+    relative_path: Option<&str>,
+    with_children: bool,
+) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
     let rows = sqlx::query(
         "SELECT guid, relative_path, created_at FROM secondary_windows
-         WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR relative_path = ?2)
+         WHERE (?1 IS NULL OR kind = ?1) AND (?2 IS NULL OR relative_path = ?2) AND (?3 OR parent_tab IS NULL)
          ORDER BY relative_path ASC, created_at DESC",
     )
     .bind(kind)
     .bind(relative_path)
+    .bind(with_children)
     .fetch_all(pool)
     .await?;
 
@@ -833,8 +989,13 @@ pub async fn list_secondary_windows(
             }
         })
         .collect();
-    for external in records.iter_mut().flat_map(|w| w.tab_groups.iter_mut()).flat_map(|g| g.tabs.iter_mut()).flat_map(|t| t.external_pages.iter_mut()) {
-        external.is_open = crate::external_sites::is_open(&app, &external.guid);
+    for tab in records.iter_mut().flat_map(|w| w.tab_groups.iter_mut()).flat_map(|g| g.tabs.iter_mut()) {
+        for external in tab.external_pages.iter_mut() {
+            external.is_open = crate::external_sites::is_open(&app, &external.guid);
+        }
+        for opened in tab.opened_apps.iter_mut() {
+            opened.is_open = crate::window_host::is_open(&app, &opened.guid);
+        }
     }
     Ok(records)
 }
@@ -1082,8 +1243,7 @@ pub async fn close_secondary_window(
     if !crate::window_host::request_close(&app, &guid) {
         state.pending_tab_activation.lock().unwrap().remove(&guid);
         state.current_tabs.lock().unwrap().remove(&guid);
-        let external = delete_window_and_tags(&state.pool, &guid).await;
-        crate::external_sites::close_windows(&app, &external);
+        delete_window_and_tags(&state.pool, &guid).await.close(&app);
         let _ = app.emit(EVENT_CHANGED, ());
     }
     Ok(())
@@ -1115,7 +1275,7 @@ pub async fn close_all_secondary_windows(
     kind: Option<String>,
 ) -> Result<(), String> {
     let kind = kind.as_deref().map(|k| Kind::parse(Some(k))).transpose()?;
-    let rows = fetch_rows(&state.pool, kind.map(Kind::as_str), relative_path.as_deref())
+    let rows = fetch_rows_with(&state.pool, kind.map(Kind::as_str), relative_path.as_deref(), true)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1125,8 +1285,7 @@ pub async fn close_all_secondary_windows(
             // The window-destroyed handler deletes the row (and its tags) once the window actually closes.
             closing.push(guid.clone());
         } else {
-            let external = delete_window_and_tags(&state.pool, guid).await;
-            crate::external_sites::close_windows(&app, &external);
+            delete_window_and_tags(&state.pool, guid).await.close(&app);
         }
     }
 
@@ -1144,7 +1303,7 @@ pub async fn suspend_all_secondary_windows(
     kind: Option<String>,
 ) -> Result<(), String> {
     let kind = kind.as_deref().map(|k| Kind::parse(Some(k))).transpose()?;
-    let rows = fetch_rows(&state.pool, kind.map(Kind::as_str), relative_path.as_deref())
+    let rows = fetch_rows_with(&state.pool, kind.map(Kind::as_str), relative_path.as_deref(), true)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -1678,6 +1837,7 @@ pub async fn add_blank_tab(
         created_at,
         tags: Vec::new(),
         external_pages: Vec::new(),
+        opened_apps: Vec::new(),
     })
 }
 
@@ -1732,6 +1892,7 @@ pub async fn clone_tab(
         created_at,
         tags: Vec::new(),
         external_pages: Vec::new(),
+        opened_apps: Vec::new(),
     })
 }
 
@@ -1803,8 +1964,9 @@ pub async fn delete_tab_group(
     group_guid: String,
 ) -> Result<(), String> {
     let (window_guid, tab_guids) = delete_tab_group_impl(&state.pool, &group_guid).await?;
-    let external = crate::external_sites::delete_for_tabs(&state.pool, &tab_guids).await;
-    crate::external_sites::close_windows(&app, &external);
+    let mut closing = delete_children_of_tabs(&state.pool, &tab_guids).await;
+    closing.external.extend(crate::external_sites::delete_for_tabs(&state.pool, &tab_guids).await);
+    closing.close(&app);
 
     state.pending_tab_activation.lock().unwrap().retain(|_, (pending_tab, _)| !tab_guids.contains(pending_tab));
 
@@ -1842,8 +2004,9 @@ pub async fn close_tab(
     tab_guid: String,
 ) -> Result<(), String> {
     let window_guid = close_tab_impl(&state.pool, &tab_guid).await?;
-    let external = crate::external_sites::delete_for_tabs(&state.pool, std::slice::from_ref(&tab_guid)).await;
-    crate::external_sites::close_windows(&app, &external);
+    let mut closing = delete_children_of_tabs(&state.pool, std::slice::from_ref(&tab_guid)).await;
+    closing.external.extend(crate::external_sites::delete_for_tabs(&state.pool, std::slice::from_ref(&tab_guid)).await);
+    closing.close(&app);
 
     // An activation still waiting for this tab's page would find it gone; nothing is left to wait for.
     state.pending_tab_activation.lock().unwrap().retain(|_, (pending_tab, _)| *pending_tab != tab_guid);
