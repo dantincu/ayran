@@ -26,6 +26,18 @@
 //! first checks that Filen still looks as it did when each change was made, and reports conflicts
 //! instead of overwriting unless told to.
 //!
+//! Two more things sit on top. A file can be **locked against caching**: its cached copy (and what the
+//! cache knows about it) is then never refreshed, dropped or expired — not by the interval, not by a
+//! newer listing, not by clearing the cache — until it is unlocked; the lock belongs to the account's
+//! file, so a branch that reads it through sees the same frozen copy. And a branch can **check out** a
+//! file without changing it: the file's current content is copied into the branch and recorded, as a
+//! change of kind `checkout`, based on the version that was checked out — so it shows in the branch's
+//! pending changes and its version is verified at commit time like every other change's.
+//!
+//! Whoever works on a file remembers its **version** (`FileVersion`: exists, size, modification time —
+//! what Filen's listing offers) and, before saving over it, asks Filen itself (`check_version`, which
+//! never goes through the cache) whether it is still the same.
+//!
 //! Filen is reached through the `Remote` trait, so all of this is tested without a network.
 
 use std::collections::{HashMap, HashSet};
@@ -33,7 +45,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 use tokio::sync::Mutex;
 
@@ -126,7 +138,10 @@ pub struct CacheEntry {
     pub mtime_ms: Option<u64>,
     /// The file's content is in the cache (so opening it needs no network).
     pub cached: bool,
-    /// In a branch: `"put"` (written in the branch) or `"mkdir"` (made in the branch).
+    /// The file is locked against caching: its cached copy is never refreshed or dropped.
+    pub locked: bool,
+    /// In a branch: `"put"` (written in the branch), `"mkdir"` (made in the branch) or `"checkout"`
+    /// (checked out, not changed).
     pub changed: Option<String>,
 }
 
@@ -165,9 +180,49 @@ pub struct BranchInfo {
 #[serde(rename_all = "camelCase")]
 pub struct BranchChange {
     pub path: String,
-    /// `put`, `mkdir` or `delete`.
+    /// `put`, `mkdir`, `delete` or `checkout` (a file taken into the branch without being changed).
     pub kind: String,
     pub is_new: bool,
+}
+
+/// Which version of a file someone has been working on: whether it existed, and its size and
+/// modification time — all Filen's listing says, and enough to tell that it has changed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVersion {
+    pub exists: bool,
+    pub size: Option<u64>,
+    pub mtime_ms: Option<u64>,
+}
+
+impl FileVersion {
+    fn missing() -> Self {
+        Self { exists: false, size: None, mtime_ms: None }
+    }
+
+    fn of(entry: Option<&RemoteEntry>) -> Self {
+        match entry {
+            Some(e) if !e.is_directory => Self { exists: true, size: e.size, mtime_ms: e.mtime_ms },
+            _ => Self::missing(),
+        }
+    }
+
+    /// The same version (a file that doesn't exist is the same as another that doesn't).
+    fn same_as(&self, other: &FileVersion) -> bool {
+        self.exists == other.exists && (!self.exists || (self.size == other.size && self.mtime_ms == other.mtime_ms))
+    }
+}
+
+/// What asking Filen about a file found.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionCheck {
+    /// Filen has the very version that was being worked on.
+    pub up_to_date: bool,
+    /// When it isn't: what happened to it, in words.
+    pub problem: Option<String>,
+    /// How Filen has the file now.
+    pub current: FileVersion,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -306,7 +361,12 @@ struct EntryRow {
     mtime_ms: Option<i64>,
     local_name: String,
     content_at: Option<i64>,
+    locked: i64,
 }
+
+/// The columns of an entries row, as EntryRow reads them (with whether the file is locked).
+const ENTRY_COLUMNS: &str = "path, name, is_dir, size, mtime_ms, local_name, content_at,
+    EXISTS(SELECT 1 FROM file_locks l WHERE l.user_id = entries.user_id AND l.path = entries.path) AS locked";
 
 #[derive(sqlx::FromRow, Clone, Debug)]
 struct ChangeRow {
@@ -366,6 +426,9 @@ impl Cache {
             "CREATE TABLE IF NOT EXISTS branches (user_id INTEGER NOT NULL, pair_index INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (user_id, pair_index))",
             "CREATE TABLE IF NOT EXISTS branch_changes (user_id INTEGER NOT NULL, branch INTEGER NOT NULL, path TEXT NOT NULL, parent TEXT NOT NULL, kind TEXT NOT NULL, base_exists INTEGER NOT NULL, base_size INTEGER, base_mtime_ms INTEGER, local_name TEXT NOT NULL, changed_at INTEGER NOT NULL, PRIMARY KEY (user_id, branch, path))",
             "CREATE INDEX IF NOT EXISTS branch_changes_parent ON branch_changes (user_id, branch, parent)",
+            // Files locked against caching. Kept apart from `entries` so that a lock survives its row being
+            // dropped and made again (a commit, or a listing that briefly lacks the file).
+            "CREATE TABLE IF NOT EXISTS file_locks (user_id INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY (user_id, path))",
         ] {
             sqlx::query(statement).execute(&pool).await.map_err(sql)?;
         }
@@ -473,7 +536,7 @@ impl Cache {
                 }
             }
         }
-        for table in ["branch_changes", "branches", "listings", "entries", "accounts"] {
+        for table in ["branch_changes", "branches", "listings", "entries", "file_locks", "accounts"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE user_id = ?1")).bind(user_id).execute(&self.pool).await.map_err(sql)?;
         }
         Ok(())
@@ -494,9 +557,18 @@ impl Cache {
         Ok(self.a_dir().join(folder_pairs::short_name(pair_index as u32)).join(crate::layout::FILES_CONTENT_FOLDER))
     }
 
-    /// Throws away everything cached for the account (listings, metadata, contents); branches stay.
+    /// Throws away everything cached for the account (listings, metadata, contents); branches stay,
+    /// and so do the files locked against caching (with the folders above them, whose rows name them).
     pub async fn clear(&self, user_id: i64) -> Result<(), String> {
         let _guard = self.lock(user_id).await;
+        let locked: Vec<String> = sqlx::query_scalar("SELECT e.path FROM entries e JOIN file_locks l ON l.user_id = e.user_id AND l.path = e.path WHERE e.user_id = ?1 AND e.is_dir = 0")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(sql)?;
+        if !locked.is_empty() {
+            return self.clear_except(user_id, &locked).await;
+        }
         let content = self.content_root(user_id).await?;
         match std::fs::remove_dir_all(&content) {
             Ok(()) => {}
@@ -509,12 +581,71 @@ impl Cache {
         Ok(())
     }
 
+    /// clear() when files are locked: everything goes but them and the folders above them.
+    async fn clear_except(&self, user_id: i64, locked: &[String]) -> Result<(), String> {
+        let keep: HashSet<String> = locked.iter().flat_map(|p| prefixes(p)).collect();
+        let rows: Vec<(String, i64)> = sqlx::query_as("SELECT path, is_dir FROM entries WHERE user_id = ?1").bind(user_id).fetch_all(&self.pool).await.map_err(sql)?;
+        for (path, is_dir) in rows.iter().filter(|(p, _)| !keep.contains(p)) {
+            let local = self.mirror_path(user_id, path).await?;
+            let _ = if *is_dir != 0 { std::fs::remove_dir_all(&local) } else { std::fs::remove_file(&local) };
+        }
+        for (path, _) in rows.iter().filter(|(p, _)| !keep.contains(p)) {
+            sqlx::query("DELETE FROM entries WHERE user_id = ?1 AND path = ?2").bind(user_id).bind(path).execute(&self.pool).await.map_err(sql)?;
+        }
+        sqlx::query("DELETE FROM listings WHERE user_id = ?1").bind(user_id).execute(&self.pool).await.map_err(sql)?;
+        Ok(())
+    }
+
+    // ── Files locked against caching ─────────────────────────────────────────
+
+    async fn is_locked(&self, user_id: i64, path: &str) -> Result<bool, String> {
+        let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM file_locks WHERE user_id = ?1 AND path = ?2")
+            .bind(user_id)
+            .bind(path)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql)?;
+        Ok(found.is_some())
+    }
+
+    async fn set_lock_row(&self, user_id: i64, path: &str, locked: bool) -> Result<(), String> {
+        let statement = if locked { "INSERT OR IGNORE INTO file_locks (user_id, path) VALUES (?1, ?2)" } else { "DELETE FROM file_locks WHERE user_id = ?1 AND path = ?2" };
+        sqlx::query(statement).bind(user_id).bind(path).execute(&self.pool).await.map_err(sql)?;
+        Ok(())
+    }
+
+    /// Forgets the locks of `path` and everything below it (it was deleted or moved).
+    async fn drop_locks_below(&self, user_id: i64, path: &str) -> Result<(), String> {
+        let below = format!("{path}/");
+        sqlx::query("DELETE FROM file_locks WHERE user_id = ?1 AND (path = ?2 OR substr(path, 1, ?3) = ?4)")
+            .bind(user_id)
+            .bind(path)
+            .bind(below.chars().count() as i64)
+            .bind(&below)
+            .execute(&self.pool)
+            .await
+            .map_err(sql)?;
+        Ok(())
+    }
+
+    /// Locks a file of the account against caching, or unlocks it. A locked file's cached copy is
+    /// **frozen**: it is served as it is — with no check that it is still current, so it opens offline
+    /// too — and neither the interval, nor a newer listing, nor a deletion in Filen, nor "clear the
+    /// cache" touches it. Locking fetches the file first if it isn't cached (there has to be a copy to
+    /// keep). It is about the account's file, so it holds in every branch that reads it through.
+    pub async fn set_locked(&self, remote: &impl Remote, user_id: i64, path: &str, locked: bool) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let _guard = self.lock(user_id).await;
+        if locked {
+            self.cached_file_account(remote, user_id, &path).await?;
+        }
+        self.set_lock_row(user_id, &path, locked).await
+    }
+
     // ── The cached tree of the account itself ────────────────────────────────
 
     async fn entry(&self, user_id: i64, path: &str) -> Result<Option<EntryRow>, String> {
-        sqlx::query_as::<_, EntryRow>(
-            "SELECT path, name, is_dir, size, mtime_ms, local_name, content_at FROM entries WHERE user_id = ?1 AND path = ?2",
-        )
+        sqlx::query_as::<_, EntryRow>(&format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE user_id = ?1 AND path = ?2"))
         .bind(user_id)
         .bind(path)
         .fetch_optional(&self.pool)
@@ -523,9 +654,7 @@ impl Cache {
     }
 
     async fn children(&self, user_id: i64, parent: &str) -> Result<Vec<EntryRow>, String> {
-        sqlx::query_as::<_, EntryRow>(
-            "SELECT path, name, is_dir, size, mtime_ms, local_name, content_at FROM entries WHERE user_id = ?1 AND parent = ?2",
-        )
+        sqlx::query_as::<_, EntryRow>(&format!("SELECT {ENTRY_COLUMNS} FROM entries WHERE user_id = ?1 AND parent = ?2"))
         .bind(user_id)
         .bind(parent)
         .fetch_all(&self.pool)
@@ -595,17 +724,22 @@ impl Cache {
         let now = self.now();
         let existing: HashMap<String, EntryRow> = self.children(user_id, path).await?.into_iter().map(|r| (r.name.clone(), r)).collect();
         let listed: HashSet<&str> = remote.iter().map(|e| e.name.as_str()).collect();
+        // A locked file is frozen: what the cache holds of it stays, whatever Filen now says (even that it is gone).
+        let frozen = |row: &EntryRow| row.locked != 0 && row.is_dir == 0;
 
         for (name, row) in &existing {
-            if !listed.contains(name.as_str()) {
+            if !listed.contains(name.as_str()) && !frozen(row) {
                 self.drop_subtree(user_id, &row.path).await?;
             }
         }
 
         let mut taken: HashSet<String> =
-            existing.iter().filter(|(n, _)| listed.contains(n.as_str())).map(|(_, r)| r.local_name.to_lowercase()).collect();
+            existing.iter().filter(|(n, r)| listed.contains(n.as_str()) || frozen(r)).map(|(_, r)| r.local_name.to_lowercase()).collect();
         for entry in remote {
             let entry_path = join_path(path, &entry.name);
+            if !entry.is_directory && existing.get(&entry.name).is_some_and(|row| frozen(row) && row.is_dir == 0) {
+                continue;
+            }
             match existing.get(&entry.name) {
                 Some(row) if (row.is_dir != 0) == entry.is_directory => {
                     let changed = row.size != entry.size.map(|s| s as i64) || row.mtime_ms != entry.mtime_ms.map(|m| m as i64);
@@ -669,6 +803,7 @@ impl Cache {
             size: row.size.map(|s| s as u64),
             mtime_ms: row.mtime_ms.map(|m| m as u64),
             cached: row.content_at.is_some(),
+            locked: row.locked != 0,
             changed: None,
         }
     }
@@ -714,6 +849,15 @@ impl Cache {
     /// download leaves nothing that looks cached.
     async fn cached_file_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<PathBuf, String> {
         let parent = parent_of(path).ok_or("That's the root folder, not a file.")?;
+        // A locked file that is cached is served as it is: nothing about it is validated (or fetched).
+        if let Some(entry) = self.entry(user_id, path).await? {
+            if entry.locked != 0 && entry.is_dir == 0 && entry.content_at.is_some() {
+                let local = self.mirror_path(user_id, path).await?;
+                if local.is_file() {
+                    return Ok(local);
+                }
+            }
+        }
         self.list_account(remote, user_id, &parent, false).await?; // validates the listing (and so the entry)
         let entry = self.entry(user_id, path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
         if entry.is_dir != 0 {
@@ -799,13 +943,27 @@ impl Cache {
         match branch {
             Some(branch) => self.write_branch(remote, user_id, branch, &path, &parent, bytes).await,
             None => {
-                self.list_account(remote, user_id, &parent, false).await?;
-                write_remote(remote, &path, bytes).await?;
-                self.list_account(remote, user_id, &parent, true).await?; // Filen's own idea of the new file
-                let local = self.mirror_path(user_id, &path).await?;
-                self.store_content(user_id, &path, &local, bytes).await
+                // A locked file stays locked, on what is written now: the lock is lifted while the cache
+                // learns of the new version (a frozen row would ignore it) and put back after.
+                let was_locked = self.is_locked(user_id, &path).await?;
+                if was_locked {
+                    self.set_lock_row(user_id, &path, false).await?;
+                }
+                let done = self.write_account(remote, user_id, &path, &parent, bytes).await;
+                if was_locked {
+                    self.set_lock_row(user_id, &path, true).await?;
+                }
+                done
             }
         }
+    }
+
+    async fn write_account(&self, remote: &impl Remote, user_id: i64, path: &str, parent: &str, bytes: &[u8]) -> Result<(), String> {
+        self.list_account(remote, user_id, parent, false).await?;
+        write_remote(remote, path, bytes).await?;
+        self.list_account(remote, user_id, parent, true).await?; // Filen's own idea of the new file
+        let local = self.mirror_path(user_id, path).await?;
+        self.store_content(user_id, path, &local, bytes).await
     }
 
     /// Creates a folder (and any missing folders above it).
@@ -837,6 +995,7 @@ impl Cache {
             Some(branch) => self.remove_branch(remote, user_id, branch, &path).await,
             None => {
                 remote.remove(&path).await?;
+                self.drop_locks_below(user_id, &path).await?;
                 self.drop_subtree(user_id, &path).await
             }
         }
@@ -859,12 +1018,85 @@ impl Cache {
             Some(branch) => self.rename_branch(remote, user_id, branch, &from, &to).await,
             None => {
                 remote.rename(&from, &to).await?;
+                self.drop_locks_below(user_id, &from).await?;
                 self.drop_subtree(user_id, &from).await?;
                 let mut affected: Vec<String> = parent_of(&from).into_iter().collect();
                 affected.extend(prefixes(&to).iter().filter_map(|p| parent_of(p)));
                 self.invalidate_listings(user_id, &affected).await
             }
         }
+    }
+
+    // ── Versions ─────────────────────────────────────────────────────────────
+
+    /// The version of the file as the cache knows it — what someone opening it is working on. No
+    /// network. In a branch that already holds the file (changed or checked out) it is the version
+    /// *that* was based on: the one that has to still be Filen's for the file to be saved or committed
+    /// without a warning.
+    pub async fn version(&self, user_id: i64, branch: Option<i64>, path: &str) -> Result<FileVersion, String> {
+        let path = norm_path(path)?;
+        let _guard = self.lock(user_id).await;
+        if let Some(branch) = branch {
+            self.branch_exists(user_id, branch).await?;
+            if let Some(change) = self.change(user_id, branch, &path).await?.filter(|c| c.kind != "delete") {
+                return Ok(FileVersion { exists: change.base_exists != 0, size: change.base_size.map(|s| s as u64), mtime_ms: change.base_mtime_ms.map(|m| m as u64) });
+            }
+        }
+        Ok(match self.entry(user_id, &path).await? {
+            Some(e) if e.is_dir == 0 => FileVersion { exists: true, size: e.size.map(|s| s as u64), mtime_ms: e.mtime_ms.map(|m| m as u64) },
+            _ => FileVersion::missing(),
+        })
+    }
+
+    /// Asks Filen itself — not the cache, which a locked file would keep frozen — how the file is now,
+    /// and compares it with `base`, the version that was being worked on.
+    pub async fn check_version(&self, remote: &impl Remote, user_id: i64, branch: Option<i64>, path: &str, base: &FileVersion) -> Result<VersionCheck, String> {
+        let path = norm_path(path)?;
+        let parent = parent_of(&path).ok_or("The root folder isn't a file.")?;
+        let _guard = self.lock(user_id).await;
+        if let Some(branch) = branch {
+            if self.inside_new_folder(user_id, branch, &parent).await? {
+                // Filen has nothing there at all, and nothing can have changed.
+                return Ok(VersionCheck { up_to_date: !base.exists, problem: None, current: FileVersion::missing() });
+            }
+        }
+        let listing = remote.readdir(&parent).await.map_err(|e| format!("Filen can't be asked about the file just now ({e})."))?;
+        let current = FileVersion::of(listing.iter().find(|e| e.name == name_of(&path)));
+        let problem = if current.same_as(base) {
+            None
+        } else if !base.exists {
+            Some("it was created in Filen after you started".to_string())
+        } else if !current.exists {
+            Some("it was deleted in Filen after you started".to_string())
+        } else if current.mtime_ms > base.mtime_ms {
+            Some("Filen has a newer version of it".to_string())
+        } else {
+            Some("Filen has a different version of it".to_string())
+        };
+        Ok(VersionCheck { up_to_date: problem.is_none(), problem, current })
+    }
+
+    /// Bases the branch's change at `path` on what Filen has now — the person saw that Filen changed the
+    /// file and chose to overwrite it — so the commit doesn't warn about it again.
+    pub async fn rebase(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let parent = parent_of(&path).ok_or("The root folder isn't a file.")?;
+        let _guard = self.lock(user_id).await;
+        self.branch_exists(user_id, branch).await?;
+        self.change(user_id, branch, &path).await?.filter(|c| c.kind != "delete").ok_or("The branch has no change to that file.")?;
+        let listing = remote.readdir(&parent).await.map_err(|e| format!("Filen can't be asked about the file just now ({e})."))?;
+        let now = FileVersion::of(listing.iter().find(|e| e.name == name_of(&path)));
+        sqlx::query("UPDATE branch_changes SET base_exists = ?4, base_size = ?5, base_mtime_ms = ?6 WHERE user_id = ?1 AND branch = ?2 AND path = ?3")
+            .bind(user_id)
+            .bind(branch)
+            .bind(&path)
+            .bind(now.exists as i64)
+            .bind(now.size.map(|s| s as i64))
+            .bind(now.mtime_ms.map(|m| m as i64))
+            .execute(&self.pool)
+            .await
+            .map_err(sql)?;
+        Ok(())
     }
 
     // ── Branches ─────────────────────────────────────────────────────────────
@@ -1076,14 +1308,15 @@ impl Cache {
 
         for change in self.change_children(user_id, branch, path).await? {
             let name = name_of(&change.path).to_string();
+            let locked = entries.iter().any(|e| e.name == name && e.locked); // the account's file under it
             entries.retain(|e| e.name != name);
             match change.kind.as_str() {
                 "delete" => {}
-                "mkdir" => entries.push(CacheEntry { name, is_directory: true, size: None, mtime_ms: Some(change.changed_at as u64), cached: false, changed: Some("mkdir".into()) }),
-                _ => {
+                "mkdir" => entries.push(CacheEntry { name, is_directory: true, size: None, mtime_ms: Some(change.changed_at as u64), cached: false, locked: false, changed: Some("mkdir".into()) }),
+                kind => {
                     let local = self.branch_local_path(user_id, branch, &change.path).await?;
                     let size = std::fs::metadata(&local).map(|m| m.len()).ok();
-                    entries.push(CacheEntry { name, is_directory: false, size, mtime_ms: Some(change.changed_at as u64), cached: true, changed: Some("put".into()) });
+                    entries.push(CacheEntry { name, is_directory: false, size, mtime_ms: Some(change.changed_at as u64), cached: true, locked, changed: Some(kind.into()) });
                 }
             }
         }
@@ -1112,10 +1345,58 @@ impl Cache {
         if self.deleted_in_branch(user_id, branch, path).await? {
             return Err(format!("\"{path}\" was deleted in this branch."));
         }
-        if self.change(user_id, branch, path).await?.is_some_and(|c| c.kind == "put") {
+        if self.change(user_id, branch, path).await?.is_some_and(|c| c.kind == "put" || c.kind == "checkout") {
             return self.branch_local_path(user_id, branch, path).await;
         }
         self.cached_file_account(remote, user_id, path).await
+    }
+
+    /// Takes the file into the branch without changing it: its content (fetched if need be) is copied
+    /// into the branch and recorded as a `checkout` based on the version that was copied, so it is
+    /// among the branch's pending changes and its version is checked when the branch is committed. A
+    /// file the branch already changed (or checked out) is left as it is.
+    pub async fn checkout(&self, remote: &impl Remote, user_id: i64, branch: i64, path: &str) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let parent = parent_of(&path).ok_or("The root folder can't be checked out.")?;
+        let _guard = self.lock(user_id).await;
+        self.branch_exists(user_id, branch).await?;
+        if self.deleted_in_branch(user_id, branch, &path).await? {
+            return Err(format!("\"{path}\" was deleted in this branch."));
+        }
+        match self.change(user_id, branch, &path).await? {
+            Some(c) if c.kind == "put" || c.kind == "checkout" => return Ok(()),
+            Some(_) => return Err(format!("\"{path}\" isn't a file.")),
+            None => {}
+        }
+        let source = self.cached_file_account(remote, user_id, &path).await?;
+        let local = self.begin_put(remote, user_id, branch, &path, &parent).await?;
+        sqlx::query("UPDATE branch_changes SET kind = 'checkout' WHERE user_id = ?1 AND branch = ?2 AND path = ?3")
+            .bind(user_id)
+            .bind(branch)
+            .bind(&path)
+            .execute(&self.pool)
+            .await
+            .map_err(sql)?;
+        if let Err(e) = std::fs::copy(&source, &local) {
+            sqlx::query("DELETE FROM branch_changes WHERE user_id = ?1 AND branch = ?2 AND path = ?3").bind(user_id).bind(branch).bind(&path).execute(&self.pool).await.map_err(sql)?;
+            return Err(io(e));
+        }
+        Ok(())
+    }
+
+    /// Lets go of a checkout that was never changed: the file leaves the branch's pending changes.
+    pub async fn release(&self, user_id: i64, branch: i64, path: &str) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let _guard = self.lock(user_id).await;
+        self.branch_exists(user_id, branch).await?;
+        let change = self.change(user_id, branch, &path).await?.ok_or("That file isn't checked out in this branch.")?;
+        if change.kind != "checkout" {
+            return Err("That file has changes in this branch; it can't be let go without losing them.".to_string());
+        }
+        let local = self.branch_local_path(user_id, branch, &path).await?;
+        sqlx::query("DELETE FROM branch_changes WHERE user_id = ?1 AND branch = ?2 AND path = ?3").bind(user_id).bind(branch).bind(&path).execute(&self.pool).await.map_err(sql)?;
+        let _ = std::fs::remove_file(local);
+        Ok(())
     }
 
     /// Where the file is on disk, fetched (streamed) into the cache if it isn't there yet — for
@@ -1298,19 +1579,21 @@ impl Cache {
         let mut changes = self.changes(user_id, branch).await?;
         let depth = |c: &ChangeRow| c.path.matches('/').count();
 
-        // Filen as it is now, one fresh listing per folder involved.
-        let mut current: HashMap<String, Option<Vec<CacheEntry>>> = HashMap::new();
+        // Filen as it is now — asked directly, one listing per folder involved (the cache would show a
+        // locked file as it was).
+        let mut current: HashMap<String, Option<Vec<RemoteEntry>>> = HashMap::new();
         let mut conflicts = Vec::new();
         for change in &changes {
             let parent = parent_of(&change.path).unwrap_or_else(|| "/".to_string());
             if !current.contains_key(&parent) {
-                let listing = self.list_account(remote, user_id, &parent, true).await.ok().map(|l| l.entries);
-                current.insert(parent.clone(), listing);
+                current.insert(parent.clone(), remote.readdir(&parent).await.ok());
             }
             let now_entry = current[&parent].as_ref().and_then(|entries| entries.iter().find(|e| e.name == name_of(&change.path)));
-            let same_as_base = |e: &CacheEntry| e.size.map(|s| s as i64) == change.base_size && e.mtime_ms.map(|m| m as i64) == change.base_mtime_ms;
+            let same_as_base = |e: &RemoteEntry| e.size.map(|s| s as i64) == change.base_size && e.mtime_ms.map(|m| m as i64) == change.base_mtime_ms;
             let problem = match (change.kind.as_str(), change.base_exists != 0, now_entry) {
                 ("mkdir", _, Some(e)) if !e.is_directory => Some("a file with that name exists in Filen now"),
+                ("checkout", _, None) => Some("it was deleted in Filen after it was checked out"),
+                ("checkout", _, Some(e)) if !same_as_base(e) => Some("it changed in Filen after it was checked out"),
                 ("put", false, Some(_)) => Some("it was created in Filen after the branch was"),
                 ("put", true, None) => Some("it was deleted in Filen after the branch changed it"),
                 ("put", true, Some(e)) if !same_as_base(e) => Some("it changed in Filen after the branch did"),
@@ -1325,7 +1608,9 @@ impl Cache {
             return Ok(CommitReport { committed: false, applied: 0, conflicts });
         }
 
-        // Folders first (top down), then files, then deletions (bottom up).
+        // A checkout changes nothing: it only had its version verified. Folders first (top down), then
+        // files, then deletions (bottom up).
+        changes.retain(|c| c.kind != "checkout");
         changes.sort_by_key(|c| (match c.kind.as_str() { "mkdir" => 0, "put" => 1, _ => 2 }, if c.kind == "delete" { -(depth(c) as i64) } else { depth(c) as i64 }));
         let mut applied = 0;
         let mut touched: Vec<String> = Vec::new();
@@ -1348,7 +1633,11 @@ impl Cache {
             touched.push(change.path.clone());
         }
 
-        // Filen changed, so what's cached about it is out of date.
+        // Filen changed, so what's cached about it is out of date. (A file that was deleted has no lock
+        // left to keep; one that was written keeps its lock, which then holds the version fetched next.)
+        for change in changes.iter().filter(|c| c.kind == "delete") {
+            self.drop_locks_below(user_id, &change.path).await?;
+        }
         for path in &touched {
             self.drop_subtree(user_id, path).await?;
             let mut affected: Vec<String> = prefixes(path).iter().filter_map(|p| parent_of(p)).collect();
@@ -1435,8 +1724,22 @@ impl Cache {
 
     /// Finishes the upload: the file now exists (in Filen, or in the branch), and what was assembled
     /// on disk is its cached copy.
-    pub async fn upload_finish<R: Remote>(&self, remote: &R, mut job: UploadJob<R::Upload>) -> Result<(), String> {
+    pub async fn upload_finish<R: Remote>(&self, remote: &R, job: UploadJob<R::Upload>) -> Result<(), String> {
         let _guard = self.lock(job.user_id).await;
+        // As for a write: a locked file stays locked, on the version that was just uploaded.
+        let (user_id, path) = (job.user_id, job.path.clone());
+        let was_locked = job.branch.is_none() && self.is_locked(user_id, &path).await?;
+        if was_locked {
+            self.set_lock_row(user_id, &path, false).await?;
+        }
+        let done = self.finish_upload_job(remote, job).await;
+        if was_locked {
+            self.set_lock_row(user_id, &path, true).await?;
+        }
+        done
+    }
+
+    async fn finish_upload_job<R: Remote>(&self, remote: &R, mut job: UploadJob<R::Upload>) -> Result<(), String> {
         drop(job.file.take());
         let (user_id, path, parent) = (job.user_id, job.path.clone(), job.parent.clone());
         let local = match job.branch {
@@ -1658,6 +1961,203 @@ mod tests {
 
     fn run<F: Future<Output = ()>>(future: F) {
         tauri::async_runtime::block_on(future)
+    }
+
+    #[test]
+    fn a_locked_file_is_frozen_until_it_is_unlocked() {
+        run(async {
+            let f = Fixture::new("lock").await;
+            f.remote.put("/d/a.txt", "one");
+            f.remote.put("/d/b.txt", "bee");
+            f.cache.set_locked(&f.remote, 7, "/d/a.txt", true).await.unwrap();
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1, "locking fetches the file, so there is a copy to keep");
+            let entries = f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap().entries;
+            assert!(entries[0].locked && entries[0].cached && !entries[1].locked, "{entries:?}");
+
+            // Changed in Filen and past the interval: the unlocked file follows, the locked one doesn't.
+            f.remote.put("/d/a.txt", "one, changed elsewhere");
+            f.remote.put("/d/b.txt", "bee, changed elsewhere");
+            f.advance(4000);
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap(), b"one");
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/b.txt").await.unwrap(), b"bee, changed elsewhere");
+            let listed = f.cache.list(&f.remote, 7, None, "/d", true).await.unwrap().entries;
+            assert_eq!((listed[0].size, listed[0].locked), (Some(3), true), "its metadata is frozen too: {listed:?}");
+
+            // Offline, long after: a locked file opens without asking anybody.
+            f.remote.offline.store(true, Ordering::SeqCst);
+            f.advance(999_999);
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap(), b"one");
+            f.remote.offline.store(false, Ordering::SeqCst);
+
+            // Deleted in Filen: still here, frozen — and clearing the cache keeps it (and only it).
+            f.remote.remove("/d/a.txt").await.unwrap();
+            f.advance(4000);
+            assert_eq!(Fixture::names(&f.cache.list(&f.remote, 7, None, "/d", true).await.unwrap()), ["a.txt", "b.txt"]);
+            f.cache.clear(7).await.unwrap();
+            assert!(f.base.join("a/001/c/d/a.txt").is_file() && !f.base.join("a/001/c/d/b.txt").exists());
+            f.remote.offline.store(true, Ordering::SeqCst);
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap(), b"one", "after the clear, offline");
+            f.remote.offline.store(false, Ordering::SeqCst);
+
+            // Unlocked, it is an ordinary cached file again, and Filen's deletion catches up with it.
+            f.cache.set_locked(&f.remote, 7, "/d/a.txt", false).await.unwrap();
+            assert_eq!(Fixture::names(&f.cache.list(&f.remote, 7, None, "/d", true).await.unwrap()), ["b.txt"]);
+            assert!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.is_err());
+            assert!(f.cache.set_locked(&f.remote, 7, "/d/nothing.txt", true).await.is_err(), "only a file Filen has can be locked");
+        });
+    }
+
+    #[test]
+    fn a_locked_file_stays_locked_when_written_and_forgets_it_when_deleted() {
+        run(async {
+            let f = Fixture::new("lock-write").await;
+            f.remote.put("/a.txt", "one");
+            f.cache.set_locked(&f.remote, 7, "/a.txt", true).await.unwrap();
+
+            f.cache.write(&f.remote, 7, None, "/a.txt", b"two").await.unwrap();
+            assert_eq!(f.remote.text("/a.txt").as_deref(), Some("two"));
+            let entry = f.cache.list(&f.remote, 7, None, "/", false).await.unwrap().entries.remove(0);
+            assert_eq!((entry.locked, entry.size), (true, Some(3)), "still locked, on what was written: {entry:?}");
+
+            f.remote.put("/a.txt", "changed elsewhere");
+            f.advance(4000);
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/a.txt").await.unwrap(), b"two", "and frozen on it");
+
+            f.cache.remove(&f.remote, 7, None, "/a.txt").await.unwrap();
+            f.cache.write(&f.remote, 7, None, "/a.txt", b"again").await.unwrap();
+            assert!(!f.cache.list(&f.remote, 7, None, "/", false).await.unwrap().entries[0].locked, "a deleted file's lock is gone");
+        });
+    }
+
+    #[test]
+    fn a_locked_file_is_the_same_frozen_copy_in_every_branch() {
+        run(async {
+            let f = Fixture::new("lock-branch").await;
+            f.remote.put("/a.txt", "one");
+            let branch = f.cache.create_branch(7, "b").await.unwrap();
+            let b = Some(branch.index);
+            f.cache.set_locked(&f.remote, 7, "/a.txt", true).await.unwrap();
+            f.remote.put("/a.txt", "changed elsewhere");
+            f.advance(4000);
+            assert_eq!(f.cache.read(&f.remote, 7, b, "/a.txt").await.unwrap(), b"one");
+            assert!(f.cache.list(&f.remote, 7, b, "/", true).await.unwrap().entries[0].locked);
+            // A file the branch changed still says so, and its lock is the account file's.
+            f.cache.write(&f.remote, 7, b, "/a.txt", b"mine").await.unwrap();
+            let entry = f.cache.list(&f.remote, 7, b, "/", false).await.unwrap().entries.remove(0);
+            assert_eq!((entry.locked, entry.changed.as_deref()), (true, Some("put")));
+        });
+    }
+
+    #[test]
+    fn a_version_is_checked_against_filen_itself_even_for_a_locked_file() {
+        run(async {
+            let f = Fixture::new("version").await;
+            f.remote.put("/a.txt", "v1");
+            f.cache.read(&f.remote, 7, None, "/a.txt").await.unwrap();
+            let v1 = f.cache.version(7, None, "/a.txt").await.unwrap();
+            assert!(v1.exists && v1.size == Some(2));
+            assert!(f.cache.check_version(&f.remote, 7, None, "/a.txt", &v1).await.unwrap().up_to_date);
+            assert!(!f.cache.version(7, None, "/nothing.txt").await.unwrap().exists);
+
+            f.cache.set_locked(&f.remote, 7, "/a.txt", true).await.unwrap();
+            f.remote.put("/a.txt", "v2, from somewhere else");
+            let check = f.cache.check_version(&f.remote, 7, None, "/a.txt", &v1).await.unwrap();
+            assert!(!check.up_to_date, "the lock freezes the cache, not the truth");
+            assert!(check.problem.as_deref().unwrap().contains("newer"), "{check:?}");
+            assert_eq!(check.current.size, Some(23));
+
+            f.remote.remove("/a.txt").await.unwrap();
+            let gone = f.cache.check_version(&f.remote, 7, None, "/a.txt", &v1).await.unwrap();
+            assert!(!gone.up_to_date && !gone.current.exists && gone.problem.as_deref().unwrap().contains("deleted"), "{gone:?}");
+            // A file that didn't exist when the work began and does now.
+            f.remote.put("/new.txt", "someone's");
+            assert!(!f.cache.check_version(&f.remote, 7, None, "/new.txt", &FileVersion { exists: false, size: None, mtime_ms: None }).await.unwrap().up_to_date);
+
+            f.remote.offline.store(true, Ordering::SeqCst);
+            assert!(f.cache.check_version(&f.remote, 7, None, "/new.txt", &v1).await.is_err(), "it can't be verified offline, and says so");
+        });
+    }
+
+    #[test]
+    fn a_checked_out_file_is_a_pending_change_that_is_verified_but_never_applied() {
+        run(async {
+            let f = Fixture::new("checkout").await;
+            f.remote.put("/docs/a.txt", "one");
+            f.remote.put("/docs/b.txt", "two");
+            let branch = f.cache.create_branch(7, "work").await.unwrap();
+            let b = Some(branch.index);
+
+            f.cache.checkout(&f.remote, 7, branch.index, "/docs/a.txt").await.unwrap();
+            f.cache.checkout(&f.remote, 7, branch.index, "/docs/a.txt").await.unwrap(); // already: nothing happens
+            assert!(f.cache.checkout(&f.remote, 7, branch.index, "/docs/missing.txt").await.is_err());
+            assert!(f.cache.checkout(&f.remote, 7, branch.index, "/docs").await.is_err(), "a folder isn't checked out");
+            let changes = f.cache.branch_changes(7, branch.index).await.unwrap();
+            assert_eq!(changes.len(), 1);
+            assert_eq!((changes[0].path.as_str(), changes[0].kind.as_str(), changes[0].is_new), ("/docs/a.txt", "checkout", false));
+            assert_eq!(f.cache.branches(7).await.unwrap()[0].changes, 1);
+            let view = f.cache.list(&f.remote, 7, b, "/docs", false).await.unwrap();
+            assert_eq!(view.entries.iter().find(|e| e.name == "a.txt").unwrap().changed.as_deref(), Some("checkout"));
+            assert!(view.entries.iter().find(|e| e.name == "b.txt").unwrap().changed.is_none());
+            assert_eq!(f.cache.read(&f.remote, 7, b, "/docs/a.txt").await.unwrap(), b"one", "read from the branch's own copy");
+            let base = f.cache.version(7, b, "/docs/a.txt").await.unwrap();
+            assert_eq!(base, f.cache.version(7, None, "/docs/a.txt").await.unwrap(), "based on the version that was checked out");
+
+            // Committing an unchanged checkout applies nothing, and the branch goes.
+            let report = f.cache.commit_branch(&f.remote, 7, branch.index, false).await.unwrap();
+            assert!(report.committed && report.applied == 0 && report.conflicts.is_empty(), "{report:?}");
+            assert_eq!(f.remote.text("/docs/a.txt").as_deref(), Some("one"));
+            assert!(f.cache.branches(7).await.unwrap().is_empty());
+
+            // Filen moved on after the checkout: the commit says so, and letting go of it clears the way.
+            let second = f.cache.create_branch(7, "second").await.unwrap();
+            f.cache.checkout(&f.remote, 7, second.index, "/docs/a.txt").await.unwrap();
+            f.remote.put("/docs/a.txt", "one, changed elsewhere");
+            let report = f.cache.commit_branch(&f.remote, 7, second.index, false).await.unwrap();
+            assert!(!report.committed && report.conflicts.len() == 1 && report.conflicts[0].contains("checked out"), "{report:?}");
+            f.cache.release(7, second.index, "/docs/a.txt").await.unwrap();
+            assert!(f.cache.branch_changes(7, second.index).await.unwrap().is_empty());
+            assert!(f.cache.release(7, second.index, "/docs/a.txt").await.is_err());
+            assert!(f.cache.commit_branch(&f.remote, 7, second.index, false).await.unwrap().committed);
+
+            // Deleted in Filen after the checkout is a conflict too.
+            let third = f.cache.create_branch(7, "third").await.unwrap();
+            f.cache.checkout(&f.remote, 7, third.index, "/docs/b.txt").await.unwrap();
+            f.remote.remove("/docs/b.txt").await.unwrap();
+            let report = f.cache.commit_branch(&f.remote, 7, third.index, false).await.unwrap();
+            assert!(!report.committed && report.conflicts[0].contains("deleted"), "{report:?}");
+        });
+    }
+
+    #[test]
+    fn editing_a_checked_out_file_keeps_its_base_and_the_person_can_rebase_onto_filen() {
+        run(async {
+            let f = Fixture::new("checkout-edit").await;
+            f.remote.put("/a.txt", "one");
+            let branch = f.cache.create_branch(7, "edit").await.unwrap();
+            let b = Some(branch.index);
+            f.cache.checkout(&f.remote, 7, branch.index, "/a.txt").await.unwrap();
+            let base = f.cache.version(7, b, "/a.txt").await.unwrap();
+
+            f.cache.write(&f.remote, 7, b, "/a.txt", b"one, edited").await.unwrap();
+            let changes = f.cache.branch_changes(7, branch.index).await.unwrap();
+            assert_eq!((changes.len(), changes[0].kind.as_str()), (1, "put"), "editing turns the checkout into a change");
+            assert_eq!(f.cache.version(7, b, "/a.txt").await.unwrap(), base, "but it is still based on what was checked out");
+            assert!(f.cache.release(7, branch.index, "/a.txt").await.is_err());
+            assert!(f.cache.check_version(&f.remote, 7, b, "/a.txt", &base).await.unwrap().up_to_date);
+
+            f.remote.put("/a.txt", "one, and a colleague's words");
+            let check = f.cache.check_version(&f.remote, 7, b, "/a.txt", &base).await.unwrap();
+            assert!(!check.up_to_date);
+            let report = f.cache.commit_branch(&f.remote, 7, branch.index, false).await.unwrap();
+            assert!(!report.committed && report.conflicts[0].contains("changed in Filen after the branch did"), "{report:?}");
+
+            // The person looked, and chose to overwrite: based on Filen's version now, the commit goes through.
+            f.cache.rebase(&f.remote, 7, branch.index, "/a.txt").await.unwrap();
+            assert!(f.cache.check_version(&f.remote, 7, b, "/a.txt", &f.cache.version(7, b, "/a.txt").await.unwrap()).await.unwrap().up_to_date);
+            assert!(f.cache.commit_branch(&f.remote, 7, branch.index, false).await.unwrap().committed);
+            assert_eq!(f.remote.text("/a.txt").as_deref(), Some("one, edited"));
+            assert!(f.cache.rebase(&f.remote, 7, branch.index, "/a.txt").await.is_err(), "the branch is gone");
+        });
     }
 
     #[test]

@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Clock, Database as DatabaseIcon, HardDrive, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import IconButton from './IconButton'
+import { getAppState, setAppState } from '../lib/appState'
+import { kbdItem, useListKeyboard } from '../lib/keyboard'
+import { isObject, usePersistedState } from '../lib/tabState'
 import {
   clearStore,
   createDatabase,
@@ -21,6 +24,12 @@ import {
 } from '../lib/storageInspector'
 
 type SubTab = 'local' | 'session' | 'indexeddb'
+
+const SUB_TABS: SubTab[] = ['local', 'session', 'indexeddb']
+/** Which panel is shown, and — in IndexedDB — which database and object store are open: kept for the
+ * next visit to this tab page. */
+const SUB_TAB_KEY = 'storageTab.panel'
+const IDB_NAVIGATION_KEY = 'storageTab.indexedDb'
 
 function WebStoragePanel({ storage, label }: { storage: Storage; label: string }) {
   const [rows, setRows] = useState<{ key: string; value: string }[]>([])
@@ -162,42 +171,108 @@ function IndexedDbPanel() {
   const [newStoreAutoIncrement, setNewStoreAutoIncrement] = useState(true)
   const [recordKey, setRecordKey] = useState('')
   const [recordValue, setRecordValue] = useState('{}')
+  const [navigationLoaded, setNavigationLoaded] = useState(false)
+  // The item the arrow keys are on, in whichever of the three lists (databases, object stores, records)
+  // is the deepest one open; and whether the level was reached with the keys.
+  const [kbdFocus, setKbdFocus] = useState(-1)
+  const keyboardMovedRef = useRef(false)
+  const leftItemRef = useRef<string | null>(null)
 
-  const refreshDatabases = useCallback(async () => {
+  const refreshDatabases = useCallback(async (): Promise<string[]> => {
     try {
-      setDatabases(await listDatabases())
+      const found = await listDatabases()
+      setDatabases(found)
+      return found.map((d) => d.name)
     } catch (e) {
       setError(String(e))
+      return []
     }
   }, [])
 
+  // The start: the databases, then back to the database and store of the last visit — where they still are.
   useEffect(() => {
-    refreshDatabases()
+    ;(async () => {
+      const [saved, names] = await Promise.all([getAppState<unknown>(IDB_NAVIGATION_KEY).catch(() => undefined), refreshDatabases()])
+      if (isObject(saved) && typeof saved.db === 'string' && names.includes(saved.db)) {
+        await openDatabase(saved.db, typeof saved.store === 'string' ? saved.store : null)
+      }
+      setNavigationLoaded(true)
+    })()
   }, [refreshDatabases])
 
-  async function openDatabase(name: string) {
+  useEffect(() => {
+    if (navigationLoaded) setAppState(IDB_NAVIGATION_KEY, { db: selectedDb, store: selectedStore }).catch(() => {})
+  }, [navigationLoaded, selectedDb, selectedStore])
+
+  /** Opens the database, and — if `store` is given and it has it — that object store. */
+  async function openDatabase(name: string, store: string | null = null) {
     setError(null)
     setSelectedDb(name)
     setSelectedStore(null)
     setRecords([])
     try {
-      setStores(await listStores(name))
+      const found = await listStores(name)
+      setStores(found)
+      if (store && found.includes(store)) await showStore(name, store)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function showStore(database: string, name: string) {
+    setError(null)
+    setSelectedStore(name)
+    try {
+      setStoreInfo(await getStoreInfo(database, name))
+      setRecords(await listRecords(database, name))
     } catch (e) {
       setError(String(e))
     }
   }
 
   async function openStore(name: string) {
-    if (!selectedDb) return
-    setError(null)
-    setSelectedStore(name)
-    try {
-      setStoreInfo(await getStoreInfo(selectedDb, name))
-      setRecords(await listRecords(selectedDb, name))
-    } catch (e) {
-      setError(String(e))
-    }
+    if (selectedDb) await showStore(selectedDb, name)
   }
+
+  // ── Keyboard: databases → object stores → records; Right goes down a level, Left back up ──
+
+  const level: 'databases' | 'stores' | 'records' = selectedStore ? 'records' : selectedDb ? 'stores' : 'databases'
+  useEffect(() => {
+    const byKeyboard = keyboardMovedRef.current
+    keyboardMovedRef.current = false
+    if (!byKeyboard) return setKbdFocus(-1)
+    const left = leftItemRef.current
+    setKbdFocus(
+      level === 'databases' ? Math.max(0, databases.findIndex((d) => d.name === left)) : level === 'stores' ? Math.max(0, stores.indexOf(left ?? '')) : 0,
+    )
+  }, [level])
+
+  useListKeyboard({
+    count: level === 'databases' ? databases.length : level === 'stores' ? stores.length : records.length,
+    focused: kbdFocus,
+    setFocused: setKbdFocus,
+    onOpen: (i) => {
+      if (level === 'records') return
+      keyboardMovedRef.current = true
+      if (level === 'databases') openDatabase(databases[i].name)
+      else openStore(stores[i])
+    },
+    onParent:
+      level === 'databases'
+        ? undefined
+        : () => {
+            keyboardMovedRef.current = true
+            if (level === 'records') {
+              leftItemRef.current = selectedStore
+              setSelectedStore(null)
+              setRecords([])
+            } else {
+              leftItemRef.current = selectedDb
+              setSelectedDb(null)
+              setStores([])
+            }
+          },
+  })
 
   async function refreshRecords() {
     if (!selectedDb || !selectedStore) return
@@ -314,7 +389,7 @@ function IndexedDbPanel() {
       <div className="toolbar">
         <strong>IndexedDB</strong>
         <div className="toolbar-actions">
-          <IconButton icon={RefreshCw} label="Refresh" onClick={refreshDatabases} />
+          <IconButton icon={RefreshCw} label="Refresh" onClick={() => refreshDatabases()} />
         </div>
       </div>
 
@@ -324,8 +399,8 @@ function IndexedDbPanel() {
         <div className="sqlite-sidebar">
           <div className="muted">Databases</div>
           <ul className="table-list">
-            {databases.map((d) => (
-              <li key={d.name}>
+            {databases.map((d, i) => (
+              <li key={d.name} {...(level === 'databases' ? kbdItem(kbdFocus, i, setKbdFocus) : {})}>
                 <button
                   className={`link-button ${selectedDb === d.name ? 'active' : ''}`}
                   onClick={() => openDatabase(d.name)}
@@ -348,8 +423,8 @@ function IndexedDbPanel() {
                 Object stores in {selectedDb}
               </div>
               <ul className="table-list">
-                {stores.map((s) => (
-                  <li key={s}>
+                {stores.map((s, i) => (
+                  <li key={s} {...(level === 'stores' ? kbdItem(kbdFocus, i, setKbdFocus) : {})}>
                     <button
                       className={`link-button ${selectedStore === s ? 'active' : ''}`}
                       onClick={() => openStore(s)}
@@ -418,8 +493,8 @@ function IndexedDbPanel() {
                     </tr>
                   </thead>
                   <tbody>
-                    {records.map((r) => (
-                      <tr key={String(r.key)}>
+                    {records.map((r, i) => (
+                      <tr key={String(r.key)} {...(level === 'records' ? kbdItem(kbdFocus, i, setKbdFocus) : {})}>
                         <td>{String(r.key)}</td>
                         <td>{JSON.stringify(r.value)}</td>
                         <td>
@@ -461,7 +536,7 @@ function IndexedDbPanel() {
 }
 
 export default function StorageTab() {
-  const [sub, setSub] = useState<SubTab>('local')
+  const [sub, setSub, subLoaded] = usePersistedState<SubTab>(SUB_TAB_KEY, 'local', (raw) => (SUB_TABS.includes(raw as SubTab) ? (raw as SubTab) : undefined))
   const [wipeKey, setWipeKey] = useState(0)
   const [wipeError, setWipeError] = useState<string | null>(null)
   const [wiping, setWiping] = useState(false)
@@ -512,9 +587,9 @@ export default function StorageTab() {
         </button>
       </nav>
       <div className="tab-content" key={wipeKey}>
-        {sub === 'local' && <WebStoragePanel storage={window.localStorage} label="Local Storage" />}
-        {sub === 'session' && <WebStoragePanel storage={window.sessionStorage} label="Session Storage" />}
-        {sub === 'indexeddb' && <IndexedDbPanel />}
+        {subLoaded && sub === 'local' && <WebStoragePanel storage={window.localStorage} label="Local Storage" />}
+        {subLoaded && sub === 'session' && <WebStoragePanel storage={window.sessionStorage} label="Session Storage" />}
+        {subLoaded && sub === 'indexeddb' && <IndexedDbPanel />}
       </div>
     </div>
   )

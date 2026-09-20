@@ -8,6 +8,7 @@ import {
   Download,
   Eraser,
   File as FileIcon,
+  FileCheck,
   FilePlus,
   Folder,
   FolderPlus,
@@ -15,11 +16,14 @@ import {
   GitBranchPlus,
   GitMerge,
   ListChecks,
+  Lock,
   Pencil,
   RefreshCw,
   Save,
   Scissors,
   Trash2,
+  Undo2,
+  Unlock,
   Upload,
   X,
 } from 'lucide-react'
@@ -32,6 +36,7 @@ import { joinRelative } from '../../lib/localFs'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
 import { getAppState, setAppState } from '../../lib/appState'
+import { kbdItem, useListKeyboard } from '../../lib/keyboard'
 import {
   copyTree,
   filenCache,
@@ -47,7 +52,9 @@ import {
   type DirListing,
   type Entry,
   type FileSource,
+  type FileVersion,
   type FilenAccountInfo,
+  type VersionCheck,
 } from './sources'
 import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
 
@@ -110,7 +117,13 @@ interface Editing {
   path: string
   content: string
   dirty: boolean
+  /** Filen: the version of the file that was opened (or saved last) — what is checked against Filen
+   * before saving over it. `null` for a file that isn't one. */
+  version: FileVersion | null
 }
+
+/** The folder a path is in (paths have no leading slash; the root is `''`). */
+const parentPath = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 
 export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null; initial: Location | null }) {
   // The tab this page is showing: the one it registered as, then whichever the user switches to.
@@ -138,6 +151,13 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
   const [changes, setChanges] = useState<BranchChange[] | null>(null)
 
   const [editing, setEditing] = useState<Editing | null>(null)
+  // Filen has another version of the file being saved than the one being edited: what it found, until
+  // the person has chosen what to do.
+  const [conflict, setConflict] = useState<VersionCheck | null>(null)
+  // The item the arrow keys are on (an index into all the entries), and which item of a folder that was
+  // opened or left with the keys to start from.
+  const [kbdFocus, setKbdFocus] = useState(-1)
+  const pendingFocusRef = useRef<string | 'first' | null>(null)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<Clipboard | null>(null)
@@ -383,7 +403,9 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       if (text === null) {
         setError(`"${entry.name}" isn't a text file this small — export it instead.`)
       } else {
-        setEditing({ source, path: rel, content: text, dirty: false })
+        // Right after the read, so it is the version of what was read that is remembered.
+        const version = (await source.version?.(rel).catch(() => null)) ?? null
+        setEditing({ source, path: rel, content: text, dirty: false, version })
       }
     } catch (e) {
       setError(String(e))
@@ -394,15 +416,83 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
     }
   }
 
-  async function save() {
+  /** Saves the file being edited. A Filen file is first checked against Filen itself: if it isn't the
+   * version that was being worked on any more, nothing is written and the person is asked (see
+   * `conflict`). `overwrite` is the answer "overwrite it": the check is skipped, and in a branch the
+   * change is then based on Filen's version, so the commit doesn't warn about it again. */
+  async function save(overwrite = false) {
     if (!editing) return
-    const { source: editedSource, path: filePath, content } = editing
+    const { source: editedSource, path: filePath, content, version } = editing
     setError(null)
+    setNotice(null)
     try {
+      if (!overwrite && editedSource.checkVersion && version) {
+        let check: VersionCheck | null = null
+        try {
+          check = await editedSource.checkVersion(filePath, version)
+        } catch (e) {
+          // In a branch the save stays on this device and the commit checks again; the account itself
+          // can't be written to offline anyway, so the person is told.
+          if (editedSource.branch === null) throw e
+        }
+        if (check && !check.upToDate) {
+          setConflict(check)
+          return
+        }
+      }
       await editedSource.write(filePath, new TextEncoder().encode(content))
-      setEditing((e) => (e && e.path === filePath ? { ...e, dirty: false } : e))
+      if (overwrite) await editedSource.rebase?.(filePath)
+      const saved = (await editedSource.version?.(filePath).catch(() => null)) ?? null
+      setEditing((e) => (e && e.path === filePath ? { ...e, dirty: false, version: saved ?? e.version } : e))
       await load(false)
       if (account) await reloadBranches()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  /** "Discard changes": the edits are dropped and the file is read again — Filen's version, or in a
+   * branch that already holds the file, the branch's. */
+  async function discardEdits() {
+    if (!editing) return
+    const { source: editedSource, path: filePath } = editing
+    setConflict(null)
+    try {
+      await editedSource.list(parentPath(filePath), true) // Filen's own idea of the folder, so a newer file replaces the cached one
+      const text = decodeText(await editedSource.read(filePath))
+      if (text === null) throw new Error(`"${filePath}" isn't a text file this small any more — export it instead.`)
+      const fresh = (await editedSource.version?.(filePath).catch(() => null)) ?? null
+      setEditing((e) => (e && e.path === filePath ? { ...e, content: text, dirty: false, version: fresh ?? e.version } : e))
+      setNotice('Your changes were discarded; this is the file as it is now.')
+    } catch (e) {
+      setEditing(null) // it is gone (or isn't text now): there is nothing to go on editing
+      setError(String(e))
+    }
+    await load(false)
+  }
+
+  /** "New branch…" from the editor: makes a branch and carries on in it — an unchanged file is checked
+   * out there, an edited one is saved into it with the next Save. */
+  async function newBranchFromEditor() {
+    if (!editing) return
+    const editedAccount = accounts.find((a) => `${FILEN_PREFIX}${a.userId}` === editing.source.id)
+    if (!editedAccount) return
+    const name = window.prompt(`Name of the new branch (up to ${MAX_BRANCH_NAME_CHARS} characters):`)?.trim()
+    if (!name) return
+    if ([...name].length > MAX_BRANCH_NAME_CHARS) return setError(`A branch name has at most ${MAX_BRANCH_NAME_CHARS} characters.`)
+    setError(null)
+    try {
+      const created = await filenCache.createBranch(editedAccount.userId, name)
+      const inBranch = filenSource(editedAccount, created.index)
+      // (The file the editor shows came from the account, so that is what is checked out — a file open
+      // from another branch isn't the account's.)
+      if (!editing.dirty && editing.source.branch === null) await inBranch.checkout?.(editing.path)
+      setEditing((e) => (e ? { ...e, source: inBranch } : e))
+      if (editedAccount.userId === account?.userId) {
+        await reloadBranches()
+        setBranch(created.index)
+      }
+      setNotice(`Working in the new branch "${name}".`)
     } catch (e) {
       setError(String(e))
     }
@@ -435,7 +525,10 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
     if (!name || !nameOk(name)) return
     if (entries.some((e) => e.name === name)) return setError(`"${name}" already exists.`)
     const rel = joinRelative(path, name)
-    if (await act(() => source.write(rel, new Uint8Array()))) setEditing({ source, path: rel, content: '', dirty: false })
+    if (await act(() => source.write(rel, new Uint8Array()))) {
+      const version = (await source.version?.(rel).catch(() => null)) ?? null
+      setEditing({ source, path: rel, content: '', dirty: false, version })
+    }
   }
 
   async function uploadFiles() {
@@ -476,6 +569,29 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
           : 'for good'
     if (!(await confirm(`Delete "${entry.name}" ${where}?`))) return
     await act(() => source.remove(joinRelative(path, entry.name), entry.isDirectory))
+  }
+
+  /** Locks the file against caching, or unlocks it: a locked file's cached copy is never refreshed, expired
+   * or cleared. It is the account's file that is locked, so this is the same from the account and from
+   * any branch. */
+  async function toggleLock(entry: Entry) {
+    if (!source?.setLocked) return
+    const target = joinRelative(path, entry.name)
+    const lock = !entry.locked
+    if (await act(() => source.setLocked!(target, lock))) {
+      setNotice(lock ? `"${entry.name}" is locked: this copy is kept as it is until you unlock it.` : `"${entry.name}" is unlocked: it is refreshed like the rest of the cache again.`)
+    }
+  }
+
+  /** Takes the file into the branch without changing it, so it is among the branch's pending changes. */
+  async function checkoutEntry(entry: Entry) {
+    if (!source?.checkout) return
+    if (await act(() => source.checkout!(joinRelative(path, entry.name)))) setNotice(`"${entry.name}" is checked out in this branch.`)
+  }
+
+  async function releaseEntry(entry: Entry) {
+    if (!source?.release) return
+    await act(() => source.release!(joinRelative(path, entry.name)))
   }
 
   function startRename(entry: Entry) {
@@ -530,7 +646,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
 
   async function clearCache() {
     if (!account) return
-    if (!(await confirm('Throw away everything cached for this account? Branches are kept.'))) return
+    if (!(await confirm('Throw away everything cached for this account? Branches, and files you locked against caching, are kept.'))) return
     try {
       await filenCache.clear(account.userId)
       await load(false)
@@ -600,6 +716,41 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
       setError(String(e))
     }
   }
+
+  // ── Keyboard ──
+
+  // A new folder: nothing is focused until a key is pressed — unless it was entered with the keys.
+  useEffect(() => {
+    setKbdFocus(-1)
+  }, [sourceId, branch, path])
+  useEffect(() => {
+    const pending = pendingFocusRef.current
+    if (pending === null || loading) return
+    pendingFocusRef.current = null
+    setKbdFocus(pending === 'first' ? (entries.length > 0 ? 0 : -1) : Math.max(0, entries.findIndex((e) => e.name === pending)))
+  }, [entries, loading])
+  // The page shown follows the focus.
+  useEffect(() => {
+    if (kbdFocus >= 0) setPage(Math.floor(kbdFocus / pageSize))
+  }, [kbdFocus, pageSize])
+
+  useListKeyboard({
+    count: entries.length,
+    focused: kbdFocus,
+    setFocused: setKbdFocus,
+    enabled: ready && !editing && !changes && !conflict && renaming === null,
+    onOpen: (i) => {
+      const entry = entries[i]
+      if (!entry) return
+      pendingFocusRef.current = entry.isDirectory ? 'first' : null
+      openEntry(entry)
+    },
+    onParent: () => {
+      if (path === '') return
+      pendingFocusRef.current = path.slice(path.lastIndexOf('/') + 1)
+      setPath(parentPath(path))
+    },
+  })
 
   // ── Rendering ──
 
@@ -740,11 +891,11 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
                     </td>
                   </tr>
                 )}
-                {pagedEntries.map((entry) => {
+                {pagedEntries.map((entry, i) => {
                   const size = entry.size ?? meta[entry.name]?.size ?? null
                   const mtimeMs = entry.mtimeMs ?? meta[entry.name]?.mtimeMs ?? null
                   return (
-                    <tr key={entry.name}>
+                    <tr key={entry.name} {...kbdItem(kbdFocus, currentPage * pageSize + i, setKbdFocus)}>
                       <td>
                         {renaming === entry.name ? (
                           <input
@@ -762,7 +913,19 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
                             {entry.isDirectory ? <Folder size={15} strokeWidth={2} aria-hidden="true" /> : <FileIcon size={15} strokeWidth={2} aria-hidden="true" />}
                             {entry.name}
                             {account && !entry.isDirectory && entry.cached && <span className="notes-badge" title="Its content is cached">cached</span>}
-                            {entry.changed && <span className="notes-badge notes-badge-changed" title="Changed in this branch">{entry.changed === 'mkdir' ? 'new folder' : 'changed'}</span>}
+                            {account && !entry.isDirectory && entry.locked && (
+                              <span className="notes-badge notes-badge-locked" title="Locked against caching: this copy is never refreshed, expired or cleared">
+                                <Lock size={11} aria-hidden="true" /> locked
+                              </span>
+                            )}
+                            {entry.changed && (
+                              <span
+                                className={`notes-badge notes-badge-${entry.changed}`}
+                                title={entry.changed === 'checkout' ? 'Checked out in this branch, not changed' : 'Changed in this branch'}
+                              >
+                                {entry.changed === 'mkdir' ? 'new folder' : entry.changed === 'checkout' ? 'checked out' : 'changed'}
+                              </span>
+                            )}
                           </button>
                         )}
                       </td>
@@ -770,6 +933,19 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
                       <td className="muted">{mtimeMs !== null ? formatTime(mtimeMs) : ''}</td>
                       <td className="row-actions">
                         {!entry.isDirectory && <IconButton icon={Download} label="Export" onClick={() => exportEntry(entry)} />}
+                        {account && !entry.isDirectory && (
+                          <IconButton
+                            icon={entry.locked ? Unlock : Lock}
+                            label={entry.locked ? 'Unlock — let it be refreshed like the rest of the cache' : 'Lock against caching — keep this copy: never refresh, expire or clear it'}
+                            onClick={() => toggleLock(entry)}
+                          />
+                        )}
+                        {account && branch !== null && !entry.isDirectory && !entry.changed && (
+                          <IconButton icon={FileCheck} label="Check out into this branch — it then appears in the pending changes" onClick={() => checkoutEntry(entry)} />
+                        )}
+                        {account && branch !== null && entry.changed === 'checkout' && (
+                          <IconButton icon={Undo2} label="Let go of the checkout" onClick={() => releaseEntry(entry)} />
+                        )}
                         <IconButton icon={Copy} label="Copy" onClick={() => clip(entry, 'copy')} />
                         <IconButton icon={Scissors} label="Cut" onClick={() => clip(entry, 'cut')} />
                         <IconButton icon={Pencil} label="Rename" onClick={() => startRename(entry)} />
@@ -794,13 +970,57 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
                 {editing.source.label} · {editing.path}
               </strong>
               <div>
-                <IconButton icon={Save} label="Save" onClick={save} disabled={!editing.dirty} />
+                {editing.source.kind === 'filen' && <IconButton icon={GitBranchPlus} label="New branch… — carry on in a branch of the account" onClick={newBranchFromEditor} />}
+                <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
                 <IconButton icon={X} label="Close" onClick={closeEditor} />
               </div>
             </div>
             <textarea value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value, dirty: true })} spellCheck={false} />
           </div>
         </div>
+      )}
+
+      {conflict && editing && (
+        <Modal title="Filen has changed this file" onClose={() => setConflict(null)}>
+          <p>
+            <strong>{editing.path}</strong>: {conflict.problem ?? 'Filen has another version of it'}.
+          </p>
+          {conflict.current.exists && (
+            <p className="muted">
+              Filen's version: {conflict.current.size !== null ? formatBytes(conflict.current.size) : '?'}
+              {conflict.current.mtimeMs !== null ? `, changed ${formatTime(conflict.current.mtimeMs)}` : ''}.
+            </p>
+          )}
+          <ul className="notes-conflict-options">
+            <li>
+              <strong>Overwrite</strong> — {editing.source.branch === null ? "your version replaces Filen's" : "your version is saved in the branch, based on Filen's version as it is now"}.
+            </li>
+            <li>
+              <strong>Discard changes</strong> — your changes are lost and {editing.source.branch === null ? "Filen's version is loaded" : 'the file is loaded again as this branch has it'}.
+            </li>
+            <li>
+              <strong>Cancel</strong> — back to the editor, as if Save had not been pressed.
+            </li>
+          </ul>
+          <div className="dialog-actions">
+            <button
+              type="button"
+              className="dialog-danger"
+              onClick={() => {
+                setConflict(null)
+                save(true)
+              }}
+            >
+              Overwrite
+            </button>
+            <button type="button" className="dialog-danger" onClick={discardEdits}>
+              Discard changes
+            </button>
+            <button type="button" autoFocus onClick={() => setConflict(null)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
       )}
 
       {changes && (
@@ -811,7 +1031,7 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
             <ul className="notes-changes">
               {changes.map((c) => (
                 <li key={`${c.kind}:${c.path}`}>
-                  <span className={`notes-badge notes-badge-${c.kind}`}>{c.kind === 'put' ? (c.isNew ? 'new file' : 'changed') : c.kind === 'mkdir' ? 'new folder' : 'deleted'}</span> {c.path}
+                  <span className={`notes-badge notes-badge-${c.kind}`}>{c.kind === 'put' ? (c.isNew ? 'new file' : 'changed') : c.kind === 'mkdir' ? 'new folder' : c.kind === 'checkout' ? 'checked out' : 'deleted'}</span> {c.path}
                 </li>
               ))}
             </ul>

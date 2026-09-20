@@ -15,7 +15,7 @@ use tauri::ipc::{Request, Response};
 use tauri::{AppHandle, State};
 
 use crate::device_files::ExportState;
-use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FilenRemote, Listing, UploadJob};
+use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FileVersion, FilenRemote, Listing, UploadJob, VersionCheck};
 use crate::fs_scope::FsScope;
 
 /// An upload that a window feeds piece by piece (`filen_cache_upload_begin` … `_finish`).
@@ -180,6 +180,57 @@ pub async fn filen_cache_commit_branch(
 #[tauri::command]
 pub async fn filen_cache_discard_branch(cache: State<'_, Cache>, user_id: u64, branch: i64) -> Result<(), String> {
     cache.discard_branch(user_id as i64, branch).await
+}
+
+// ── Versions, locks and checkouts ──────────────────────────────────────────────
+
+/// The version of a file as the cache knows it — what a window that has just opened it is working
+/// on (in a branch that changed or checked out the file: the version that change is based on).
+#[tauri::command]
+pub async fn filen_cache_version(cache: State<'_, Cache>, user_id: u64, branch: Option<i64>, path: String) -> Result<FileVersion, String> {
+    cache.version(user_id as i64, branch, &path).await
+}
+
+/// Asks Filen itself whether the file is still at `base`, the version that was being worked on.
+#[tauri::command]
+pub async fn filen_cache_check_version(
+    app: AppHandle,
+    cache: State<'_, Cache>,
+    user_id: u64,
+    branch: Option<i64>,
+    path: String,
+    base: FileVersion,
+) -> Result<VersionCheck, String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    cache.check_version(&remote, user_id as i64, branch, &path, &base).await
+}
+
+/// Bases the branch's change to a file on what Filen has now (the person chose to overwrite it).
+#[tauri::command]
+pub async fn filen_cache_rebase(app: AppHandle, cache: State<'_, Cache>, user_id: u64, branch: i64, path: String) -> Result<(), String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    cache.rebase(&remote, user_id as i64, branch, &path).await
+}
+
+/// Locks a file of the account against caching (its cached copy is never refreshed or dropped), or
+/// unlocks it. It is about the account's file, so it holds in every branch too.
+#[tauri::command]
+pub async fn filen_cache_set_locked(app: AppHandle, cache: State<'_, Cache>, user_id: u64, path: String, locked: bool) -> Result<(), String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    cache.set_locked(&remote, user_id as i64, &path, locked).await
+}
+
+/// Takes a file into the branch without changing it, so it is among the branch's pending changes.
+#[tauri::command]
+pub async fn filen_cache_checkout(app: AppHandle, cache: State<'_, Cache>, user_id: u64, branch: i64, path: String) -> Result<(), String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    cache.checkout(&remote, user_id as i64, branch, &path).await
+}
+
+/// Lets go of a file that was checked out and never changed.
+#[tauri::command]
+pub async fn filen_cache_release(cache: State<'_, Cache>, user_id: u64, branch: i64, path: String) -> Result<(), String> {
+    cache.release(user_id as i64, branch, &path).await
 }
 
 // ── Big files: nothing here holds a whole file ─────────────────────────────────

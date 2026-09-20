@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { exportToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
 import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
 import IconButton from './IconButton'
 import Pagination from './Pagination'
 import { getAppState, setAppState } from '../lib/appState'
+import { kbdItem, useListKeyboard } from '../lib/keyboard'
+import { isObject } from '../lib/tabState'
 import {
   filenMkdir,
   filenReadFile,
@@ -21,7 +23,8 @@ import {
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { writeUserFile } from '../lib/localFs'
 
-const ACTIVE_ACCOUNT_KEY = 'filenTab.activeAccount'
+/** Where the person was: the account and the folder in it. */
+const LOCATION_KEY = 'filenTab.location'
 
 function joinFilenPath(base: string, name: string): string {
   return base === '/' ? `/${name}` : `${base}/${name}`
@@ -43,6 +46,14 @@ export default function FilenTab() {
 
   const [page, setPage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
+  // The saved place is read once, with the first list of accounts; until then nothing is saved over it.
+  const [locationLoaded, setLocationLoaded] = useState(false)
+  const locationLoadedRef = useRef(false)
+  const restoredPathRef = useRef(false)
+  // The item the arrow keys are on (an index into all the entries), and which item of a folder that was
+  // opened or left with the keys to start from.
+  const [kbdFocus, setKbdFocus] = useState(-1)
+  const pendingFocusRef = useRef<string | 'first' | null>(null)
 
   useEffect(() => {
     getGlobalPageSize().then(setPageSizeState)
@@ -61,11 +72,25 @@ export default function FilenTab() {
   const loadAccounts = useCallback(async () => {
     const list = await listFilenAccounts()
     setAccounts(list)
-    const saved = await getAppState<number>(ACTIVE_ACCOUNT_KEY)
+    const saved = locationLoadedRef.current ? undefined : await getAppState<unknown>(LOCATION_KEY)
+    const place =
+      isObject(saved) && typeof saved.userId === 'number' && typeof saved.path === 'string' && saved.path.startsWith('/')
+        ? { userId: saved.userId, path: saved.path }
+        : null
     setActiveId((current) => {
       if (current != null && list.some((a) => a.userId === current)) return current
-      return list.find((a) => a.userId === saved)?.userId ?? list[0]?.userId ?? null
+      return list.find((a) => a.userId === place?.userId)?.userId ?? list[0]?.userId ?? null
     })
+    if (!locationLoadedRef.current) {
+      locationLoadedRef.current = true
+      // Back to the folder of the last visit — if its account is still connected (the folder itself is
+      // judged when it is listed: one that is gone falls back to the top).
+      if (place && list.some((a) => a.userId === place.userId)) {
+        setPath(place.path)
+        restoredPathRef.current = place.path !== '/'
+      }
+      setLocationLoaded(true)
+    }
   }, [])
 
   useEffect(() => {
@@ -77,8 +102,14 @@ export default function FilenTab() {
     setError(null)
     try {
       setEntries(await filenReaddir(userId, dirPath))
+      restoredPathRef.current = false
     } catch (e) {
-      setError(String(e))
+      if (restoredPathRef.current && dirPath !== '/') {
+        restoredPathRef.current = false
+        setPath('/') // the folder of the last visit is gone: start at the top
+      } else {
+        setError(String(e))
+      }
     } finally {
       setLoading(false)
     }
@@ -92,10 +123,13 @@ export default function FilenTab() {
     refreshDir(activeId, path)
   }, [activeId, path, refreshDir])
 
+  useEffect(() => {
+    if (locationLoaded && activeId != null) setAppState(LOCATION_KEY, { userId: activeId, path }).catch(() => {})
+  }, [locationLoaded, activeId, path])
+
   function switchAccount(userId: number) {
     setActiveId(userId)
     setPath('/')
-    setAppState(ACTIVE_ACCOUNT_KEY, userId)
   }
 
   async function handleRemove() {
@@ -166,6 +200,12 @@ export default function FilenTab() {
   async function uploadFromComputer() {
     await act(async (userId) => {
       for (const file of await pickFilesFromDevice()) {
+        // A file of that name is there: say so (and how it is) instead of quietly replacing it.
+        const existing = entries.find((e) => e.name === file.name && !e.isDirectory)
+        if (existing) {
+          const when = existing.mtimeMs != null ? `, last changed ${new Date(existing.mtimeMs).toLocaleString()}` : ''
+          if (!(await confirm(`"${file.name}" is already in this folder in Filen (${existing.size ?? '?'} bytes${when}). Replace it with the file you chose?`))) continue
+        }
         await filenWriteFile(userId, joinFilenPath(path, file.name), file.data)
       }
     })
@@ -195,6 +235,41 @@ export default function FilenTab() {
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
   const currentPage = Math.min(page, pageCount - 1)
   const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
+
+  // ── Keyboard ──
+
+  // A new folder: nothing is focused until a key is pressed — unless it was entered with the keys.
+  useEffect(() => {
+    setKbdFocus(-1)
+  }, [activeId, path])
+  useEffect(() => {
+    const pending = pendingFocusRef.current
+    if (pending === null || loading) return
+    pendingFocusRef.current = null
+    setKbdFocus(pending === 'first' ? (entries.length > 0 ? 0 : -1) : Math.max(0, entries.findIndex((e) => e.name === pending)))
+  }, [entries, loading])
+  useEffect(() => {
+    if (kbdFocus >= 0) setPage(Math.floor(kbdFocus / pageSize))
+  }, [kbdFocus, pageSize])
+
+  useListKeyboard({
+    count: entries.length,
+    focused: kbdFocus,
+    setFocused: setKbdFocus,
+    enabled: activeId != null && !showAddForm,
+    onOpen: (i) => {
+      const entry = entries[i]
+      if (!entry?.isDirectory) return
+      pendingFocusRef.current = 'first'
+      openEntry(entry)
+    },
+    onParent: () => {
+      if (path === '/') return
+      const cut = path.lastIndexOf('/')
+      pendingFocusRef.current = path.slice(cut + 1)
+      setPath(cut <= 0 ? '/' : path.slice(0, cut))
+    },
+  })
 
   return (
     <div className="tab-panel">
@@ -298,8 +373,8 @@ export default function FilenTab() {
                     </td>
                   </tr>
                 )}
-                {pagedEntries.map((entry) => (
-                  <tr key={entry.name}>
+                {pagedEntries.map((entry, i) => (
+                  <tr key={entry.name} {...kbdItem(kbdFocus, currentPage * pageSize + i, setKbdFocus)}>
                     <td>
                       <button className="link-button entry-name" onClick={() => openEntry(entry)}>
                         {entry.isDirectory ? (

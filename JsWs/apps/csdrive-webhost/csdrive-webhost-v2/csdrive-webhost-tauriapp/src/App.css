@@ -1121,3 +1121,163 @@ select {
   justify-content: space-between;
   gap: 8px;
 }
+
+/* ── Keyboard: the focused list item ─────────────────────────────────────────── */
+
+/* The item the arrow keys are on (lib/keyboard.ts, kbdItem). An outline, so it shows on top of the
+   "recently visited" tint and on table rows alike. */
+[data-kbd-focused] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+
+.file-table tr[data-kbd-focused] td {
+  background: var(--row-hover);
+}
+
+/* ── Pagination: the list of all pages ───────────────────────────────────────── */
+
+.pagination-controls {
+  position: relative;
+}
+
+.pagination-page-button {
+  font: inherit;
+  font-size: 12px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.pagination-page-button:hover,
+.pagination-page-button[aria-expanded='true'] {
+  border-color: var(--border);
+  background: var(--row-hover);
+}
+
+.page-popover {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  width: min(320px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.page-popover-input {
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.page-popover-input.invalid {
+  border-color: var(--error-fg);
+  background: var(--error-bg);
+}
+
+.page-popover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
+  gap: 4px;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.page-popover-item {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.page-popover-item:hover {
+  background: var(--row-hover);
+}
+
+.page-popover-item.current {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+/* ── The tab switcher ────────────────────────────────────────────────────────── */
+
+.switcher-input {
+  width: 100%;
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.switcher-input.invalid {
+  border-color: var(--error-fg);
+  background: var(--error-bg);
+}
+
+.switcher-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.switcher-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.switcher-row:hover,
+.switcher-row.matching {
+  background: var(--row-hover);
+}
+
+.switcher-row.matching {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.switcher-number {
+  min-width: 1.5em;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.switcher-hint {
+  margin-top: 8px;
+  font-size: 12px;
+}

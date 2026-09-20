@@ -25,6 +25,7 @@ import Modal from './Modal'
 import Pagination from './Pagination'
 import { TagList } from './Tags'
 import { getAppState, setAppState } from '../lib/appState'
+import { kbdItem, useListKeyboard } from '../lib/keyboard'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
 import { joinRelative } from '../lib/localFs'
@@ -178,6 +179,13 @@ export default function FilesTab() {
   const [hydrated, setHydrated] = useState(false)
   const [page, setPage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
+  // The item the arrow keys are on (an index into all the entries, not just the page shown), and — for a
+  // move made with the keys — which item of the folder that opens to start from.
+  const [kbdFocus, setKbdFocus] = useState(-1)
+  const pendingFocusRef = useRef<string | 'first' | null>(null)
+  // The folder was restored from the last visit and hasn't been listed yet: if it can't be, go to the
+  // root's top instead of showing an error about somewhere the person never asked to be.
+  const restoredPathRef = useRef(false)
 
   useEffect(() => {
     ;(async () => {
@@ -194,6 +202,7 @@ export default function FilesTab() {
       if (saved && typeof saved.path === 'string' && all.some((r) => r.id === saved.rootId)) {
         setActiveRootId(saved.rootId)
         setPath(saved.path)
+        restoredPathRef.current = saved.path !== ''
       }
       setPageSizeState(savedPageSize)
       setHydrated(true)
@@ -264,9 +273,17 @@ export default function FilesTab() {
         }),
       )
       if (requestId !== latestRequestRef.current) return
+      restoredPathRef.current = false
       setEntries(withSizes)
     } catch (e) {
-      if (requestId === latestRequestRef.current) setError(String(e))
+      if (requestId === latestRequestRef.current) {
+        if (restoredPathRef.current && path !== '') {
+          restoredPathRef.current = false
+          setPath('')
+        } else {
+          setError(String(e))
+        }
+      }
     } finally {
       if (requestId === latestRequestRef.current) setLoading(false)
     }
@@ -511,6 +528,42 @@ export default function FilesTab() {
   const currentPage = Math.min(page, pageCount - 1)
   const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
 
+  // ── Keyboard ──
+
+  // A new folder: nothing is focused until a key is pressed — unless the folder was entered with the
+  // keys, which then start at its first item (or, going up, at the folder just left).
+  useEffect(() => {
+    setKbdFocus(-1)
+  }, [activeRootId, path])
+  useEffect(() => {
+    const pending = pendingFocusRef.current
+    if (pending === null || loading) return
+    pendingFocusRef.current = null
+    setKbdFocus(pending === 'first' ? (entries.length > 0 ? 0 : -1) : Math.max(0, entries.findIndex((e) => e.name === pending)))
+  }, [entries, loading])
+  // The page shown follows the focus.
+  useEffect(() => {
+    if (kbdFocus >= 0) setPage(Math.floor(kbdFocus / pageSize))
+  }, [kbdFocus, pageSize])
+
+  useListKeyboard({
+    count: entries.length,
+    focused: kbdFocus,
+    setFocused: setKbdFocus,
+    onOpen: (i) => {
+      const entry = entries[i]
+      if (!entry) return
+      pendingFocusRef.current = entry.isDirectory ? 'first' : null
+      openEntry(entry)
+    },
+    onParent: () => {
+      if (path === '') return
+      const cut = path.lastIndexOf('/')
+      pendingFocusRef.current = path.slice(cut + 1)
+      setPath(cut < 0 ? '' : path.slice(0, cut))
+    },
+  })
+
   return (
     <div className="tab-panel files-tab">
       <div className="root-switcher">
@@ -584,8 +637,8 @@ export default function FilesTab() {
                 </td>
               </tr>
             )}
-            {pagedEntries.map((entry) => (
-              <tr key={entry.name}>
+            {pagedEntries.map((entry, i) => (
+              <tr key={entry.name} {...kbdItem(kbdFocus, currentPage * pageSize + i, setKbdFocus)}>
                 <td>
                   {renaming === entry.name ? (
                     <input

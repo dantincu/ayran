@@ -26,8 +26,29 @@ export interface Entry {
   mtimeMs: number | null
   /** Filen: the file's content is in the cache (opening it needs no network). */
   cached?: boolean
-  /** Filen, in a branch: `put` (written there) or `mkdir` (made there). */
+  /** Filen: the file is locked against caching — its cached copy is never refreshed, expired or cleared. */
+  locked?: boolean
+  /** Filen, in a branch: `put` (written there), `mkdir` (made there) or `checkout` (taken into the
+   * branch without being changed). */
   changed?: string | null
+}
+
+/** Which version of a Filen file someone has been working on: whether it existed, and its size and
+ * modification time. */
+export interface FileVersion {
+  exists: boolean
+  size: number | null
+  mtimeMs: number | null
+}
+
+/** What asking Filen itself about a file found. */
+export interface VersionCheck {
+  /** Filen has the very version that was being worked on. */
+  upToDate: boolean
+  /** When it hasn't: what happened to it, in words. */
+  problem: string | null
+  /** How Filen has the file now. */
+  current: FileVersion
 }
 
 export interface DirListing {
@@ -45,6 +66,8 @@ export interface FileSource {
   viewKey: string
   kind: 'local' | 'filen'
   label: string
+  /** Filen: the branch this works in, or `null` for the account itself. */
+  branch?: number | null
   /** `force` skips the cache (Filen only). */
   list(path: string, force?: boolean): Promise<DirListing>
   /** Size and modification time of an entry — for sources whose listing doesn't carry them. */
@@ -68,6 +91,21 @@ export interface FileSource {
   mkdir(path: string): Promise<void>
   remove(path: string, isDirectory: boolean): Promise<void>
   rename(from: string, to: string): Promise<void>
+
+  // Filen only ────────────────────────────────────────────────────────────────
+  /** The version of the file as the cache knows it — call it right after opening the file, to know what
+   * is being worked on. */
+  version?(path: string): Promise<FileVersion>
+  /** Asks Filen itself (never the cache) whether the file is still at `base`. */
+  checkVersion?(path: string, base: FileVersion): Promise<VersionCheck>
+  /** In a branch: bases the file's change on what Filen has now (the person chose to overwrite it). */
+  rebase?(path: string): Promise<void>
+  /** Locks the file against caching, or unlocks it (see `Entry.locked`). */
+  setLocked?(path: string, locked: boolean): Promise<void>
+  /** In a branch: takes the file into it without changing it, so it is among the pending changes. */
+  checkout?(path: string): Promise<void>
+  /** In a branch: lets go of a file that was checked out and never changed. */
+  release?(path: string): Promise<void>
 }
 
 function sortEntries(entries: Entry[]): Entry[] {
@@ -132,7 +170,7 @@ export interface BranchInfo {
 
 export interface BranchChange {
   path: string
-  kind: 'put' | 'mkdir' | 'delete'
+  kind: 'put' | 'mkdir' | 'delete' | 'checkout'
   isNew: boolean
 }
 
@@ -140,6 +178,12 @@ export interface CommitReport {
   committed: boolean
   applied: number
   conflicts: string[]
+}
+
+interface RawVersion {
+  exists: boolean
+  size: number | null
+  mtimeMs: number | null
 }
 
 interface RawListing {
@@ -175,6 +219,7 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     viewKey: `${FILEN_PREFIX}${userId}#${branch ?? ''}`,
     kind: 'filen',
     label: account.email,
+    branch,
     async list(path, force) {
       const listing = await invoke<RawListing>('filen_cache_list', { ...target, path: filenPath(path), force: !!force })
       return { entries: sortEntries(listing.entries), fetchedAt: listing.fetchedAt, stale: listing.stale }
@@ -206,6 +251,13 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     mkdir: (path) => invoke<void>('filen_cache_mkdir', { ...target, path: filenPath(path) }),
     remove: (path) => invoke<void>('filen_cache_rm', { ...target, path: filenPath(path) }),
     rename: (from, to) => invoke<void>('filen_cache_rename', { ...target, from: filenPath(from), to: filenPath(to) }),
+    version: (path) => invoke<RawVersion>('filen_cache_version', { ...target, path: filenPath(path) }),
+    checkVersion: (path, base) => invoke<VersionCheck>('filen_cache_check_version', { ...target, path: filenPath(path), base }),
+    rebase: branch === null ? undefined : (path) => invoke<void>('filen_cache_rebase', { userId, branch, path: filenPath(path) }),
+    // A lock is on the account's file, so it is the same whichever branch it is asked from.
+    setLocked: (path, locked) => invoke<void>('filen_cache_set_locked', { userId, path: filenPath(path), locked }),
+    checkout: branch === null ? undefined : (path) => invoke<void>('filen_cache_checkout', { userId, branch, path: filenPath(path) }),
+    release: branch === null ? undefined : (path) => invoke<void>('filen_cache_release', { userId, branch, path: filenPath(path) }),
   }
 }
 

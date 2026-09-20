@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowRightLeft,
   ArrowUpDown,
@@ -28,6 +28,8 @@ import Modal from './Modal'
 import { TagList } from './Tags'
 import ReorderList from './ReorderList'
 import { getAppState, setAppState } from '../lib/appState'
+import { kbdItem, useListKeyboard } from '../lib/keyboard'
+import { isObject, isStringOrNull } from '../lib/tabState'
 import { rootOfTab } from '../lib/rootTags'
 import {
   activateTab,
@@ -406,6 +408,8 @@ function LevelPanel<T>({
   onDoneReordering,
   onReorder,
   emptyMessage,
+  focusedIndex,
+  onFocusItem,
 }: {
   items: T[]
   getId: (item: T) => string
@@ -415,6 +419,9 @@ function LevelPanel<T>({
   onDoneReordering: () => void
   onReorder: (items: T[]) => void
   emptyMessage: string
+  /** The item the arrow keys are on, and how a press on an item moves it there. */
+  focusedIndex: number
+  onFocusItem: (index: number) => void
 }) {
   if (reordering) {
     return (
@@ -431,8 +438,10 @@ function LevelPanel<T>({
   }
   return (
     <ul className="window-list">
-      {items.map((item) => (
-        <li key={getId(item)}>{renderRow(item)}</li>
+      {items.map((item, i) => (
+        <li key={getId(item)} {...kbdItem(focusedIndex, i, onFocusItem)}>
+          {renderRow(item)}
+        </li>
       ))}
     </ul>
   )
@@ -460,6 +469,13 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   const [currentWindowGuid, setCurrentWindowGuid] = useState<string | null>(null)
   const [currentGroupGuid, setCurrentGroupGuid] = useState<string | null>(null)
   const [reordering, setReordering] = useState(false)
+  // Where the person was (and so where they are back to on returning to this tab page), read at the start.
+  const NAVIGATION_KEY = `${statePrefix}.navigation`
+  const [navigationLoaded, setNavigationLoaded] = useState(false)
+  const [recordsLoaded, setRecordsLoaded] = useState(false)
+  // The item the arrow keys are on, and whether the last move of the view was made with the keys.
+  const [kbdFocus, setKbdFocus] = useState(-1)
+  const keyboardMovedRef = useRef(false)
 
   const [detailsFor, setDetailsFor] = useState<SecondaryWindowRecord | null>(null)
   const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
@@ -481,6 +497,23 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     getAppState<Record<string, string[]>>(TAB_GROUP_ORDER_KEY).then((saved) => setTabGroupOrderState(saved ?? {}))
     getAppState<Record<string, string[]>>(TAB_ORDER_KEY).then((saved) => setTabOrderState(saved ?? {}))
   }, [])
+
+  // Restore the navigation. Whether it still leads anywhere is judged once the list has loaded (below).
+  useEffect(() => {
+    getAppState<unknown>(NAVIGATION_KEY).then((saved) => {
+      if (isObject(saved) && typeof saved.view === 'string' && saved.view in VIEW_DEPTH && isStringOrNull(saved.app) && isStringOrNull(saved.window) && isStringOrNull(saved.group)) {
+        setView(saved.view as View)
+        setCurrentApp(saved.app)
+        setCurrentWindowGuid(saved.window)
+        setCurrentGroupGuid(saved.group)
+      }
+      setNavigationLoaded(true)
+    }, () => setNavigationLoaded(true))
+  }, [])
+
+  useEffect(() => {
+    if (navigationLoaded) setAppState(NAVIGATION_KEY, { view, app: currentApp, window: currentWindowGuid, group: currentGroupGuid }).catch(() => {})
+  }, [navigationLoaded, view, currentApp, currentWindowGuid, currentGroupGuid])
 
   function navigate(next: View) {
     setView(next)
@@ -544,6 +577,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
       if (isSystem) setCatalog(await listSystemApps())
       const list = await listSecondaryWindows(kind)
       setRecords(list)
+      setRecordsLoaded(true)
       setRootTags(await fetchRootTags(list))
     } catch (e) {
       setError(String(e))
@@ -741,6 +775,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   // etc.), fall back to the deepest level that's still valid instead of showing
   // a blank/broken screen.
   useEffect(() => {
+    if (!navigationLoaded || !recordsLoaded) return // (a saved place isn't judged against a list that hasn't arrived)
     if (view === 'apps') return
     if (!currentAppGroup) {
       setView('apps')
@@ -761,7 +796,51 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
       setView('groups')
       setCurrentGroupGuid(null)
     }
-  }, [records, view, currentAppGroup, currentWindow, currentGroup])
+  }, [navigationLoaded, recordsLoaded, records, view, currentAppGroup, currentWindow, currentGroup])
+
+  // ── Keyboard: Up/Down/Home/End/PageUp/PageDown through the list of the level shown, Left to the level
+  // above, Right into (or, for a tab, to) the focused item.
+  const levelIds =
+    view === 'apps'
+      ? apps.map((g) => g.relativePath)
+      : view === 'windows'
+        ? windowsOfCurrentApp.map((w) => w.guid)
+        : view === 'groups'
+          ? groupsOfCurrentWindow.map((g) => g.guid)
+          : tabsOfCurrentGroup.map((t) => t.guid)
+  const levelCurrent = view === 'apps' ? currentApp : view === 'windows' ? currentWindowGuid : view === 'groups' ? currentGroupGuid : null
+
+  // A new level: the keys start from the item the person came from (going up) or the first one (going
+  // down); after a click, nothing is focused until a key is pressed.
+  useEffect(() => {
+    const byKeyboard = keyboardMovedRef.current
+    keyboardMovedRef.current = false
+    setKbdFocus(byKeyboard && levelIds.length > 0 ? Math.max(0, levelCurrent ? levelIds.indexOf(levelCurrent) : 0) : -1)
+  }, [view, recordsLoaded])
+
+  const PARENT_VIEW: Record<View, View | null> = { apps: null, windows: 'apps', groups: 'windows', tabs: 'groups' }
+  useListKeyboard({
+    count: levelIds.length,
+    focused: kbdFocus,
+    setFocused: setKbdFocus,
+    enabled: !reordering && !detailsFor && !movingTab && !renamingGroup,
+    onOpen: (i) => {
+      if (view === 'tabs') {
+        handleActivateTab(levelIds[i])
+        return
+      }
+      keyboardMovedRef.current = true
+      if (view === 'apps') openApp(levelIds[i])
+      else if (view === 'windows') openWindow(levelIds[i])
+      else openGroup(levelIds[i])
+    },
+    onParent: PARENT_VIEW[view]
+      ? () => {
+          keyboardMovedRef.current = true
+          navigate(PARENT_VIEW[view]!)
+        }
+      : undefined,
+  })
 
   const liveDetailsFor = detailsFor ? records.find((r) => r.guid === detailsFor.guid) ?? null : null
   const moveCandidates: MoveCandidate[] = movingTab
@@ -863,6 +942,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
               onDoneReordering={() => setReordering(false)}
               onReorder={(newApps) => saveGroupOrder(newApps.map((g) => g.relativePath))}
               emptyMessage={isSystem ? 'No system apps.' : 'No web apps open yet. Open an .html file from the Files tab as a web app to see it here.'}
+              focusedIndex={kbdFocus}
+              onFocusItem={setKbdFocus}
               renderReorderLabel={(g) => (
                 <span>
                   <span className="window-group-path">{appName(g.relativePath)}</span>{' '}
@@ -924,6 +1005,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
               onDoneReordering={() => setReordering(false)}
               onReorder={(newWindows) => saveItemOrder(currentApp!, newWindows.map((w) => w.guid))}
               emptyMessage="No windows for this app yet."
+              focusedIndex={kbdFocus}
+              onFocusItem={setKbdFocus}
               renderReorderLabel={(w) => (
                 <span className="reorder-window-item">
                   <span className={`status-dot ${w.isOpen ? 'status-open' : 'status-suspended'}`} />
@@ -988,6 +1071,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
               onDoneReordering={() => setReordering(false)}
               onReorder={(newGroups) => saveTabGroupOrder(currentWindow.guid, newGroups.map((g) => g.guid))}
               emptyMessage="No tab groups yet."
+              focusedIndex={kbdFocus}
+              onFocusItem={setKbdFocus}
               renderReorderLabel={(g) => (
                 <span className="muted">
                   {g.name ?? `Tab group · ${formatDateTime(g.createdAt)}`} ({g.tabs.length} tab{g.tabs.length === 1 ? '' : 's'})
@@ -1046,6 +1131,8 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
               onDoneReordering={() => setReordering(false)}
               onReorder={(newTabs) => saveTabOrder(currentGroup.guid, newTabs.map((t) => t.guid))}
               emptyMessage="No tabs yet."
+              focusedIndex={kbdFocus}
+              onFocusItem={setKbdFocus}
               renderReorderLabel={(t) => <span>{t.tabText ? t.tabText.firstRow.map((s) => s.text).join(' ') : t.resourceId}</span>}
               renderRow={(t) => (
                 <TabRow

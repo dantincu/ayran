@@ -9,7 +9,9 @@ import StorageTab from './components/StorageTab'
 import SettingsTab from './components/SettingsTab'
 import Splash from './components/Splash'
 import { hideNativeSplash } from './lib/nativeSplash'
+import TabSwitcher from './components/TabSwitcher'
 import { getAppState, setAppState } from './lib/appState'
+import { isShortcut, shortcutLabel, TAB_SWITCHER_LETTER } from './lib/keyboard'
 
 type Tab = 'system' | 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
 
@@ -32,6 +34,18 @@ function isTab(value: unknown): value is Tab {
 
 export default function App() {
   const [tab, setTabState] = useState<Tab | null>(null)
+  const [switching, setSwitching] = useState(false)
+
+  // The tab switcher opens from anywhere in the admin-app.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!isShortcut(e, TAB_SWITCHER_LETTER)) return
+      e.preventDefault()
+      setSwitching((open) => !open)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   useEffect(() => {
     getAppState<Tab>(ACTIVE_TAB_KEY).then((stored) => {
@@ -58,14 +72,14 @@ export default function App() {
   return (
     <div className="app-shell">
       <nav className="tab-nav">
-        {TABS.map((t) => {
+        {TABS.map((t, i) => {
           const Icon = t.icon
           return (
             <button
               key={t.id}
               className={`tab-button ${tab === t.id ? 'active' : ''}`}
               onClick={() => setTab(t.id)}
-              title={t.label}
+              title={`${t.label} — tab ${i + 1} (${shortcutLabel(TAB_SWITCHER_LETTER)}, then ${i + 1})`}
             >
               <Icon size={18} strokeWidth={2} aria-hidden="true" />
               <span>{t.label}</span>
@@ -82,6 +96,17 @@ export default function App() {
         {tab === 'storage' && <StorageTab />}
         {tab === 'settings' && <SettingsTab />}
       </main>
+      {switching && (
+        <TabSwitcher
+          tabs={TABS}
+          currentId={tab}
+          onPick={(id) => {
+            setSwitching(false)
+            if (isTab(id)) setTab(id)
+          }}
+          onClose={() => setSwitching(false)}
+        />
+      )}
     </div>
   )
 }

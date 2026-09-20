@@ -80,3 +80,35 @@
 .file-table td.muted {
   white-space: nowrap;
 }
+
+.notes-badge-locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.notes-badge-checkout {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.notes-conflict-options {
+  margin: 8px 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.dialog-danger {
+  color: var(--error-fg);
+}
