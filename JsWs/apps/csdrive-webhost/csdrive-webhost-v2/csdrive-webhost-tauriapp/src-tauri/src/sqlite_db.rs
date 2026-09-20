@@ -180,7 +180,7 @@ async fn connect(path: &Path) -> Result<SqlitePool, sqlx::Error> {
 #[tauri::command]
 pub async fn sqlite_load(
     app: AppHandle,
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, SqliteState>,
     root: String,
     path: String,
@@ -197,7 +197,7 @@ pub async fn sqlite_load(
 
 #[tauri::command]
 pub async fn sqlite_close(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, SqliteState>,
     db: Option<String>,
 ) -> Result<(), String> {
@@ -207,7 +207,7 @@ pub async fn sqlite_close(
 
 #[tauri::command]
 pub async fn sqlite_execute(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, SqliteState>,
     db: String,
     query: String,
@@ -220,7 +220,7 @@ pub async fn sqlite_execute(
 
 #[tauri::command]
 pub async fn sqlite_select(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, SqliteState>,
     db: String,
     query: String,

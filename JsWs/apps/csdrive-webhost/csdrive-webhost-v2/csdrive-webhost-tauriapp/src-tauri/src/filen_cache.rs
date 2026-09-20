@@ -240,7 +240,7 @@ pub async fn filen_cache_release(cache: State<'_, Cache>, user_id: u64, branch: 
 /// `filen_cache_upload_finish` (or gives up with `filen_cache_upload_abort`).
 #[tauri::command]
 pub async fn filen_cache_upload_begin(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     cache: State<'_, Cache>,
     sessions: State<'_, UploadSessions>,
@@ -265,7 +265,7 @@ pub async fn filen_cache_upload_begin(
 /// A piece that fails ends the upload.
 #[tauri::command]
 pub async fn filen_cache_upload_chunk(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     cache: State<'_, Cache>,
     sessions: State<'_, UploadSessions>,
@@ -286,7 +286,7 @@ pub async fn filen_cache_upload_chunk(
 /// Ends an upload: the file now exists, and what was sent is its cached copy.
 #[tauri::command]
 pub async fn filen_cache_upload_finish(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     cache: State<'_, Cache>,
     sessions: State<'_, UploadSessions>,
@@ -300,7 +300,7 @@ pub async fn filen_cache_upload_finish(
 
 /// Gives up an upload: nothing is left of it.
 #[tauri::command]
-pub fn filen_cache_upload_abort(window: tauri::WebviewWindow, sessions: State<'_, UploadSessions>, id: String) -> Result<(), String> {
+pub fn filen_cache_upload_abort(window: crate::window_host::CallerWindow, sessions: State<'_, UploadSessions>, id: String) -> Result<(), String> {
     sessions.remove(&id, &crate::window_host::caller_key(&window));
     Ok(())
 }
@@ -353,7 +353,7 @@ pub async fn filen_cache_download_to(
 /// then copied: it never goes through the window. Trusted windows only, like every export.
 #[tauri::command]
 pub async fn filen_cache_export(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     cache: State<'_, Cache>,
     exports: State<'_, ExportState>,

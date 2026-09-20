@@ -27,6 +27,8 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // The windows of web apps (WindowActivity) reach the backend through this (see WindowBridge).
+    WindowBridge.init(applicationContext)
     showSplash()
   }
 

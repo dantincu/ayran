@@ -55,6 +55,20 @@ pub fn code_snippets() -> Vec<CodeSnippet> {
 /// exposes `CsdriveSafeArea.get()` ("top,right,bottom,left" in CSS px) and calls
 /// `window.__csdriveApplySafeArea` whenever the insets change.
 #[cfg_attr(desktop, allow(dead_code))] // only injected on mobile
+/// Runs in every web app's and system app's window before the page's own scripts: **the page can't change
+/// its own address** with `history.pushState` / `replaceState` (they throw, and can't be put back) or the
+/// Navigation API, which is what an app would otherwise use to turn a document into a "single page" that
+/// wanders off its address without a navigation the backend could see (`on_navigation` only sees real
+/// ones). A changed *fragment* (`#section`, an in-page link) stays allowed — it goes nowhere. It is a
+/// guard against pages, not a boundary against hostile code (which the CSP and the capabilities are).
+pub const FROZEN_ADDRESS_INIT_SCRIPT: &str = r#"(function () {
+  function refuse() { throw new DOMException('A page cannot change its own address.', 'SecurityError') }
+  try { Object.defineProperty(History.prototype, 'pushState', { value: refuse, writable: false, configurable: false }) } catch (e) {}
+  try { Object.defineProperty(History.prototype, 'replaceState', { value: refuse, writable: false, configurable: false }) } catch (e) {}
+  try { Object.defineProperty(window, 'navigation', { value: undefined, writable: false, configurable: false }) } catch (e) {}
+})();"#;
+
+#[cfg_attr(desktop, allow(dead_code))] // only the Android webview needs it
 pub const SAFE_AREA_INIT_SCRIPT: &str = r#"(function () {
   var sides = ['top', 'right', 'bottom', 'left'];
   function apply(top, right, bottom, left) {

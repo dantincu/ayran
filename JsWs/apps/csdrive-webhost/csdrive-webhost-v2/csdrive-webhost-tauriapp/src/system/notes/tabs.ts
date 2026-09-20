@@ -131,8 +131,9 @@ export async function registerTab(): Promise<Tab | null> {
   }
 }
 
-/** Tells the window manager which place the tab is at now, and how to label it. Also puts the place
- * in this page's address, so a plain reload comes back to it. */
+/** Tells the window manager which place the tab is at now, and how to label it. (The page's own address
+ * never changes — a page can't — so a reload comes back to the place through the resource id the window
+ * manager stored, which the page's registration answers with.) */
 export async function reportLocation(
   tab: Tab,
   location: Location,
@@ -142,7 +143,6 @@ export async function reportLocation(
   unsaved = false,
 ): Promise<void> {
   const query = encodeLocation(location)
-  history.replaceState(null, '', `${window.location.pathname}?${query}`)
   const firstRow: TabText['firstRow'] = [{ text: label, bold: true }]
   if (branchName) firstRow.push({ text: ` · ${branchName}`, italic: true })
   // A tab that is editing a file says so — and whether there is something not saved yet.

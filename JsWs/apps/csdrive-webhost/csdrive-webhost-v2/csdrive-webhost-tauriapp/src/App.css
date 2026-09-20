@@ -1158,11 +1158,12 @@ select {
   background: var(--row-hover);
 }
 
+/* Placed by Pagination (top/left, against the screen): as tall as the screen allows, less a margin and the
+   system bars' insets on a phone. */
 .page-popover {
-  position: absolute;
-  right: 0;
-  bottom: calc(100% + 6px);
+  position: fixed;
   z-index: 20;
+  max-height: calc(100dvh - 16px - var(--csdrive-safe-area-inset-top, 0px) - var(--csdrive-safe-area-inset-bottom, 0px));
   width: min(320px, calc(100vw - 32px));
   display: flex;
   flex-direction: column;
@@ -1189,12 +1190,21 @@ select {
   background: var(--error-bg);
 }
 
+/* The list of pages takes the height the popover has (up to the screen's) and scrolls (vertically, inside the
+   popover) only when there are more pages than that. */
 .page-popover-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(44px, 1fr));
   gap: 4px;
-  max-height: 200px;
+  flex: 0 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.page-popover-item.cursor {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .page-popover-item {

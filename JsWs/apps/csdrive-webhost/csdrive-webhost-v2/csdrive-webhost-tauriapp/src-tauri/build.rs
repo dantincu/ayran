@@ -121,5 +121,13 @@ fn main() {
             "get_deployable_app_html",
         ]),
     );
+    // The `window.__TAURI__` script of the Tauri version this is built with — Tauri passes its path to the crates that depend on
+    // it (`links = "Tauri"`). The windows of the Android bridge (`window_scripts.rs`) serve it to their pages, as Tauri does
+    // to its own webviews, so it is copied next to the build output for `include_str!`.
+    let global_script = std::env::var("DEP_TAURI_GLOBAL_API_SCRIPT_PATH").expect("Tauri didn't say where its global API script is");
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("no OUT_DIR"));
+    std::fs::copy(&global_script, out_dir.join("tauri-global.js")).expect("couldn't copy Tauri's global API script");
+    println!("cargo:rerun-if-changed={global_script}");
+
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

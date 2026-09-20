@@ -18,9 +18,9 @@ These work on every list you can browse — no need to click it first, the keys 
 
 | Keys | What it does |
 | --- | --- |
-| **↓** / **↑** | Focus the next / previous item. (With nothing focused yet, either one focuses the first item.) |
-| **Home** / **End** | Focus the first / last item — in a paginated list, of *all* the pages; the page shown follows. |
-| **Page Down** / **Page Up** | Move the focus 10 items down / up. |
+| **↓** / **↑** | Focus the next / previous item. (With nothing focused yet, either one focuses the first item — in a paginated list, the first item of the page shown.) |
+| **Home** / **End** | Focus the first / last item — in a paginated list, of the **page** the focus is on (not of all the pages). |
+| **Page Down** / **Page Up** | Move the focus 10 items down / up. In a paginated list this stays inside the page: with fewer than 10 items left it stops at the page's last / first item, and pressed *there* it goes on to the **next page's first item** / **previous page's last item**. |
 | **←** | Go to the **parent**: up a folder, or up a level (opened item → tab → tab group → window → app), or close the open database / object store. The item you just came from is focused. |
 | **→** | Go into the **focused item**: open a folder, open a file to edit it, open an app's windows, a window's tab groups, a tab group's tabs, what was **opened from a tab** (its web apps and external web sites), a database's tables or stores. On an external web site, → brings its window to the front (or opens it again). A folder you enter has its first item focused. |
 | **Enter** | The focused item's own action: on a **tab**, show it (its window opens if need be); on anything else, the same as →. (Not heard while a button or link has the focus — Enter presses that.) |
@@ -50,7 +50,18 @@ Every paginated list (Files, Filen.io, Notes) has the page indicator, `3 / 12`, 
 | *Press the indicator* (mouse or touch) | Opens the same page list *without* the number box: press a page number to go there. |
 | **Esc** | Closes the page list (so does pressing anywhere outside it). |
 
-The current page is highlighted in the list. **Ctrl+G** is ignored while a dialog or the editor is open.
+The current page is highlighted in the list, and a second outline — the **cursor** — shows where the keys have taken you. While the page list is open:
+
+| Keys | What it does |
+| --- | --- |
+| **←** / **→** | Move the cursor to the previous / next page number. |
+| **↑** / **↓** | Move the cursor to the same column of the previous / next **row** of page numbers (on a shorter last row, to its last number). |
+| **Page Up** / **Page Down** | Move the cursor up / down by **half the height** of the list, in rows. |
+| **Home** / **End** | Move the cursor to the first / last page. |
+| **Enter** | Go to the page under the cursor (when no number has been typed; with one typed, to that number). |
+| *Typing a number* | The cursor follows it. |
+
+The popover is as tall as the screen allows; the list scrolls (vertically, inside the popover) when there are more pages than fit, and follows the cursor. **Ctrl+G** is ignored while a dialog or the editor is open.
 
 ## Dialogs, editors and text boxes
 

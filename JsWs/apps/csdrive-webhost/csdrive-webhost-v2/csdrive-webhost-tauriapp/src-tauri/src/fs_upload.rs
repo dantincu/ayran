@@ -119,7 +119,7 @@ impl LocalUploads {
 /// the file in pieces with `fs_upload_chunk` and ends with `fs_upload_finish` (or `fs_upload_abort`).
 #[tauri::command]
 pub async fn fs_upload_begin(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     scope: State<'_, FsScope>,
     uploads: State<'_, LocalUploads>,
     root: String,
@@ -133,7 +133,7 @@ pub async fn fs_upload_begin(
 /// The next piece of an upload: its bytes are the request body and `id` an argument (see
 /// `ipc::body_bytes`/`field`; from JS, `invokeWithBytes('fs_upload_chunk', bytes, { id })`).
 #[tauri::command]
-pub async fn fs_upload_chunk(window: tauri::WebviewWindow, uploads: State<'_, LocalUploads>, request: Request<'_>) -> Result<(), String> {
+pub async fn fs_upload_chunk(window: crate::window_host::CallerWindow, uploads: State<'_, LocalUploads>, request: Request<'_>) -> Result<(), String> {
     let id = crate::ipc::field(&request, "id")?;
     let bytes = crate::ipc::body_bytes(&request)?;
     let uploads = uploads.inner().clone();
@@ -143,7 +143,7 @@ pub async fn fs_upload_chunk(window: tauri::WebviewWindow, uploads: State<'_, Lo
 
 #[tauri::command]
 pub async fn fs_upload_finish(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     scope: State<'_, FsScope>,
     uploads: State<'_, LocalUploads>,
     id: String,
@@ -154,7 +154,7 @@ pub async fn fs_upload_finish(
 }
 
 #[tauri::command]
-pub fn fs_upload_abort(window: tauri::WebviewWindow, uploads: State<'_, LocalUploads>, id: String) -> Result<(), String> {
+pub fn fs_upload_abort(window: crate::window_host::CallerWindow, uploads: State<'_, LocalUploads>, id: String) -> Result<(), String> {
     uploads.abort(&crate::window_host::caller_key(&window), &id);
     Ok(())
 }

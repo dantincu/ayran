@@ -91,7 +91,7 @@ pub struct DataFolderInfo {
 }
 
 #[tauri::command]
-pub fn get_data_folder_info(window: tauri::WebviewWindow, app: AppHandle) -> Result<DataFolderInfo, String> {
+pub fn get_data_folder_info(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<DataFolderInfo, String> {
     crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
@@ -109,7 +109,7 @@ pub fn get_data_folder_info(window: tauri::WebviewWindow, app: AppHandle) -> Res
 /// folder, records it as the new custom data location. Does not move or touch any
 /// existing files — the change only takes effect after the app is restarted.
 #[tauri::command]
-pub fn pick_and_set_custom_data_folder(window: tauri::WebviewWindow, app: AppHandle) -> Result<Option<String>, String> {
+pub fn pick_and_set_custom_data_folder(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<Option<String>, String> {
     crate::window_host::require_admin(&window)?;
 
     // Mobile folder pickers hand back opaque URIs, not paths the app could keep its
@@ -142,7 +142,7 @@ pub fn pick_and_set_custom_data_folder(window: tauri::WebviewWindow, app: AppHan
 }
 
 #[tauri::command]
-pub fn reset_data_folder_to_default(window: tauri::WebviewWindow, app: AppHandle) -> Result<(), String> {
+pub fn reset_data_folder_to_default(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<(), String> {
     crate::window_host::require_admin(&window)?;
     let default_dir = default_app_data_dir(&app)?;
     write_custom_dir(&default_dir, None)
@@ -245,7 +245,7 @@ fn clear_directory_contents(dir: &Path, exclude: Option<&Path>) -> Result<(), St
 /// empty) folder instead of continuing to run with a closed one.
 #[tauri::command]
 pub async fn clear_custom_data_folder_contents(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
@@ -272,7 +272,7 @@ pub async fn clear_custom_data_folder_contents(
 /// restarts the app afterward.
 #[tauri::command]
 pub async fn delete_app_data(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     windows_state: tauri::State<'_, crate::secondary_windows::SecondaryWindowsState>,
     db_state: tauri::State<'_, crate::app_state::AppDbState>,

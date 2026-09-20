@@ -283,7 +283,7 @@ pub(crate) async fn note_closed(app: &AppHandle, guid: &str) {
 /// opens, listed under the tab that asked. The caller must be a web app or system app with a tab.
 #[tauri::command]
 pub async fn open_external_site(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     sites: State<'_, ExternalSites>,
     windows: State<'_, SecondaryWindowsState>,
@@ -304,7 +304,7 @@ pub async fn open_external_site(
     let request = request_id.clone();
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
-        let confirmed = confirm(&app_for_task, &app_name, &url).await;
+        let confirmed = confirm(&app_for_task, &window_guid, &app_name, &url).await;
         app_for_task.state::<ExternalSites>().confirming.store(false, Ordering::SeqCst);
 
         let pool = pool_of(&app_for_task);
@@ -329,18 +329,29 @@ pub async fn open_external_site(
 }
 
 /// The OS native box: who asks, and the address to be opened.
-async fn confirm(app: &AppHandle, app_name: &str, url: &Url) -> bool {
-    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.dialog()
-        .message(format!("\"{app_name}\" wants to open this web site in a window of CsDrive WebHost:\n\n{url}\n\nOpen it?"))
-        .title("Open an external web site?")
-        .kind(MessageDialogKind::Warning)
-        .buttons(MessageDialogButtons::OkCancelCustom("Open".to_string(), "Cancel".to_string()))
-        .show(move |answer| {
-            let _ = sender.send(answer);
-        });
-    receiver.await.unwrap_or(false)
+async fn confirm(app: &AppHandle, asker: &str, app_name: &str, url: &Url) -> bool {
+    let message = format!("\"{app_name}\" wants to open this web site in a window of CsDrive WebHost:\n\n{url}\n\nOpen it?");
+    // On Android the box is shown by the window that asks: a dialog of the app's main activity would not be visible over it.
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        crate::android_windows::ask(asker, "Open an external web site?", &message, &["Open", "Cancel"]).await == Some(0)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let _ = asker;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        app.dialog()
+            .message(message)
+            .title("Open an external web site?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Open".to_string(), "Cancel".to_string()))
+            .show(move |answer| {
+                let _ = sender.send(answer);
+            });
+        receiver.await.unwrap_or(false)
+    }
 }
 
 /// The person said yes: the page is listed under its tab, and its window opens.
@@ -399,6 +410,7 @@ pub async fn close_external_site(app: AppHandle, windows: State<'_, SecondaryWin
 }
 
 /// Every listed site (closing the app closes all their windows).
+#[cfg(desktop)]
 pub async fn all_guids(pool: &SqlitePool) -> Vec<String> {
     sqlx::query_scalar("SELECT guid FROM external_pages").fetch_all(pool).await.unwrap_or_default()
 }
@@ -570,9 +582,18 @@ mod host {
         });
     }
 
-    /// The site is on top of the app already; there is no other window to bring forward.
-    pub fn focus(_app: &AppHandle, _guid: &str) -> Result<(), String> {
-        Ok(())
+    /// Brings the site's own task to the front.
+    pub fn focus(_app: &AppHandle, guid: &str) -> Result<(), String> {
+        if !with_open(|open| open.contains(guid)) {
+            return Ok(());
+        }
+        let id = guid.to_string();
+        crate::android_jni::on_activity(move |env, activity| {
+            let class = crate::android_jni::helper_class(env, activity, CLASS)?;
+            let id = env.new_string(&id)?;
+            env.call_static_method(&class, "focus", "(Landroid/app/Activity;Ljava/lang/String;)V", &[JValue::Object(activity), JValue::Object(&id)])?;
+            Ok(())
+        })
     }
 
     /// While any site is showing, asks Kotlin now and then what happened to them.

@@ -232,8 +232,10 @@ export async function removeWindowTag(id: number): Promise<void> {
  * reloading, the tab its window is showing — and answers with it. To *add* another tab from the
  * page, use `addWindowTab`. The window is identified implicitly (its own Tauri window
  * label), never sent explicitly — see `secondary_windows::init_window_tab` in Rust.
- * `url` is expected to be the page's own `location.href`; the backend splits it into
- * the window's html-file relative path and a resource id (relative path + query).
+ * `url` is the page's own address plus, if it likes, a query string of its own choosing; the backend splits it
+ * into the window's html-file relative path and a resource id (relative path + query). A page never changes its
+ * own address (it can't — see `FROZEN_ADDRESS_INIT_SCRIPT` in Rust), so the query is only a way of saying which
+ * resource this tab shows; on a reload the answer carries the resource id the window manager stored.
  * `resourceType` (optional, can instead — or also — be set later via
  * `updateTabResource`) is the key into this app's icon set; if this is the first
  * time the backend has seen this `appVersion` for this html file, it will emit

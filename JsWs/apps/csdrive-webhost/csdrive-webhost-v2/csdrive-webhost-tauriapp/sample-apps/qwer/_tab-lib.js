@@ -40,26 +40,27 @@ window.TabLib = (function () {
     return { text: String(text), bold: !!opts.bold, italic: !!opts.italic }
   }
 
-  // Replaces this page's query string (via pushState, no reload) with `params`,
-  // so location.href — what init_window_tab reads — identifies this resource.
-  function setQuery(params) {
+  // The address init_window_tab is told: this page's own address with `params` as its query string, which
+  // identifies the resource the tab shows. The page's location itself never changes — a page can't change
+  // its address (history.pushState throws) — so this is a value, not a navigation.
+  function urlFor(params) {
     const url = new URL(location.href)
     url.search = ''
     for (const key in params) url.searchParams.set(key, String(params[key]))
-    history.pushState(null, '', url)
+    return url.href
   }
 
   // The window manager tells the page when the user switches to another tab of its window (the
   // 'tab-navigate' event, carrying the same { tabGuid, resourceId, codeSnippets } that openTab and
   // addTab return). The listener is on this window (not the global event.listen, which also hears
   // events sent to other windows) and is added as soon as this file loads, i.e. before any request
-  // below is sent, so no switch can be missed. The default reaction is to start over at the page's
-  // own address; a page that can show another tab in place calls onNavigate(handler) instead.
+  // below is sent, so no switch can be missed. The default reaction is to start the page over (a reload);
+  // a page that can show another tab in place calls onNavigate(handler) instead.
   var navigateHandler = null
   var listening = window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', function (event) {
     applySnippets(event.payload.codeSnippets)
     if (navigateHandler) navigateHandler(event.payload)
-    else location.href = location.pathname
+    else location.reload()
   })
   function onNavigate(handler) {
     navigateHandler = handler
@@ -74,11 +75,10 @@ window.TabLib = (function () {
   // is passed to onNavigate.
   async function openTab(params, appVersion, resourceType, handler) {
     if (handler) onNavigate(handler)
-    setQuery(params)
     await listening
     const response = await invoke('init_window_tab', {
       appVersion: appVersion || 1,
-      url: location.href,
+      url: urlFor(params),
       resourceType: resourceType || null,
     })
     applySnippets(response.codeSnippets)
@@ -89,11 +89,10 @@ window.TabLib = (function () {
   // the one the window is showing, and makes it the window's current tab. Takes and returns what
   // openTab does. This is the only way a page creates a tab.
   async function addTab(params, appVersion, resourceType) {
-    setQuery(params)
     await listening
     const response = await invoke('add_window_tab', {
       appVersion: appVersion || 1,
-      url: location.href,
+      url: urlFor(params),
       resourceType: resourceType || null,
     })
     applySnippets(response.codeSnippets)

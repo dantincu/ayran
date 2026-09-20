@@ -32,10 +32,21 @@
             </intent-filter>
         </activity>
 
+        <!-- A window of a web app or a system app (WindowActivity.kt): one task each in the Recents screen. `intoExisting` keys the
+             task by the intent's data (csdrive-window://<guid>), so opening a window that is showing brings it to the front. -->
+        <activity
+            android:name=".WindowActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:documentLaunchMode="intoExisting"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize"
+            android:theme="@style/Theme.csdrive_webhost_tauriapp" />
+
         <!-- An external web site (ExternalSiteActivity.kt): a plain WebView with no bridge to the backend. -->
         <activity
             android:name=".ExternalSiteActivity"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:documentLaunchMode="intoExisting"
             android:exported="false"
             android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
 

@@ -741,9 +741,6 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
         // from them (which do the same to theirs): their windows close, their entries stay.
         let open = crate::external_sites::guids_of_window(&state.pool, guid).await;
         crate::external_sites::close_windows(app, &open);
-        // (Desktop only: on Android one page is showing at a time, and a parent is suspended *because* its child
-        // took the screen — closing the child then would undo the very thing that suspended the parent.)
-        #[cfg(desktop)]
         for child in crate::notes_pages::children_of_window(&state.pool, guid).await {
             if crate::window_host::is_open(app, &child) {
                 state.pending_suspend.lock().unwrap().insert(child.clone());
@@ -1529,7 +1526,7 @@ pub const EVENT_REQUEST_RESOURCE_ICONS: &str = "request-resource-icons";
 
 #[tauri::command]
 pub async fn init_window_tab(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     app_version: i64,
@@ -1555,7 +1552,8 @@ pub async fn init_window_tab(
     state.current_tabs.lock().unwrap().insert(window_guid.clone(), result.tab_guid.clone());
 
     if needs_icons {
-        let _ = window.emit(EVENT_REQUEST_RESOURCE_ICONS, ());
+        // To the window that registered — not to every window.
+        crate::window_host::emit_if_open(&app, &window_guid, EVENT_REQUEST_RESOURCE_ICONS, ());
     }
 
     let _ = app.emit(EVENT_CHANGED, ());
@@ -1605,7 +1603,7 @@ async fn add_tab_impl(
 /// reload of the page binds to it.
 #[tauri::command]
 pub async fn add_window_tab(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     app_version: i64,
@@ -1627,10 +1625,10 @@ pub async fn add_window_tab(
     .await?;
 
     state.pending_tab_activation.lock().unwrap().remove(&window_guid);
-    state.current_tabs.lock().unwrap().insert(window_guid, result.tab_guid.clone());
+    state.current_tabs.lock().unwrap().insert(window_guid.clone(), result.tab_guid.clone());
 
     if needs_icons {
-        let _ = window.emit(EVENT_REQUEST_RESOURCE_ICONS, ());
+        crate::window_host::emit_if_open(&app, &window_guid, EVENT_REQUEST_RESOURCE_ICONS, ());
     }
     let _ = app.emit(EVENT_CHANGED, ());
     result.code_snippets = crate::code_snippets::code_snippets();
@@ -1670,7 +1668,7 @@ async fn update_tab_resource_impl(
 /// app's page can't relabel another window's tab.
 #[tauri::command]
 pub async fn update_tab_resource(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     tab_guid: String,
@@ -1700,7 +1698,7 @@ pub async fn update_tab_resource(
 /// the icons get filed under.
 #[tauri::command]
 pub async fn submit_resource_icons(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     state: tauri::State<'_, SecondaryWindowsState>,
     icons: std::collections::HashMap<String, String>,

@@ -22,6 +22,11 @@ pub fn init(app: AppHandle) {
     let _ = APP.set(app);
 }
 
+/// The app, once it is running (the windows' natives are called from Kotlin, which has no handle of its own).
+pub fn app() -> Option<&'static AppHandle> {
+    APP.get()
+}
+
 /// Runs `job` on Android's UI thread with the JNI environment and the activity, and
 /// returns what it returned. A Java exception raised inside it is logged, cleared and
 /// turned into an `Err`.

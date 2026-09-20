@@ -39,7 +39,8 @@ class ExternalSiteActivity : Activity() {
         val id = intent.getStringExtra(EXTRA_ID)
         val url = intent.getStringExtra(EXTRA_URL)
         if (id == null || url == null) {
-            finish()
+            // (A restored task whose site is gone, or a "bring it to the front" for a site that is not showing.)
+            finishAndRemoveTask()
             return
         }
         siteId = id
@@ -58,7 +59,7 @@ class ExternalSiteActivity : Activity() {
             text = "✕"
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.TRANSPARENT)
-            setOnClickListener { finish() }
+            setOnClickListener { finishAndRemoveTask() }
         }
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -130,7 +131,7 @@ class ExternalSiteActivity : Activity() {
 
     private fun goBackOrClose() {
         val view = web
-        if (view != null && view.canGoBack()) view.goBack() else finish()
+        if (view != null && view.canGoBack()) view.goBack() else finishAndRemoveTask()
     }
 
     @Deprecated("Deprecated in Java")

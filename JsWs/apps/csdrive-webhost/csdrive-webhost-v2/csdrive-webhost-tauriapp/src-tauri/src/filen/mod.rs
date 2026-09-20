@@ -227,7 +227,7 @@ struct KeyPairResponse {
 
 #[tauri::command]
 pub async fn filen_login(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     email: String,
     password: String,
@@ -298,7 +298,7 @@ pub async fn filen_login(
 }
 
 #[tauri::command]
-pub async fn filen_logout(window: tauri::WebviewWindow, app: AppHandle, user_id: u64) -> Result<(), String> {
+pub async fn filen_logout(window: crate::window_host::CallerWindow, app: AppHandle, user_id: u64) -> Result<(), String> {
     crate::window_host::require_admin(&window)?;
     delete_session(&app, user_id)?;
     app.state::<FilenState>().sessions.lock().unwrap().remove(&user_id);

@@ -50,7 +50,7 @@ const BOOTSTRAP: &str = "
       else { el.innerHTML = s.code; document.body.appendChild(el) }
     })
   }
-  t.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', function () { location.href = location.pathname })
+  t.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', function () { location.reload() })
   t.core.invoke('init_window_tab', { appVersion: 1, url: location.href, resourceType: null }).then(function (tab) {
     apply(tab.codeSnippets)
     var label = { firstRow: [{ text: document.title, bold: true }], secondRow: [{ text: decodeURIComponent(location.pathname.replace(/^\\//, '')) }] }

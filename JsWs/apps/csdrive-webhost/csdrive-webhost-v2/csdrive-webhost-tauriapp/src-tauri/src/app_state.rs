@@ -71,7 +71,7 @@ pub async fn set_global_setting(state: tauri::State<'_, AppDbState>, key: String
 
 #[tauri::command]
 pub async fn get_app_state(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, AppDbState>,
     key: String,
 ) -> Result<Option<String>, String> {
@@ -86,7 +86,7 @@ pub async fn get_app_state(
 
 #[tauri::command]
 pub async fn set_app_state(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, AppDbState>,
     key: String,
     value: String,

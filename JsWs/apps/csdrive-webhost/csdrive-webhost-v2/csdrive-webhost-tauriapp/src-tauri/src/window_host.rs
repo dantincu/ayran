@@ -2,32 +2,26 @@
 //!
 //! - **Desktop:** every web app entry (see `secondary_windows`) is a real OS window,
 //!   labelled with the entry's guid; the admin-app owns the window labelled `main`.
-//! - **Android / iOS:** there is exactly one webview (`main`), so it *navigates*
-//!   between the admin-app and web apps. Opening an entry navigates it to that app;
-//!   leaving (system Back, or the admin-app being loaded again) suspends the entry
-//!   (its tabs and tags are kept); closing an entry explicitly deletes it. Because
-//!   the webview's label no longer says who is calling, callers are told apart by
-//!   the page they're running: the admin-app's origin, or a web app's — and which web
-//!   app entry that is, is tracked here (`HostState::active`).
+//! - **Android:** every entry is an activity of its own (`android_windows.rs`, strategy in
+//!   `docs/strategies/android-windows-strategy.md`) holding a plain WebView with a bridge of our own;
+//!   the admin-app stays in Tauri's one webview, `main`. Nothing on a page says who is calling: which
+//!   window a call comes from is decided by the activity that sent it.
+//! - **iOS:** not implemented.
 //!
 //! Everything else (`secondary_windows`, `app_state`, `sqlite_db`, the admin-only
 //! commands) asks this module instead of touching windows or labels directly.
 
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashSet;
+use std::ops::Deref;
+use std::sync::OnceLock;
 
-use tauri::{AppHandle, Manager, Url, WebviewWindow};
+use tauri::ipc::{CommandArg, CommandItem, InvokeError};
+use tauri::{AppHandle, Runtime, Url, WebviewWindow};
 
 use crate::USER_PROTOCOL;
 
 /// The admin-app's window on every platform.
 pub const MAIN_WINDOW_LABEL: &str = "main";
-
-#[derive(Default)]
-pub struct HostState {
-    /// Mobile only: the web app entry the single webview is currently showing.
-    #[allow(dead_code)]
-    active: Mutex<Option<String>>,
-}
 
 // ── URLs ──────────────────────────────────────────────────────────────────────
 
@@ -171,7 +165,7 @@ pub fn is_user_url(url: &Url) -> bool {
 
 /// Whether `url` is on the app's own frontend origin (`tauri://localhost`, `http://tauri.localhost`,
 /// or the dev server's under `tauri dev`).
-fn is_app_origin(url: &Url) -> bool {
+pub(crate) fn is_app_origin(url: &Url) -> bool {
     url_is_on(url, "tauri")
         || ADMIN_URL.get().is_some_and(|admin| {
             url.scheme() == admin.scheme() && url.host_str() == admin.host_str() && url.port_or_known_default() == admin.port_or_known_default()
@@ -200,27 +194,93 @@ pub fn is_system_url(url: &Url) -> bool {
 
 // ── Who is calling ────────────────────────────────────────────────────────────
 
-/// Whether the calling page is the admin-app.
-pub fn is_admin_page(window: &WebviewWindow) -> bool {
-    platform::is_admin_page(window)
+/// The commands a window (of a web app or a system app) may call: what `capabilities/user-apps.json` and `system-apps.json`
+/// grant every window (`allow-some-command` → `some_command`). Tauri applies those files to a desktop window by its label;
+/// the Android bridge (`android_windows.rs`) applies the same list itself, so there is one.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub fn window_commands() -> &'static HashSet<String> {
+    static COMMANDS: OnceLock<HashSet<String>> = OnceLock::new();
+    COMMANDS.get_or_init(|| {
+        let mut commands = HashSet::new();
+        for file in [include_str!("../capabilities/user-apps.json"), include_str!("../capabilities/system-apps.json")] {
+            commands.extend(granted_commands(file));
+        }
+        commands
+    })
+}
+
+/// The commands a capability file grants (its `allow-some-command` permissions).
+fn granted_commands(capability_file: &str) -> Vec<String> {
+    let parsed: serde_json::Value = serde_json::from_str(capability_file).expect("a capability file is valid json");
+    parsed["permissions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|permission| permission.as_str()?.strip_prefix("allow-"))
+        .map(|command| command.replace('-', "_"))
+        .collect()
+}
+
+/// The window a command was called from — the admin-app, or the web app / system app entry (secondary window) with
+/// a given guid. A command that needs to know who is calling takes this instead of a `WebviewWindow` (which it
+/// derefs to: for a call made through Tauri's own webview — desktop windows, the admin-app — it *is* that window).
+///
+/// Who it is is worked out **when the command is extracted, from something the page cannot influence**: on desktop the
+/// window's label (Tauri's capability files also keep the windows apart by label); on Android the activity the call came
+/// from (`android_windows::caller_in`) — the page's address is not consulted, so nothing a page does can pass it off
+/// as another window.
+pub struct CallerWindow<R: Runtime = tauri::Wry> {
+    window: WebviewWindow<R>,
+    /// The entry's guid, or `None` for the admin-app.
+    guid: Option<String>,
+    /// Whether the window is one of the app's own system apps (Notes...).
+    system: bool,
+}
+
+impl<R: Runtime> Deref for CallerWindow<R> {
+    type Target = WebviewWindow<R>;
+
+    fn deref(&self) -> &WebviewWindow<R> {
+        &self.window
+    }
+}
+
+impl<R: Runtime> CallerWindow<R> {
+    /// Whether the caller is the admin-app.
+    pub fn is_admin(&self) -> bool {
+        self.guid.is_none()
+    }
+}
+
+impl<'de, R: Runtime> CommandArg<'de, R> for CallerWindow<R> {
+    fn from_command(command: CommandItem<'de, R>) -> Result<Self, InvokeError> {
+        let headers = command.message.headers().clone();
+        let window = WebviewWindow::<R>::from_command(command)?;
+        let (guid, system) = platform::identify(&headers, &window).map_err(InvokeError::from)?;
+        Ok(Self { window, guid, system })
+    }
+}
+
+/// Whether the calling window is the admin-app.
+pub fn is_admin_page<R: Runtime>(window: &CallerWindow<R>) -> bool {
+    window.is_admin()
 }
 
 /// The web app entry (secondary window guid) the caller is, or `None` if the caller is
 /// the admin-app.
-pub fn caller_guid(window: &WebviewWindow) -> Option<String> {
-    platform::caller_guid(window)
+pub fn caller_guid<R: Runtime>(window: &CallerWindow<R>) -> Option<String> {
+    window.guid.clone()
 }
 
 /// Stable per-caller key (the guid, or `main` for the admin-app) — e.g. to scope open
 /// SQLite databases to whoever opened them.
-pub fn caller_key(window: &WebviewWindow) -> String {
+pub fn caller_key<R: Runtime>(window: &CallerWindow<R>) -> String {
     caller_guid(window).unwrap_or_else(|| MAIN_WINDOW_LABEL.to_string())
 }
 
-/// For commands only the admin-app may use. Capabilities already keep web apps out on
-/// desktop (by window label), but on mobile the admin-app and web apps share one
-/// webview, so this is what actually tells them apart.
-pub fn require_admin(window: &WebviewWindow) -> Result<(), String> {
+/// For commands only the admin-app may use. (Capabilities keep web apps out of them on desktop, by window label; this
+/// is what does it on Android, where every call reaches Tauri through the one webview, and on desktop too.)
+pub fn require_admin<R: Runtime>(window: &CallerWindow<R>) -> Result<(), String> {
     if is_admin_page(window) {
         Ok(())
     } else {
@@ -228,17 +288,15 @@ pub fn require_admin(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
-/// Whether the calling page is one of the app's own system apps (Notes...). Read from the page's
-/// address, which a window can't change to a system page's unless it is one (navigation is confined
-/// per kind of window — see `lock_down_navigation`).
-pub fn is_system_page(window: &WebviewWindow) -> bool {
-    window.url().is_ok_and(|url| is_system_url(&url))
+/// Whether the calling window is one of the app's own system apps (Notes...).
+pub fn is_system_page<R: Runtime>(window: &CallerWindow<R>) -> bool {
+    window.system
 }
 
 /// For the few commands that reach beyond what a web app may do and that the app's own code —
 /// the admin-app and the system apps — needs (today: exporting a file to the device, see
 /// `device_files`). A user web app is refused.
-pub fn require_trusted(window: &WebviewWindow) -> Result<(), String> {
+pub fn require_trusted<R: Runtime>(window: &CallerWindow<R>) -> Result<(), String> {
     if is_admin_page(window) || is_system_page(window) {
         Ok(())
     } else {
@@ -283,14 +341,12 @@ pub fn focus(app: &AppHandle, guid: &str) -> Result<(), String> {
 #[cfg(desktop)]
 mod platform {
     use super::*;
-    use tauri::{WebviewUrl, WebviewWindowBuilder, WindowEvent};
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-    pub fn is_admin_page(window: &WebviewWindow) -> bool {
-        window.label() == MAIN_WINDOW_LABEL
-    }
-
-    pub fn caller_guid(window: &WebviewWindow) -> Option<String> {
-        (window.label() != MAIN_WINDOW_LABEL).then(|| window.label().to_string())
+    /// Who a call comes from: the window's label (the admin-app is `main`; every other window's label is its guid), and
+    /// whether the page it shows is a system app's.
+    pub fn identify<R: Runtime>(_headers: &tauri::http::HeaderMap, window: &WebviewWindow<R>) -> Result<(Option<String>, bool), String> {
+        Ok(((window.label() != MAIN_WINDOW_LABEL).then(|| window.label().to_string()), window.url().is_ok_and(|url| is_system_url(&url))))
     }
 
     pub fn is_open(app: &AppHandle, guid: &str) -> bool {
@@ -310,7 +366,8 @@ mod platform {
             ),
         };
 
-        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, url), Allowed::for_kind(page.kind))
+        // A web app's or system app's window stays at its own page (see `lock_down_navigation`).
+        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, url), Allowed::for_kind(page.kind), Some(page.url()?))
             .title(page.title())
             .inner_size(1024.0, 768.0)
             // Without this, wry hands the page the *real paths* of files dropped on it (Tauri's
@@ -371,94 +428,77 @@ mod platform {
     }
 }
 
-// ── Mobile: one webview that navigates ────────────────────────────────────────
+// ── Android: one activity per window ─────────────────────────────────────────
 
-#[cfg(mobile)]
+#[cfg(target_os = "android")]
 mod platform {
     use super::*;
+    use crate::android_windows as host;
 
-    pub fn is_admin_page(window: &WebviewWindow) -> bool {
-        window.url().is_ok_and(|url| is_admin_url(&url))
+    /// Who a call comes from: the activity that sent it (see `android_windows::caller_in`), or — a call made through
+    /// Tauri's own webview, which shows nothing but the admin-app — the admin-app.
+    pub fn identify<R: Runtime>(headers: &tauri::http::HeaderMap, _window: &WebviewWindow<R>) -> Result<(Option<String>, bool), String> {
+        Ok(host::caller_in(headers)?.map_or((None, false), |(guid, system)| (Some(guid), system)))
     }
 
-    pub fn caller_guid(window: &WebviewWindow) -> Option<String> {
-        if is_admin_page(window) {
-            None
-        } else {
-            window.app_handle().state::<HostState>().active.lock().unwrap().clone()
-        }
-    }
-
-    pub fn is_open(app: &AppHandle, guid: &str) -> bool {
-        app.state::<HostState>().active.lock().unwrap().as_deref() == Some(guid)
-    }
-
-    fn navigate(app: &AppHandle, url: Url) -> Result<(), String> {
-        let window = app.get_webview_window(MAIN_WINDOW_LABEL).ok_or("The main window isn't available.")?;
-        window.navigate(navigation_url(&url)).map_err(|e| e.to_string())
-    }
-
-    /// Runs the "window was destroyed" bookkeeping for an entry that is no longer showing.
-    fn retire(app: &AppHandle, guid: String, keep_entry: bool) {
-        if keep_entry {
-            crate::secondary_windows::mark_suspending(app, &guid);
-        }
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            crate::secondary_windows::handle_window_destroyed(&app, &guid).await;
-        });
+    pub fn is_open(_app: &AppHandle, guid: &str) -> bool {
+        host::is_open(guid)
     }
 
     pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
-        let previous = app.state::<HostState>().active.lock().unwrap().replace(guid.to_string());
-        if let Some(previous) = previous.filter(|p| p != guid) {
-            retire(app, previous, true); // only one app can be showing; the old one is kept, suspended
-        }
-        navigate(app, page.url()?)
+        host::open(app, guid, page)
     }
 
-    pub fn emit_if_open<S: serde::Serialize + Clone>(app: &AppHandle, guid: &str, event: &str, payload: S) -> bool {
-        use tauri::Emitter;
-        // There is one webview, `main`, showing whichever page is active.
-        is_open(app, guid) && app.emit_to(MAIN_WINDOW_LABEL, event, payload).is_ok()
+    pub fn emit_if_open<S: serde::Serialize + Clone>(_app: &AppHandle, guid: &str, event: &str, payload: S) -> bool {
+        host::emit_if_open(guid, event, &payload)
     }
 
-    pub fn request_close(app: &AppHandle, guid: &str) -> bool {
-        if !is_open(app, guid) {
-            return false;
-        }
-        *app.state::<HostState>().active.lock().unwrap() = None;
-        // Not "keep": the caller decides that (by marking the entry as suspending
-        // first); otherwise closing deletes it, as on desktop.
-        retire(app, guid.to_string(), false);
-        let _ = navigate(app, admin_page_url());
-        true
+    pub fn request_close(_app: &AppHandle, guid: &str) -> bool {
+        host::request_close(guid)
+    }
+
+    pub async fn wait_until_closed(_app: &AppHandle, guids: &[String]) {
+        host::wait_until_closed(guids).await
+    }
+
+    pub fn focus(app: &AppHandle, guid: &str) -> Result<(), String> {
+        host::focus(app, guid)
+    }
+}
+
+// ── iOS: not implemented ─────────────────────────────────────────────────────
+
+#[cfg(target_os = "ios")]
+mod platform {
+    use super::*;
+
+    const NOT_IMPLEMENTED: &str = "Windows aren't implemented on iOS yet.";
+
+    pub fn identify<R: Runtime>(_headers: &tauri::http::HeaderMap, _window: &WebviewWindow<R>) -> Result<(Option<String>, bool), String> {
+        Ok((None, false))
+    }
+
+    pub fn is_open(_app: &AppHandle, _guid: &str) -> bool {
+        false
+    }
+
+    pub fn open(_app: &AppHandle, _guid: &str, _page: &Page) -> Result<(), String> {
+        Err(NOT_IMPLEMENTED.to_string())
+    }
+
+    pub fn emit_if_open<S: serde::Serialize + Clone>(_app: &AppHandle, _guid: &str, _event: &str, _payload: S) -> bool {
+        false
+    }
+
+    pub fn request_close(_app: &AppHandle, _guid: &str) -> bool {
+        false
     }
 
     pub async fn wait_until_closed(_app: &AppHandle, _guids: &[String]) {}
 
     pub fn focus(_app: &AppHandle, _guid: &str) -> Result<(), String> {
-        Ok(())
+        Err(NOT_IMPLEMENTED.to_string())
     }
-
-    /// Called on every page load. Leaving a web app by any route other than closing it
-    /// (system Back, a link, the admin-app being loaded again) lands on the admin-app
-    /// with an entry still marked active: that's a suspend, not a close.
-    pub fn note_navigation(app: &AppHandle, url: &Url) {
-        if !is_admin_url(url) {
-            return;
-        }
-        let left = app.state::<HostState>().active.lock().unwrap().take();
-        if let Some(guid) = left {
-            retire(app, guid, true);
-        }
-    }
-}
-
-/// Mobile only: tell the host a page is loading (see `platform::note_navigation`).
-#[cfg(mobile)]
-pub fn note_navigation(app: &AppHandle, url: &Url) {
-    platform::note_navigation(app, url)
 }
 
 #[cfg(test)]
@@ -497,6 +537,27 @@ mod tests {
         assert!(!user("tauri://localhost/index.html"));
         assert!(!user("http://csuser.localhost.evil.com/"));
         assert!(!user("csuser://evil/x.html"));
+    }
+
+    #[test]
+    fn what_a_window_may_call_is_what_the_capability_files_grant_to_every_window_and_nothing_of_the_admin_apps() {
+        let windows = window_commands();
+        for command in ["list_secondary_windows", "init_window_tab", "fs_read_file", "sqlite_select", "open_external_site", "filen_cache_list", "save_to_device"] {
+            assert!(windows.contains(command), "{command}");
+        }
+        // What only the admin-app may do (admin.json) is never on the list — nor is anything of Tauri's own plugins.
+        for command in granted_commands(include_str!("../capabilities/admin.json")) {
+            assert!(!windows.contains(&command), "{command} is the admin-app's");
+        }
+        for command in ["filen_login", "filen_logout", "delete_app_data", "get_data_folder_info", "fs_root_path", "list_deployable_apps"] {
+            assert!(!windows.contains(command), "{command}");
+        }
+        assert!(windows.iter().all(|c| !c.contains(':') && !c.starts_with("plugin")));
+        // Every one of them is a command the app defines (build.rs lists them all: granting one that isn't there is a typo).
+        let build = include_str!("../build.rs");
+        for command in windows {
+            assert!(build.contains(&format!("\"{command}\"")), "{command} is granted to windows but isn't a command of the app");
+        }
     }
 
     #[test]

@@ -274,6 +274,8 @@ export default function FilenTab() {
     count: entries.length,
     focused: kbdFocus,
     setFocused: setKbdFocus,
+    pageSize,
+    page: currentPage,
     enabled: activeId != null && !showAddForm,
     onOpen: (i) => {
       const entry = entries[i]

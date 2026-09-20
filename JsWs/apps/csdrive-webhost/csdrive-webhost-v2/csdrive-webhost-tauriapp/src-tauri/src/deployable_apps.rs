@@ -26,7 +26,7 @@ pub struct DeployableAppInfo {
 const REGISTRY: &[(&str, &str, &str, &str)] = &[];
 
 #[tauri::command]
-pub fn list_deployable_apps(window: tauri::WebviewWindow) -> Result<Vec<DeployableAppInfo>, String> {
+pub fn list_deployable_apps(window: crate::window_host::CallerWindow) -> Result<Vec<DeployableAppInfo>, String> {
     crate::window_host::require_admin(&window)?;
     Ok(REGISTRY
         .iter()
@@ -43,7 +43,7 @@ pub fn list_deployable_apps(window: tauri::WebviewWindow) -> Result<Vec<Deployab
 /// it's deploying into (whichever root/path that is — this command doesn't need
 /// to know).
 #[tauri::command]
-pub fn get_deployable_app_html(window: tauri::WebviewWindow, app_id: String) -> Result<String, String> {
+pub fn get_deployable_app_html(window: crate::window_host::CallerWindow, app_id: String) -> Result<String, String> {
     crate::window_host::require_admin(&window)?;
     REGISTRY
         .iter()

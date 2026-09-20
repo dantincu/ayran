@@ -570,6 +570,8 @@ export default function FilesTab() {
     count: entries.length,
     focused: kbdFocus,
     setFocused: setKbdFocus,
+    pageSize,
+    page: currentPage,
     onOpen: (i) => {
       const entry = entries[i]
       if (!entry) return

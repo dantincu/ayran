@@ -54,11 +54,16 @@ export interface ListKeyboard {
   onActivate?: (index: number) => void
   /** Off while something else owns the keys (a list being sorted, another list on top). */
   enabled?: boolean
+  /** A paginated list: how many items a page holds, and the page shown (used when nothing is focused yet).
+   * Home/End then go to the first/last item *of the page*, and PageUp/PageDown move 10 inside it — to its
+   * start/end when fewer are left, and from there (when already at it) to the previous/next page. */
+  pageSize?: number
+  page?: number
 }
 
 /** Arrow-key navigation of a list, for the page it is used on: Up/Down move the focus by one,
- * Home/End go to the first/last item, PageUp/PageDown move it by 10, Left goes to the parent and Right
- * into the focused item. The keys are heard on the whole window, so no element has to be focused
+ * Home/End go to the first/last item, PageUp/PageDown move it by 10 (of a paginated list: within the page
+ * shown — see `pageSize`), Left goes to the parent and Right into the focused item. The keys are heard on the whole window, so no element has to be focused
  * first — except that a text box, a menu or an open dialog keeps its own keys.
  *
  * The list marks the focused row with kbdItem; the row is scrolled into view here. */
@@ -68,29 +73,42 @@ export function useListKeyboard(options: ListKeyboard) {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      const { count, focused, setFocused, onOpen, onParent, onActivate, enabled } = latest.current
+      const { count, focused, setFocused, onOpen, onParent, onActivate, enabled, pageSize, page } = latest.current
       if (enabled === false || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
       if (isTypingTarget(e.target) || overlayOpen()) return
       const from = Math.max(focused, 0)
+      // The page the focus is on (or, with none, the one shown): where it starts and ends.
+      const paged = pageSize !== undefined && pageSize > 0
+      const pageStart = paged ? (focused >= 0 ? Math.floor(focused / pageSize) : (page ?? 0)) * pageSize : 0
+      const pageEnd = paged ? Math.min(count - 1, pageStart + pageSize - 1) : count - 1
       let next: number
       switch (e.key) {
+        // (With nothing focused yet, either one focuses the first item — of the page shown, in a paginated list.)
         case 'ArrowDown':
-          next = focused < 0 ? 0 : focused + 1
+          next = focused < 0 ? pageStart : focused + 1
           break
         case 'ArrowUp':
-          next = focused < 0 ? 0 : focused - 1
+          next = focused < 0 ? pageStart : focused - 1
           break
         case 'Home':
-          next = 0
+          next = pageStart
           break
         case 'End':
-          next = count - 1
+          next = pageEnd
           break
         case 'PageDown':
-          next = from + PAGE_JUMP
+          if (!paged) next = from + PAGE_JUMP
+          else {
+            const at = focused < 0 ? pageStart : focused
+            next = at >= pageEnd ? (pageEnd < count - 1 ? pageEnd + 1 : pageEnd) : Math.min(pageEnd, at + PAGE_JUMP)
+          }
           break
         case 'PageUp':
-          next = from - PAGE_JUMP
+          if (!paged) next = from - PAGE_JUMP
+          else {
+            const at = focused < 0 ? pageStart : focused
+            next = at <= pageStart ? (pageStart > 0 ? pageStart - 1 : pageStart) : Math.max(pageStart, at - PAGE_JUMP)
+          }
           break
         case 'ArrowLeft':
           if (onParent) {

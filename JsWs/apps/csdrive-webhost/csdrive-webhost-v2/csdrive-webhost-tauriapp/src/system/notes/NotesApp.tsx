@@ -872,6 +872,8 @@ export default function NotesApp({ tab: initialTab, initial }: { tab: Tab | null
     count: entries.length,
     focused: kbdFocus,
     setFocused: setKbdFocus,
+    pageSize,
+    page: currentPage,
     enabled: ready && !editing && !changes && !conflict && renaming === null,
     onOpen: (i) => {
       const entry = entries[i]

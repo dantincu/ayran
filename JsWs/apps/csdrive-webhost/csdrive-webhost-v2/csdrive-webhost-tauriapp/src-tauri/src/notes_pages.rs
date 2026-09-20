@@ -194,7 +194,7 @@ async fn resolve(app: &AppHandle, file: &FileRef) -> Result<(String, Origin), St
 /// Resolves to the new window's guid.
 #[tauri::command]
 pub async fn open_file_as_web_app(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     windows: State<'_, SecondaryWindowsState>,
     file: FileRef,
@@ -213,7 +213,7 @@ pub async fn open_file_as_web_app(
 /// as a sibling of the page that asked. Resolves to the new window's guid.
 #[tauri::command]
 pub async fn open_related_web_app(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     windows: State<'_, SecondaryWindowsState>,
     path: String,

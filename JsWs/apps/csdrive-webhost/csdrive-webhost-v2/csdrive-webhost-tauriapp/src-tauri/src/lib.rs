@@ -1,5 +1,7 @@
 #[cfg(target_os = "android")]
 mod android_jni;
+#[cfg(target_os = "android")]
+mod android_windows;
 mod app_state;
 mod code_snippets;
 mod data_location;
@@ -23,6 +25,7 @@ mod secondary_windows;
 mod sqlite_db;
 mod system_apps;
 mod window_host;
+mod window_scripts;
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +44,7 @@ pub(crate) const USER_PROTOCOL: &str = "csuser";
 /// Everything else is locked to the same origin or in-memory sources too, so
 /// images/fonts/scripts/frames can't be used to reach out either (nor can forms). Inline
 /// scripts and styles stay allowed, since web apps commonly are one self-contained file.
-fn content_security_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
+pub(crate) fn content_security_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     app.config()
         .app
         .security
@@ -55,41 +58,80 @@ fn content_security_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Stri
 /// CSP doesn't cover navigating the window itself (`location.href = "https://…"`
 /// would ship data out in the URL, and leave our CSP behind), so windows may only
 /// ever be at our own pages, and only those their kind needs: a web app's window at web apps' pages
-/// (`csuser`), a system app's at system apps' pages, and the main window — which on Android is the
-/// only window and moves between all of them — at any.
+/// (`csuser`), a system app's at system apps' pages, and the main window at the admin-app's.
 fn is_internal_url(url: &Url, allowed: window_host::Allowed) -> bool {
     (allowed.user && window_host::is_user_url(url))
         || (allowed.system && window_host::is_system_url(url))
         || (allowed.admin && window_host::is_admin_url(url))
 }
 
+/// What a window's navigation to `url` does.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Nav {
+    /// It goes ahead.
+    Allow,
+    /// The link goes to the OS browser; the window stays where it is.
+    Browser,
+    /// Nothing happens.
+    Block,
+}
+
+/// Whether `url` is the page `own` (the same path and query; a fragment is not part of it).
+fn same_page(url: &Url, own: &Url) -> bool {
+    url.path() == own.path() && url.query() == own.query()
+}
+
+/// The rule for a window's navigations. A link to the web goes to the browser. Of our own pages a window may
+/// be at the ones its kind needs (`is_internal_url`) — and, when it has a page of its own (`own`: a web app's or
+/// system app's window), **only that page**: a web app can't be taken to another page of ours —
+/// by a link, `location.href`, a redirect — any more than it can change its address without navigating (see
+/// `code_snippets::FROZEN_ADDRESS_INIT_SCRIPT`). Reloading it is going to the same address, which is allowed.
+pub(crate) fn navigation_verdict(url: &Url, allowed: window_host::Allowed, own: Option<&Url>) -> Nav {
+    if is_internal_url(url, allowed) {
+        return match own {
+            Some(own) if !same_page(url, own) => Nav::Block,
+            _ => Nav::Allow,
+        };
+    }
+    // Our own origins (the admin-app, another kind's pages, the IPC name) are never for the browser.
+    if matches!(url.scheme(), "http" | "https") && !window_host::is_own_origin(url) {
+        Nav::Browser
+    } else {
+        Nav::Block
+    }
+}
+
 /// Applies the network lockdown to a window under construction.
 ///
-/// `allowed`: which pages the window may be at (see `is_internal_url`).
+/// `allowed`: which pages the window may be at (see `is_internal_url`). `own`: the one page a window that
+/// never leaves its page may be at (see `navigation_verdict`); `None` for the main window (the admin-app).
 pub(crate) fn lock_down_navigation<R: tauri::Runtime>(
     builder: WebviewWindowBuilder<'_, R, impl Manager<R>>,
     allowed: window_host::Allowed,
+    own: Option<Url>,
 ) -> WebviewWindowBuilder<'_, R, impl Manager<R>> {
+    let frozen = own.is_some();
     let builder = builder
-        .on_navigation(move |url| {
-            if is_internal_url(url, allowed) {
-                return true;
+        .on_navigation(move |url| match navigation_verdict(url, allowed, own.as_ref()) {
+            Nav::Allow => true,
+            Nav::Browser => {
+                external_sites::open_in_browser(url);
+                false
             }
-            // A click on a link to the web goes to the OS browser; the window stays where it is.
-            external_sites::open_in_browser(url);
-            false
+            Nav::Block => false,
         })
         .on_new_window(|url, _features| {
             external_sites::open_in_browser(&url);
             NewWindowResponse::Deny
         });
+    let builder = if frozen { builder.initialization_script(code_snippets::FROZEN_ADDRESS_INIT_SCRIPT) } else { builder };
     // Publishes the Android system-bar insets to the page as CSS variables (see `code_snippets`).
     #[cfg(mobile)]
     let builder = builder.initialization_script(code_snippets::SAFE_AREA_INIT_SCRIPT);
     builder
 }
 
-fn respond(status: StatusCode, content_type: &str, body: Vec<u8>, csp: &str) -> Response<Vec<u8>> {
+pub(crate) fn respond(status: StatusCode, content_type: &str, body: Vec<u8>, csp: &str) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, content_type)
@@ -166,6 +208,22 @@ fn resolve_file_in(base_dir: &Path, request_path: &str, default_document: &str) 
         Some(canonical_candidate)
     } else {
         None
+    }
+}
+
+/// The answer to a request for `path` (decoded) on the web apps' origin: a file of the user folder, or — in the reserved
+/// `/@…` space — a picked folder's or a Filen account's (see `notes_pages`). Used by the `csuser` protocol and, on Android,
+/// by the windows' own WebViews (`android_windows`).
+pub(crate) async fn serve_user_path(app: &tauri::AppHandle, path: &str) -> Response<Vec<u8>> {
+    let csp = content_security_policy(app);
+    match notes_pages::parse_special(path) {
+        // The user folder, as ever.
+        None => {
+            let data_dir = data_location::effective_data_dir(app).expect("failed to resolve app data dir");
+            serve_file(&layout::user_dir(&data_dir), path, "index.html", &csp)
+        }
+        Some(Err(())) => respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp),
+        Some(Ok(special)) => notes_pages::serve(app, special, &csp).await,
     }
 }
 
@@ -285,22 +343,11 @@ pub fn run() {
         ])
         .register_asynchronous_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>, responder| {
             let app = ctx.app_handle().clone();
-            let csp = content_security_policy(&app);
             let path = percent_encoding::percent_decode_str(request.uri().path()).decode_utf8_lossy().into_owned();
-            match notes_pages::parse_special(&path) {
-                // The user folder, as ever.
-                None => {
-                    let data_dir = data_location::effective_data_dir(&app).expect("failed to resolve app data dir");
-                    responder.respond(serve_file(&layout::user_dir(&data_dir), &path, "index.html", &csp));
-                }
-                Some(Err(())) => responder.respond(respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp)),
-                // A picked folder or a Filen account (which may have to be fetched, so not on this thread).
-                Some(Ok(special)) => {
-                    tauri::async_runtime::spawn(async move {
-                        responder.respond(notes_pages::serve(&app, special, &csp).await);
-                    });
-                }
-            }
+            // (A picked folder or a Filen account may have to be fetched, so not on this thread.)
+            tauri::async_runtime::spawn(async move {
+                responder.respond(serve_user_path(&app, &path).await);
+            });
         })
         .on_window_event(|window, event| {
             // Closing the main window first suspends every secondary window (see the function).
@@ -330,7 +377,6 @@ pub fn run() {
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
-            app.manage(window_host::HostState::default());
             app.manage(external_sites::ExternalSites::default());
             app.manage(device_files::ExportState::default());
             app.manage(filen_cache::UploadSessions::default());
@@ -355,7 +401,8 @@ pub fn run() {
             // The admin-app is the Tauri app's own frontend (`frontendDist`), compiled into the binary.
             let main_window = lock_down_navigation(
                 WebviewWindowBuilder::new(app, window_host::MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into())),
-                window_host::Allowed { user: true, system: true, admin: true },
+                window_host::Allowed { user: false, system: false, admin: true },
+                None,
             );
             #[cfg(desktop)]
             let main_window = main_window
@@ -378,14 +425,6 @@ pub fn run() {
         })
 ;
 
-    // One webview on mobile: notice when it lands back on the admin-app (see `window_host`).
-    #[cfg(mobile)]
-    let builder = builder.on_page_load(|webview, payload| {
-        if let tauri::webview::PageLoadEvent::Started = payload.event() {
-            window_host::note_navigation(webview.app_handle(), payload.url());
-        }
-    });
-
     builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -394,6 +433,28 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_web_app_stays_on_its_own_page_and_links_to_the_web_go_to_the_browser() {
+        let url = |u: &str| Url::parse(u).unwrap();
+        let user = window_host::Allowed::for_kind(window_host::Kind::User);
+        let own = url("http://csuser.localhost/qwer/index1.html");
+        let verdict = |u: &str| navigation_verdict(&url(u), user, Some(&own));
+        assert_eq!(verdict("http://csuser.localhost/qwer/index1.html"), Nav::Allow, "a reload");
+        assert_eq!(verdict("http://csuser.localhost/qwer/index1.html#section"), Nav::Allow, "an in-page link");
+        assert_eq!(verdict("http://csuser.localhost/qwer/index2.html"), Nav::Block, "another page of the same folder");
+        assert_eq!(verdict("http://csuser.localhost/qwer/index1.html?file=x"), Nav::Block, "the same page at another address");
+        assert_eq!(verdict("http://tauri.localhost/index.html"), Nav::Block, "the admin-app");
+        assert_eq!(verdict("https://example.com/a?b=c"), Nav::Browser);
+        assert_eq!(verdict("http://localhost:3000/"), Nav::Browser);
+        assert_eq!(verdict("javascript:alert(1)"), Nav::Block);
+        assert_eq!(verdict("data:text/html,x"), Nav::Block);
+        assert_eq!(verdict("file:///C:/Windows/win.ini"), Nav::Block);
+        // A window that has no page of its own (the main window) moves between the pages it may be at.
+        let main = window_host::Allowed { user: true, system: true, admin: true };
+        assert_eq!(navigation_verdict(&url("http://csuser.localhost/qwer/index2.html"), main, None), Nav::Allow);
+        assert_eq!(navigation_verdict(&url("https://example.com/"), main, None), Nav::Browser);
+    }
 
     fn internal(url: &str, allowed: window_host::Allowed) -> bool {
         is_internal_url(&Url::parse(url).unwrap(), allowed)

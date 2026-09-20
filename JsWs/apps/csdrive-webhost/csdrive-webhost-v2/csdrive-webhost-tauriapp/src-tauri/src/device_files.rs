@@ -35,7 +35,7 @@ impl ExportState {
 /// if the person cancelled.
 #[tauri::command]
 pub async fn choose_save_location(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     app: tauri::AppHandle,
     state: tauri::State<'_, ExportState>,
     name: String,
@@ -63,7 +63,7 @@ pub async fn export_file(state: &ExportState, name: String, token: Option<String
 /// copying it to where the person chose. Never goes through the window.
 #[tauri::command]
 pub async fn export_local_file(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     scope: tauri::State<'_, crate::fs_scope::FsScope>,
     state: tauri::State<'_, ExportState>,
     root: String,
@@ -84,7 +84,7 @@ pub async fn export_local_file(
 /// ended up (for display).
 #[tauri::command]
 pub async fn save_to_device(
-    window: tauri::WebviewWindow,
+    window: crate::window_host::CallerWindow,
     state: tauri::State<'_, ExportState>,
     request: Request<'_>,
 ) -> Result<String, String> {

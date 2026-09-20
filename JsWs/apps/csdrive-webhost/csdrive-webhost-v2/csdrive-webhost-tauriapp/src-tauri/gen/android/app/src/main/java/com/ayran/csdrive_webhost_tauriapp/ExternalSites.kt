@@ -45,13 +45,21 @@ object ExternalSites {
 
     @JvmStatic
     fun open(activity: Activity, id: String, url: String) {
-        if (showing.containsKey(id)) return // already showing
-        activity.startActivity(
-            Intent(activity, ExternalSiteActivity::class.java)
-                .putExtra(ExternalSiteActivity.EXTRA_ID, id)
-                .putExtra(ExternalSiteActivity.EXTRA_URL, url),
-        )
+        activity.startActivity(intent(activity, id).putExtra(ExternalSiteActivity.EXTRA_URL, url))
     }
+
+    /** Brings a showing site's task to the front (`documentLaunchMode="intoExisting"`: the same intent finds it). */
+    @JvmStatic
+    fun focus(activity: Activity, id: String) {
+        if (showing.containsKey(id)) activity.startActivity(intent(activity, id))
+    }
+
+    // A site is a task of its own in the Recents screen, like a window: what tells one from another is the intent's data.
+    private fun intent(activity: Activity, id: String) =
+        Intent(activity, ExternalSiteActivity::class.java)
+            .setData(Uri.parse("csdrive-site://$id"))
+            .putExtra(ExternalSiteActivity.EXTRA_ID, id)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NEW_DOCUMENT)
 
     /** A link to the web clicked in one of the app's pages: the person's browser opens it. */
     @JvmStatic
@@ -67,7 +75,7 @@ object ExternalSites {
 
     @JvmStatic
     fun close(id: String) {
-        showing[id]?.finish()
+        showing[id]?.finishAndRemoveTask()
     }
 
     /** The events since the last call, one per line ("" when there are none). */
