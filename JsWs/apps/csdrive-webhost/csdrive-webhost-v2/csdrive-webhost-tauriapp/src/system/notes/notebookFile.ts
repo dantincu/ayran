@@ -1,9 +1,11 @@
+import { MAX_NAME_PART_CHARS, NOTEBOOK_FILE } from '../../lib/appConfig'
+
 /** The notebook file of the Notes strategy (`docs/strategies/notes-strategy.md`, "The root folder of a notebook"): what
  * it is called, what is in it, and how a note's title becomes part of a file name. Nothing here touches a disk or the
  * backend, so it is plain functions — see `notebooks.ts` for where they are used. */
 
 /** A file is a notebook's when its name is this or ends with it (case doesn't matter: Windows and Filen don't care). */
-export const NOTEBOOK_FILE_SUFFIX = '[note-book].json'
+export const NOTEBOOK_FILE_SUFFIX = NOTEBOOK_FILE
 
 /** What the notebook file holds. The keys are PascalCase, as in the strategy. */
 export interface NotebookFile {
@@ -79,7 +81,6 @@ export function withTitle(raw: Record<string, unknown>, title: string): Record<s
 }
 
 /** The longest file/folder name part made from a title, in characters. */
-export const MAX_NAME_PART_CHARS = 100
 
 /** How a title becomes (part of) a file or folder name — the rule of the Notes strategy: characters a file name can't have
  * are discarded, `/` becomes `%` and `%` becomes `%%` (so the name can be read back), and the result is at most 100

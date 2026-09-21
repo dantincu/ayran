@@ -108,9 +108,11 @@ index falls in (`999`–`401` an item, `399`–`301` a ternary section, `299`–
 internal pairs is a fixed string in brackets, which is fine — it is whatever comes after the first dash.
 
 **Where the numberings are defined.** `folder_pairs.rs` holds the *mechanism* only — `Interval`, `Indexing`, `Numbering`, the temporary prefix,
-`rename`, `reassign` — and knows nothing about notes. Each *use* defines its own numbering as a constant next to the code that creates its pairs:
-this app's cached accounts and branches use `Numbering::DEFAULT` (`files_cache::NUMBERING`); the note system's intervals above will be constants in
-the Notes persistence code when it is written. Until then they live in this document and in a test that builds a parent shared by all five kinds.
+`rename`, `reassign` — and knows nothing about notes. **The constants themselves are in one config file**, `csdrive-webhost-tauriapp/config/folder-pairs-and-notes.json`,
+compiled into the backend (`config.rs`) and bundled into the frontend (`appConfig.ts`): the `.keep` file and its content, the temporary prefix,
+the longest name part, the default numbering (this app's cached accounts and branches, `config::DEFAULT_NUMBERING`) and the note system's
+intervals from the table above (they are used by the Notes app's own code, `noteIndexes.ts`, which does the same arithmetic in the frontend). A test
+checks that the intervals don't overlap.
 
 ## Choosing the full name part
 

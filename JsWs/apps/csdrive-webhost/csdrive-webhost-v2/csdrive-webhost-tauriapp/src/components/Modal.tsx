@@ -6,6 +6,8 @@ import { useMaximizable } from '../lib/modalStack'
 
 interface ModalProps {
   title: string
+  /** A wider panel, for a dialog with a list or several fields (it is still at most the window). */
+  wide?: boolean
   onClose: () => void
   children: React.ReactNode
 }
@@ -15,7 +17,7 @@ interface ModalProps {
  * take its parent down with it. */
 const openModals: symbol[] = []
 
-export default function Modal({ title, onClose, children }: ModalProps) {
+export default function Modal({ title, onClose, children, wide }: ModalProps) {
   const { maximized, toggle } = useMaximizable()
   useEffect(() => {
     const token = Symbol('modal')
@@ -32,7 +34,7 @@ export default function Modal({ title, onClose, children }: ModalProps) {
 
   return (
     <div className={`modal-overlay ${maximized ? 'maximized' : ''}`} onClick={onClose}>
-      <div className={`modal-panel ${maximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div className={`modal-panel ${wide ? 'wide' : ''} ${maximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <strong>{title}</strong>
           <div className="modal-header-actions">

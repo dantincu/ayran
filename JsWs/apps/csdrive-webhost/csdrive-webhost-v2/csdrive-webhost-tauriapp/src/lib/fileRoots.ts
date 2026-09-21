@@ -1,4 +1,4 @@
-import { copyFile, readDir, readFile, writeFile, uploadFile, mkdir, remove, rename, stat, exists, rootRealPath, type DirEntry, type FileInfo } from './fs'
+import { copyFile, readDir, readDirDetailed, readFile, writeFile, uploadFile, mkdir, remove, rename, stat, exists, rootRealPath, type DirEntry, type DirEntryDetailed, type FileInfo } from './fs'
 import { joinRelative } from './localFs'
 import { listPickedRoots, pickFolder, removePickedRoot, type PickedRoot } from './pickedRoots'
 
@@ -64,6 +64,11 @@ export async function listRootDir(root: FileRoot, relativePath: string): Promise
     if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
     return a.name.localeCompare(b.name)
   })
+}
+
+/** The folder's entries with size and dates (created, modified) — one call for the folder, for searching and sorting. Unsorted. */
+export async function listRootDirDetailed(root: FileRoot, relativePath: string): Promise<DirEntryDetailed[]> {
+  return readDirDetailed(root.id, relative(relativePath))
 }
 
 export async function statRootPath(root: FileRoot, relativePath: string): Promise<FileInfo> {

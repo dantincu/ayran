@@ -8,7 +8,7 @@
 //!   thing's actual data. Being short, it keeps deep paths inside the operating systems' length limits, whatever
 //!   the human-readable name is.
 //! - the **full folder**, `<prefix>NNN-<full name part>` — the same, a dash, then a human-readable description of
-//!   what the pair is for. It holds nothing but a `.keep` file (see [`KEEP_FILE`]): it exists so a person browsing
+//!   what the pair is for. It holds nothing but a `.keep` file (see `keepFile` (in the config)): it exists so a person browsing
 //!   the disk can tell which short folder is which.
 //!
 //! **How names and indexes are chosen is a [`Numbering`]**: a prefix, an [`Interval`] of indexes (ascending or
@@ -26,19 +26,27 @@ use std::path::{Path, PathBuf};
 
 /// The file every full folder holds, so that it is never an *empty* folder: copying or mirroring folders to and from
 /// cloud storage, and archiving them, tend to lose empty folders — and the pair must stay side by side wherever it goes.
-pub const KEEP_FILE: &str = ".keep";
+pub fn keep_file() -> &'static str {
+    &crate::config::get().folder_pairs.keep_file
+}
 
-/// What `KEEP_FILE` holds: one dash — not nothing, because some cloud storage systems ignore empty files too.
-pub const KEEP_CONTENT: &str = "-";
+/// What `keepFile` holds: one dash — not nothing, because some cloud storage systems ignore empty files too.
+pub fn keep_content() -> &'static str {
+    &crate::config::get().folder_pairs.keep_content
+}
 
 /// The prefix pairs carry *while* many of them are being renumbered (see [`reassign`]): every pair is first renamed to
 /// it, and only then to its final name, so that no new name can collide with a name that has not moved yet.
 #[allow(dead_code)] // for the note system (Notes persistence, to come): tested, not called by the app yet
-pub const TEMPORARY_PREFIX: &str = "t_";
+pub fn temporary_prefix() -> &'static str {
+    &crate::config::get().folder_pairs.temporary_prefix
+}
 
 /// The longest full-folder-name part we'll create (in characters): keeps the whole name well inside
 /// the 255-byte limit of common file systems.
-pub const MAX_NAME_PART_CHARS: usize = 100;
+pub fn max_name_part_chars() -> usize {
+    crate::config::get().folder_pairs.max_name_part_chars
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderPair {
@@ -117,6 +125,8 @@ pub struct Numbering {
 impl Numbering {
     /// What the app's own pairs (cached accounts, branches) use: no prefix, from `001` upward without an end, three digits
     /// (more above 999), filling gaps.
+    /// What the shipped config says the app's own pairs use (`config::DEFAULT_NUMBERING`) — kept as a constant for the tests.
+    #[cfg(test)]
     pub const DEFAULT: Numbering = Numbering { prefix: "", interval: Interval::ascending(1, u32::MAX, 3), indexing: Indexing::FillGaps };
 
     #[allow(dead_code)] // for the note system (Notes persistence, to come): tested, not called by the app yet
@@ -124,10 +134,10 @@ impl Numbering {
         Self { prefix, interval, indexing }
     }
 
-    /// The same numbering under [`TEMPORARY_PREFIX`].
-    #[allow(dead_code)] // for the note system (Notes persistence, to come): tested, not called by the app yet
-    pub const fn temporary(&self) -> Self {
-        Self { prefix: TEMPORARY_PREFIX, ..*self }
+    /// The same numbering under `TEMPORARY_PREFIX` (in the config).
+    #[allow(dead_code)] // the notes do their renumbering in the frontend (noteModel.ts), with the same prefix from the same config
+    pub fn temporary(&self) -> Self {
+        Self { prefix: temporary_prefix(), ..*self }
     }
 
     /// `<prefix>NNN` for `index`.
@@ -274,7 +284,7 @@ impl Numbering {
         Ok(self.list(parent)?.into_iter().find(|(_, p)| p == part).map(|(pair, _)| pair))
     }
 
-    /// The pair for `part`, creating it or repairing a missing short folder or `KEEP_FILE` if needed. For a fixed index
+    /// The pair for `part`, creating it or repairing a missing short folder or `keepFile` if needed. For a fixed index
     /// (an interval of one) this is "the pair with that number, made if it isn't there": it fails if another pair holds it.
     pub fn ensure(&self, parent: &Path, part: &str) -> io::Result<FolderPair> {
         match self.find(parent, part)? {
@@ -301,7 +311,7 @@ impl Numbering {
         Ok(true)
     }
 
-    /// Gives every pair of this numbering in `parent` its `KEEP_FILE` if it lacks one — the pairs made before the rule
+    /// Gives every pair of this numbering in `parent` its `keepFile` if it lacks one — the pairs made before the rule
     /// existed, or whose marker was lost on the way somewhere. Returns how many it wrote. (`ensure` does the same for the
     /// one pair it is asked about.)
     pub fn repair(&self, parent: &Path) -> io::Result<usize> {
@@ -315,15 +325,15 @@ impl Numbering {
     }
 }
 
-/// Makes sure `full_dir` (which is made if it is missing) holds its `KEEP_FILE`, with the right content. Returns whether
+/// Makes sure `full_dir` (which is made if it is missing) holds its `keepFile`, with the right content. Returns whether
 /// it had to write it.
 fn mark_full_dir(full_dir: &Path) -> io::Result<bool> {
     std::fs::create_dir_all(full_dir)?;
-    let keep = full_dir.join(KEEP_FILE);
-    if std::fs::read(&keep).is_ok_and(|content| content == KEEP_CONTENT.as_bytes()) {
+    let keep = full_dir.join(keep_file());
+    if std::fs::read(&keep).is_ok_and(|content| content == keep_content().as_bytes()) {
         return Ok(false);
     }
-    std::fs::write(&keep, KEEP_CONTENT)?;
+    std::fs::write(&keep, keep_content())?;
     Ok(true)
 }
 
@@ -359,7 +369,7 @@ pub fn rename(parent: &Path, pair: &FolderPair, to: &Numbering, to_index: u32) -
 
 /// Renumbers many pairs at once: each of `moves` is a pair of `from` and the index it gets in `to`. **Two phases**, so that
 /// a new name never collides with an old one that hasn't moved yet (swapping `001` and `002`, or shifting a whole run by
-/// one): first every pair is renamed to [`TEMPORARY_PREFIX`] (`from.temporary()`) with its own index, then every one to
+/// one): first every pair is renamed to `TEMPORARY_PREFIX` (in the config) (`from.temporary()`) with its own index, then every one to
 /// its final name. Everything that can be checked is checked before the first rename: the new indexes must be distinct and
 /// in `to`'s interval, and no folder that isn't one of the moving pairs may already have one of the new names. If a rename
 /// fails midway the pairs that got that far keep the temporary prefix — `list` them with `from.temporary()` and call
@@ -391,7 +401,7 @@ pub fn reassign(parent: &Path, from: &Numbering, to: &Numbering, moves: &[(Folde
     }
 
     let temporary = from.temporary();
-    if from.prefix != TEMPORARY_PREFIX {
+    if from.prefix != temporary_prefix() {
         for (pair, _) in moves {
             let held = temporary.make_pair(parent, pair.index, &pair.part);
             for dir in [&held.short_dir, &held.full_dir] {
@@ -403,7 +413,7 @@ pub fn reassign(parent: &Path, from: &Numbering, to: &Numbering, moves: &[(Folde
     }
     let mut waiting = Vec::with_capacity(moves.len());
     for (pair, index) in moves {
-        let held = if from.prefix == TEMPORARY_PREFIX { pair.clone() } else { rename(parent, pair, &temporary, pair.index)? };
+        let held = if from.prefix == temporary_prefix() { pair.clone() } else { rename(parent, pair, &temporary, pair.index)? };
         waiting.push((held, *index));
     }
     waiting.iter().map(|(held, index)| rename(parent, held, to, *index)).collect()
@@ -411,18 +421,18 @@ pub fn reassign(parent: &Path, from: &Numbering, to: &Numbering, moves: &[(Folde
 
 /// Makes `text` safe to use as (part of) a folder name on every platform: characters that can't
 /// appear in a Windows file name become `_`, and so do control characters; trailing dots and spaces
-/// (which Windows drops) are removed; it's cut to `MAX_NAME_PART_CHARS`.
+/// (which Windows drops) are removed; it's cut to `maxNamePartChars`.
 pub fn sanitize_part(text: &str) -> String {
     let cleaned: String = text
         .chars()
         .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') { '_' } else { c })
-        .take(MAX_NAME_PART_CHARS)
+        .take(max_name_part_chars())
         .collect();
     cleaned.trim_end_matches(['.', ' ']).to_string()
 }
 
 /// Checks a name the user chose for a pair's full name part (a branch's name): non-empty, at most
-/// `MAX_NAME_PART_CHARS` characters, and valid as a file name on every platform.
+/// `maxNamePartChars` characters, and valid as a file name on every platform.
 pub fn validate_part(name: &str) -> Result<(), String> {
     const RESERVED: [&str; 22] = [
         "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
@@ -431,8 +441,8 @@ pub fn validate_part(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("Give it a name.".to_string());
     }
-    if name.chars().count() > MAX_NAME_PART_CHARS {
-        return Err(format!("The name can be at most {MAX_NAME_PART_CHARS} characters."));
+    if name.chars().count() > max_name_part_chars() {
+        return Err(format!("The name can be at most {} characters.", max_name_part_chars()));
     }
     if let Some(bad) = name.chars().find(|c| c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')) {
         return Err(format!("The name can't contain {}.", if bad.is_control() { "control characters".to_string() } else { format!("\"{bad}\"") }));
@@ -650,8 +660,8 @@ mod tests {
         assert_eq!(first.full_name, "001-filen@@a@x.com@@1");
         assert_eq!(first.part, "filen@@a@x.com@@1");
         let held: Vec<_> = std::fs::read_dir(&first.full_dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!(held, [KEEP_FILE], "the full folder holds only its .keep");
-        assert_eq!(std::fs::read_to_string(first.full_dir.join(KEEP_FILE)).unwrap(), "-", "with one dash in it");
+        assert_eq!(held, [keep_file()], "the full folder holds only its .keep");
+        assert_eq!(std::fs::read_to_string(first.full_dir.join(keep_file())).unwrap(), "-", "with one dash in it");
 
         assert_eq!(AFTER.find(&parent, "filen@@b@x.com@@2").unwrap(), Some(second.clone()));
         assert_eq!(AFTER.find(&parent, "filen@@c@x.com@@3").unwrap(), None);
@@ -690,20 +700,20 @@ mod tests {
         std::fs::write(parent.join("002").join("data.txt"), "data").unwrap();
         assert_eq!(DEFAULT.repair(&parent).unwrap(), 2, "both got one");
         for full in ["001-old@@a", "002-old@@b"] {
-            assert_eq!(std::fs::read_to_string(parent.join(full).join(KEEP_FILE)).unwrap(), "-", "{full}");
+            assert_eq!(std::fs::read_to_string(parent.join(full).join(keep_file())).unwrap(), "-", "{full}");
         }
-        assert!(!parent.join("001").join(KEEP_FILE).exists() && !parent.join("002").join(KEEP_FILE).exists(), "the short folders are the data's and stay as they are");
+        assert!(!parent.join("001").join(keep_file()).exists() && !parent.join("002").join(keep_file()).exists(), "the short folders are the data's and stay as they are");
         assert_eq!(std::fs::read_to_string(parent.join("002").join("data.txt")).unwrap(), "data");
         assert_eq!(DEFAULT.repair(&parent).unwrap(), 0, "nothing more to do");
         assert_eq!(DEFAULT.repair(&parent.join("nowhere")).unwrap(), 0, "a parent that isn't there has no pairs");
 
         // A marker with the wrong content, or one that got lost, is put right — by `repair` and by `ensure`.
-        std::fs::write(parent.join("001-old@@a").join(KEEP_FILE), "").unwrap();
-        std::fs::remove_file(parent.join("002-old@@b").join(KEEP_FILE)).unwrap();
+        std::fs::write(parent.join("001-old@@a").join(keep_file()), "").unwrap();
+        std::fs::remove_file(parent.join("002-old@@b").join(keep_file())).unwrap();
         assert_eq!(DEFAULT.repair(&parent).unwrap(), 2);
-        std::fs::remove_file(parent.join("002-old@@b").join(KEEP_FILE)).unwrap();
+        std::fs::remove_file(parent.join("002-old@@b").join(keep_file())).unwrap();
         DEFAULT.ensure(&parent, "old@@b").unwrap();
-        assert_eq!(std::fs::read_to_string(parent.join("002-old@@b").join(KEEP_FILE)).unwrap(), "-");
+        assert_eq!(std::fs::read_to_string(parent.join("002-old@@b").join(keep_file())).unwrap(), "-");
         let _ = std::fs::remove_dir_all(&parent);
     }
 
@@ -716,7 +726,7 @@ mod tests {
         let moved = rename(&parent, &a, &DEFAULT, 7).unwrap();
         assert_eq!((moved.short_name.as_str(), moved.full_name.as_str()), ("007", "007-a"));
         assert_eq!(std::fs::read_to_string(moved.short_dir.join("data.txt")).unwrap(), "data");
-        assert_eq!(std::fs::read_to_string(moved.full_dir.join(KEEP_FILE)).unwrap(), "-");
+        assert_eq!(std::fs::read_to_string(moved.full_dir.join(keep_file())).unwrap(), "-");
         assert_eq!(names(&parent), ["002", "002-b", "007", "007-a"]);
         assert_eq!(rename(&parent, &moved, &DEFAULT, 7).unwrap(), moved, "to where it is: nothing to do");
         // Onto a name that's taken: refused, nothing moves.
@@ -747,7 +757,7 @@ mod tests {
         assert_eq!(names(&parent), ["001", "001-c", "002", "002-a", "003", "003-b"], "no temporary name left behind");
         for (pair, text) in now.iter().zip(["A", "B", "C"]) {
             assert_eq!(std::fs::read_to_string(pair.short_dir.join("data.txt")).unwrap(), text, "the data went with its pair");
-            assert_eq!(std::fs::read_to_string(pair.full_dir.join(KEEP_FILE)).unwrap(), "-");
+            assert_eq!(std::fs::read_to_string(pair.full_dir.join(keep_file())).unwrap(), "-");
         }
 
         // Checked before anything moves: a repeated index, one outside the interval, a name a stranger holds.
@@ -791,7 +801,7 @@ mod tests {
     fn names_are_sanitised_and_validated() {
         assert_eq!(sanitize_part("a<b>c:d\"e/f\\g|h?i*j"), "a_b_c_d_e_f_g_h_i_j");
         assert_eq!(sanitize_part("trailing. . "), "trailing");
-        assert_eq!(sanitize_part(&"x".repeat(300)).chars().count(), MAX_NAME_PART_CHARS);
+        assert_eq!(sanitize_part(&"x".repeat(300)).chars().count(), max_name_part_chars());
         assert_eq!(sanitize_part("ok@example.com"), "ok@example.com");
 
         assert!(validate_part("my branch").is_ok());

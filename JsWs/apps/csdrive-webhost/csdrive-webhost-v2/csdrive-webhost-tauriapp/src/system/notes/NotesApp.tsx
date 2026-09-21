@@ -10,6 +10,7 @@ import {
   Eraser,
   Eye,
   File as FileIcon,
+  Folders,
   FileCheck,
   FilePlus,
   Folder,
@@ -30,6 +31,7 @@ import {
   RefreshCw,
   Save,
   Scissors,
+  Search,
   Trash2,
   Undo2,
   Unlock,
@@ -47,6 +49,11 @@ import { type MenuItem } from '../../components/ContextMenu'
 import Pagination from '../../components/Pagination'
 import { mediaKindOf } from '../../lib/media'
 import ThumbnailGrid from './ThumbnailGrid'
+import SearchPanel from './SearchPanel'
+import { FileSearchResults } from './SearchResults'
+import { DEFAULT_SORT, sortEntries, type FileHit, type SearchCriteria, type SortSpec } from './search'
+import FolderPairModal from './FolderPairModal'
+import { selectBaseName } from './renaming'
 import { useNotesSettings } from './settings'
 import { exportPathToDevice, isMobile, pickDeviceFiles } from '../../lib/platform'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
@@ -244,8 +251,17 @@ export default function NotesApp({
   const [goingTo, setGoingTo] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  /** Which entry is being renamed *now* — read by the handlers that can fire twice for one rename (a step with the arrow keys, then the blur). */
+  const renamingRef = useRef<string | null>(null)
+  /** The dialog that adds a folders pair. */
+  const [pairing, setPairing] = useState(false)
   /** The media viewer, when it is open: the media of the folder, and which one is shown first. */
   const [viewer, setViewer] = useState<{ items: MediaItem[]; start: number } | null>(null)
+  /** The search and sort panel: open or not, how the listing is sorted, and — while results show — what is searched for (from `searchRoot`). */
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
+  const [criteria, setCriteria] = useState<SearchCriteria | null>(null)
+  const [searchRoot, setSearchRoot] = useState('')
   const { settings, change: changeSettings } = useNotesSettings()
   const [clipboard, setClipboard] = useState<Clipboard | null>(null)
 
@@ -379,6 +395,9 @@ export default function NotesApp({
   // ── Listing ──
 
   const latestRequest = useRef(0)
+  /** What the listing is sorted by (read by `load`, which is not re-made for it: a change of key reloads below). */
+  const sortKeyRef = useRef<string>('default')
+  sortKeyRef.current = sort.key
 
   const load = useCallback(
     async (force: boolean) => {
@@ -387,7 +406,9 @@ export default function NotesApp({
       setLoading(true)
       setError(null)
       try {
-        const result = await source.list(path, force)
+        // A folder of this device lists names only; sorting by size or date needs them all, in one call for the folder.
+        const detailed = ['size', 'modified', 'created'].includes(sortKeyRef.current) && source.listDetailed
+        const result = await (detailed ? source.listDetailed!(path) : source.list(path, force))
         if (requestId !== latestRequest.current) return
         setListing(result)
         setMeta({})
@@ -411,9 +432,21 @@ export default function NotesApp({
 
   useEffect(() => {
     setPage(0)
+    setCriteria(null) // the results belong to the folder that was searched
   }, [sourceId, branch, path])
 
-  const entries = listing?.entries ?? []
+  // Sorting by size or date reads them for the whole folder (a folder of this device lists names only): list again when that starts or stops.
+  const needsDetails = ['size', 'modified', 'created'].includes(sort.key)
+  const detailsWere = useRef(needsDetails)
+  useEffect(() => {
+    if (detailsWere.current === needsDetails) return
+    detailsWere.current = needsDetails
+    if (ready && source?.listDetailed) load(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsDetails])
+
+  const sorted = useMemo(() => (listing ? (sort === DEFAULT_SORT || (sort.key === 'default' && !sort.descending && sort.foldersFirst) ? listing.entries : sortEntries(listing.entries, sort)) : []), [listing, sort])
+  const entries = sorted
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
   const currentPage = Math.min(page, pageCount - 1)
   const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
@@ -813,15 +846,30 @@ export default function NotesApp({
   }
 
   function startRename(entry: Entry) {
+    renamingRef.current = entry.name
     setRenaming(entry.name)
     setRenameValue(entry.name)
   }
 
-  async function commitRename(oldName: string) {
+  function cancelRename() {
+    renamingRef.current = null
+    setRenaming(null)
+  }
+
+  /** Submits the new name. `step` is how the rename ended, as in Total Commander: Enter or a press elsewhere (0), or the Down / Up
+   * arrow (1 / -1) — which submits *and* goes on to rename the item after / before it in the list. */
+  async function commitRename(oldName: string, step: -1 | 0 | 1 = 0) {
+    if (renamingRef.current !== oldName) return // already submitted: the box that closes fires its blur too
+    renamingRef.current = null
     const newName = renameValue.trim()
     setRenaming(null)
-    if (!source || !newName || newName === oldName || !nameOk(newName)) return
-    await act(() => source.rename(joinRelative(path, oldName), joinRelative(path, newName)))
+    const at = entries.findIndex((e) => e.name === oldName)
+    const next = step !== 0 && at >= 0 ? entries[at + step] : undefined
+    if (source && newName && newName !== oldName && nameOk(newName)) await act(() => source.rename(joinRelative(path, oldName), joinRelative(path, newName)))
+    if (next) {
+      setKbdFocus(at + step)
+      startRename(next)
+    }
   }
 
   function clip(entry: Entry, mode: 'copy' | 'cut') {
@@ -952,13 +1000,30 @@ export default function NotesApp({
     if (kbdFocus >= 0) setPage(Math.floor(kbdFocus / pageSize))
   }, [kbdFocus, pageSize])
 
+  // F2 renames the focused item (as in Total Commander); the Rename button does the same with a mouse or a finger.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== 'F2' || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey || e.defaultPrevented) return
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if (document.querySelector('.modal-overlay, .editor-overlay, .media-viewer')) return
+      const entry = entries[kbdFocus]
+      if (!entry) return
+      e.preventDefault()
+      startRename(entry)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entries, kbdFocus])
+
   useListKeyboard({
     count: entries.length,
     focused: kbdFocus,
     setFocused: setKbdFocus,
     pageSize,
     page: currentPage,
-    enabled: ready && !editing && !changes && !conflict && renaming === null && !details && !goingTo,
+    enabled: ready && !editing && !changes && !conflict && renaming === null && !details && !goingTo && criteria === null,
     onOpen: (i) => {
       const entry = entries[i]
       if (!entry) return
@@ -1239,6 +1304,7 @@ export default function NotesApp({
             </div>
             <div className="toolbar-actions">
               <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
+              <IconButton icon={Search} label="Search and sort…" onClick={() => setSearchOpen((open) => !open)} />
               <IconButton
                 icon={settings.viewThumbnails ? List : LayoutGrid}
                 label={settings.viewThumbnails ? 'View as a list' : 'View thumbnails'}
@@ -1247,6 +1313,7 @@ export default function NotesApp({
               <IconButton icon={Info} label="Details of this folder" onClick={() => showDetails(null)} />
               <IconButton icon={FilePlus} label="New file" onClick={createFile} />
               <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
+              <IconButton icon={Folders} label="Add folders pair…" onClick={() => setPairing(true)} />
               <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
               {clipboard && <IconButton icon={ClipboardPaste} label={`Paste "${clipboard.name}"`} onClick={paste} />}
               <IconButton icon={RefreshCw} label={account ? 'Refresh from Filen' : 'Refresh'} onClick={() => load(true)} />
@@ -1257,7 +1324,44 @@ export default function NotesApp({
           {notice && <div className="status-banner">{notice}</div>}
           {loading && <div className="muted">Loading…</div>}
 
-          {!loading && settings.viewThumbnails && source && (
+          <div hidden={!searchOpen}>
+            <SearchPanel
+              kind="files"
+              sort={sort}
+              onSort={setSort}
+              searching={criteria !== null}
+              onSearch={(c) => {
+                setSearchRoot(path)
+                setCriteria(c)
+              }}
+              onClear={() => setCriteria(null)}
+            />
+          </div>
+
+          {criteria && source && (
+            <FileSearchResults
+              source={source}
+              folder={searchRoot}
+              criteria={criteria}
+              sort={sort}
+              pageSize={pageSize}
+              onOpen={(hit: FileHit) => {
+                if (hit.entry.isDirectory) setCriteria(null)
+                openEntry(hit.entry, hit.folder)
+              }}
+              onShow={(hit: FileHit) => {
+                setCriteria(null)
+                const at = entries.findIndex((e) => e.name === hit.entry.name)
+                if (hit.folder === path && at >= 0) setKbdFocus(at) // (the folder is already shown: nothing is listed again to focus it after)
+                else {
+                  pendingFocusRef.current = hit.entry.name
+                  setPath(hit.folder)
+                }
+              }}
+            />
+          )}
+
+          {!criteria && !loading && settings.viewThumbnails && source && (
             <ThumbnailGrid
               source={source}
               path={path}
@@ -1271,12 +1375,20 @@ export default function NotesApp({
               renaming={
                 renaming === null
                   ? null
-                  : { name: renaming, value: renameValue, onChange: setRenameValue, onCommit: () => commitRename(renaming), onCancel: () => setRenaming(null) }
+                  : {
+                      name: renaming,
+                      value: renameValue,
+                      onChange: setRenameValue,
+                      onCommit: () => commitRename(renaming),
+                      onCancel: cancelRename,
+                      onStep: (step) => commitRename(renaming, step),
+                      isDirectory: entries.find((e) => e.name === renaming)?.isDirectory ?? false,
+                    }
               }
             />
           )}
 
-          {!loading && !settings.viewThumbnails && (
+          {!criteria && !loading && !settings.viewThumbnails && (
             <table className="file-table">
               <thead>
                 <tr>
@@ -1305,10 +1417,16 @@ export default function NotesApp({
                             autoFocus
                             value={renameValue}
                             onChange={(e) => setRenameValue(e.target.value)}
+                            onFocus={(e) => selectBaseName(e.currentTarget, entry.isDirectory)}
                             onBlur={() => commitRename(entry.name)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') commitRename(entry.name)
-                              if (e.key === 'Escape') setRenaming(null)
+                              if (e.key === 'Escape') cancelRename()
+                              // Up and Down submit the new name and go on to rename the item before / after (Total Commander).
+                              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                                e.preventDefault()
+                                commitRename(entry.name, e.key === 'ArrowDown' ? 1 : -1)
+                              }
                             }}
                           />
                         ) : (
@@ -1368,9 +1486,22 @@ export default function NotesApp({
             </table>
           )}
 
-          <Pagination page={currentPage} pageSize={pageSize} totalItems={entries.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
+          {criteria === null && <Pagination page={currentPage} pageSize={pageSize} totalItems={entries.length} onPageChange={setPage} onPageSizeChange={setPageSize} />}
         </div>
       </main>
+
+      {pairing && source && (
+        <FolderPairModal
+          source={source}
+          folder={path}
+          taken={entries.map((e) => e.name)}
+          onDone={() => {
+            setPairing(false)
+            load(false)
+          }}
+          onClose={() => setPairing(false)}
+        />
+      )}
 
       {viewer && <MediaViewer items={viewer.items} start={viewer.start} onClose={() => setViewer(null)} />}
 

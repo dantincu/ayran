@@ -6,6 +6,7 @@ import { joinRelative } from '../../lib/localFs'
 import {
   type FileRoot,
   listRootDir,
+  listRootDirDetailed,
   mkdirRoot,
   readRootFile,
   removeRootPath,
@@ -27,6 +28,8 @@ export interface Entry {
   isDirectory: boolean
   size: number | null
   mtimeMs: number | null
+  /** When it was created — a folder of this device where the platform keeps that (a search and a sort can use it); Filen doesn't say. */
+  createdMs?: number | null
   /** Filen: the file's content is in the cache (opening it needs no network). */
   cached?: boolean
   /** Filen: the file is locked against caching — its cached copy is never refreshed, expired or cleared. */
@@ -80,6 +83,9 @@ export interface FileSource {
   branch?: number | null
   /** `force` skips the cache (Filen only). */
   list(path: string, force?: boolean): Promise<DirListing>
+  /** A folder of this device: the same, with every entry's size and dates — one call for the whole folder (searching and sorting by
+   * size or date need them all; `list` gives names only). A Filen listing has size and modified time already. */
+  listDetailed?(path: string): Promise<DirListing>
   /** Size and modification time of an entry — for sources whose listing doesn't carry them. */
   stat?(path: string): Promise<{ size: number | null; mtimeMs: number | null }>
   read(path: string): Promise<Uint8Array>
@@ -152,6 +158,12 @@ export function localSource(root: FileRoot): FileSource {
       const entries = await listRootDir(root, path)
       return {
         entries: sortEntries(entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory, size: null, mtimeMs: null }))),
+      }
+    },
+    async listDetailed(path) {
+      const entries = await listRootDirDetailed(root, path)
+      return {
+        entries: sortEntries(entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory, size: e.size, mtimeMs: e.mtimeMs, createdMs: e.createdMs }))),
       }
     },
     async stat(path) {
@@ -315,6 +327,7 @@ export function scopedSource(base: FileSource, root: string, label: string): Fil
     viewKey: `${base.viewKey}@${root}`,
     label,
     list: (path, force) => base.list(at(path), force),
+    listDetailed: base.listDetailed ? (path) => base.listDetailed!(at(path)) : undefined,
     read: (path) => base.read(at(path)),
     write: (path, data) => base.write(at(path), data),
     exportFile: (path, name, token) => base.exportFile(at(path), name, token),

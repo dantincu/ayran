@@ -27,6 +27,20 @@ export function readDir(root: string, path: string): Promise<DirEntry[]> {
   return invoke<DirEntry[]>('fs_read_dir', { root, path })
 }
 
+/** An entry of a folder with its size and dates, all in one call (see `readDirDetailed`). */
+export interface DirEntryDetailed extends DirEntry {
+  /** A file's size; `null` for a folder. */
+  size: number | null
+  mtimeMs: number | null
+  /** When it was created, where the platform keeps that. */
+  createdMs: number | null
+}
+
+/** The entries of a folder with their sizes and dates, in one call for the whole folder — what searching and sorting a listing need. */
+export function readDirDetailed(root: string, path: string): Promise<DirEntryDetailed[]> {
+  return invoke<DirEntryDetailed[]>('fs_read_dir_detailed', { root, path })
+}
+
 export function stat(root: string, path: string): Promise<FileInfo> {
   return invoke<FileInfo>('fs_stat', { root, path })
 }

@@ -53,7 +53,9 @@ use crate::folder_pairs;
 
 /// The default cache interval: one hour.
 pub const DEFAULT_TTL_SECS: i64 = 3600;
-const PROVIDER: &str = "filen";
+fn provider() -> &'static str {
+    &crate::config::get().folder_pairs.account_provider
+}
 /// Inside an account's short folder, beside the cached contents: where uploads are assembled and
 /// downloads' partial files never go (those sit next to their target, with a .part ending).
 const UPLOADS_FOLDER: &str = "tmp";
@@ -61,7 +63,7 @@ const UPLOADS_FOLDER: &str = "tmp";
 const READ_PIECE: usize = 1_048_576;
 /// Accounts' and branches' folder pairs take the lowest free index, so deleting one (disconnecting an
 /// account, committing or discarding a branch) leaves no permanent gap in the numbering.
-const NUMBERING: folder_pairs::Numbering = folder_pairs::Numbering::DEFAULT;
+static NUMBERING: &std::sync::LazyLock<folder_pairs::Numbering> = &crate::config::DEFAULT_NUMBERING;
 /// Local file names are cut to this many characters (the pair strategy keeps the folders above short).
 const MAX_LOCAL_NAME: usize = 120;
 
@@ -369,13 +371,13 @@ fn remove_older_thumbs(folder: &Path, prefix: &str, keep: String) {
 /// `filen@@<email>@@<account id>` — the account's full-folder-name part (see the pairs strategy).
 pub fn account_part(email: &str, user_id: i64) -> String {
     let tail = format!("@@{user_id}");
-    let room = folder_pairs::MAX_NAME_PART_CHARS.saturating_sub(PROVIDER.len() + 2 + tail.len());
+    let room = folder_pairs::max_name_part_chars().saturating_sub(provider().len() + 2 + tail.len());
     let email: String = folder_pairs::sanitize_part(email).chars().take(room).collect();
-    format!("{PROVIDER}@@{}{tail}", email.trim_end_matches(['.', ' ']))
+    format!("{}@@{}{tail}", provider(), email.trim_end_matches(['.', ' ']))
 }
 
 fn is_account_part_for(part: &str, user_id: i64) -> bool {
-    part.starts_with(&format!("{PROVIDER}@@")) && part.ends_with(&format!("@@{user_id}"))
+    part.starts_with(&format!("{}@@", provider())) && part.ends_with(&format!("@@{user_id}"))
 }
 
 // ── The cache ─────────────────────────────────────────────────────────────────
@@ -451,7 +453,7 @@ impl Cache {
         Ok(cache)
     }
 
-    /// Every full folder holds its `.keep` (see `folder_pairs::KEEP_FILE`) — including the ones made before that rule
+    /// Every full folder holds its `.keep` (see `folder_pairs::keep_file()`) — including the ones made before that rule
     /// existed, which get theirs at the next start. Best effort: a folder that can't be written to is left for next time.
     fn keep_pairs_marked(&self) {
         let _ = NUMBERING.repair(&self.a_dir());
@@ -551,9 +553,9 @@ impl Cache {
             let marker = account.short_dir.join(NUMBERING.full_name(branch as u32, &name));
             std::fs::create_dir_all(&short).map_err(io)?;
             std::fs::create_dir_all(&marker).map_err(io)?;
-            let keep = marker.join(folder_pairs::KEEP_FILE);
+            let keep = marker.join(folder_pairs::keep_file());
             if !keep.exists() {
-                std::fs::write(keep, folder_pairs::KEEP_CONTENT).map_err(io)?;
+                std::fs::write(keep, folder_pairs::keep_content()).map_err(io)?;
             }
         }
         Ok(short.is_dir().then_some(short))

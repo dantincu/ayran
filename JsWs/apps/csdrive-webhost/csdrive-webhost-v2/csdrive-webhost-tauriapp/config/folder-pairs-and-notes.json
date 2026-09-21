@@ -1,0 +1,32 @@
+{
+  "_about": "The constants of the folder pairs (docs/strategies/folder-pairs-strategy.md) and of the notes (docs/strategies/notes-strategy.md). One file for both sides: the Rust backend embeds it at build time (src-tauri/src/config.rs, include_str!) and the frontend bundles it (src/lib/appConfig.ts), so it is inside every installer and APK, and nothing can change it on a person's machine. Edit it and rebuild. A test in config.rs checks that the numberings do not overlap and that the values make sense.",
+
+  "folderPairs": {
+    "keepFile": ".keep",
+    "keepContent": "-",
+    "temporaryPrefix": "t_",
+    "maxNamePartChars": 100,
+    "accountProvider": "filen",
+    "defaultNumbering": { "prefix": "", "from": 1, "to": 4294967295, "digits": 3, "indexing": "fillGaps" }
+  },
+
+  "notes": {
+    "files": {
+      "notebook": "[note-book].json",
+      "note": "[note].json",
+      "children": "[note-children].json"
+    },
+    "markdown": { "prefix": "0-", "suffix": "[note].md" },
+    "numberings": {
+      "noteItems": { "label": "Note items", "prefix": "", "from": 999, "to": 401, "digits": 3, "indexing": "afterLargest" },
+      "primarySections": { "label": "Primary note sections", "prefix": "", "from": 199, "to": 111, "digits": 3, "indexing": "afterLargest" },
+      "secondarySections": { "label": "Secondary note sections", "prefix": "", "from": 299, "to": 201, "digits": 3, "indexing": "afterLargest" },
+      "ternarySections": { "label": "Ternary note sections", "prefix": "", "from": 399, "to": 301, "digits": 3, "indexing": "afterLargest" }
+    },
+    "internals": {
+      "noteFiles": { "label": "The note's files", "prefix": "", "from": 1, "to": 1, "digits": 2, "indexing": "fillGaps", "name": "Note files" },
+      "noteInternals": { "label": "The note's internals", "prefix": "", "from": 2, "to": 2, "digits": 2, "indexing": "fillGaps", "name": "[note-internals]" },
+      "notebook": { "label": "The notebook's own", "prefix": "", "from": 3, "to": 3, "digits": 2, "indexing": "fillGaps", "name": "[note-book]" }
+    }
+  }
+}

@@ -4,6 +4,7 @@ mod android_jni;
 mod android_windows;
 mod app_state;
 mod code_snippets;
+mod config;
 mod data_location;
 mod deployable_apps;
 mod device_files;
@@ -343,6 +344,7 @@ pub fn run() {
             code_snippets::get_code_snippets,
             device_files::save_to_device,
             fs_commands::fs_read_dir,
+            fs_commands::fs_read_dir_detailed,
             fs_commands::fs_stat,
             fs_commands::fs_exists,
             fs_commands::fs_read_file,

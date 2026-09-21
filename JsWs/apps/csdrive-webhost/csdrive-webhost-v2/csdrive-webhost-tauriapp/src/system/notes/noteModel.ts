@@ -15,16 +15,17 @@
  *
  * The address of a note is the path of its short folder with the query key `note`: `/Projects/001/002?note`. */
 
+import { CHILDREN_JSON, config, KEEP_CONTENT, KEEP_FILE, MARKDOWN_PREFIX, NOTE_JSON, NOTE_MARKDOWN_SUFFIX, TEMPORARY_PREFIX } from '../../lib/appConfig'
 import { dotNetTimestamp, namePartFromTitle } from './notebookFile'
+import { indexText, INDEX_DIGITS, MAX_INDEX, NOTE_ITEMS, nextIndexIn, normalize, type Assignment } from './noteIndexes'
 import type { Entry, FileSource } from './sources'
 
-export const NOTE_JSON = '[note].json'
-export const CHILDREN_JSON = '[note-children].json'
-export const NOTE_MARKDOWN_SUFFIX = '[note].md'
+// The names come from the config file (`config/folder-pairs-and-notes.json`), never from here.
+export { CHILDREN_JSON, NOTE_JSON, NOTE_MARKDOWN_SUFFIX }
 /** The internals pair that holds a note's files. */
-export const NOTE_FILES_INDEX = '01'
-export const NOTE_FILES_NAME = 'Note files'
-const KEEP = '.keep'
+export const NOTE_FILES_INDEX = String(config.notes.internals.noteFiles.from).padStart(config.notes.internals.noteFiles.digits, '0')
+export const NOTE_FILES_NAME = config.notes.internals.noteFiles.name ?? 'Note files'
+const KEEP = KEEP_FILE
 
 /** A note as its parent lists it. */
 export interface NoteRef {
@@ -44,31 +45,37 @@ interface ChildEntry {
   UpdatedAt?: string
 }
 
-const join = (...parts: string[]) => parts.map((p) => p.replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')
-const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
+export const join = (...parts: string[]) => parts.map((p) => p.replace(/^\/+|\/+$/g, '')).filter(Boolean).join('/')
+export const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 const baseOf = (path: string) => path.slice(path.lastIndexOf('/') + 1)
 
 // ── Names ─────────────────────────────────────────────────────────────────────
 
-const NOTE_INDEX = /^\d{3}$/
-const NOTE_MARKER = /^(\d{3})-(.*)$/s
+const NOTE_INDEX = new RegExp(`^\\d{${INDEX_DIGITS}}$`)
+export const NOTE_MARKER = new RegExp(`^(\\d{${INDEX_DIGITS}})-(.*)$`, 's')
 
 /** The name part a title makes (see `namePartFromTitle`), never empty. */
 export const partOf = (title: string) => namePartFromTitle(title) || 'Untitled'
 
 export const markerName = (index: string, title: string) => `${index}-${partOf(title)}`
-export const markdownName = (title: string) => `0-${partOf(title)}${NOTE_MARKDOWN_SUFFIX}`
+export const markdownName = (title: string) => `${MARKDOWN_PREFIX}${partOf(title)}${NOTE_MARKDOWN_SUFFIX}`
 export const isNoteMarkdown = (name: string) => name.toLowerCase().endsWith(NOTE_MARKDOWN_SUFFIX.toLowerCase())
 
-/** The index for the next note in a folder that holds `names`: one more than the highest used — by a short folder or a marker —
- * ("after the largest", gaps stay). `null` when all 999 are taken. */
-export function nextNoteIndex(names: Iterable<string>): string | null {
-  let highest = 0
+/** The indexes a folder that holds `names` uses — by a short folder or by a marker, in any interval. */
+export function usedIndexes(names: Iterable<string>): number[] {
+  const used: number[] = []
   for (const name of names) {
     const m = NOTE_INDEX.test(name) ? name : NOTE_MARKER.exec(name)?.[1]
-    if (m) highest = Math.max(highest, Number(m))
+    if (m) used.push(Number(m))
   }
-  return highest >= 999 ? null : String(highest + 1).padStart(3, '0')
+  return used
+}
+
+/** The index for the next note in a folder that holds `names`: the note items' interval (`999`→`401` in the config), **one step past
+ * the furthest in use** ("after the largest"; gaps stay). `null` when the interval has no room beyond the furthest. */
+export function nextNoteIndex(names: Iterable<string>): string | null {
+  const next = nextIndexIn(NOTE_ITEMS, usedIndexes(names))
+  return next === null ? null : indexText(next)
 }
 
 /** The address of the note whose short folder is `folder`. */
@@ -182,21 +189,30 @@ export async function ancestorsOf(source: FileSource, folder: string, notebookRo
 
 // ── Writing ───────────────────────────────────────────────────────────────────
 
-/** Puts (or replaces) the entry of a child in the parent's `[note-children].json`, creating the file when there is none. */
-async function setChild(source: FileSource, parent: string, ref: NoteRef | null, index: string): Promise<void> {
+/** Changes the parent's `[note-children].json` with `change` (given the `ChildNotes` object), creating the file when there is none — or
+ * making the list from the folders when it is damaged, so what was there is not lost. */
+async function updateChildren(source: FileSource, parent: string, change: (children: Record<string, unknown>) => void): Promise<void> {
   const path = join(parent, CHILDREN_JSON)
   const file = (await readJson(source, path)) ?? {}
   let children: Record<string, unknown>
   if (file.ChildNotes !== null && typeof file.ChildNotes === 'object' && !Array.isArray(file.ChildNotes)) {
     children = { ...(file.ChildNotes as Record<string, unknown>) }
   } else {
-    // No list (or a damaged one): it is made from the folders, so what was there is not lost.
     children = {}
     for (const n of (await readChildren(source, parent)).notes) children[n.index] = { Title: n.title, CreatedAt: n.createdAt, ...(n.updatedAt ? { UpdatedAt: n.updatedAt } : {}) }
   }
-  if (ref) children[index] = { Title: ref.title, CreatedAt: ref.createdAt, ...(ref.updatedAt ? { UpdatedAt: ref.updatedAt } : {}) }
-  else delete children[index]
+  change(children)
   await writeJson(source, path, { ...file, ChildNotes: children })
+}
+
+const childEntry = (ref: NoteRef) => ({ Title: ref.title, CreatedAt: ref.createdAt, ...(ref.updatedAt ? { UpdatedAt: ref.updatedAt } : {}) })
+
+/** Puts (or replaces) the entry of a child in the parent's `[note-children].json`, creating the file when there is none. */
+export async function setChild(source: FileSource, parent: string, ref: NoteRef | null, index: string): Promise<void> {
+  await updateChildren(source, parent, (children) => {
+    if (ref) children[index] = childEntry(ref)
+    else delete children[index]
+  })
 }
 
 /** A new note titled `title` in `parent` (a notebook's root or a note's short folder). Everything the note needs is made — its
@@ -206,14 +222,14 @@ export async function createNote(source: FileSource, parent: string, title: stri
   if (!clean) throw new Error('A note needs a title.')
   const names = (await source.list(parent, true)).entries.map((e) => e.name)
   const index = nextNoteIndex(names)
-  if (index === null) throw new Error('This folder already has 999 notes.')
+  if (index === null) throw new Error(`This folder has no room for another note (${NOTE_ITEMS.label} go from ${NOTE_ITEMS.from} to ${NOTE_ITEMS.to}): normalize the indexes of its notes to make room.`)
   const folder = join(parent, index)
   const marker = join(parent, markerName(index, clean))
   const stamp = dotNetTimestamp(now)
 
   await source.mkdir(folder)
   await source.mkdir(marker)
-  await source.write(join(marker, KEEP), new TextEncoder().encode('-'))
+  await source.write(join(marker, KEEP), new TextEncoder().encode(KEEP_CONTENT))
   await writeJson(source, join(folder, NOTE_JSON), { Title: clean, CreatedAt: stamp, UpdatedAt: stamp })
   await source.write(join(folder, markdownName(clean)), new TextEncoder().encode(`${markdownTitle(clean)}\n`))
   await writeJson(source, join(folder, CHILDREN_JSON), { ChildNotes: {} })
@@ -227,7 +243,7 @@ export async function createNote(source: FileSource, parent: string, title: stri
  * the index is not three digits or is already used (by a short folder or a marker). The note's own contents, children and files
  * keep their names: they are inside the folder that moved. */
 export async function changeNoteIndex(source: FileSource, note: NoteRef, newIndex: string): Promise<NoteRef> {
-  if (!NOTE_INDEX.test(newIndex) || Number(newIndex) === 0) throw new Error('An index is a number from 1 to 999.')
+  if (!NOTE_INDEX.test(newIndex) || Number(newIndex) === 0) throw new Error(`An index is a number from 1 to ${MAX_INDEX}.`)
   if (newIndex === note.index) return note
   const parent = parentOf(note.folder)
   const entries = (await source.list(parent, true)).entries
@@ -292,7 +308,87 @@ export async function ensureNoteFiles(source: FileSource, folder: string): Promi
   const markerName = `${NOTE_FILES_INDEX}-${NOTE_FILES_NAME}`
   if (!entries.some((e) => e.isDirectory && e.name === markerName)) {
     await source.mkdir(join(folder, markerName))
-    await source.write(join(folder, markerName, KEEP), new TextEncoder().encode('-'))
+    await source.write(join(folder, markerName, KEEP), new TextEncoder().encode(KEEP_CONTENT))
   }
   return files
 }
+
+// ── Giving many notes new indexes at once ─────────────────────────────────────
+
+/** The marker folder of the note whose index is `index` among the `entries` of its parent. */
+export const markerOf = (entries: Entry[], index: string) => entries.find((e) => e.isDirectory && NOTE_MARKER.exec(e.name)?.[1] === index)
+
+/** Puts back what an interrupted renumbering left under the temporary prefix (`t_005`, `t_005-title`): each goes back to the name it had
+ * when that name is free. Returns how many folders were put back. */
+export async function recoverInterrupted(source: FileSource, parent: string): Promise<number> {
+  const entries = (await source.list(parent, true)).entries.filter((e) => e.isDirectory)
+  const names = new Set(entries.map((e) => e.name))
+  let back = 0
+  for (const entry of entries) {
+    if (!entry.name.startsWith(TEMPORARY_PREFIX)) continue
+    const original = entry.name.slice(TEMPORARY_PREFIX.length)
+    if (!(NOTE_INDEX.test(original) || NOTE_MARKER.test(original)) || names.has(original)) continue
+    await source.rename(join(parent, entry.name), join(parent, original))
+    back++
+  }
+  return back
+}
+
+/** Gives many notes of `parent` new indexes **at once**: `moves` says the index each is to hold (only the ones that change matter).
+ * Renaming them one by one would run into the names of notes that haven't moved yet (a run shifted by one, two swapped), so it is done
+ * in two phases, as the folder pairs strategy says: every note that moves first takes the **temporary prefix** (`t_`, same index),
+ * then every one takes its final name — for both folders of its pair, the short folder and the marker. Everything that can be checked is
+ * checked before the first rename (indexes valid, distinct, and not held by a note that isn't moving). The parent's list follows. */
+export async function reassignIndexes(source: FileSource, parent: string, moves: Array<{ note: NoteRef; to: number }>): Promise<void> {
+  const changing = moves.filter((move) => Number(move.note.index) !== move.to)
+  if (changing.length === 0) return
+  const targets = changing.map((move) => move.to)
+  if (targets.some((to) => !Number.isInteger(to) || to < 1 || to > MAX_INDEX)) throw new Error(`An index is a number from 1 to ${MAX_INDEX}.`)
+  if (new Set(targets).size !== targets.length) throw new Error('Two notes would get the same index.')
+
+  await recoverInterrupted(source, parent)
+  const entries = (await source.list(parent, true)).entries.filter((e) => e.isDirectory)
+  const leaving = new Set(changing.map((move) => move.note.index))
+  for (const to of targets) {
+    const text = indexText(to)
+    const holder = entries.find((e) => (e.name === text || NOTE_MARKER.exec(e.name)?.[1] === text) && !leaving.has(text))
+    if (holder) throw new Error(`The index ${text} is already used here (by "${holder.name}").`)
+  }
+  for (const move of changing) {
+    const temporary = `${TEMPORARY_PREFIX}${move.note.index}`
+    if (entries.some((e) => e.name === temporary || e.name.startsWith(`${temporary}-`))) throw new Error(`"${temporary}" is in the way — an earlier renumbering left it.`)
+  }
+
+  const pairs = changing.map((move) => {
+    const marker = markerOf(entries, move.note.index)
+    return { move, part: marker ? NOTE_MARKER.exec(marker.name)![2] : null, from: move.note.index, to: indexText(move.to) }
+  })
+  try {
+    for (const pair of pairs) {
+      await source.rename(join(parent, pair.from), join(parent, `${TEMPORARY_PREFIX}${pair.from}`))
+      if (pair.part !== null) await source.rename(join(parent, `${pair.from}-${pair.part}`), join(parent, `${TEMPORARY_PREFIX}${pair.from}-${pair.part}`))
+    }
+    for (const pair of pairs) {
+      await source.rename(join(parent, `${TEMPORARY_PREFIX}${pair.from}`), join(parent, pair.to))
+      if (pair.part !== null) await source.rename(join(parent, `${TEMPORARY_PREFIX}${pair.from}-${pair.part}`), join(parent, `${pair.to}-${pair.part}`))
+    }
+  } catch (e) {
+    throw new Error(`Renumbering stopped halfway (${e instanceof Error ? e.message : String(e)}). The notes it had reached carry the prefix "${TEMPORARY_PREFIX}"; doing it again puts them back first.`)
+  }
+  await updateChildren(source, parent, (children) => {
+    for (const pair of pairs) delete children[pair.from]
+    for (const pair of pairs) children[pair.to] = childEntry(pair.move.note)
+  })
+}
+
+/** Normalizes the indexes of the children of `parent` (see `normalize` in `noteIndexes.ts`): the gaps of each interval are closed, the
+ * order is kept. Returns how many notes got another index. */
+export async function normalizeChildren(source: FileSource, parent: string): Promise<number> {
+  const { notes } = await readChildren(source, parent)
+  const rows: Assignment[] = notes.map((n) => ({ key: n.index, index: Number(n.index) }))
+  const next = new Map(normalize(rows).map((row) => [row.key, row.index]))
+  const moves = notes.map((note) => ({ note, to: next.get(note.index)! }))
+  await reassignIndexes(source, parent, moves)
+  return moves.filter((move) => Number(move.note.index) !== move.to).length
+}
+

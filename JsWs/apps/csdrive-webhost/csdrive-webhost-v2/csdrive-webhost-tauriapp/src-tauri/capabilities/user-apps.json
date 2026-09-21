@@ -9,6 +9,7 @@
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-fs-read-dir",
+    "allow-fs-read-dir-detailed",
     "allow-fs-stat",
     "allow-fs-exists",
     "allow-fs-read-file",

@@ -245,7 +245,7 @@ async fn open(app: &AppHandle, window_guid: &str, url: &Url, new_tab: bool) {
 /// The name of a note's markdown file among the entries of its short folder (`(name, is a folder)`): the file whose name ends
 /// with `[note].md`.
 pub(crate) fn note_markdown_among(entries: impl IntoIterator<Item = (String, bool)>) -> Option<String> {
-    entries.into_iter().find(|(name, is_dir)| !is_dir && name.to_lowercase().ends_with("[note].md")).map(|(name, _)| name)
+    entries.into_iter().find(|(name, is_dir)| !is_dir && name.to_lowercase().ends_with(&crate::config::get().notes.markdown.suffix.to_lowercase())).map(|(name, _)| name)
 }
 
 /// The page a note's address (`/Book/001?note`) stands for: its markdown file, found in the note's short folder — in the user

@@ -26,6 +26,20 @@ pub struct DirEntryInfo {
     pub is_symlink: bool,
 }
 
+/// An entry of a listing with what a search and a sort need — size and dates — in **one** call for the whole folder (asking for each
+/// entry would be a call per entry). `created_ms` is `None` where the platform doesn't keep a creation time.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntryDetailed {
+    pub name: String,
+    pub is_directory: bool,
+    pub is_file: bool,
+    pub is_symlink: bool,
+    pub size: Option<u64>,
+    pub mtime_ms: Option<u64>,
+    pub created_ms: Option<u64>,
+}
+
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FileInfo {
@@ -61,6 +75,32 @@ fn read_dir(scope: &FsScope, root: &str, rel: &str) -> Result<Vec<DirEntryInfo>,
             is_directory: shown.as_ref().is_some_and(|m| m.is_dir()),
             is_file: shown.as_ref().is_some_and(|m| m.is_file()),
             is_symlink,
+        });
+    }
+    Ok(entries)
+}
+
+fn millis(time: std::io::Result<std::time::SystemTime>) -> Option<u64> {
+    time.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64)
+}
+
+fn read_dir_detailed(scope: &FsScope, root: &str, rel: &str) -> Result<Vec<DirEntryDetailed>, String> {
+    let real = scope.check_in(root, rel, true)?;
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(&real).map_err(io)? {
+        let entry = entry.map_err(io)?;
+        let listed = entry.metadata().map_err(io)?; // does not follow links
+        let is_symlink = listed.file_type().is_symlink();
+        let shown = if is_symlink { std::fs::metadata(entry.path()).ok() } else { Some(listed) };
+        let is_file = shown.as_ref().is_some_and(|m| m.is_file());
+        entries.push(DirEntryDetailed {
+            name: entry.file_name().to_string_lossy().into_owned(),
+            is_directory: shown.as_ref().is_some_and(|m| m.is_dir()),
+            is_file,
+            is_symlink,
+            size: shown.as_ref().filter(|m| m.is_file()).map(|m| m.len()),
+            mtime_ms: shown.as_ref().and_then(|m| millis(m.modified())),
+            created_ms: shown.as_ref().and_then(|m| millis(m.created())),
         });
     }
     Ok(entries)
@@ -143,6 +183,13 @@ fn copy_file(scope: &FsScope, from_root: &str, from: &str, to_root: &str, to: &s
 pub async fn fs_read_dir(scope: State<'_, FsScope>, root: String, path: String) -> Result<Vec<DirEntryInfo>, String> {
     let scope = scope.inner().clone();
     blocking(move || read_dir(&scope, &root, &path)).await
+}
+
+/// A folder's entries with their sizes and dates (see `DirEntryDetailed`): what searching and sorting a listing need.
+#[tauri::command]
+pub async fn fs_read_dir_detailed(scope: State<'_, FsScope>, root: String, path: String) -> Result<Vec<DirEntryDetailed>, String> {
+    let scope = scope.inner().clone();
+    blocking(move || read_dir_detailed(&scope, &root, &path)).await
 }
 
 #[tauri::command]
@@ -231,6 +278,20 @@ mod tests {
     }
 
     const U: &str = "user";
+
+    #[test]
+    fn a_detailed_listing_carries_sizes_and_dates_for_the_whole_folder_in_one_call() {
+        let (scope, _, _) = scoped("detailed");
+        write_file(&scope, U, "a.txt", b"hello").unwrap();
+        mkdir(&scope, U, "sub", false).unwrap();
+        let mut entries = read_dir_detailed(&scope, U, "").unwrap();
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(entries.len(), 2);
+        assert_eq!((entries[0].name.as_str(), entries[0].is_file, entries[0].size), ("a.txt", true, Some(5)));
+        assert!(entries[0].mtime_ms.is_some_and(|ms| ms > 1_000_000_000_000), "a modification time in milliseconds");
+        assert_eq!((entries[1].name.as_str(), entries[1].is_directory, entries[1].size), ("sub", true, None), "a folder has no size");
+        assert!(read_dir_detailed(&scope, U, "../outside").is_err(), "the scope is judged as for any listing");
+    }
 
     #[test]
     fn files_and_folders_can_be_created_read_listed_renamed_and_removed() {

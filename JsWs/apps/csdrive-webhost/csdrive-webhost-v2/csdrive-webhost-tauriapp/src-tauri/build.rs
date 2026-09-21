@@ -61,6 +61,7 @@ fn main() {
             "get_code_snippets",
             "save_to_device",
             "fs_read_dir",
+            "fs_read_dir_detailed",
             "fs_stat",
             "fs_exists",
             "fs_read_file",

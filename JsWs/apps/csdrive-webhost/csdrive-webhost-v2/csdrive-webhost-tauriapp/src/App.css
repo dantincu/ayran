@@ -1648,6 +1648,10 @@ select {
   padding: clamp(6px, 2.1vw, 40px);
 }
 
+.modal-panel.wide {
+  max-width: min(760px, 100%);
+}
+
 .modal-panel.maximized,
 .editor-panel.maximized {
   width: 100%;
@@ -1830,6 +1834,8 @@ select {
 }
 
 .note-index {
+  background: transparent;
+  cursor: pointer;
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
   color: var(--muted);
@@ -2083,4 +2089,267 @@ select {
 .thumb-name .icon-button {
   width: 26px;
   height: 26px;
+}
+
+/* ---- Add a folders pair (system/notes/FolderPairModal.tsx) ---- */
+
+.pair-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.pair-modal input[type='text'],
+.pair-modal input:not([type]) {
+  width: 100%;
+}
+
+.pair-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.pair-preview {
+  overflow-wrap: anywhere;
+}
+
+.pair-hint-button {
+  padding: 0 2px;
+  vertical-align: middle;
+}
+
+.pair-hint {
+  line-height: 1.5;
+}
+
+/* ---- The indexes of a note's children, all at once (system/notes/IndexesModal.tsx) ---- */
+
+.indexes-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.indexes-tools {
+  align-items: center;
+  gap: 8px;
+}
+
+.indexes-convert {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.indexes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.indexes-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.indexes-row:last-child {
+  border-bottom: none;
+}
+
+.indexes-row.changed {
+  background: var(--status-bg);
+}
+
+.indexes-row.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.indexes-row .icon-button {
+  width: 28px;
+  height: 28px;
+}
+
+.indexes-grip {
+  display: inline-flex;
+  color: var(--muted);
+  cursor: grab;
+  touch-action: none;
+}
+
+.indexes-input {
+  width: 4.5em;
+  text-align: center;
+  font-family: monospace;
+}
+
+.indexes-input.invalid {
+  border-color: var(--error-fg);
+  background: var(--error-bg);
+}
+
+.indexes-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.indexes-interval,
+.indexes-was {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  .indexes-interval {
+    display: none;
+  }
+}
+
+.note-index-input {
+  width: 4.5em;
+  text-align: center;
+  font-family: monospace;
+}
+
+.note-title-input {
+  flex: 1;
+  min-width: 8em;
+}
+
+.delete-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.paste-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.indexes-select button.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.indexes-row input[type='checkbox'] {
+  flex-shrink: 0;
+}
+
+/* ---- Search and sort (system/notes/SearchPanel.tsx, SearchResults.tsx) ---- */
+
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+}
+
+.search-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.search-panel fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 8px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.search-panel legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.search-panel input:not([type='checkbox']),
+.search-panel select {
+  width: 100%;
+  min-width: 0;
+}
+
+.search-options {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.search-options select {
+  width: auto;
+}
+
+.search-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.search-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.search-note {
+  font-size: 11px;
+}
+
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.search-status {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.search-where {
+  font-family: monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.search-snippet {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.spin {
+  animation: app-spin 1s linear infinite;
 }

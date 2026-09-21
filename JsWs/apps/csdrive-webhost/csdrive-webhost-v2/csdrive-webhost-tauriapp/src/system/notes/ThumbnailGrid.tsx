@@ -6,6 +6,7 @@ import { kbdItem } from '../../lib/keyboard'
 import { joinRelative } from '../../lib/localFs'
 import { mediaKindOf } from '../../lib/media'
 import type { Entry, FileSource } from './sources'
+import { selectBaseName } from './renaming'
 import { thumbnailOf } from './thumbnails'
 
 interface Props {
@@ -23,7 +24,7 @@ interface Props {
   onOpen: (entry: Entry) => void
   menuFor: (entry: Entry) => MenuItem[]
   /** The entry being renamed, and how — its name is then a box. */
-  renaming: { name: string; value: string; onChange: (value: string) => void; onCommit: () => void; onCancel: () => void } | null
+  renaming: { name: string; value: string; onChange: (value: string) => void; onCommit: () => void; onCancel: () => void; onStep: (step: -1 | 1) => void; isDirectory: boolean } | null
 }
 
 /** The folder as **thumbnails**: a card per entry — a picture's or a video's small image (made when the card comes into view; see
@@ -51,10 +52,16 @@ export default function ThumbnailGrid({ source, path, entries, meta, firstIndex,
                   autoFocus
                   value={renaming.value}
                   onChange={(e) => renaming.onChange(e.target.value)}
+                  onFocus={(e) => selectBaseName(e.currentTarget, renaming.isDirectory)}
                   onBlur={renaming.onCommit}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') renaming.onCommit()
                     if (e.key === 'Escape') renaming.onCancel()
+                    // As in Total Commander: Up and Down submit the new name and go on to rename the item before / after.
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault()
+                      renaming.onStep(e.key === 'ArrowDown' ? 1 : -1)
+                    }
                   }}
                 />
               ) : (
