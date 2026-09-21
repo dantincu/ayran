@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { invokeWithBytes } from '../../lib/ipcBytes'
 import { copyFile } from '../../lib/fs'
-import { openFileAsWebApp } from '../../lib/secondaryWindows'
+import { notifyFileSaved, openFileAsWebApp, type FileRef } from '../../lib/secondaryWindows'
 import { joinRelative } from '../../lib/localFs'
 import {
   type FileRoot,
@@ -21,6 +21,8 @@ import {
  * root, `/`-separated, with none for the root itself (`''`). */
 
 export interface Entry {
+  /** Filen: its id (uuid) — none for something that only exists in a branch so far. */
+  id?: string | null
   name: string
   isDirectory: boolean
   size: number | null
@@ -60,6 +62,13 @@ export interface DirListing {
   stale?: boolean
 }
 
+/** Where the thumbnails of a Filen account's (or branch's) files are kept, on disk with the cache: a JPEG per version of a
+ * file, told by its modification time and size (see `thumbnails.ts`). */
+export interface ThumbnailStore {
+  get(path: string, mtimeMs: number, size: number): Promise<Uint8Array | null>
+  put(path: string, mtimeMs: number, size: number, jpeg: Uint8Array): Promise<void>
+}
+
 export interface FileSource {
   /** Stable across sessions — what a tab's resource id names (`local:user`, `filen:123`). */
   id: string
@@ -84,6 +93,9 @@ export interface FileSource {
   exportFile(path: string, name: string, token: string | null): Promise<string>
   /** A folder on this device: the root id the file commands know it by. */
   rootId?: string
+  /** With `rootId`: the folder of that root this source's paths are relative to (a source scoped to a folder inside it,
+   * see `scopedSource`) — `''` or absent: the root itself. */
+  rootPrefix?: string
   /** Filen: takes a file from a folder on this device (`root` and `source`, as the file commands
    * name them) without it passing through the page. */
   copyFromLocal?(path: string, root: string, source: string): Promise<void>
@@ -92,6 +104,13 @@ export interface FileSource {
   mkdir(path: string): Promise<void>
   remove(path: string, isDirectory: boolean): Promise<void>
   rename(from: string, to: string): Promise<void>
+
+  /** The file as the backend names it (which storage, which folder or account, which path). */
+  fileRef?(path: string): FileRef
+  /** Filen: where its thumbnails are kept (a folder on this device has none: they are made again each session). */
+  thumbnails?: ThumbnailStore
+  /** Tells the windows that show the file as a web app that it was saved (they reload). */
+  notifySaved?(path: string): Promise<void>
 
   /** Opens the html or markdown file as a web app (a window of its own, listed under this Notes tab). */
   openAsWebApp?(path: string): Promise<void>
@@ -140,6 +159,8 @@ export function localSource(root: FileRoot): FileSource {
       return { size: info.isDirectory ? null : info.size, mtimeMs: info.mtimeMs }
     },
     rootId: root.id,
+    fileRef: (path) => ({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path }),
+    notifySaved: (path) => notifyFileSaved({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path }),
     openAsWebApp: async (path) => {
       await openFileAsWebApp({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path })
     },
@@ -252,6 +273,19 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
         throw e
       }
     },
+    fileRef: (path) => ({ storage: 'FilenCloud', userId, branch, path: filenPath(path) }),
+    thumbnails: {
+      async get(path, mtimeMs, size) {
+        const bytes = new Uint8Array(await invoke<ArrayBuffer>('filen_cache_thumb_get', { ...target, path: filenPath(path), mtimeMs, size }))
+        return bytes.length > 0 ? bytes : null
+      },
+      async put(path, mtimeMs, size, jpeg) {
+        const fields: Record<string, string> = { userId: String(userId), path: filenPath(path), mtimeMs: String(mtimeMs), size: String(size) }
+        if (branch !== null) fields.branch = String(branch)
+        await invokeWithBytes('filen_cache_thumb_put', jpeg, fields)
+      },
+    },
+    notifySaved: (path) => notifyFileSaved({ storage: 'FilenCloud', userId, branch, path: filenPath(path) }),
     openAsWebApp: async (path) => {
       await openFileAsWebApp({ storage: 'FilenCloud', userId, branch, path: filenPath(path) })
     },
@@ -269,6 +303,47 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     checkout: branch === null ? undefined : (path) => invoke<void>('filen_cache_checkout', { userId, branch, path: filenPath(path) }),
     release: branch === null ? undefined : (path) => invoke<void>('filen_cache_release', { userId, branch, path: filenPath(path) }),
   }
+}
+
+/** `base` seen from the folder `root` inside it: every path is relative to that folder, and nothing above it can be reached — what
+ * a note's files explorer works in (the note's `01` folder). `label` is what the folder is called in the listing's breadcrumbs. */
+export function scopedSource(base: FileSource, root: string, label: string): FileSource {
+  const at = (path: string) => joinRelative(root, path)
+  const scoped: FileSource = {
+    ...base,
+    id: base.id,
+    viewKey: `${base.viewKey}@${root}`,
+    label,
+    list: (path, force) => base.list(at(path), force),
+    read: (path) => base.read(at(path)),
+    write: (path, data) => base.write(at(path), data),
+    exportFile: (path, name, token) => base.exportFile(at(path), name, token),
+    mkdir: (path) => base.mkdir(at(path)),
+    remove: (path, isDirectory) => base.remove(at(path), isDirectory),
+    rename: (from, to) => base.rename(at(from), at(to)),
+    rootPrefix: base.rootId === undefined ? undefined : joinRelative(base.rootPrefix ?? '', root),
+  }
+  if (base.stat) scoped.stat = (path) => base.stat!(at(path))
+  if (base.writeFromFile) scoped.writeFromFile = (path, file) => base.writeFromFile!(at(path), file)
+  if (base.copyFromLocal) scoped.copyFromLocal = (path, rootId, source) => base.copyFromLocal!(at(path), rootId, source)
+  if (base.copyToLocal) scoped.copyToLocal = (path, rootId, dest) => base.copyToLocal!(at(path), rootId, dest)
+  if (base.openAsWebApp) scoped.openAsWebApp = (path) => base.openAsWebApp!(at(path))
+  if (base.notifySaved) scoped.notifySaved = (path) => base.notifySaved!(at(path))
+  if (base.fileRef) scoped.fileRef = (path) => base.fileRef!(at(path))
+  if (base.thumbnails) {
+    const store = base.thumbnails
+    scoped.thumbnails = {
+      get: (path, mtimeMs, size) => store.get(at(path), mtimeMs, size),
+      put: (path, mtimeMs, size, jpeg) => store.put(at(path), mtimeMs, size, jpeg),
+    }
+  }
+  if (base.version) scoped.version = (path) => base.version!(at(path))
+  if (base.checkVersion) scoped.checkVersion = (path, known) => base.checkVersion!(at(path), known)
+  if (base.rebase) scoped.rebase = (path) => base.rebase!(at(path))
+  if (base.setLocked) scoped.setLocked = (path, locked) => base.setLocked!(at(path), locked)
+  if (base.checkout) scoped.checkout = (path) => base.checkout!(at(path))
+  if (base.release) scoped.release = (path) => base.release!(at(path))
+  return scoped
 }
 
 // ── Working across sources ────────────────────────────────────────────────────
@@ -289,11 +364,11 @@ export async function copyTree(
       await copyTree(from, joinRelative(fromPath, child.name), child.isDirectory, to, joinRelative(toPath, child.name))
     }
   } else if (from.rootId !== undefined && to.rootId !== undefined) {
-    await copyFile(from.rootId, fromPath, to.rootId, toPath) // both on this device: copied on the Rust side
+    await copyFile(from.rootId, joinRelative(from.rootPrefix ?? '', fromPath), to.rootId, joinRelative(to.rootPrefix ?? '', toPath)) // both on this device: copied on the Rust side
   } else if (from.rootId !== undefined && to.copyFromLocal) {
-    await to.copyFromLocal(toPath, from.rootId, fromPath) // read from disk on the Rust side
+    await to.copyFromLocal(toPath, from.rootId, joinRelative(from.rootPrefix ?? '', fromPath)) // read from disk on the Rust side
   } else if (to.rootId !== undefined && from.copyToLocal) {
-    await from.copyToLocal(fromPath, to.rootId, toPath) // written to disk on the Rust side
+    await from.copyToLocal(fromPath, to.rootId, joinRelative(to.rootPrefix ?? '', toPath)) // written to disk on the Rust side
   } else {
     await to.write(toPath, await from.read(fromPath))
   }

@@ -59,6 +59,13 @@ pub const FILES_ACCOUNTS_FOLDER: &str = "a";
 /// Inside `files`: one folder pair per account with branches (its short folder holds one pair per branch).
 pub const FILES_BRANCHES_FOLDER: &str = "b";
 
+/// Inside `files`: the thumbnails of an account's files — one folder pair per account, laid out like the account's files.
+pub const FILES_THUMBNAILS_FOLDER: &str = "t";
+
+/// Inside `files`: the thumbnails of a branch's files — one folder pair per account, and inside it one pair per branch
+/// (numbered like the branch's pair in `b`). Goes with the branch, when it is committed or discarded.
+pub const FILES_BRANCH_THUMBNAILS_FOLDER: &str = "tb";
+
 /// Inside an account's short folder in `a`: the mirror of the account's files (only what was opened or exported).
 /// Inside `files`: where uploads from a window into a local folder are assembled (`fs_upload.rs`);
 /// emptied at every start.

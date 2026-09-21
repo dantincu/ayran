@@ -228,7 +228,7 @@ export default function Pagination({ page, pageSize, totalItems, onPageChange, o
         />
 
         {opened !== null && (
-          <div className="page-popover" role="dialog" aria-label="Go to page" ref={popoverRef}>
+          <div className="page-popover" role="dialog" aria-label="Go to page" ref={popoverRef} data-no-text-menu>
             {opened === 'keyboard' && (
               <input
                 autoFocus

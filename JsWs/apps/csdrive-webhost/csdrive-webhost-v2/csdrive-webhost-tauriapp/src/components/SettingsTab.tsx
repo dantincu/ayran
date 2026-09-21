@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { Eye, EyeOff, Eraser, FolderOpen, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import IconButton from './IconButton'
+import { internalClipboard } from '../lib/clipboard'
 import {
   clearCustomDataFolderContents,
   deleteAppData,
@@ -16,6 +17,28 @@ export default function SettingsTab() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [changed, setChanged] = useState(false)
+  // What the app's own clipboard holds (`null`: not read yet) and whether its text is shown.
+  const [clipboardText, setClipboardText] = useState<string | null>(null)
+  const [clipboardShown, setClipboardShown] = useState(false)
+
+  const readClipboard = useCallback(async () => {
+    try {
+      setClipboardText(await internalClipboard.get())
+    } catch (e) {
+      setError(String(e))
+    }
+  }, [])
+
+  async function clearClipboard() {
+    setError(null)
+    try {
+      await internalClipboard.clear()
+      setClipboardShown(false)
+      await readClipboard()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -27,7 +50,8 @@ export default function SettingsTab() {
 
   useEffect(() => {
     refresh()
-  }, [refresh])
+    readClipboard()
+  }, [refresh, readClipboard])
 
   async function changeFolder() {
     setError(null)
@@ -156,6 +180,35 @@ export default function SettingsTab() {
         <div className="error-banner" style={{ marginTop: 12 }}>
           Restart the app for this change to take effect.
         </div>
+      )}
+
+      <div className="toolbar" style={{ marginTop: 24 }}>
+        <strong>The app's clipboard</strong>
+        <div className="toolbar-actions">
+          <IconButton icon={RefreshCw} label="Read it again" onClick={readClipboard} />
+        </div>
+      </div>
+      <p className="muted">
+        One text that every window of the app — the admin-app, Notes and web apps — can copy to and paste from. It is kept in
+        memory only and is gone when the app closes; the system's clipboard is not touched.
+      </p>
+      <div className="toolbar-actions">
+        <span className="muted">
+          {clipboardText === null ? 'Reading…' : clipboardText === '' ? 'It is empty.' : `It holds ${clipboardText.length.toLocaleString()} character${clipboardText.length === 1 ? '' : 's'}.`}
+        </span>
+        {clipboardText !== null && clipboardText !== '' && (
+          <IconButton
+            icon={clipboardShown ? EyeOff : Eye}
+            label={clipboardShown ? 'Hide what it holds' : 'Show what it holds'}
+            onClick={() => setClipboardShown((shown) => !shown)}
+          />
+        )}
+        <IconButton icon={Eraser} label="Clear the app's clipboard" onClick={clearClipboard} disabled={!clipboardText} />
+      </div>
+      {clipboardShown && clipboardText && (
+        <pre className="path" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 160, overflow: 'auto' }}>
+          {clipboardText.length > 2000 ? `${clipboardText.slice(0, 2000)}…` : clipboardText}
+        </pre>
       )}
 
       <div className="toolbar" style={{ marginTop: 24 }}>

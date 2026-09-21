@@ -3,16 +3,15 @@ import {
   ArrowRightLeft,
   ArrowUpDown,
   Check,
-  CheckCheck,
   ClipboardPaste,
   Copy,
   CopyPlus,
   AppWindow,
   ExternalLink,
   FilePlus,
-  Fingerprint,
   Globe,
   Hash,
+  Info,
   FolderPlus,
   Link,
   Pause,
@@ -30,11 +29,15 @@ import { confirm } from '@tauri-apps/plugin-dialog'
 import IconButton from './IconButton'
 import Modal from './Modal'
 import { TagList } from './Tags'
+import DetailsModal, { type DetailField } from './DetailsModal'
 import ReorderList from './ReorderList'
 import { getAppState, setAppState } from '../lib/appState'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
 import { isObject, isStringOrNull } from '../lib/tabState'
-import { rootOfTab } from '../lib/rootTags'
+import { filenRootTagGuid, rootOfTab, rootTagGuid } from '../lib/rootTags'
+import { listPickedRoots } from '../lib/pickedRoots'
+import { listFilenAccounts } from '../lib/filen'
+import { copyToOsClipboard } from '../lib/clipboard'
 import {
   activateTab,
   addBlankTab,
@@ -48,6 +51,8 @@ import {
   deleteTabGroup,
   focusExternalSite,
   focusSecondaryWindow,
+  reloadSecondaryWindow,
+  reloadTab,
   listSecondaryWindows,
   listSystemApps,
   listTags,
@@ -139,6 +144,23 @@ async function fetchRootTags(records: SecondaryWindowRecord[]): Promise<TagRecor
   return guids.size > 0 ? listTags(Array.from(guids)) : []
 }
 
+/** The record a details popup is open for. */
+type DetailsKey = { kind: 'app'; path: string } | { kind: 'window' | 'group' | 'tab' | 'child' | 'root'; guid: string }
+
+/** The tabs with those that show the same root together (roots in the order they first appear, the tabs that show none last),
+ * each keeping its place among its own. */
+function groupTabsByRoot(tabs: TabRecord[]): TabRecord[] {
+  const buckets = new Map<string | null, TabRecord[]>()
+  for (const tab of tabs) {
+    const key = rootOfTab(tab)?.guid ?? null
+    const bucket = buckets.get(key)
+    if (bucket) bucket.push(tab)
+    else buckets.set(key, [tab])
+  }
+  const keys = Array.from(buckets.keys()).sort((a, b) => (a === null ? 1 : b === null ? -1 : 0))
+  return keys.flatMap((key) => buckets.get(key)!)
+}
+
 /** What is listed under a tab: an external web site opened from its page, or a web app opened from it (a Notes
  * tab's files) — oldest first before any saved order is applied. */
 type Child =
@@ -166,26 +188,8 @@ function formatDateTime(ms: number): string {
 /** The two tabs (User Apps, System Apps) are this same component and each keeps its own saved order. */
 const STATE_PREFIX: Record<WindowKind, string> = { user: 'windowsTab', system: 'systemAppsTab' }
 
-/** Synchronous, no permission prompt involved — the reliable path in a desktop
- * webview. Tried first so a slow/hanging clipboard permission negotiation (seen with
- * the async Clipboard API when the window lacks OS focus) never leaves the button
- * stuck waiting. */
-function copyViaExecCommand(text: string): boolean {
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  const ok = document.execCommand('copy')
-  document.body.removeChild(textarea)
-  return ok
-}
-
-async function copyToClipboard(text: string): Promise<void> {
-  if (copyViaExecCommand(text)) return
-  await navigator.clipboard.writeText(text)
-}
+// (Copying to the clipboard: `lib/clipboard.ts`.)
+const copyToClipboard = copyToOsClipboard
 
 /** A tab's resource identifier — what identifies the resource the tab shows, inside its app (a file, a
  * folder, an address…; for a Notes tab, `system:notes?s=…&p=…`) — to read and to copy. */
@@ -205,46 +209,6 @@ function ResourceIdModal({ tab, onClose, onError }: { tab: TabRecord; onClose: (
       </div>
       <div className="modal-field-label">The app's page</div>
       <code className="window-item-guid">{tab.relativePath}</code>
-    </Modal>
-  )
-}
-
-function WindowDetailsModal({
-  record,
-  onClose,
-  onError,
-}: {
-  record: SecondaryWindowRecord
-  onClose: () => void
-  onError: (message: string) => void
-}) {
-  const [copied, setCopied] = useState(false)
-
-  async function handleCopy() {
-    await copyToClipboard(record.guid)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
-  }
-
-  return (
-    <Modal title="Window details" onClose={onClose}>
-      <div>
-        <div className="modal-field-label">Created</div>
-        <div>{formatDateTime(record.createdAt)}</div>
-      </div>
-
-      <div>
-        <div className="modal-field-label">Tags</div>
-        <TagList guid={record.guid} tags={record.tags} className="window-item-tags tag-list-flush" onError={onError} />
-      </div>
-
-      <div>
-        <div className="modal-field-label">GUID</div>
-        <div className="modal-guid-row">
-          <span className="window-item-guid">{record.guid}</span>
-          <IconButton icon={copied ? CheckCheck : Copy} label="Copy GUID" onClick={handleCopy} />
-        </div>
-      </div>
     </Modal>
   )
 }
@@ -384,9 +348,12 @@ function TabRow({
   onCut,
   onClone,
   onActivate,
+  onReload,
   onClose,
   onOpenExternal,
   onShowResourceId,
+  showRoot,
+  onShowDetails,
 }: {
   tab: TabRecord
   /** The tags of every root the listed tabs show (see `rootOfTab`); this tab's are picked out by guid. */
@@ -398,15 +365,21 @@ function TabRow({
   onCut: () => void
   onClone: () => void
   onActivate: () => void
+  /** Reloads the tab's page (only offered while an open window is showing the tab). */
+  onReload: () => void
   onClose: () => void
   /** Shows the external web sites opened from this tab. */
   onOpenExternal: () => void
   /** Shows the tab's resource identifier (to read and copy). */
   onShowResourceId: () => void
+  /** Whether the tab's root is shown under it (it isn't when the tabs are grouped by root: the group says it once). */
+  showRoot: boolean
+  onShowDetails: () => void
 }) {
   // A tab that shows a root (a folder, a Filen account) has two sets of tags: the root's — the same
   // wherever that root appears — and its own. When both are shown each line says which it is.
   const root = rootOfTab(tab)
+  const rootOwn = root ? rootTags.filter((t) => t.guid === root.guid) : []
   return (
     <div className={`window-item tab-row ${cut ? 'tab-row-cut' : ''}`}>
       <div className="tab-row-header">
@@ -434,6 +407,8 @@ function TabRow({
           {tab.externalPages.length + tab.openedApps.length > 0 && (
             <span className="muted tab-row-external-count">{tab.externalPages.length + tab.openedApps.length}</span>
           )}
+          {tab.showing && <IconButton icon={RefreshCw} label="Reload this tab's page" onClick={onReload} />}
+          <IconButton icon={Info} label="Details" onClick={onShowDetails} />
           <IconButton icon={Hash} label="Resource identifier — view and copy" onClick={onShowResourceId} />
           <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
           <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
@@ -441,30 +416,52 @@ function TabRow({
           <IconButton icon={X} label="Close tab (suspends its window if the window is showing it)" variant="danger" onClick={onClose} />
         </div>
       </div>
-      {root ? (
-        <>
-          <div className="tab-tags-line">
-            <span className="tab-tags-caption" title="Tags of the folder or account this tab shows — shared by every tab on it, and by the Files tab">
-              Root
-            </span>
-            <TagList
-              guid={root.guid}
-              tags={rootTags.filter((t) => t.guid === root.guid)}
-              className="tab-tags-list"
-              onChanged={onRootTagsChanged}
-              onError={onError}
-            />
-          </div>
+      {/* A row of tags only where there are tags: the first one is added from the details. */}
+      {showRoot && root && rootOwn.length > 0 && (
+        <div className="tab-tags-line">
+          <span className="tab-tags-caption" title="Tags of the folder or account this tab shows — shared by every tab on it, and by the Files tab">
+            Root
+          </span>
+          <TagList guid={root.guid} tags={rootOwn} className="tab-tags-list" onChanged={onRootTagsChanged} onError={onError} />
+        </div>
+      )}
+      {tab.tags.length > 0 &&
+        (showRoot && root && rootOwn.length > 0 ? (
           <div className="tab-tags-line">
             <span className="tab-tags-caption" title="Tags of this tab only">
               Tab
             </span>
             <TagList guid={tab.guid} tags={tab.tags} className="tab-tags-list" onError={onError} />
           </div>
-        </>
-      ) : (
-        <TagList guid={tab.guid} tags={tab.tags} className="window-item-tags" onError={onError} />
-      )}
+        ) : (
+          <TagList guid={tab.guid} tags={tab.tags} className="window-item-tags" onError={onError} />
+        ))}
+    </div>
+  )
+}
+
+/** The heading of the tabs that show one root, when the tabs are grouped by root: the root's name and tags, said once. */
+function RootHeader({
+  label,
+  guid,
+  tags,
+  onDetails,
+  onChanged,
+  onError,
+}: {
+  label: string
+  /** The tags' guid; null for the tabs that show no root. */
+  guid: string | null
+  tags: TagRecord[]
+  onDetails: () => void
+  onChanged: () => void
+  onError: (message: string) => void
+}) {
+  return (
+    <div className="root-group-header">
+      <span className="root-group-title">{label}</span>
+      {guid && <TagList guid={guid} tags={tags} className="window-item-tags tag-list-flush" onChanged={onChanged} onError={onError} />}
+      {guid && <IconButton icon={Info} label="Details of this root" onClick={onDetails} />}
     </div>
   )
 }
@@ -480,8 +477,10 @@ function ExternalRow({
   onFocus,
   onSuspend,
   onClose,
+  onDetails,
 }: {
   page: ExternalPageRecord
+  onDetails: () => void
   onError: (message: string) => void
   onCopy: (text: string) => void
   onOpen: () => void
@@ -504,6 +503,7 @@ function ExternalRow({
         </button>
         <div className="row-actions">
           <span className={`status-dot ${page.isOpen ? 'status-open' : 'status-suspended'}`} title={page.isOpen ? 'Open' : 'Suspended'} />
+          <IconButton icon={Info} label="Details" onClick={onDetails} />
           <IconButton icon={Copy} label="Copy the address to the clipboard" onClick={() => onCopy(page.url)} />
           <IconButton
             icon={Link}
@@ -533,13 +533,17 @@ function OpenedAppRow({
   onError,
   onOpen,
   onFocus,
+  onReload,
   onSuspend,
   onClose,
+  onDetails,
 }: {
   app: OpenedAppRecord
+  onDetails: () => void
   onError: (message: string) => void
   onOpen: () => void
   onFocus: () => void
+  onReload: () => void
   onSuspend: () => void
   onClose: () => void
 }) {
@@ -559,9 +563,11 @@ function OpenedAppRow({
         </button>
         <div className="row-actions">
           <span className={`status-dot ${app.isOpen ? 'status-open' : 'status-suspended'}`} title={app.isOpen ? 'Open' : 'Suspended'} />
+          <IconButton icon={Info} label="Details" onClick={onDetails} />
           {app.isOpen ? (
             <>
               <IconButton icon={ExternalLink} label="Bring its window to the front" onClick={onFocus} />
+              <IconButton icon={RefreshCw} label="Reload its page" onClick={onReload} />
               <IconButton icon={Pause} label={SUSPEND_HINT} onClick={onSuspend} />
             </>
           ) : (
@@ -659,7 +665,11 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   const [kbdFocus, setKbdFocus] = useState(-1)
   const keyboardMovedRef = useRef(false)
 
-  const [detailsFor, setDetailsFor] = useState<SecondaryWindowRecord | null>(null)
+  const [detailsKey, setDetailsKey] = useState<DetailsKey | null>(null)
+  // (System Apps) Whether the tabs of a tab group are grouped by the root they show — the folder or Filen account.
+  const GROUP_BY_ROOT_KEY = `${statePrefix}.groupByRoot`
+  const [groupByRoot, setGroupByRootState] = useState(false)
+  const [rootNames, setRootNames] = useState<Record<string, string>>({})
   const [movingTab, setMovingTab] = useState<TabRecord | null>(null)
   const [cutTab, setCutTab] = useState<TabRecord | null>(null)
   const [renamingGroup, setRenamingGroup] = useState<TabGroupRecord | null>(null)
@@ -674,9 +684,33 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   // else: there is no way to move one under another tab, which is the one that opened it.
   const [externalOrder, setExternalOrderState] = useState<Record<string, string[]>>({})
 
+  function setGroupByRoot(on: boolean) {
+    setReordering(false) // (sorting is for the plain list)
+    setGroupByRootState(on)
+    setAppState(GROUP_BY_ROOT_KEY, on).catch(() => {})
+  }
+
+  // What the roots are called, for the headings of the groups and the details: the user folder, the folders picked, the Filen accounts.
+  useEffect(() => {
+    if (!isSystem) return
+    let alive = true
+    Promise.all([listPickedRoots().catch(() => []), listFilenAccounts().catch(() => [])]).then(([picked, accounts]) => {
+      if (!alive) return
+      const names: Record<string, string> = { [rootTagGuid('user')]: 'user' }
+      for (const root of picked) names[rootTagGuid(root.id)] = root.label
+      for (const account of accounts) names[filenRootTagGuid(account.userId)] = account.email
+      setRootNames(names)
+    })
+    return () => {
+      alive = false
+    }
+  }, [isSystem, records])
+  const rootLabel = (guid: string) => rootNames[guid] ?? guid.replace(/^root:/, '')
+
   const appName = (relativePath: string) => catalog.find((a) => a.relativePath === relativePath)?.name ?? relativePath
 
   useEffect(() => {
+    getAppState<boolean>(GROUP_BY_ROOT_KEY).then((saved) => setGroupByRootState(saved === true))
     getAppState<boolean>(USE_CUSTOM_ORDER_KEY).then((saved) => setUseCustomOrderState(saved ?? false))
     getAppState<string[]>(GROUP_ORDER_KEY).then((saved) => setGroupOrderState(saved ?? []))
     getAppState<Record<string, string[]>>(ITEM_ORDER_KEY).then((saved) => setItemOrderState(saved ?? {}))
@@ -817,6 +851,14 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   async function handleFocus(guid: string) {
     try {
       await focusSecondaryWindow(guid)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function handleReload(guid: string) {
+    try {
+      await reloadSecondaryWindow(guid)
     } catch (e) {
       setError(String(e))
     }
@@ -982,7 +1024,19 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     ? applyOrder(currentWindow.tabGroups, (g) => g.guid, true, tabGroupOrder[currentWindow.guid])
     : []
   const currentGroup = currentWindow?.tabGroups.find((g) => g.guid === currentGroupGuid) ?? null
-  const tabsOfCurrentGroup = currentGroup ? applyOrder(currentGroup.tabs, (t) => t.guid, true, tabOrder[currentGroup.guid]) : []
+  const orderedTabsOfCurrentGroup = currentGroup ? applyOrder(currentGroup.tabs, (t) => t.guid, true, tabOrder[currentGroup.guid]) : []
+  const grouping = isSystem && groupByRoot
+  const tabsOfCurrentGroup = grouping ? groupTabsByRoot(orderedTabsOfCurrentGroup) : orderedTabsOfCurrentGroup
+  // The first tab of each run of tabs on the same root gets that root's heading (grouped mode).
+  const rootStarts = new Map<string, string | null>()
+  if (grouping) {
+    let previous: string | null | undefined
+    for (const tab of tabsOfCurrentGroup) {
+      const root = rootOfTab(tab)?.guid ?? null
+      if (root !== previous) rootStarts.set(tab.guid, root)
+      previous = root
+    }
+  }
   const currentTab = currentGroup?.tabs.find((t) => t.guid === currentTabGuid) ?? null
   const externalOfCurrentTab = currentTab ? applyOrder(childrenOf(currentTab), (c) => c.guid, true, externalOrder[currentTab.guid]) : []
 
@@ -1053,7 +1107,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     count: levelIds.length,
     focused: kbdFocus,
     setFocused: setKbdFocus,
-    enabled: !reordering && !detailsFor && !movingTab && !renamingGroup && !resourceIdFor,
+    enabled: !reordering && !detailsKey && !movingTab && !renamingGroup && !resourceIdFor,
     // Right: into the item — and on an external web site, which has nothing below it, to its window.
     onOpen: (i) => {
       if (view === 'external') {
@@ -1091,7 +1145,120 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
       : undefined,
   })
 
-  const liveDetailsFor = detailsFor ? records.find((r) => r.guid === detailsFor.guid) ?? null : null
+  /** What the details popup shows for `key`, from the records as they are now; null when the record is gone. */
+  function buildDetails(key: DetailsKey): { title: string; fields: DetailField[]; tags?: { guid: string; tags: TagRecord[]; onChanged?: () => void }; extra?: ReactNode } | null {
+    const state = (open: boolean) => (open ? 'Open' : 'Suspended')
+    if (key.kind === 'app') {
+      const group = apps.find((g) => g.relativePath === key.path)
+      return {
+        title: 'App details',
+        fields: [
+          { label: 'Name', value: appName(key.path), copy: false },
+          { label: 'Page', value: key.path, mono: true },
+          { label: 'Windows', value: String(group?.windows.length ?? 0), copy: false },
+        ],
+      }
+    }
+    if (key.kind === 'window') {
+      const w = records.find((r) => r.guid === key.guid)
+      if (!w) return null
+      return {
+        title: 'Window details',
+        fields: [
+          { label: 'Created', value: formatDateTime(w.createdAt), copy: false },
+          { label: 'State', value: state(w.isOpen), copy: false },
+          { label: 'GUID', value: w.guid, mono: true },
+        ],
+        tags: { guid: w.guid, tags: w.tags },
+      }
+    }
+    if (key.kind === 'group') {
+      const g = records.flatMap((r) => r.tabGroups).find((x) => x.guid === key.guid)
+      if (!g) return null
+      return {
+        title: 'Tab group details',
+        fields: [
+          { label: 'Name', value: g.name ?? '', copy: false },
+          { label: 'Created', value: formatDateTime(g.createdAt), copy: false },
+          { label: 'Tabs', value: String(g.tabs.length), copy: false },
+          { label: 'GUID', value: g.guid, mono: true },
+        ],
+        tags: { guid: g.guid, tags: g.tags },
+      }
+    }
+    if (key.kind === 'tab') {
+      const t = records.flatMap((r) => r.tabGroups).flatMap((g) => g.tabs).find((x) => x.guid === key.guid)
+      if (!t) return null
+      const root = rootOfTab(t)
+      const second = t.tabText?.secondRow.map((s) => s.text).join(' • ') ?? ''
+      return {
+        title: 'Tab details',
+        fields: [
+          { label: 'Label', value: tabLabel(t), copy: false },
+          ...(second ? [{ label: 'Second line', value: second, copy: false }] : []),
+          { label: 'Resource identifier', value: t.resourceId, mono: true },
+          { label: 'App page', value: t.relativePath, mono: true },
+          ...(root ? [{ label: 'Root', value: rootLabel(root.guid), copy: false }] : []),
+          { label: 'Created', value: formatDateTime(t.createdAt), copy: false },
+          { label: 'GUID', value: t.guid, mono: true },
+        ],
+        tags: { guid: t.guid, tags: t.tags },
+        extra: root ? (
+          <div>
+            <div className="modal-field-label">Tags of the root — shared by every tab on it, and by the Files tab</div>
+            <TagList guid={root.guid} tags={rootTags.filter((x) => x.guid === root.guid)} className="window-item-tags tag-list-flush" showWhenEmpty onChanged={refreshRootTags} onError={setError} />
+          </div>
+        ) : undefined,
+      }
+    }
+    if (key.kind === 'root') {
+      return {
+        title: 'Root details',
+        fields: [
+          { label: 'Root', value: rootLabel(key.guid), copy: false },
+          { label: 'Tag identifier', value: key.guid, mono: true },
+        ],
+        tags: { guid: key.guid, tags: rootTags.filter((x) => x.guid === key.guid), onChanged: refreshRootTags },
+      }
+    }
+    // A child of a tab: an external web site or a web app opened from it.
+    const child = records.flatMap((r) => r.tabGroups).flatMap((g) => g.tabs).flatMap((t) => childrenOf(t)).find((c) => c.guid === key.guid)
+    if (!child) return null
+    if (child.kind === 'site') {
+      const p = child.page
+      return {
+        title: 'External web site details',
+        fields: [
+          { label: 'Title', value: p.title ?? '', copy: !!p.title },
+          { label: 'Address', value: p.url, mono: true },
+          { label: 'First opened at', value: p.initialUrl, mono: true },
+          { label: 'Created', value: formatDateTime(p.createdAt), copy: false },
+          { label: 'State', value: state(p.isOpen), copy: false },
+          { label: 'GUID', value: p.guid, mono: true },
+        ],
+        tags: { guid: p.guid, tags: p.tags },
+      }
+    }
+    const a = child.app
+    return {
+      title: 'Web app details',
+      fields: [
+        { label: 'Title', value: a.tabText?.firstRow.map((s) => s.text).join('') ?? '', copy: false },
+        { label: 'Path', value: a.path, mono: true },
+        { label: 'Kept in', value: a.storage === 'FilenCloud' ? 'A Filen account' : a.storage === 'DeviceFolder' ? 'A folder of this device' : 'The user folder', copy: false },
+        { label: 'Created', value: formatDateTime(a.createdAt), copy: false },
+        { label: 'State', value: state(a.isOpen), copy: false },
+        { label: 'GUID', value: a.guid, mono: true },
+      ],
+      tags: { guid: a.guid, tags: a.tags },
+    }
+  }
+  const details = detailsKey ? buildDetails(detailsKey) : null
+  // A record that has gone (its window was closed…) takes its popup with it.
+  useEffect(() => {
+    if (detailsKey && !details) setDetailsKey(null)
+  }, [detailsKey, details])
+
   const moveCandidates: MoveCandidate[] = movingTab
     ? records
         .filter((r) => r.relativePath === movingTab.relativePath)
@@ -1219,6 +1386,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       </span>
                     </button>
                     <div className="row-actions">
+                      <IconButton icon={Info} label="Details" onClick={() => setDetailsKey({ kind: 'app', path: g.relativePath })} />
                       {isSystem && <IconButton icon={ExternalLink} label="Open in a new window" onClick={() => handleOpenNew(g.relativePath)} />}
                       <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(g.relativePath)} />
                       <IconButton icon={PauseCircle} label={SUSPEND_ALL_HINT} onClick={() => handleSuspendAll(g.relativePath)} />
@@ -1280,10 +1448,11 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       <span className="muted window-item-state">{w.isOpen ? 'Open' : 'Suspended'}</span>
                     </button>
                     <div className="row-actions">
-                      <IconButton icon={Fingerprint} label="Details" onClick={() => setDetailsFor(w)} />
+                      <IconButton icon={Info} label="Details" onClick={() => setDetailsKey({ kind: 'window', guid: w.guid })} />
                       {w.isOpen ? (
                         <>
                           <IconButton icon={ExternalLink} label="Focus" onClick={() => handleFocus(w.guid)} />
+                          <IconButton icon={RefreshCw} label="Reload the page the window shows" onClick={() => handleReload(w.guid)} />
                           <IconButton icon={Pause} label={SUSPEND_HINT} onClick={() => handleSuspend(w.guid)} />
                           <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(w.guid)} />
                         </>
@@ -1345,6 +1514,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       </span>
                     </button>
                     <div className="row-actions">
+                      <IconButton icon={Info} label="Details" onClick={() => setDetailsKey({ kind: 'group', guid: g.guid })} />
                       <IconButton icon={Pencil} label="Rename tab group" onClick={() => setRenamingGroup(g)} />
                       <IconButton
                         icon={Trash2}
@@ -1366,6 +1536,12 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
         <>
           <div className="toolbar">
             <span className="muted">Tabs</span>
+            {isSystem && (
+              <label className="custom-order-toggle" title="List the tabs that show the same folder or Filen account together, under one heading with its tags">
+                <input type="checkbox" checked={groupByRoot} onChange={(e) => setGroupByRoot(e.target.checked)} />
+                Group by root
+              </label>
+            )}
             <div className="toolbar-actions">
               {currentWindowActions}
               <IconButton icon={Plus} label="New tab" onClick={() => handleAddBlankTab(currentGroup.guid)} />
@@ -1375,7 +1551,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                 label={reordering ? 'Stop sorting' : 'Sort'}
                 variant={reordering ? 'danger' : 'default'}
                 onClick={() => setReordering((v) => !v)}
-                disabled={!reordering && tabsOfCurrentGroup.length < 2}
+                disabled={(!reordering && tabsOfCurrentGroup.length < 2) || grouping}
               />
             </div>
           </div>
@@ -1392,8 +1568,21 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
               onFocusItem={setKbdFocus}
               renderReorderLabel={(t) => <span>{t.tabText ? t.tabText.firstRow.map((s) => s.text).join(' ') : t.resourceId}</span>}
               renderRow={(t) => (
+                <>
+                {rootStarts.has(t.guid) && (
+                  <RootHeader
+                    label={rootStarts.get(t.guid) ? rootLabel(rootStarts.get(t.guid)!) : 'Tabs that show no root'}
+                    guid={rootStarts.get(t.guid) ?? null}
+                    tags={rootTags.filter((x) => x.guid === rootStarts.get(t.guid))}
+                    onDetails={() => setDetailsKey({ kind: 'root', guid: rootStarts.get(t.guid)! })}
+                    onChanged={refreshRootTags}
+                    onError={setError}
+                  />
+                )}
                 <TabRow
                   tab={t}
+                  showRoot={!grouping}
+                  onShowDetails={() => setDetailsKey({ kind: 'tab', guid: t.guid })}
                   rootTags={rootTags}
                   cut={cutTab?.guid === t.guid}
                   onError={setError}
@@ -1402,6 +1591,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                   onCut={() => setCutTab(t)}
                   onClone={() => handleCloneTab(t.guid)}
                   onActivate={() => handleActivateTab(t.guid)}
+                  onReload={() => handleExternal(() => reloadTab(t.guid))}
                   onClose={() => handleCloseTab(t.guid)}
                   onOpenExternal={() => {
                     setCurrentTabGuid(t.guid)
@@ -1409,6 +1599,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                   }}
                   onShowResourceId={() => setResourceIdFor(t)}
                 />
+                </>
               )}
             />
           </div>
@@ -1455,6 +1646,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                 c.kind === 'site' ? (
                   <ExternalRow
                     page={c.page}
+                    onDetails={() => setDetailsKey({ kind: 'child', guid: c.guid })}
                     onError={setError}
                     onCopy={handleCopy}
                     onOpen={() => handleExternal(() => reopenExternalSite(c.guid))}
@@ -1465,9 +1657,11 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                 ) : (
                   <OpenedAppRow
                     app={c.app}
+                    onDetails={() => setDetailsKey({ kind: 'child', guid: c.guid })}
                     onError={setError}
                     onOpen={() => handleExternal(() => reopenSecondaryWindow(c.guid))}
                     onFocus={() => handleExternal(() => focusSecondaryWindow(c.guid))}
+                    onReload={() => handleExternal(() => reloadSecondaryWindow(c.guid))}
                     onSuspend={() => handleExternal(() => suspendSecondaryWindow(c.guid))}
                     onClose={() => handleExternal(() => closeSecondaryWindow(c.guid))}
                   />
@@ -1480,8 +1674,10 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
 
       {resourceIdFor && <ResourceIdModal tab={resourceIdFor} onClose={() => setResourceIdFor(null)} onError={setError} />}
 
-      {liveDetailsFor && (
-        <WindowDetailsModal record={liveDetailsFor} onClose={() => setDetailsFor(null)} onError={setError} />
+      {details && (
+        <DetailsModal title={details.title} fields={details.fields} tags={details.tags} onClose={() => setDetailsKey(null)} onError={setError}>
+          {details.extra}
+        </DetailsModal>
       )}
 
       {movingTab && (

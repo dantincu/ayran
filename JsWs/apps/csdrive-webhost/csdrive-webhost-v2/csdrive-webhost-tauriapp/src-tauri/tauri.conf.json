@@ -13,8 +13,8 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' data: blob: ipc: http://ipc.localhost; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
-      "devCsp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self' data: blob: ipc: http://ipc.localhost ws://localhost:1420; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+      "csp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: csuser: http://csuser.localhost; font-src 'self' data:; media-src 'self' data: blob: csuser: http://csuser.localhost; connect-src 'self' data: blob: ipc: http://ipc.localhost; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
+      "devCsp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: csuser: http://csuser.localhost; font-src 'self' data:; media-src 'self' data: blob: csuser: http://csuser.localhost; connect-src 'self' data: blob: ipc: http://ipc.localhost ws://localhost:1420; frame-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {

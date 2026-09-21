@@ -121,11 +121,15 @@ interface TagListProps {
    * backend's `secondary-windows-changed` event. */
   onChanged?: () => void
   onError: (message: string) => void
+  /** Show the list — with its "add tag" button — even when there are no tags. Only the record's details popup does: a
+   * listing shows a row of tags for a record that has some, and nothing for one that has none (so no empty row). */
+  showWhenEmpty?: boolean
 }
 
 /** A tag's badges plus an "add tag" button: click a badge's text to edit it, drag
- * badges to reorder them (or use the arrows in the edit dialog), × to remove. */
-export function TagList({ guid, tags, className, onChanged, onError }: TagListProps) {
+ * badges to reorder them (or use the arrows in the edit dialog), × to remove.
+ * With no tags it shows nothing (unless `showWhenEmpty`): the first tag is added from the details of the record. */
+export function TagList({ guid, tags, className, onChanged, onError, showWhenEmpty = false }: TagListProps) {
   // `undefined` = dialog closed, `null` = adding a new tag, a number = editing that tag.
   const [dialog, setDialog] = useState<number | null | undefined>(undefined)
   const [dropTargetId, setDropTargetId] = useState<number | null>(null)
@@ -151,6 +155,8 @@ export function TagList({ guid, tags, className, onChanged, onError }: TagListPr
 
   const editing = typeof dialog === 'number' ? tags.find((t) => t.id === dialog) : undefined
   const editingIndex = editing ? tags.indexOf(editing) : -1
+
+  if (tags.length === 0 && !showWhenEmpty) return null
 
   return (
     <div className={className}>

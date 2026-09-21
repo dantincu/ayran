@@ -47,8 +47,9 @@ page JS ──▶ window.__TAURI_INTERNALS__.invoke ──▶ CsdriveBridge.invo
   host gets an error response** (a second wall behind the CSP). HTML documents get `<script src="/@csdrive/window.js">` (the bridge, Tauri's `window.__TAURI__` and the frozen-address guard) first in their `<head>`
   — injected by Rust while serving, so it works on every WebView version and before any page script (and the CSP's `script-src 'self'` covers it).
 - **Frozen address.** `shouldOverrideUrlLoading` asks Rust (`navigation_verdict`, the same function desktop uses): the window's own page (reload,
-  fragment) goes ahead, a link to the web goes to the OS browser, everything else is blocked. The init script disables `pushState`,
-  `replaceState` and `navigation`.
+  fragment) goes ahead, a link to the web goes to the OS browser, a request for another page of a web app's own storage is put to the
+  person (`link_navigation`: native boxes on the window's activity, see CLAUDE.md, "Links between pages of web apps") and everything else is
+  blocked. The init script turns `pushState` and `replaceState` into such a request and removes `navigation`.
 
 ## Lifecycle
 

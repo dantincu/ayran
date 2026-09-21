@@ -42,7 +42,7 @@ window.TabLib = (function () {
 
   // The address init_window_tab is told: this page's own address with `params` as its query string, which
   // identifies the resource the tab shows. The page's location itself never changes — a page can't change
-  // its address (history.pushState throws) — so this is a value, not a navigation.
+  // its address (history.pushState only *asks* the person to go to another page) — so this is a value, not a navigation.
   function urlFor(params) {
     const url = new URL(location.href)
     url.search = ''
@@ -147,6 +147,19 @@ window.TabLib = (function () {
     return invoke('open_external_site', { url: url })
   }
 
+  // ── Other pages, and the app's own clipboard ──
+  // openPage(path) opens another web page in a window of its own: `path` is relative to this page's own address (a leading
+  // slash: to the root of the folder or account this page is in). It resolves to the new window's guid.
+  function openPage(path) {
+    return invoke('open_related_web_app', { path: path })
+  }
+  // The app's own clipboard: one text, shared by every window of the app (not the system's clipboard).
+  var internalClipboard = {
+    get: function () { return invoke('internal_clipboard_get') },
+    set: function (text) { return invoke('internal_clipboard_set', { text: String(text) }) },
+    clear: function () { return invoke('internal_clipboard_clear') },
+  }
+
   // Registers this app's icon set (a plain object of resourceType -> SVG markup)
   // and arranges to report it whenever the backend asks — which happens once per
   // app_version this app ever passes to openTab/init_window_tab (including the
@@ -167,6 +180,8 @@ window.TabLib = (function () {
     onNavigate: onNavigate,
     openExternalSite: openExternalSite,
     onExternalSite: onExternalSite,
+    openPage: openPage,
+    internalClipboard: internalClipboard,
     updateTab: updateTab,
     registerIcons: registerIcons,
     applySnippets: applySnippets,

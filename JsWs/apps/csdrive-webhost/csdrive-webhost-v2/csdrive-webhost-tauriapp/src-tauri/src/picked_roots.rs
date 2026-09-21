@@ -122,6 +122,11 @@ async fn all(pool: &SqlitePool) -> Result<Vec<Remembered>, sqlx::Error> {
     sqlx::query_as::<_, Remembered>("SELECT id, path, label FROM picked_roots ORDER BY created_at, rowid").fetch_all(pool).await
 }
 
+/// The name of the picked folder `id` — what a person calls it — if it is remembered.
+pub async fn label_of(pool: &SqlitePool, id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT label FROM picked_roots WHERE id = ?1").bind(id).fetch_optional(pool).await.ok().flatten()
+}
+
 /// The folder's own name (or the whole path, for a drive root).
 fn label_for(path: &str) -> String {
     let trimmed = path.trim_end_matches(['/', '\\']);

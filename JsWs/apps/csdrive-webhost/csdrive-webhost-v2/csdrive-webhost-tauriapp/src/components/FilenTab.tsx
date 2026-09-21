@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { exportToDevice, isMobile, pickFilesFromDevice } from '../lib/platform'
-import { Cloud, Download, File, Folder, FolderPlus, LogOut, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
+import { Cloud, Download, File, Folder, FolderPlus, Info, LogOut, Navigation, Pencil, RefreshCw, Save, Trash2, Upload, UserPlus, X } from 'lucide-react'
+import DetailsModal, { type DetailField } from './DetailsModal'
+import GoToPathModal from './GoToPathModal'
 import IconButton from './IconButton'
 import Pagination from './Pagination'
 import { getAppState, setAppState } from '../lib/appState'
@@ -14,6 +16,7 @@ import {
   filenReaddir,
   filenRename,
   filenRm,
+  filenStat,
   filenWriteFile,
   listFilenAccounts,
   loginFilen,
@@ -23,6 +26,8 @@ import {
 } from '../lib/filen'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { writeUserFile } from '../lib/localFs'
+import { formatBytesExact } from '../lib/format'
+import { pathForInput } from '../lib/pathInput'
 
 /** Where the person was: the account and the folder in it. */
 const LOCATION_KEY = 'filenTab.location'
@@ -30,6 +35,10 @@ const LOCATION_KEY = 'filenTab.location'
 function joinFilenPath(base: string, name: string): string {
   return base === '/' ? `/${name}` : `${base}/${name}`
 }
+
+/** What the details popup is about: an entry of the folder, or the folder itself (whose id the listing doesn't carry, so it
+ * is asked for). */
+type Details = { kind: 'entry'; entry: FilenEntry } | { kind: 'here'; entry: FilenEntry | null }
 
 export default function FilenTab() {
   const [accounts, setAccounts] = useState<FilenAccount[]>([])
@@ -39,6 +48,9 @@ export default function FilenTab() {
   const [entries, setEntries] = useState<FilenEntry[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const [details, setDetails] = useState<Details | null>(null)
+  const [goingTo, setGoingTo] = useState(false)
 
   const [showAddForm, setShowAddForm] = useState(false)
   const [form, setForm] = useState({ email: '', password: '', twoFactorCode: '' })
@@ -249,6 +261,67 @@ export default function FilenTab() {
     }
   }
 
+  async function showDetails(target: { kind: 'entry'; entry: FilenEntry } | { kind: 'here' }) {
+    if (target.kind === 'entry') {
+      setDetails(target)
+      return
+    }
+    const opened: Details = { kind: 'here', entry: null }
+    setDetails(opened)
+    if (activeId == null) return
+    try {
+      const entry = await filenStat(activeId, path)
+      setDetails((current) => (current === opened ? { kind: 'here', entry } : current))
+    } catch {
+      // no id, then: the path is still shown
+    }
+  }
+
+  function detailFields(): { title: string; fields: DetailField[] } | null {
+    if (!details) return null
+    const account = accounts.find((a) => a.userId === activeId)
+    const entry = details.entry
+    const shownPath = details.kind === 'entry' ? joinFilenPath(path, details.entry.name) : path
+    const isDirectory = details.kind === 'here' ? true : details.entry.isDirectory
+    const fields: DetailField[] = [
+      { label: 'Name', value: details.kind === 'entry' ? details.entry.name : shownPath === '/' ? 'root' : (shownPath.split('/').pop() ?? '') },
+      { label: 'Kind', value: isDirectory ? 'Folder' : 'File', copy: false },
+      { label: 'Path', value: shownPath, mono: true },
+      { label: 'Account', value: account?.email ?? '' },
+      // The id is kept out of sight until asked for; it can be copied to either clipboard.
+      { label: 'Item id', value: entry?.id ?? '', mono: true, hidden: true },
+    ]
+    if (entry && !isDirectory && entry.size != null) fields.push({ label: 'Size', value: formatBytesExact(entry.size) })
+    if (entry?.mtimeMs != null) fields.push({ label: 'Modified', value: new Date(entry.mtimeMs).toLocaleString() })
+    return { title: isDirectory ? 'Folder in Filen' : 'File in Filen', fields }
+  }
+
+  /** "Go to a path": a folder of the account — or a file, whose folder is opened with the file focused. */
+  async function goToPath(segments: string[]): Promise<string | null> {
+    if (activeId == null) return 'No account is open.'
+    const target = '/' + segments.join('/')
+    if (target === '/') {
+      setPath('/')
+      return null
+    }
+    let found: FilenEntry
+    try {
+      found = await filenStat(activeId, target)
+    } catch {
+      return `There is nothing at ${target} in this account.`
+    }
+    if (found.isDirectory) {
+      setPath(target)
+    } else {
+      const cut = target.lastIndexOf('/')
+      pendingFocusRef.current = target.slice(cut + 1)
+      setPath(cut <= 0 ? '/' : target.slice(0, cut))
+    }
+    return null
+  }
+
+  const shownDetails = detailFields()
+
   const breadcrumbs = path === '/' ? [''] : ['', ...path.split('/').filter(Boolean)]
   const pageCount = Math.max(1, Math.ceil(entries.length / pageSize))
   const currentPage = Math.min(page, pageCount - 1)
@@ -368,6 +441,8 @@ export default function FilenTab() {
               })}
             </div>
             <div className="toolbar-actions">
+              <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
+              <IconButton icon={Info} label="Details of this folder" onClick={() => showDetails({ kind: 'here' })} />
               <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
               <IconButton icon={Upload} label="Upload from computer…" onClick={uploadFromComputer} />
               <IconButton icon={RefreshCw} label="Refresh" onClick={() => refreshDir(activeId, path)} />
@@ -406,6 +481,7 @@ export default function FilenTab() {
                       </button>
                     </td>
                     <td className="row-actions">
+                      <IconButton icon={Info} label="Details" onClick={() => showDetails({ kind: 'entry', entry })} />
                       {!entry.isDirectory && (
                         <>
                           <IconButton icon={Download} label="Export…" onClick={() => downloadToComputer(entry)} />
@@ -429,6 +505,17 @@ export default function FilenTab() {
             onPageSizeChange={setPageSize}
           />
         </>
+      )}
+
+      {shownDetails && <DetailsModal title={shownDetails.title} fields={shownDetails.fields} onClose={() => setDetails(null)} onError={setError} />}
+
+      {goingTo && (
+        <GoToPathModal
+          current={pathForInput(path)}
+          hint="A path in this Filen account — /folder/subfolder"
+          onGo={goToPath}
+          onClose={() => setGoingTo(false)}
+        />
       )}
     </div>
   )

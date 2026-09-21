@@ -44,6 +44,8 @@ export interface TabRecord {
   /** The web apps opened from this tab (a Notes tab): files of a folder or a Filen account, each in a window of
    * its own that is listed here — not among the apps. */
   openedApps: OpenedAppRecord[]
+  /** An open window is showing this tab now — so it has a page that can be reloaded. */
+  showing: boolean
 }
 
 /** A web app opened from a Notes tab, as listed under that tab. */
@@ -197,6 +199,16 @@ export async function focusSecondaryWindow(guid: string): Promise<void> {
   await invoke('focus_secondary_window', { guid })
 }
 
+/** Reloads the page an open window shows. */
+export async function reloadSecondaryWindow(guid: string): Promise<void> {
+  await invoke('reload_secondary_window', { guid })
+}
+
+/** Reloads a tab — possible while an open window is showing it. */
+export async function reloadTab(tabGuid: string): Promise<void> {
+  await invoke('reload_tab', { tabGuid })
+}
+
 export function onSecondaryWindowsChanged(callback: () => void): Promise<UnlistenFn> {
   return listen(EVENT_CHANGED, () => callback())
 }
@@ -301,6 +313,40 @@ export async function openFileAsWebApp(file: FileRef): Promise<string> {
   return invoke<string>('open_file_as_web_app', { file })
 }
 
+/** What Notes knows of the tab that follows a file's editor. */
+export interface SyncingTab {
+  tabGuid: string
+  /** The window shows it now. */
+  showing: boolean
+}
+
+/** Opens `file` (a page: a note's markdown…) as a web page in a **tab of this Notes window** and shows it. `sync`: the tab that
+ * follows the editor — one per file, brought back by a second call; otherwise a tab of its own. `newWindow`: in a window of its own
+ * instead (what an editor uses, so that it stays where it is). Notes only. */
+export async function openNoteTab(file: FileRef, sync: boolean, newWindow = false): Promise<string> {
+  return invoke<string>('open_note_tab', { file, sync, newWindow })
+}
+
+/** The tab of this window that follows `file`'s editor, if there is one. */
+export async function noteTabState(file: FileRef): Promise<SyncingTab | null> {
+  return invoke<SyncingTab | null>('note_tab_state', { file })
+}
+
+/** Shows, suspends (leaves, keeping it listed) or closes the tab that follows `file`'s editor. */
+export async function noteTabAction(file: FileRef, action: 'show' | 'suspend' | 'close'): Promise<void> {
+  await invoke('note_tab_action', { file, action })
+}
+
+/** Tells the windows that show `file` as a web app that it was saved: they reload. (Admin-app and system apps only.) */
+export async function notifyFileSaved(file: FileRef): Promise<void> {
+  await invoke('notify_file_saved', { file })
+}
+
+/** The address at which a system app's page loads `file` as a picture or media (see `lib/media.ts`). */
+export async function mediaUrl(file: FileRef): Promise<string> {
+  return invoke<string>('media_url', { file })
+}
+
 /** For a page that was opened from Notes: opens another file next to its own (`path` is relative to the page's),
  * listed under the same Notes tab. */
 export async function openRelatedWebApp(path: string): Promise<string> {
@@ -318,6 +364,12 @@ export async function openRelatedWebApp(path: string): Promise<string> {
  * `external-site-closed`. */
 export async function openExternalSite(url: string): Promise<string> {
   return invoke<string>('open_external_site', { url })
+}
+
+/** The admin-app asks to open a web address of a file it shows in the OS browser (there is no tab to list an external site
+ * under): the person is asked first, in a native box. Resolves to whether they agreed. */
+export async function openWebAddress(url: string): Promise<boolean> {
+  return invoke<boolean>('open_web_address', { url })
 }
 
 export interface ExternalSiteResponse {

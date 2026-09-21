@@ -30,14 +30,35 @@ export interface Location {
 }
 
 /** Bumped when the icon set below changes: the backend then asks the page for it again. */
-const APP_VERSION = 3
+const APP_VERSION = 4
 
-const RESOURCE_TYPES = { local: 'local', filen: 'filen', branch: 'branch', editing: 'editing', home: 'home', notebooks: 'notebooks' } as const
+const RESOURCE_TYPES = {
+  local: 'local',
+  filen: 'filen',
+  branch: 'branch',
+  editing: 'editing',
+  home: 'home',
+  notebooks: 'notebooks',
+  settings: 'settings',
+  notes: 'notes',
+  noteEdit: 'noteedit',
+  noteFiles: 'notefiles',
+} as const
 
 /** What a Notes tab shows: the home page, the page for managing notebooks, or the file manager (at a place; `null`: where
  * it was last). The resource id names it: `system:notes?v=home`, `system:notes?v=notebooks`, or — for the file manager —
  * the place's query (see `encodeLocation`). A tab that names nothing shows the home page. */
-export type Place = { view: 'home' } | { view: 'notebooks' } | { view: 'files'; location: Location | null }
+export type Place =
+  | { view: 'home' }
+  | { view: 'notebooks' }
+  | { view: 'settings' }
+  | { view: 'files'; location: Location | null }
+  /** The notes in a notebook's root folder or in a note's short folder (`folder`, relative to the source's root). */
+  | { view: 'notes'; sourceId: string; folder: string }
+  /** The dedicated page for editing a note's markdown. */
+  | { view: 'noteEdit'; sourceId: string; folder: string }
+  /** The explorer of a note's files (its `01` folder), at `path` inside it. */
+  | { view: 'noteFiles'; sourceId: string; folder: string; path: string }
 
 /** The place a resource id (or a page's query string) names, if it names one. */
 export function decodePlace(resourceId: string): Place | null {
@@ -45,6 +66,15 @@ export function decodePlace(resourceId: string): Place | null {
   const view = new URLSearchParams(query).get('v')
   if (view === 'home') return { view: 'home' }
   if (view === 'notebooks') return { view: 'notebooks' }
+  if (view === 'settings') return { view: 'settings' }
+  const params = new URLSearchParams(query)
+  const sourceId = params.get('s')
+  const folder = params.get('f')
+  if (sourceId && folder !== null) {
+    if (view === 'notes') return { view: 'notes', sourceId, folder }
+    if (view === 'noteEdit') return { view: 'noteEdit', sourceId, folder }
+    if (view === 'noteFiles') return { view: 'noteFiles', sourceId, folder, path: params.get('p') ?? '' }
+  }
   const location = decodeLocation(resourceId)
   return location ? { view: 'files', location } : null
 }
@@ -59,6 +89,10 @@ const ICONS: Record<string, string> = {
   editing: svg('<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'),
   home: svg('<path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'),
   notebooks: svg('<path d="M2 6h4"/><path d="M2 10h4"/><path d="M2 14h4"/><path d="M2 18h4"/><rect width="16" height="20" x="4" y="2" rx="2"/><path d="M16 2v20"/>'),
+  settings: svg('<path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>'),
+  notes: svg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>'),
+  noteedit: svg('<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z"/>'),
+  notefiles: svg('<path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>'),
   branch: svg('<line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>'),
 }
 
@@ -150,10 +184,36 @@ export async function registerTab(): Promise<Tab | null> {
   }
 }
 
+/** The address of a place of the note pages, as it goes in a resource id. */
+export function encodeNotePlace(place: Extract<Place, { view: 'notes' | 'noteEdit' | 'noteFiles' }>): string {
+  const params = new URLSearchParams({ v: place.view, s: place.sourceId, f: place.folder })
+  if (place.view === 'noteFiles' && place.path) params.set('p', place.path)
+  return params.toString()
+}
+
+/** Tells the window manager what a note page shows: `title` (a notebook's or a note's), the kind of page, and whether what
+ * the page holds has changes that aren't saved. */
+export async function reportNotePlace(
+  tab: Tab,
+  place: Extract<Place, { view: 'notes' | 'noteEdit' | 'noteFiles' }>,
+  title: string,
+  unsaved = false,
+): Promise<void> {
+  const what = place.view === 'notes' ? 'Notes' : place.view === 'noteEdit' ? 'Editing the note' : `Files${place.path ? ` · /${place.path}` : ''}`
+  const firstRow: TabText['firstRow'] = [{ text: title, bold: true }]
+  const secondRow: TabText['secondRow'] = [{ text: what }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]
+  const type = place.view === 'notes' ? RESOURCE_TYPES.notes : place.view === 'noteEdit' ? RESOURCE_TYPES.noteEdit : RESOURCE_TYPES.noteFiles
+  try {
+    await updateTabResource(tab.tabGuid, { firstRow, secondRow }, type, `system:notes?${encodeNotePlace(place)}`)
+  } catch {
+    // The tab may have been closed from the window manager meanwhile — nothing to report to.
+  }
+}
+
 /** Tells the window manager that the tab shows the home page or the page for managing notebooks. */
-export async function reportView(tab: Tab, view: 'home' | 'notebooks'): Promise<void> {
-  const firstRow: TabText['firstRow'] = [{ text: view === 'home' ? 'Notes' : 'Notebooks', bold: true }]
-  const secondRow: TabText['secondRow'] = [{ text: view === 'home' ? 'Home' : 'Manage notebooks' }]
+export async function reportView(tab: Tab, view: 'home' | 'notebooks' | 'settings'): Promise<void> {
+  const firstRow: TabText['firstRow'] = [{ text: view === 'home' ? 'Notes' : view === 'settings' ? 'Notes' : 'Notebooks', bold: true }]
+  const secondRow: TabText['secondRow'] = [{ text: view === 'home' ? 'Home' : view === 'settings' ? 'Settings' : 'Manage notebooks' }]
   try {
     await updateTabResource(tab.tabGuid, { firstRow, secondRow }, RESOURCE_TYPES[view], `system:notes?v=${view}`)
   } catch {

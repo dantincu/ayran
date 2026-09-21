@@ -1,21 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import {
+  ArrowLeft,
   ClipboardPaste,
   Cloud,
   CloudOff,
   Copy,
   Download,
   Eraser,
+  Eye,
   File as FileIcon,
   FileCheck,
   FilePlus,
   Folder,
   FolderPlus,
+  FolderSearch,
   GitBranch,
   GitBranchPlus,
   GitMerge,
   House,
+  Info,
+  LayoutGrid,
+  List,
+  Navigation,
   AppWindow,
   ListChecks,
   Lock,
@@ -29,14 +36,28 @@ import {
   Upload,
   X,
 } from 'lucide-react'
+import CodeEditor from '../../components/CodeEditor'
+import EditorPanel from '../../components/EditorPanel'
+import DetailsModal, { type DetailField } from '../../components/DetailsModal'
+import GoToPathModal from '../../components/GoToPathModal'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
+import MediaViewer, { type MediaItem } from '../../components/MediaViewer'
+import { type MenuItem } from '../../components/ContextMenu'
 import Pagination from '../../components/Pagination'
+import { mediaKindOf } from '../../lib/media'
+import ThumbnailGrid from './ThumbnailGrid'
+import { useNotesSettings } from './settings'
 import { exportPathToDevice, isMobile, pickDeviceFiles } from '../../lib/platform'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
 import { joinRelative } from '../../lib/localFs'
+import { formatBytesExact } from '../../lib/format'
+import { pathForInput } from '../../lib/pathInput'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
+import { openExternalSite } from '../../lib/secondaryWindows'
+import { findMarkdown, readNote } from './noteModel'
+import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { getAppState, setAppState } from '../../lib/appState'
 import { offsetOfPage, pageOfOffset } from '../../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
@@ -48,6 +69,7 @@ import {
   isSameOrWithin,
   LOCAL_PREFIX,
   localSource,
+  scopedSource,
   uniqueName,
   type BranchChange,
   type BranchInfo,
@@ -125,6 +147,16 @@ function decodeText(bytes: Uint8Array): string | null {
   }
 }
 
+/** What the details popup is about: an entry of the folder shown, or the folder itself — with what had to be asked for. */
+interface DetailsOf {
+  entry: Entry | null
+  path: string
+  isDirectory: boolean
+  size: number | null
+  mtimeMs: number | null
+  id: string | null
+}
+
 interface Clipboard {
   source: FileSource
   mode: 'copy' | 'cut'
@@ -147,7 +179,29 @@ interface Editing {
 /** The folder a path is in (paths have no leading slash; the root is `''`). */
 const parentPath = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 
-export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Tab | null; initial: Location | null; onHome: () => void }) {
+/** A file explorer that works inside one folder of a source and nowhere else (a note's files, see `NoteFilesPage`): what it shows
+ * is that folder, its breadcrumbs start at `label`, Back leaves it, and each entry can be shown in the File Manager. */
+export interface Scope {
+  sourceId: string
+  /** The folder, relative to the source's root. */
+  root: string
+  label: string
+  onBack: () => void
+  /** Shows `path` (relative to `root`) in the File Manager, at its place in the whole source. */
+  onOpenInFileManager: (path: string) => void
+}
+
+export default function NotesApp({
+  tab: initialTab,
+  initial,
+  onHome,
+  scope,
+}: {
+  tab: Tab | null
+  initial: Location | null
+  onHome: () => void
+  scope?: Scope
+}) {
   // The tab this page is showing: the one it registered as, then whichever the user switches to.
   const [tab, setTab] = useState<Tab | null>(initialTab)
   const [roots, setRoots] = useState<FileRoot[]>([])
@@ -186,8 +240,13 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
   // opened or left with the keys to start from.
   const [kbdFocus, setKbdFocus] = useState(-1)
   const pendingFocusRef = useRef<string | 'first' | null>(null)
+  const [details, setDetails] = useState<DetailsOf | null>(null)
+  const [goingTo, setGoingTo] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  /** The media viewer, when it is open: the media of the folder, and which one is shown first. */
+  const [viewer, setViewer] = useState<{ items: MediaItem[]; start: number } | null>(null)
+  const { settings, change: changeSettings } = useNotesSettings()
   const [clipboard, setClipboard] = useState<Clipboard | null>(null)
 
   // ── Sources ──
@@ -264,6 +323,7 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
   useEffect(
     () =>
       subscribeNavigate((next) => {
+        if (scope) return // the page that owns the tab chooses what it shows
         const sources = sourcesRef.current
         if (!sources) {
           earlyNavigationRef.current = next
@@ -278,10 +338,15 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
 
   const account = useMemo(() => accounts.find((a) => `${FILEN_PREFIX}${a.userId}` === sourceId) ?? null, [accounts, sourceId])
   const source = useMemo<FileSource | null>(() => {
-    if (account) return filenSource(account, branch)
-    const root = roots.find((r) => `${LOCAL_PREFIX}${r.id}` === sourceId)
-    return root ? localSource(root) : null
-  }, [account, branch, roots, sourceId])
+    let base: FileSource | null
+    if (account) base = filenSource(account, branch)
+    else {
+      const root = roots.find((r) => `${LOCAL_PREFIX}${r.id}` === sourceId)
+      base = root ? localSource(root) : null
+    }
+    return base && scope ? scopedSource(base, scope.root, scope.label) : base
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, branch, roots, sourceId, scope?.root, scope?.label])
 
   const currentBranch = branches.find((b) => b.index === branch) ?? null
 
@@ -357,7 +422,7 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
   // Tell the window manager (and the address, and next start) where we are — including how far into the
   // folder's listing, as the number of records skipped so it means the same under any page size.
   useEffect(() => {
-    if (!ready || !source || restoringPage) return
+    if (!ready || !source || restoringPage || scope) return // a scoped explorer is not a place of the file manager
     const location: Location = {
       sourceId,
       branch,
@@ -505,13 +570,30 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
     if (sourceId === `${LOCAL_PREFIX}${root.id}`) selectSource(`${LOCAL_PREFIX}user`)
   }
 
-  async function openEntry(entry: Entry) {
+  /** Opens the picture, video or sound in the viewer, with the folder's other media a step away. */
+  async function viewMedia(entry: Entry, folder: string = path) {
+    if (!source?.fileRef) return
+    try {
+      const listed = folder === path ? entries : (await source.list(folder)).entries
+      const items: MediaItem[] = listed.flatMap((e) => {
+        const kind = e.isDirectory ? null : mediaKindOf(e.name)
+        return kind && source.fileRef ? [{ name: e.name, kind, file: source.fileRef(joinRelative(folder, e.name)) }] : []
+      })
+      const start = items.findIndex((item) => item.name === entry.name)
+      if (start >= 0) setViewer({ items, start })
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function openEntry(entry: Entry, folder: string = path, asText = false) {
     if (!source) return
-    const rel = joinRelative(path, entry.name)
+    const rel = joinRelative(folder, entry.name)
     if (entry.isDirectory) {
       setPath(rel)
       return
     }
+    if (!asText && mediaKindOf(entry.name) && source.fileRef) return viewMedia(entry, folder)
     setError(null)
     const size = entry.size ?? meta[entry.name]?.size ?? (await source.stat?.(rel).catch(() => null))?.size ?? null
     if (size !== null && size > MAX_EDIT_BYTES) {
@@ -562,6 +644,7 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
         }
       }
       await editedSource.write(filePath, new TextEncoder().encode(content))
+      editedSource.notifySaved?.(filePath).catch(() => {}) // windows that show the file as a web app reload
       if (overwrite) await editedSource.rebase?.(filePath)
       const saved = (await editedSource.version?.(filePath).catch(() => null)) ?? null
       setEditing((e) => (e && e.path === filePath ? { ...e, dirty: false, version: saved ?? e.version } : e))
@@ -875,7 +958,7 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
     setFocused: setKbdFocus,
     pageSize,
     page: currentPage,
-    enabled: ready && !editing && !changes && !conflict && renaming === null,
+    enabled: ready && !editing && !changes && !conflict && renaming === null && !details && !goingTo,
     onOpen: (i) => {
       const entry = entries[i]
       if (!entry) return
@@ -888,6 +971,153 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
       setPath(parentPath(path))
     },
   })
+
+  // ── "Open link" in the editor ──
+
+  /** A web address is offered to the person as an external web site of this window (the same box as for a web app's); a
+   * path — relative to the file, or absolute from the root of its folder or account — opens what it names: a page (html,
+   * markdown) as a web app, another file in the editor (the changes held there must be saved first: it takes their
+   * place), a folder in the listing. */
+  async function openLinkFromEditor(link: LinkHit) {
+    if (!editing) return
+    if (link.kind === 'web') {
+      await openExternalSite(link.target)
+      return
+    }
+    const target = resolveLinkedPath(editing.path, link.target)
+    if (!target) throw new Error('That path leaves the folder.')
+    if (isNoteQuery(target.query)) throw new Error("Notes can't be opened from a link yet.")
+    const cut = target.path.lastIndexOf('/')
+    const folder = cut < 0 ? '' : target.path.slice(0, cut)
+    const name = target.path.slice(cut + 1)
+    const found = target.path === '' ? null : (await editing.source.list(folder)).entries.find((e) => e.name === name)
+    if (target.path !== '' && !found) throw new Error(`There is nothing at ${pathForInput(target.path)}.`)
+    if (found && !found.isDirectory && /\.(html?|md|markdown)$/i.test(name) && editing.source.openAsWebApp) {
+      await editing.source.openAsWebApp(target.path)
+      return
+    }
+    if (editing.dirty) throw new Error('Save the changes first — the linked file takes this one\'s place in the editor.')
+    writeDraft(draftKey(), null)
+    setEditing(null)
+    if (!found || found.isDirectory) {
+      setPath(target.path)
+    } else {
+      setPath(folder)
+      await openEntry(found, folder)
+    }
+  }
+
+  // ── Details and "Go to a path" ──
+
+  /** Opens the details of an entry (`null`: the folder shown). What the listing doesn't say — a local file's size and date,
+   * a Filen folder's id — is asked for, and fills in when it arrives. */
+  /** What the three dots of a card (in the thumbnails view) offer for `entry`. */
+  function menuFor(entry: Entry): MenuItem[] {
+    const media = !entry.isDirectory && mediaKindOf(entry.name) !== null
+    const items: MenuItem[] = [{ label: entry.isDirectory ? 'Open the folder' : media ? 'View' : 'Open', icon: entry.isDirectory ? Folder : media ? Eye : FileIcon, onSelect: () => openEntry(entry) }]
+    if (!entry.isDirectory && /\.svg$/i.test(entry.name)) items.push({ label: 'Edit as text', icon: Pencil, onSelect: () => openEntry(entry, path, true) })
+    if (scope) items.push({ label: 'Open in File Manager', icon: FolderSearch, onSelect: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) })
+    items.push({ label: 'Details', icon: Info, onSelect: () => showDetails(entry), separated: true })
+    if (!entry.isDirectory) items.push({ label: 'Export', icon: Download, onSelect: () => exportEntry(entry) })
+    items.push({ label: 'Copy', icon: Copy, onSelect: () => clip(entry, 'copy') })
+    items.push({ label: 'Cut', icon: Scissors, onSelect: () => clip(entry, 'cut') })
+    items.push({ label: 'Rename', icon: Pencil, onSelect: () => startRename(entry) })
+    items.push({ label: 'Delete', icon: Trash2, danger: true, onSelect: () => deleteEntry(entry), separated: true })
+    return items
+  }
+
+  async function showDetails(entry: Entry | null) {
+    if (!source) return
+    const rel = entry ? joinRelative(path, entry.name) : path
+    const opened: DetailsOf = {
+      entry,
+      path: rel,
+      isDirectory: entry ? entry.isDirectory : true,
+      size: entry ? (entry.size ?? meta[entry.name]?.size ?? null) : null,
+      mtimeMs: entry ? (entry.mtimeMs ?? meta[entry.name]?.mtimeMs ?? null) : null,
+      id: entry?.id ?? null,
+    }
+    setDetails(opened)
+    try {
+      let filled = opened
+      if (source.stat && (opened.size === null || opened.mtimeMs === null) && rel !== '') {
+        const info = await source.stat(rel)
+        filled = { ...filled, size: filled.isDirectory ? null : (filled.size ?? info.size), mtimeMs: filled.mtimeMs ?? info.mtimeMs }
+      }
+      if (account && entry === null && rel !== '') {
+        // A folder's own id is in its parent's listing (the cache has it: no trip to Filen).
+        const inParent = (await source.list(parentPath(rel))).entries.find((e) => e.name === rel.slice(rel.lastIndexOf('/') + 1))
+        filled = { ...filled, id: inParent?.id ?? null }
+      }
+      if (filled !== opened) setDetails((current) => (current === opened ? filled : current))
+    } catch {
+      // nothing more to say than the listing did
+    }
+  }
+
+  function detailFields(): DetailField[] {
+    if (!details || !source) return []
+    const name = details.entry ? details.entry.name : details.path === '' ? source.label : details.path.slice(details.path.lastIndexOf('/') + 1)
+    const fields: DetailField[] = [
+      { label: 'Name', value: name },
+      { label: 'Kind', value: details.isDirectory ? 'Folder' : 'File', copy: false },
+      { label: 'Path', value: pathForInput(details.path), mono: true },
+      { label: account ? 'Account' : 'In', value: source.label },
+    ]
+    if (account) {
+      if (currentBranch) fields.push({ label: 'Branch', value: currentBranch.name })
+      // The id is kept out of sight until asked for; it can be copied to either clipboard.
+      fields.push({ label: 'Item id', value: details.id ?? '', mono: true, hidden: true })
+    }
+    if (details.size !== null && !details.isDirectory) fields.push({ label: 'Size', value: formatBytesExact(details.size) })
+    if (details.mtimeMs !== null) fields.push({ label: 'Modified', value: formatTime(details.mtimeMs) })
+    const e = details.entry
+    if (account && e) {
+      const state = [e.cached && !e.isDirectory ? 'cached' : '', e.locked ? 'locked' : '', e.changed ? (e.changed === 'mkdir' ? 'new folder in this branch' : e.changed === 'checkout' ? 'checked out in this branch' : 'changed in this branch') : '']
+        .filter(Boolean)
+        .join(', ')
+      if (state) fields.push({ label: 'State', value: state, copy: false })
+    }
+    return fields
+  }
+
+  /** "Go to a path": a folder of this source — or a file, whose folder is opened with the file focused. */
+  async function goToPath(segments: string[], query: string | null = null): Promise<string | null> {
+    if (!source) return 'Nothing is open.'
+    const rel = segments.join('/')
+    if (rel === '') {
+      setPath('')
+      return null
+    }
+    // A note's address (`/Notebook/001?note`): the note itself — its markdown as a web app.
+    if (isNoteQuery(query)) {
+      const note = await readNote(source, rel)
+      const markdown = note ? await findMarkdown(source, rel) : null
+      if (!note || !markdown) return `There is no note at ${pathForInput(rel)}.`
+      if (!source.openAsWebApp) return "This kind of place can't open a note as a web app."
+      await source.openAsWebApp(markdown)
+      return null
+    }
+    const cut = rel.lastIndexOf('/')
+    const name = rel.slice(cut + 1)
+    let found: Entry | undefined
+    try {
+      found = (await source.list(cut < 0 ? '' : rel.slice(0, cut))).entries.find((e) => e.name === name)
+    } catch {
+      found = undefined
+    }
+    if (!found) return `There is nothing at ${pathForInput(rel)} in ${source.label}${currentBranch ? ` (branch "${currentBranch.name}")` : ''}.`
+    if (found.isDirectory) {
+      setPath(rel)
+    } else {
+      // A file: the view its own kind has — the editor, for a text file — in its folder.
+      const folder = cut < 0 ? '' : rel.slice(0, cut)
+      pendingFocusRef.current = name
+      setPath(folder)
+      await openEntry(found, folder)
+    }
+    return null
+  }
 
   // ── Rendering ──
 
@@ -902,14 +1132,16 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
         <div className="tab-panel files-tab">
           <div className="root-switcher">
             <IconButton
-              icon={House}
-              label="Notes home"
+              icon={scope ? ArrowLeft : House}
+              label={scope ? 'Back to the note' : 'Notes home'}
               onClick={() => {
                 flushDraft() // what wasn't saved is kept as a draft, as when leaving for another tab
-                onHome()
+                if (scope) scope.onBack()
+                else onHome()
               }}
             />
-            {roots.map((root) => {
+            {scope && <strong>{scope.label}</strong>}
+            {!scope && roots.map((root) => {
               const id = `${LOCAL_PREFIX}${root.id}`
               return (
                 <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`}>
@@ -924,8 +1156,8 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
                 </span>
               )
             })}
-            <IconButton icon={FolderPlus} label="Add folder…" onClick={addFolder} />
-            {accounts.map((a) => {
+            {!scope && <IconButton icon={FolderPlus} label="Add folder…" onClick={addFolder} />}
+            {!scope && accounts.map((a) => {
               const id = `${FILEN_PREFIX}${a.userId}`
               return (
                 <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`}>
@@ -935,10 +1167,10 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
                 </span>
               )
             })}
-            {accounts.length === 0 && <span className="muted">Connect a Filen account in the admin-app's Filen.io tab to see it here.</span>}
+            {!scope && accounts.length === 0 && <span className="muted">Connect a Filen account in the admin-app's Filen.io tab to see it here.</span>}
           </div>
 
-          {account && (
+          {account && !scope && (
             <div className="notes-filen-panel">
               <div className="notes-panel-row">
                 <label className="notes-field">
@@ -1006,6 +1238,13 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
               })}
             </div>
             <div className="toolbar-actions">
+              <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
+              <IconButton
+                icon={settings.viewThumbnails ? List : LayoutGrid}
+                label={settings.viewThumbnails ? 'View as a list' : 'View thumbnails'}
+                onClick={() => changeSettings({ viewThumbnails: !settings.viewThumbnails })}
+              />
+              <IconButton icon={Info} label="Details of this folder" onClick={() => showDetails(null)} />
               <IconButton icon={FilePlus} label="New file" onClick={createFile} />
               <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
               <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
@@ -1018,7 +1257,26 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
           {notice && <div className="status-banner">{notice}</div>}
           {loading && <div className="muted">Loading…</div>}
 
-          {!loading && (
+          {!loading && settings.viewThumbnails && source && (
+            <ThumbnailGrid
+              source={source}
+              path={path}
+              entries={pagedEntries}
+              meta={meta}
+              firstIndex={currentPage * pageSize}
+              focused={kbdFocus}
+              onFocus={setKbdFocus}
+              onOpen={(entry) => openEntry(entry)}
+              menuFor={menuFor}
+              renaming={
+                renaming === null
+                  ? null
+                  : { name: renaming, value: renameValue, onChange: setRenameValue, onCommit: () => commitRename(renaming), onCancel: () => setRenaming(null) }
+              }
+            />
+          )}
+
+          {!loading && !settings.viewThumbnails && (
             <table className="file-table">
               <thead>
                 <tr>
@@ -1077,6 +1335,10 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
                       <td className="muted">{!entry.isDirectory && size !== null ? formatBytes(size) : ''}</td>
                       <td className="muted">{mtimeMs !== null ? formatTime(mtimeMs) : ''}</td>
                       <td className="row-actions">
+                        <IconButton icon={Info} label="Details" onClick={() => showDetails(entry)} />
+                        {scope && <IconButton icon={FolderSearch} label="Open in File Manager" onClick={() => scope.onOpenInFileManager(joinRelative(path, entry.name))} />}
+                        {!entry.isDirectory && mediaKindOf(entry.name) && <IconButton icon={Eye} label="View" onClick={() => openEntry(entry)} />}
+                        {!entry.isDirectory && /\.svg$/i.test(entry.name) && <IconButton icon={Pencil} label="Edit as text" onClick={() => openEntry(entry, path, true)} />}
                         {!entry.isDirectory && source?.openAsWebApp && /\.(html?|md|markdown)$/i.test(entry.name) && (
                           <IconButton icon={AppWindow} label="Open as web app — in a window of its own, listed under this tab" onClick={() => openAsWebApp(entry)} />
                         )}
@@ -1110,22 +1372,44 @@ export default function NotesApp({ tab: initialTab, initial, onHome }: { tab: Ta
         </div>
       </main>
 
+      {viewer && <MediaViewer items={viewer.items} start={viewer.start} onClose={() => setViewer(null)} />}
+
       {editing && (
-        <div className="editor-overlay">
-          <div className="editor-panel">
-            <div className="editor-header">
-              <strong>
-                {editing.source.label} · {editing.path}
-              </strong>
-              <div>
-                {editing.source.kind === 'filen' && <IconButton icon={GitBranchPlus} label="New branch… — carry on in a branch of the account" onClick={newBranchFromEditor} />}
-                <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
-                <IconButton icon={X} label="Close" onClick={closeEditor} />
-              </div>
-            </div>
-            <textarea value={editing.content} onChange={(e) => setEditing({ ...editing, content: e.target.value, dirty: true })} spellCheck={false} />
-          </div>
-        </div>
+        <EditorPanel
+          title={`${editing.source.label} · ${editing.path}`}
+          actions={
+            <>
+              {editing.source.kind === 'filen' && <IconButton icon={GitBranchPlus} label="New branch… — carry on in a branch of the account" onClick={newBranchFromEditor} />}
+              <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
+            </>
+          }
+          onClose={closeEditor}
+        >
+          <CodeEditor
+            value={editing.content}
+            fileName={editing.path}
+            onChange={(content) => setEditing({ ...editing, content, dirty: true })}
+            onOpenLink={openLinkFromEditor}
+          />
+        </EditorPanel>
+      )}
+
+      {details && (
+        <DetailsModal
+          title={details.isDirectory ? (account ? 'Folder in Filen' : 'Folder') : account ? 'File in Filen' : 'File'}
+          fields={detailFields()}
+          onClose={() => setDetails(null)}
+          onError={setError}
+        />
+      )}
+
+      {goingTo && (
+        <GoToPathModal
+          current={pathForInput(path)}
+          hint={`A path in ${rootLabel}${currentBranch ? ` (branch "${currentBranch.name}")` : ''} — /folder/subfolder`}
+          onGo={goToPath}
+          onClose={() => setGoingTo(false)}
+        />
       )}
 
       {conflict && editing && (

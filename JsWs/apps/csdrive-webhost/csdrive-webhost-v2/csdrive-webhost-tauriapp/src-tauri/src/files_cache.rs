@@ -69,6 +69,8 @@ const MAX_LOCAL_NAME: usize = 120;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteEntry {
+    /// The storage's own id for it, when it has one (Filen's uuid).
+    pub id: Option<String>,
     pub name: String,
     pub is_directory: bool,
     pub size: Option<u64>,
@@ -101,7 +103,7 @@ impl Remote for FilenRemote {
         Ok(crate::filen::ops::readdir(&self.0, path)
             .await?
             .into_iter()
-            .map(|e| RemoteEntry { name: e.name, is_directory: e.is_directory, size: e.size, mtime_ms: e.mtime_ms })
+            .map(|e| RemoteEntry { id: Some(e.id), name: e.name, is_directory: e.is_directory, size: e.size, mtime_ms: e.mtime_ms })
             .collect())
     }
     async fn download(&self, path: &str, sink: &mut (dyn FnMut(&[u8]) -> Result<(), String> + Send)) -> Result<(), String> {
@@ -132,6 +134,8 @@ impl Remote for FilenRemote {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CacheEntry {
+    /// Filen's id for it (its uuid) — none for something that only exists in a branch so far.
+    pub id: Option<String>,
     pub name: String,
     pub is_directory: bool,
     pub size: Option<u64>,
@@ -327,6 +331,41 @@ fn allocate_local_name(name: &str, taken: &HashSet<String>) -> String {
     candidate
 }
 
+/// The start of the name of the thumbnail file of `path` (what every version of it shares): its name made safe, and a dot.
+fn thumb_prefix(path: &str) -> String {
+    format!("{}.", mirror_name(name_of(path)))
+}
+
+/// The thumbnail file of the version (`mtime_ms`, `size`) of `path` under `root`: laid out like the files themselves, named
+/// `<name>.<modified>-<size>.jpg`, so a changed file simply has no thumbnail until one is made for its new version.
+fn thumb_file(root: &Path, path: &str, mtime_ms: u64, size: u64) -> PathBuf {
+    let mut file = root.to_path_buf();
+    let names: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    for folder in names.iter().take(names.len().saturating_sub(1)) {
+        file.push(mirror_name(folder));
+    }
+    file.push(format!("{}{mtime_ms}-{size}.jpg", thumb_prefix(path)));
+    file
+}
+
+/// Whether `name` is a thumbnail of the file whose thumbnails start with `prefix` (`<name>.`): what follows is exactly
+/// `<digits>-<digits>.jpg`, so a file called `a.b` doesn't lose its thumbnails to one called `a`.
+fn is_thumb_of(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix).and_then(|r| r.strip_suffix(".jpg")) else { return false };
+    matches!(rest.split_once('-'), Some((m, s)) if !m.is_empty() && !s.is_empty() && m.bytes().all(|b| b.is_ascii_digit()) && s.bytes().all(|b| b.is_ascii_digit()))
+}
+
+fn remove_older_thumbs(folder: &Path, prefix: &str, keep: String) {
+    if let Ok(entries) = std::fs::read_dir(folder) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name != keep && is_thumb_of(&name, prefix) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
 /// `filen@@<email>@@<account id>` — the account's full-folder-name part (see the pairs strategy).
 pub fn account_part(email: &str, user_id: i64) -> String {
     let tail = format!("@@{user_id}");
@@ -354,6 +393,7 @@ pub struct Cache {
 
 #[derive(sqlx::FromRow, Clone, Debug)]
 struct EntryRow {
+    remote_id: Option<String>,
     path: String,
     name: String,
     is_dir: i64,
@@ -365,7 +405,7 @@ struct EntryRow {
 }
 
 /// The columns of an entries row, as EntryRow reads them (with whether the file is locked).
-const ENTRY_COLUMNS: &str = "path, name, is_dir, size, mtime_ms, local_name, content_at,
+const ENTRY_COLUMNS: &str = "remote_id, path, name, is_dir, size, mtime_ms, local_name, content_at,
     EXISTS(SELECT 1 FROM file_locks l WHERE l.user_id = entries.user_id AND l.path = entries.path) AS locked";
 
 #[derive(sqlx::FromRow, Clone, Debug)]
@@ -406,6 +446,8 @@ impl Cache {
         let cache = Self::with_pool(pool, files_dir.to_path_buf(), Arc::new(now_real)).await?;
         cache.remove_leftover_uploads();
         cache.keep_pairs_marked();
+        let _ = std::fs::create_dir_all(cache.t_dir());
+        let _ = std::fs::create_dir_all(cache.tb_dir());
         Ok(cache)
     }
 
@@ -418,6 +460,13 @@ impl Cache {
             let _ = NUMBERING.repair(&account.short_dir); // the account's branches
         }
         let _ = NUMBERING.repair(&b);
+        // The thumbnails' folders follow the same rule.
+        let _ = NUMBERING.repair(&self.t_dir());
+        let tb = self.tb_dir();
+        for (account, _) in NUMBERING.list(&tb).unwrap_or_default() {
+            let _ = NUMBERING.repair(&account.short_dir);
+        }
+        let _ = NUMBERING.repair(&tb);
     }
 
     /// An upload in flight when the app stopped left its temporary file behind: they all go.
@@ -432,7 +481,7 @@ impl Cache {
     pub async fn with_pool(pool: SqlitePool, root: PathBuf, clock: Clock) -> Result<Self, String> {
         for statement in [
             "CREATE TABLE IF NOT EXISTS accounts (user_id INTEGER PRIMARY KEY, email TEXT NOT NULL, pair_index INTEGER NOT NULL, ttl_secs INTEGER, created_at INTEGER NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS entries (user_id INTEGER NOT NULL, path TEXT NOT NULL, parent TEXT NOT NULL, name TEXT NOT NULL, is_dir INTEGER NOT NULL, size INTEGER, mtime_ms INTEGER, local_name TEXT NOT NULL, fetched_at INTEGER NOT NULL, content_at INTEGER, PRIMARY KEY (user_id, path))",
+            "CREATE TABLE IF NOT EXISTS entries (user_id INTEGER NOT NULL, path TEXT NOT NULL, parent TEXT NOT NULL, name TEXT NOT NULL, is_dir INTEGER NOT NULL, size INTEGER, mtime_ms INTEGER, local_name TEXT NOT NULL, fetched_at INTEGER NOT NULL, content_at INTEGER, remote_id TEXT, PRIMARY KEY (user_id, path))",
             "CREATE INDEX IF NOT EXISTS entries_parent ON entries (user_id, parent)",
             "CREATE TABLE IF NOT EXISTS listings (user_id INTEGER NOT NULL, path TEXT NOT NULL, fetched_at INTEGER NOT NULL, PRIMARY KEY (user_id, path))",
             "CREATE TABLE IF NOT EXISTS branches (user_id INTEGER NOT NULL, pair_index INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (user_id, pair_index))",
@@ -443,6 +492,11 @@ impl Cache {
             "CREATE TABLE IF NOT EXISTS file_locks (user_id INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY (user_id, path))",
         ] {
             sqlx::query(statement).execute(&pool).await.map_err(sql)?;
+        }
+        // `remote_id` (Filen's id for the entry) was added later: a plain nullable column, filled in as listings are fetched again.
+        let has_remote_id: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('entries') WHERE name = 'remote_id'").fetch_one(&pool).await.map_err(sql)?;
+        if has_remote_id == 0 {
+            sqlx::query("ALTER TABLE entries ADD COLUMN remote_id TEXT").execute(&pool).await.map_err(sql)?;
         }
         Ok(Self { pool, root, clock, locks: StdMutex::new(HashMap::new()) })
     }
@@ -469,6 +523,94 @@ impl Cache {
 
     fn b_dir(&self) -> PathBuf {
         self.root.join(crate::layout::FILES_BRANCHES_FOLDER)
+    }
+
+    fn t_dir(&self) -> PathBuf {
+        self.root.join(crate::layout::FILES_THUMBNAILS_FOLDER)
+    }
+
+    fn tb_dir(&self) -> PathBuf {
+        self.root.join(crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER)
+    }
+
+    // ── Thumbnails ───────────────────────────────────────────────────────────
+
+    /// The folder that holds the thumbnails of the account's own files, or of one of its branches' files (`files/t/NNN` and
+    /// `files/tb/NNN/MMM`, each with its readable half beside it, like the folders of the contents and of the branches). `None`
+    /// when it doesn't exist and `make` is off.
+    async fn thumb_root(&self, user_id: i64, branch: Option<i64>, make: bool) -> Result<Option<PathBuf>, String> {
+        let part = account_part(&self.account_info(user_id).await?.email, user_id);
+        let parent = if branch.is_some() { self.tb_dir() } else { self.t_dir() };
+        let account = if make { Some(NUMBERING.ensure(&parent, &part).map_err(io)?) } else { NUMBERING.find(&parent, &part).map_err(io)? };
+        let Some(account) = account else { return Ok(None) };
+        let Some(branch) = branch else { return Ok(Some(account.short_dir)) };
+        self.branch_exists(user_id, branch).await?;
+        let short = account.short_dir.join(NUMBERING.short_name(branch as u32));
+        if make {
+            let name = self.branch_name(user_id, branch).await?;
+            let marker = account.short_dir.join(NUMBERING.full_name(branch as u32, &name));
+            std::fs::create_dir_all(&short).map_err(io)?;
+            std::fs::create_dir_all(&marker).map_err(io)?;
+            let keep = marker.join(folder_pairs::KEEP_FILE);
+            if !keep.exists() {
+                std::fs::write(keep, folder_pairs::KEEP_CONTENT).map_err(io)?;
+            }
+        }
+        Ok(short.is_dir().then_some(short))
+    }
+
+    /// The thumbnail of `path` (a JPEG) as it was made for the version of the file with this modification time and size — none
+    /// when there isn't one. In a branch, a file the branch has not changed is looked for among the account's own.
+    pub async fn thumb_get(&self, user_id: i64, branch: Option<i64>, path: &str, mtime_ms: u64, size: u64) -> Result<Option<Vec<u8>>, String> {
+        let path = norm_path(path)?;
+        let mut places = vec![branch];
+        if branch.is_some() && !self.changed_in_branch(user_id, branch.unwrap(), &path).await? {
+            places = vec![None];
+        }
+        for place in places {
+            if let Some(root) = self.thumb_root(user_id, place, false).await? {
+                if let Ok(bytes) = std::fs::read(thumb_file(&root, &path, mtime_ms, size)) {
+                    return Ok(Some(bytes));
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Keeps `bytes` (a JPEG) as the thumbnail of this version of `path`; older versions' thumbnails of it are removed. A file the
+    /// branch has changed keeps its thumbnail with the branch, any other with the account.
+    pub async fn thumb_put(&self, user_id: i64, branch: Option<i64>, path: &str, mtime_ms: u64, size: u64, bytes: &[u8]) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let place = match branch {
+            Some(b) if self.changed_in_branch(user_id, b, &path).await? => Some(b),
+            _ => None,
+        };
+        let Some(root) = self.thumb_root(user_id, place, true).await? else { return Ok(()) };
+        let target = thumb_file(&root, &path, mtime_ms, size);
+        if let Some(folder) = target.parent() {
+            std::fs::create_dir_all(folder).map_err(io)?;
+            remove_older_thumbs(folder, &thumb_prefix(&path), target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        }
+        std::fs::write(target, bytes).map_err(io)
+    }
+
+    /// Whether the branch has a change (a write, a new folder) at `path` — the file it shows is then not the account's.
+    async fn changed_in_branch(&self, user_id: i64, branch: i64, path: &str) -> Result<bool, String> {
+        let changed: Option<i64> = sqlx::query_scalar("SELECT 1 FROM branch_changes WHERE user_id = ?1 AND branch = ?2 AND path = ?3 AND kind = 'put'")
+            .bind(user_id)
+            .bind(branch)
+            .bind(path)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(sql)?;
+        Ok(changed.is_some())
+    }
+
+    /// Throws away the account's thumbnails (its own, not its branches').
+    async fn drop_thumbs_of_account(&self, user_id: i64) {
+        if let Ok(part) = self.account_branch_part(user_id).await {
+            let _ = NUMBERING.delete(&self.t_dir(), &part);
+        }
     }
 
     // ── Accounts ─────────────────────────────────────────────────────────────
@@ -540,7 +682,7 @@ impl Cache {
     /// branch) and every row. Called when it is disconnected.
     pub async fn forget_account(&self, user_id: i64) -> Result<(), String> {
         let _guard = self.lock(user_id).await;
-        for parent in [self.a_dir(), self.b_dir()] {
+        for parent in [self.a_dir(), self.b_dir(), self.t_dir(), self.tb_dir()] {
             for (pair, part) in NUMBERING.list(&parent).map_err(io)? {
                 if is_account_part_for(&part, user_id) {
                     NUMBERING.delete(&parent, &part).map_err(io)?;
@@ -587,6 +729,7 @@ impl Cache {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io(e)),
         }
+        self.drop_thumbs_of_account(user_id).await;
         for table in ["listings", "entries"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE user_id = ?1")).bind(user_id).execute(&self.pool).await.map_err(sql)?;
         }
@@ -760,7 +903,7 @@ impl Cache {
                         let _ = std::fs::remove_file(local);
                     }
                     sqlx::query(
-                        "UPDATE entries SET size = ?3, mtime_ms = ?4, fetched_at = ?5, content_at = CASE WHEN ?6 THEN NULL ELSE content_at END
+                        "UPDATE entries SET size = ?3, mtime_ms = ?4, fetched_at = ?5, content_at = CASE WHEN ?6 THEN NULL ELSE content_at END, remote_id = ?7
                          WHERE user_id = ?1 AND path = ?2",
                     )
                     .bind(user_id)
@@ -769,6 +912,7 @@ impl Cache {
                     .bind(entry.mtime_ms.map(|m| m as i64))
                     .bind(now)
                     .bind(changed)
+                    .bind(&entry.id)
                     .execute(&self.pool)
                     .await
                     .map_err(sql)?;
@@ -780,8 +924,8 @@ impl Cache {
                     let local_name = allocate_local_name(&entry.name, &taken);
                     taken.insert(local_name.to_lowercase());
                     sqlx::query(
-                        "INSERT INTO entries (user_id, path, parent, name, is_dir, size, mtime_ms, local_name, fetched_at, content_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
+                        "INSERT INTO entries (user_id, path, parent, name, is_dir, size, mtime_ms, local_name, fetched_at, content_at, remote_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL, ?10)",
                     )
                     .bind(user_id)
                     .bind(&entry_path)
@@ -792,6 +936,7 @@ impl Cache {
                     .bind(entry.mtime_ms.map(|m| m as i64))
                     .bind(&local_name)
                     .bind(now)
+                    .bind(&entry.id)
                     .execute(&self.pool)
                     .await
                     .map_err(sql)?;
@@ -810,6 +955,7 @@ impl Cache {
 
     fn to_entry(row: &EntryRow) -> CacheEntry {
         CacheEntry {
+            id: row.remote_id.clone(),
             name: row.name.clone(),
             is_directory: row.is_dir != 0,
             size: row.size.map(|s| s as u64),
@@ -1181,6 +1327,13 @@ impl Cache {
                     NUMBERING.delete(&self.b_dir(), &part).map_err(io)?;
                 }
             }
+            // The branch's thumbnails go with it — a second place, beside its folder in `b`: `tb/NNN/MMM` and its marker.
+            if let Some(account) = NUMBERING.find(&self.tb_dir(), &part).map_err(io)? {
+                let _ = NUMBERING.delete(&account.short_dir, name);
+                if NUMBERING.list(&account.short_dir).map(|l| l.is_empty()).unwrap_or(false) {
+                    let _ = NUMBERING.delete(&self.tb_dir(), &part);
+                }
+            }
         }
         sqlx::query("DELETE FROM branch_changes WHERE user_id = ?1 AND branch = ?2").bind(user_id).bind(branch).execute(&self.pool).await.map_err(sql)?;
         sqlx::query("DELETE FROM branches WHERE user_id = ?1 AND pair_index = ?2").bind(user_id).bind(branch).execute(&self.pool).await.map_err(sql)?;
@@ -1321,14 +1474,15 @@ impl Cache {
         for change in self.change_children(user_id, branch, path).await? {
             let name = name_of(&change.path).to_string();
             let locked = entries.iter().any(|e| e.name == name && e.locked); // the account's file under it
+            let id = entries.iter().find(|e| e.name == name).and_then(|e| e.id.clone()); // the account's, if there is one
             entries.retain(|e| e.name != name);
             match change.kind.as_str() {
                 "delete" => {}
-                "mkdir" => entries.push(CacheEntry { name, is_directory: true, size: None, mtime_ms: Some(change.changed_at as u64), cached: false, locked: false, changed: Some("mkdir".into()) }),
+                "mkdir" => entries.push(CacheEntry { id: None, name, is_directory: true, size: None, mtime_ms: Some(change.changed_at as u64), cached: false, locked: false, changed: Some("mkdir".into()) }),
                 kind => {
                     let local = self.branch_local_path(user_id, branch, &change.path).await?;
                     let size = std::fs::metadata(&local).map(|m| m.len()).ok();
-                    entries.push(CacheEntry { name, is_directory: false, size, mtime_ms: Some(change.changed_at as u64), cached: true, locked, changed: Some(kind.into()) });
+                    entries.push(CacheEntry { id, name, is_directory: false, size, mtime_ms: Some(change.changed_at as u64), cached: true, locked, changed: Some(kind.into()) });
                 }
             }
         }
@@ -1878,14 +2032,14 @@ mod tests {
             for (file, bytes) in self.files.lock().unwrap().iter() {
                 if let Some(rest) = file.strip_prefix(&prefix) {
                     if !rest.contains('/') {
-                        out.push(RemoteEntry { name: rest.to_string(), is_directory: false, size: Some(bytes.len() as u64), mtime_ms: Some(bytes.iter().map(|b| *b as u64).sum::<u64>() + 1000) });
+                        out.push(RemoteEntry { id: Some(format!("id:{file}")), name: rest.to_string(), is_directory: false, size: Some(bytes.len() as u64), mtime_ms: Some(bytes.iter().map(|b| *b as u64).sum::<u64>() + 1000) });
                     }
                 }
             }
             for folder in self.folders.lock().unwrap().iter() {
                 if let Some(rest) = folder.strip_prefix(&prefix) {
                     if !rest.is_empty() && !rest.contains('/') {
-                        out.push(RemoteEntry { name: rest.to_string(), is_directory: true, size: None, mtime_ms: None });
+                        out.push(RemoteEntry { id: Some(format!("id:{folder}")), name: rest.to_string(), is_directory: true, size: None, mtime_ms: None });
                     }
                 }
             }
@@ -1973,6 +2127,54 @@ mod tests {
 
     fn run<F: Future<Output = ()>>(future: F) {
         tauri::async_runtime::block_on(future)
+    }
+
+    #[test]
+    fn a_listing_carries_filens_ids_and_they_follow_the_file_when_it_is_replaced() {
+        run(async {
+            let f = Fixture::new("ids").await;
+            f.remote.put("/d/a.txt", "one");
+            f.remote.mkdir("/d/sub").await.unwrap();
+            let listed = f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap().entries;
+            let ids: Vec<(&str, Option<&str>)> = listed.iter().map(|e| (e.name.as_str(), e.id.as_deref())).collect();
+            assert_eq!(ids, [("sub", Some("id:/d/sub")), ("a.txt", Some("id:/d/a.txt"))], "folders and files both");
+            // The same listing, later, from the cache's own table — the ids were stored.
+            let again = f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap().entries;
+            assert_eq!(listed, again);
+            // In a branch: what the account has keeps its id even when the branch changed it; what the branch made has none.
+            let branch = f.cache.create_branch(7, "b").await.unwrap();
+            f.cache.write(&f.remote, 7, Some(branch.index), "/d/a.txt", b"changed").await.unwrap();
+            f.cache.write(&f.remote, 7, Some(branch.index), "/d/new.txt", b"new").await.unwrap();
+            let seen = f.cache.list(&f.remote, 7, Some(branch.index), "/d", false).await.unwrap().entries;
+            let of = |name: &str| seen.iter().find(|e| e.name == name).unwrap().id.clone();
+            assert_eq!(of("a.txt").as_deref(), Some("id:/d/a.txt"));
+            assert_eq!(of("new.txt"), None);
+        });
+    }
+
+    #[test]
+    fn a_cache_made_before_ids_gets_the_column_and_fills_it_on_the_next_listing() {
+        run(async {
+            let base = std::env::temp_dir().join(format!("csdrive-files-cache-oldids-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+            // The table as it was before `remote_id`, with a row in it.
+            sqlx::query("CREATE TABLE entries (user_id INTEGER NOT NULL, path TEXT NOT NULL, parent TEXT NOT NULL, name TEXT NOT NULL, is_dir INTEGER NOT NULL, size INTEGER, mtime_ms INTEGER, local_name TEXT NOT NULL, fetched_at INTEGER NOT NULL, content_at INTEGER, PRIMARY KEY (user_id, path))")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO entries VALUES (7, '/d/a.txt', '/d', 'a.txt', 0, 3, 1003, 'a.txt', 5, NULL)").execute(&pool).await.unwrap();
+            let clock = Arc::new(AtomicI64::new(1_000_000));
+            let for_cache = clock.clone();
+            let cache = Cache::with_pool(pool, base.clone(), Arc::new(move || for_cache.load(Ordering::SeqCst))).await.unwrap();
+            cache.ensure_account(7, "me@example.com").await.unwrap();
+            let remote = MemoryRemote::new();
+            remote.put("/d/a.txt", "one");
+            let listed = cache.list(&remote, 7, None, "/d", true).await.unwrap().entries;
+            assert_eq!(listed[0].id.as_deref(), Some("id:/d/a.txt"), "the old row got its id when the folder was fetched again");
+            let _ = std::fs::remove_dir_all(&base);
+        });
     }
 
     #[test]
@@ -2203,6 +2405,62 @@ mod tests {
         let fourth = allocate_local_name("a*b", &taken); // both become a_b
         assert_ne!(third, fourth);
         assert_eq!(allocate_local_name("Notes.txt", &taken).to_lowercase() != first.to_lowercase(), true);
+    }
+
+    #[test]
+    fn thumbnails_belong_to_a_version_of_a_file_and_go_with_the_account_or_the_branch() {
+        run(async {
+            let f = Fixture::new("thumbs").await;
+            f.remote.put("/pics/a.png", "one");
+            f.remote.put("/pics/a.png.bak", "two");
+            let t = f.base.join("t");
+
+            // Nothing yet; then one for the version (modified 1000, 3 bytes) — laid out like the files, in the account's pair.
+            assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 1000, 3).await.unwrap(), None);
+            f.cache.thumb_put(7, None, "/pics/a.png", 1000, 3, b"jpeg-1").await.unwrap();
+            assert!(t.join("001-filen@@me@example.com@@7").is_dir(), "the readable half is beside it");
+            assert!(t.join("001/pics/a.png.1000-3.jpg").is_file());
+            assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 1000, 3).await.unwrap().as_deref(), Some(&b"jpeg-1"[..]));
+            // A changed file has none until one is made for its new version, and that one replaces the old.
+            assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 2000, 5).await.unwrap(), None);
+            f.cache.thumb_put(7, None, "/pics/a.png.bak", 1000, 3, b"bak").await.unwrap();
+            f.cache.thumb_put(7, None, "/pics/a.png", 2000, 5, b"jpeg-2").await.unwrap();
+            assert!(!t.join("001/pics/a.png.1000-3.jpg").exists(), "the older version's is removed");
+            assert!(t.join("001/pics/a.png.bak.1000-3.jpg").is_file(), "…and another file's is not");
+
+            // A branch: a file it hasn't changed shows the account's thumbnail; one it changed has its own, with the branch.
+            let branch = f.cache.create_branch(7, "draft").await.unwrap();
+            let b = Some(branch.index);
+            assert_eq!(f.cache.thumb_get(7, b, "/pics/a.png", 2000, 5).await.unwrap().as_deref(), Some(&b"jpeg-2"[..]));
+            f.cache.write(&f.remote, 7, b, "/pics/a.png", b"changed").await.unwrap();
+            assert_eq!(f.cache.thumb_get(7, b, "/pics/a.png", 2000, 5).await.unwrap(), None, "changed in the branch: not the account's");
+            f.cache.thumb_put(7, b, "/pics/a.png", 3000, 7, b"branch").await.unwrap();
+            let tb = f.base.join("tb");
+            assert!(tb.join("001/001/pics/a.png.3000-7.jpg").is_file() && tb.join("001/001-draft").is_dir(), "the branch's pair, in the second place");
+            assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 3000, 7).await.unwrap(), None, "the account never sees the branch's");
+
+            // Discarding the branch deletes both of its places.
+            f.cache.discard_branch(7, branch.index).await.unwrap();
+            assert!(!f.base.join("b/001/001").exists());
+            assert!(std::fs::read_dir(&tb).unwrap().next().is_none(), "the branch's thumbnails are gone with it");
+            assert!(t.join("001/pics/a.png.2000-5.jpg").is_file(), "the account's stay");
+
+            // Clearing the cache drops the account's thumbnails; disconnecting drops them too.
+            f.cache.clear(7).await.unwrap();
+            assert!(std::fs::read_dir(&t).unwrap().next().is_none());
+            f.cache.thumb_put(7, None, "/pics/a.png", 2000, 5, b"again").await.unwrap();
+            f.cache.forget_account(7).await.unwrap();
+            assert!(std::fs::read_dir(&t).unwrap().next().is_none());
+        });
+    }
+
+    #[test]
+    fn only_a_thumbnail_of_that_very_file_is_taken_for_one() {
+        assert!(is_thumb_of("a.png.1000-3.jpg", "a.png."));
+        assert!(!is_thumb_of("a.png.bak.1000-3.jpg", "a.png."), "another file's");
+        assert!(!is_thumb_of("a.png.1000-3.jpeg", "a.png."));
+        assert!(!is_thumb_of("a.png.x-3.jpg", "a.png."));
+        assert_eq!(thumb_file(Path::new("root"), "/x/y:z/a.png", 5, 6), Path::new("root").join("x").join("y_z").join("a.png.5-6.jpg"));
     }
 
     #[test]

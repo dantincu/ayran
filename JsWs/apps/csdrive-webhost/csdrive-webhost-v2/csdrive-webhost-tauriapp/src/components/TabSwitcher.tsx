@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import Modal from './Modal'
-import { shortcutLabel, TAB_SWITCHER_LETTER } from '../lib/keyboard'
+import { chordLabel } from '../lib/chords'
 
 export interface SwitcherTab {
   id: string
@@ -76,7 +76,7 @@ export default function TabSwitcher({
           )
         })}
       </ol>
-      <div className="muted switcher-hint">{shortcutLabel(TAB_SWITCHER_LETTER)} opens this from any tab.</div>
+      <div className="muted switcher-hint">{chordLabel('t')} opens this from any tab.</div>
     </Modal>
   )
 }

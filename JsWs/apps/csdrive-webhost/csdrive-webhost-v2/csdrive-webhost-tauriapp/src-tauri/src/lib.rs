@@ -8,6 +8,7 @@ mod data_location;
 mod deployable_apps;
 mod device_files;
 mod external_sites;
+mod file_serving;
 mod files_cache;
 mod filen;
 mod filen_cache;
@@ -15,7 +16,9 @@ mod folder_pairs;
 mod fs_commands;
 mod fs_scope;
 mod fs_upload;
+mod internal_clipboard;
 mod ipc;
+mod link_navigation;
 mod layout;
 mod markdown;
 mod notes_pages;
@@ -72,24 +75,36 @@ pub(crate) enum Nav {
     Allow,
     /// The link goes to the OS browser; the window stays where it is.
     Browser,
+    /// A link (or an address the page asked for) to another page of the app's own kind: the window stays where it is
+    /// and the person is asked what to do with it (`link_navigation`).
+    Request,
     /// Nothing happens.
     Block,
 }
 
 /// Whether `url` is the page `own` (the same path and query; a fragment is not part of it).
-fn same_page(url: &Url, own: &Url) -> bool {
+pub(crate) fn same_page(url: &Url, own: &Url) -> bool {
     url.path() == own.path() && url.query() == own.query()
 }
 
 /// The rule for a window's navigations. A link to the web goes to the browser. Of our own pages a window may
 /// be at the ones its kind needs (`is_internal_url`) — and, when it has a page of its own (`own`: a web app's or
-/// system app's window), **only that page**: a web app can't be taken to another page of ours —
-/// by a link, `location.href`, a redirect — any more than it can change its address without navigating (see
-/// `code_snippets::FROZEN_ADDRESS_INIT_SCRIPT`). Reloading it is going to the same address, which is allowed.
+/// system app's window), **only that page**: a web app can't move itself to another page of ours — by a link,
+/// `location.href`, a redirect, `history.pushState` — any more than it can change its address without navigating (see
+/// `code_snippets::FROZEN_ADDRESS_INIT_SCRIPT`). Reloading it is going to the same address, which is allowed. What a
+/// *web app's* page asks for by such a navigation is a `Nav::Request`: nothing happens until the person has chosen what
+/// to do with it (`link_navigation`); a system app's window just refuses.
 pub(crate) fn navigation_verdict(url: &Url, allowed: window_host::Allowed, own: Option<&Url>) -> Nav {
     if is_internal_url(url, allowed) {
         return match own {
-            Some(own) if !same_page(url, own) => Nav::Block,
+            // Another page of a *web app's* kind is a request the person decides on; a system app's window never moves.
+            Some(own) if !same_page(url, own) => {
+                if allowed.user && window_host::is_user_url(url) {
+                    Nav::Request
+                } else {
+                    Nav::Block
+                }
+            }
             _ => Nav::Allow,
         };
     }
@@ -101,27 +116,57 @@ pub(crate) fn navigation_verdict(url: &Url, allowed: window_host::Allowed, own: 
     }
 }
 
+/// What a web app's or system app's window is at, and who hears of a request it makes for another page: the window's
+/// navigation rule reads `url` each time (it changes when the person opens a link in the window's tab — see
+/// `link_navigation`), and `on_request` is called with an address the page asked to go to (`Nav::Request`).
+#[derive(Clone)]
+pub(crate) struct OwnPage {
+    pub url: std::sync::Arc<std::sync::Mutex<Url>>,
+    pub on_request: std::sync::Arc<dyn Fn(Url) + Send + Sync>,
+}
+
 /// Applies the network lockdown to a window under construction.
 ///
 /// `allowed`: which pages the window may be at (see `is_internal_url`). `own`: the one page a window that
-/// never leaves its page may be at (see `navigation_verdict`); `None` for the main window (the admin-app).
+/// never moves itself may be at (see `navigation_verdict`); `None` for the main window (the admin-app).
 pub(crate) fn lock_down_navigation<R: tauri::Runtime>(
     builder: WebviewWindowBuilder<'_, R, impl Manager<R>>,
     allowed: window_host::Allowed,
-    own: Option<Url>,
+    own: Option<OwnPage>,
 ) -> WebviewWindowBuilder<'_, R, impl Manager<R>> {
     let frozen = own.is_some();
+    let own_for_windows = own.clone();
     let builder = builder
-        .on_navigation(move |url| match navigation_verdict(url, allowed, own.as_ref()) {
-            Nav::Allow => true,
-            Nav::Browser => {
-                external_sites::open_in_browser(url);
-                false
+        .on_navigation(move |url| {
+            let current = own.as_ref().map(|own| own.url.lock().unwrap().clone());
+            // What a window may be at follows the page it is at: a system app's window that shows a web page in one of its tabs
+            // has a web page's rules (links to other pages of the app are put to the person), and back on its own page its own.
+            let allowed = current
+                .as_ref()
+                .map_or(allowed, |page| window_host::Allowed { user: window_host::is_user_url(page), system: window_host::is_system_url(page), admin: false });
+            match navigation_verdict(url, allowed, current.as_ref()) {
+                Nav::Allow => true,
+                Nav::Browser => {
+                    external_sites::open_in_browser(url);
+                    false
+                }
+                Nav::Request => {
+                    if let Some(own) = &own {
+                        (own.on_request)(url.clone());
+                    }
+                    false
+                }
+                Nav::Block => false,
             }
-            Nav::Block => false,
         })
-        .on_new_window(|url, _features| {
-            external_sites::open_in_browser(&url);
+        .on_new_window(move |url, _features| {
+            // A link that wants a window of its own (`target=_blank`, `window.open`): to the web, the browser; to another
+            // page of ours, the same question as for any other link.
+            let user_page = own_for_windows.as_ref().is_some_and(|own| window_host::is_user_url(&own.url.lock().unwrap()));
+            match &own_for_windows {
+                Some(own) if user_page && window_host::is_user_url(&url) => (own.on_request)(url),
+                _ => external_sites::open_in_browser(&url),
+            }
             NewWindowResponse::Deny
         });
     let builder = if frozen { builder.initialization_script(code_snippets::FROZEN_ADDRESS_INIT_SCRIPT) } else { builder };
@@ -154,18 +199,15 @@ pub(crate) fn respond_text(status: StatusCode, message: &str, csp: &str) -> Resp
     respond(status, "text/plain; charset=utf-8", message.as_bytes().to_vec(), csp)
 }
 
-/// Serves `request_path` from inside `base_dir`.
-fn serve_file(base_dir: &Path, request_path: &str, default_document: &str, csp: &str) -> Response<Vec<u8>> {
+/// Serves `request_path` from inside `base_dir` (whole, or the piece a range asks for — see `file_serving`).
+fn serve_file(base_dir: &Path, request_path: &str, default_document: &str, meta: &file_serving::RequestMeta, csp: &str) -> Response<Vec<u8>> {
     match resolve_file_in(base_dir, request_path, default_document) {
-        Some(file_path) => match std::fs::read(&file_path) {
-            Ok(data) => respond_bytes(&file_path, data, csp),
-            Err(_) => respond_text(StatusCode::NOT_FOUND, "File not found", csp),
-        },
+        Some(file_path) => file_serving::respond_file(&file_path, meta, csp),
         None => respond_text(StatusCode::FORBIDDEN, "Forbidden", csp),
     }
 }
 
-fn content_type_for(path: &Path) -> &'static str {
+pub(crate) fn content_type_for(path: &Path) -> &'static str {
     match path
         .extension()
         .and_then(|e| e.to_str())
@@ -182,6 +224,19 @@ fn content_type_for(path: &Path) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "ico" => "image/x-icon",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "ogv" => "video/ogg",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "wav" => "audio/wav",
+        "oga" | "ogg" | "opus" => "audio/ogg",
+        "flac" => "audio/flac",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "txt" => "text/plain; charset=utf-8",
@@ -214,16 +269,16 @@ fn resolve_file_in(base_dir: &Path, request_path: &str, default_document: &str) 
 /// The answer to a request for `path` (decoded) on the web apps' origin: a file of the user folder, or — in the reserved
 /// `/@…` space — a picked folder's or a Filen account's (see `notes_pages`). Used by the `csuser` protocol and, on Android,
 /// by the windows' own WebViews (`android_windows`).
-pub(crate) async fn serve_user_path(app: &tauri::AppHandle, path: &str) -> Response<Vec<u8>> {
+pub(crate) async fn serve_user_path(app: &tauri::AppHandle, path: &str, meta: &file_serving::RequestMeta) -> Response<Vec<u8>> {
     let csp = content_security_policy(app);
     match notes_pages::parse_special(path) {
         // The user folder, as ever.
         None => {
             let data_dir = data_location::effective_data_dir(app).expect("failed to resolve app data dir");
-            serve_file(&layout::user_dir(&data_dir), path, "index.html", &csp)
+            serve_file(&layout::user_dir(&data_dir), path, "index.html", meta, &csp)
         }
         Some(Err(())) => respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp),
-        Some(Ok(special)) => notes_pages::serve(app, special, &csp).await,
+        Some(Ok(special)) => notes_pages::serve(app, special, meta, &csp).await,
     }
 }
 
@@ -232,6 +287,9 @@ pub(crate) async fn serve_user_path(app: &tauri::AppHandle, path: &str) -> Respo
 pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Only Rust uses it (a link's address copied from the prompt — `link_navigation`): no capability grants a page its
+        // commands.
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             secondary_windows::list_secondary_windows,
             secondary_windows::open_new_secondary_window,
@@ -242,6 +300,8 @@ pub fn run() {
             secondary_windows::close_all_secondary_windows,
             secondary_windows::suspend_all_secondary_windows,
             secondary_windows::focus_secondary_window,
+            secondary_windows::reload_secondary_window,
+            secondary_windows::reload_tab,
             secondary_windows::list_tags,
             secondary_windows::add_window_tag,
             secondary_windows::update_window_tag,
@@ -261,7 +321,16 @@ pub fn run() {
             secondary_windows::move_tab_to_group,
             notes_pages::open_file_as_web_app,
             notes_pages::open_related_web_app,
+            notes_pages::notify_file_saved,
+            notes_pages::media_url,
+            notes_pages::open_note_tab,
+            notes_pages::note_tab_state,
+            notes_pages::note_tab_action,
+            internal_clipboard::internal_clipboard_get,
+            internal_clipboard::internal_clipboard_set,
+            internal_clipboard::internal_clipboard_clear,
             external_sites::open_external_site,
+            external_sites::open_web_address,
             external_sites::reopen_external_site,
             external_sites::focus_external_site,
             external_sites::suspend_external_site,
@@ -294,6 +363,8 @@ pub fn run() {
             filen_cache::filen_cache_list,
             filen_cache::filen_cache_read,
             filen_cache::filen_cache_write,
+            filen_cache::filen_cache_thumb_get,
+            filen_cache::filen_cache_thumb_put,
             filen_cache::filen_cache_mkdir,
             filen_cache::filen_cache_rm,
             filen_cache::filen_cache_rename,
@@ -344,9 +415,10 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol(USER_PROTOCOL, |ctx, request: Request<Vec<u8>>, responder| {
             let app = ctx.app_handle().clone();
             let path = percent_encoding::percent_decode_str(request.uri().path()).decode_utf8_lossy().into_owned();
+            let meta = file_serving::RequestMeta::of(request.headers());
             // (A picked folder or a Filen account may have to be fetched, so not on this thread.)
             tauri::async_runtime::spawn(async move {
-                responder.respond(serve_user_path(&app, &path).await);
+                responder.respond(serve_user_path(&app, &path, &meta).await);
             });
         })
         .on_window_event(|window, event| {
@@ -378,6 +450,7 @@ pub fn run() {
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
             app.manage(external_sites::ExternalSites::default());
+            app.manage(internal_clipboard::InternalClipboard::default());
             app.manage(device_files::ExportState::default());
             app.manage(filen_cache::UploadSessions::default());
             app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));
@@ -442,14 +515,19 @@ mod tests {
         let verdict = |u: &str| navigation_verdict(&url(u), user, Some(&own));
         assert_eq!(verdict("http://csuser.localhost/qwer/index1.html"), Nav::Allow, "a reload");
         assert_eq!(verdict("http://csuser.localhost/qwer/index1.html#section"), Nav::Allow, "an in-page link");
-        assert_eq!(verdict("http://csuser.localhost/qwer/index2.html"), Nav::Block, "another page of the same folder");
-        assert_eq!(verdict("http://csuser.localhost/qwer/index1.html?file=x"), Nav::Block, "the same page at another address");
+        assert_eq!(verdict("http://csuser.localhost/qwer/index2.html"), Nav::Request, "another page of the same folder");
+        assert_eq!(verdict("http://csuser.localhost/qwer/index1.html?file=x"), Nav::Request, "the same page at another address");
         assert_eq!(verdict("http://tauri.localhost/index.html"), Nav::Block, "the admin-app");
         assert_eq!(verdict("https://example.com/a?b=c"), Nav::Browser);
         assert_eq!(verdict("http://localhost:3000/"), Nav::Browser);
         assert_eq!(verdict("javascript:alert(1)"), Nav::Block);
         assert_eq!(verdict("data:text/html,x"), Nav::Block);
         assert_eq!(verdict("file:///C:/Windows/win.ini"), Nav::Block);
+        // A system app's window never moves: another page of its kind is refused, not asked about.
+        let system = window_host::Allowed::for_kind(window_host::Kind::System);
+        let notes = url("http://tauri.localhost/system/notes/index.html");
+        assert_eq!(navigation_verdict(&url("http://tauri.localhost/system/other/index.html"), system, Some(&notes)), Nav::Block);
+        assert_eq!(navigation_verdict(&url("http://tauri.localhost/system/notes/index.html#x"), system, Some(&notes)), Nav::Allow);
         // A window that has no page of its own (the main window) moves between the pages it may be at.
         let main = window_host::Allowed { user: true, system: true, admin: true };
         assert_eq!(navigation_verdict(&url("http://csuser.localhost/qwer/index2.html"), main, None), Nav::Allow);
@@ -499,11 +577,14 @@ mod tests {
         for (key, extra_allowed) in [("csp", None), ("devCsp", Some("ws://localhost:1420"))] {
             let policy = security[key].as_str().unwrap_or_else(|| panic!("app.security.{key} must be set"));
             for directive in policy.split(';').map(str::trim) {
+                // The app's own web-app origin may be loaded as a picture or as media (Notes' viewer and thumbnails), and only so.
+                let shows_files = directive.starts_with("img-src ") || directive.starts_with("media-src ");
                 for source in directive.split_whitespace().skip(1) {
                     let allowed = matches!(
                         source,
                         "'none'" | "'self'" | "'unsafe-inline'" | "data:" | "blob:" | "ipc:" | "http://ipc.localhost"
-                    ) || Some(source) == extra_allowed;
+                    ) || Some(source) == extra_allowed
+                        || (shows_files && matches!(source, "csuser:" | "http://csuser.localhost"));
                     assert!(allowed, "unexpected source \"{source}\" in {key}: \"{directive}\"");
                 }
             }
@@ -522,7 +603,7 @@ mod tests {
         std::fs::write(dir.join("index.html"), "<h1>hi</h1>").unwrap();
 
         for (path, status) in [("/index.html", StatusCode::OK), ("/", StatusCode::OK), ("/missing.html", StatusCode::FORBIDDEN), ("/../x", StatusCode::FORBIDDEN)] {
-            let response = serve_file(&dir, path, "index.html", "default-src 'none'");
+            let response = serve_file(&dir, path, "index.html", &file_serving::RequestMeta::default(), "default-src 'none'");
             assert_eq!(response.status(), status, "{path}");
             assert_eq!(
                 response.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()),

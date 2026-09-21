@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "admin-app",
-  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, and deploy bundled apps.",
+  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, deploy bundled apps, and open a web address of a file it shows in the OS browser.",
   "windows": [
     "main"
   ],
@@ -14,6 +14,7 @@
     "allow-list-deployable-apps",
     "allow-get-deployable-app-html",
     "allow-fs-root-path",
+    "allow-open-web-address",
     "allow-filen-login",
     "allow-filen-logout"
   ]

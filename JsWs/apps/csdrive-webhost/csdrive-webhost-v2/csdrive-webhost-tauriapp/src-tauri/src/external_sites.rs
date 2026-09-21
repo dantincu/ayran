@@ -328,6 +328,43 @@ pub async fn open_external_site(
     Ok(request_id)
 }
 
+/// Opens a web address in the **OS browser**, once the person agrees in a native box — what the admin-app does with an address
+/// in the text of a file it shows (it has no tab to list an external site under, as `open_external_site` needs; the same
+/// address rules apply: `check_url`). Admin-app only. Resolves to whether the person agreed. Shares the one-box-at-a-time
+/// rule with `open_external_site`.
+#[tauri::command]
+pub async fn open_web_address(
+    window: crate::window_host::CallerWindow,
+    app: AppHandle,
+    sites: State<'_, ExternalSites>,
+    url: String,
+) -> Result<bool, String> {
+    crate::window_host::require_admin(&window)?;
+    let url = check_url(&url)?;
+    if sites.confirming.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("Another question is waiting for the person's answer — try again after it has been answered.".to_string());
+    }
+    let message = format!("Open this address in your web browser?\n\n{url}");
+    let confirmed = {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        app.dialog()
+            .message(message)
+            .title("Open a web address?")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom("Open".to_string(), "Cancel".to_string()))
+            .show(move |answer| {
+                let _ = sender.send(answer);
+            });
+        receiver.await.unwrap_or(false)
+    };
+    sites.confirming.store(false, Ordering::SeqCst);
+    if confirmed {
+        open_in_browser(&url);
+    }
+    Ok(confirmed)
+}
+
 /// The OS native box: who asks, and the address to be opened.
 async fn confirm(app: &AppHandle, asker: &str, app_name: &str, url: &Url) -> bool {
     let message = format!("\"{app_name}\" wants to open this web site in a window of CsDrive WebHost:\n\n{url}\n\nOpen it?");

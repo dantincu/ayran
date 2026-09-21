@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
-import { X } from 'lucide-react'
+import { Maximize2, Minimize2, X } from 'lucide-react'
 import IconButton from './IconButton'
+import { chordLabel } from '../lib/chords'
+import { useMaximizable } from '../lib/modalStack'
 
 interface ModalProps {
   title: string
@@ -14,6 +16,7 @@ interface ModalProps {
 const openModals: symbol[] = []
 
 export default function Modal({ title, onClose, children }: ModalProps) {
+  const { maximized, toggle } = useMaximizable()
   useEffect(() => {
     const token = Symbol('modal')
     openModals.push(token)
@@ -28,11 +31,18 @@ export default function Modal({ title, onClose, children }: ModalProps) {
   }, [onClose])
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+    <div className={`modal-overlay ${maximized ? 'maximized' : ''}`} onClick={onClose}>
+      <div className={`modal-panel ${maximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <strong>{title}</strong>
-          <IconButton icon={X} label="Close" onClick={onClose} />
+          <div className="modal-header-actions">
+            <IconButton
+              icon={maximized ? Minimize2 : Maximize2}
+              label={`${maximized ? 'Restore the size' : 'Maximize'} (${chordLabel('m')})`}
+              onClick={toggle}
+            />
+            <IconButton icon={X} label="Close" onClick={onClose} />
+          </div>
         </div>
         <div className="modal-body">{children}</div>
       </div>

@@ -35,7 +35,7 @@ object WindowBridge {
 
     @JvmStatic external fun nativeInvoke(guid: String, cmd: String, args: String, callback: Int, error: Int)
 
-    @JvmStatic external fun nativeServe(guid: String, url: String): ByteArray?
+    @JvmStatic external fun nativeServe(guid: String, url: String, range: String, origin: String): ByteArray?
 
     @JvmStatic external fun nativeNavigation(guid: String, url: String): Boolean
 

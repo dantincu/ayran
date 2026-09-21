@@ -9,8 +9,11 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.graphics.Color
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.JsPromptResult
@@ -48,6 +51,11 @@ class WindowActivity : Activity() {
 
     // Whether the backend knows this window (only then may it be told that the window is gone).
     private var attached = false
+
+    // The page's full screen (its viewer calls `requestFullscreen()`): the element the WebView hands over, shown over the whole
+    // window with the system bars hidden, until the page — or Back — leaves it.
+    private var customView: View? = null
+    private var customViewDone: WebChromeClient.CustomViewCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,6 +141,27 @@ class WindowActivity : Activity() {
                 return true
             }
 
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) {
+                if (customView != null) {
+                    callback.onCustomViewHidden()
+                    return
+                }
+                customView = view
+                customViewDone = callback
+                view.setBackgroundColor(Color.BLACK)
+                (window.decorView as ViewGroup).addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+                setSystemBars(false)
+            }
+
+            override fun onHideCustomView() {
+                val view = customView ?: return
+                (window.decorView as ViewGroup).removeView(view)
+                customView = null
+                customViewDone?.onCustomViewHidden()
+                customViewDone = null
+                setSystemBars(true)
+            }
+
             // <input type="file">: the system's chooser (a file's real path is never given to the page).
             override fun onShowFileChooser(v: WebView, callback: ValueCallback<Array<Uri>>, params: FileChooserParams): Boolean {
                 chooser?.onReceiveValue(null)
@@ -166,7 +195,7 @@ class WindowActivity : Activity() {
         // Back suspends the window. Android 13+ sends Back to a registered callback (and no longer calls onBackPressed once
         // an app opts in to predictive back, which targetSdk 36 does); older versions call onBackPressed.
         if (Build.VERSION.SDK_INT >= 33) {
-            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { finishAndRemoveTask() }
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) { back() }
         }
 
         WindowBridge.register(id, this)
@@ -204,9 +233,30 @@ class WindowActivity : Activity() {
         web?.evaluateJavascript(js, null)
     }
 
+    /** Back leaves the page's full screen first; only then does it suspend the window. */
+    private fun back() {
+        if (customView != null) web?.webChromeClient?.onHideCustomView() else finishAndRemoveTask()
+    }
+
+    /** Shows or hides the status and navigation bars (the page's full screen hides them; they come back with a swipe). */
+    private fun setSystemBars(visible: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let {
+                if (visible) it.show(WindowInsets.Type.systemBars()) else it.hide(WindowInsets.Type.systemBars())
+                it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (visible) View.SYSTEM_UI_FLAG_VISIBLE else (
+                View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                )
+        }
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        finishAndRemoveTask()
+        back()
     }
 
     @Deprecated("Deprecated in Java")
@@ -249,7 +299,8 @@ class WindowActivity : Activity() {
         val host = url.host ?: return null // not a network request (data:, blob:…): the WebView's own
         val ours = host == "csuser.localhost" || host == "tauri.localhost" || host == "ipc.localhost"
         if (!ours || request.method != "GET") return refused()
-        val frame = WindowBridge.nativeServe(guid, url.toString()) ?: return refused()
+        // A range (a video being played or sought) is answered a piece at a time; the origin lets the app's own page read a picture back.
+        val frame = WindowBridge.nativeServe(guid, url.toString(), request.requestHeaders["Range"] ?: "", request.requestHeaders["Origin"] ?: "") ?: return refused()
         val buffer = ByteBuffer.wrap(frame)
         val status = buffer.int
         val headerBytes = ByteArray(buffer.int)
@@ -271,6 +322,8 @@ class WindowActivity : Activity() {
 
     private fun reason(status: Int) = when (status) {
         200 -> "OK"
+        206 -> "Partial Content"
+        416 -> "Range Not Satisfiable"
         403 -> "Forbidden"
         404 -> "Not Found"
         else -> if (status in 200..299) "OK" else "Error"

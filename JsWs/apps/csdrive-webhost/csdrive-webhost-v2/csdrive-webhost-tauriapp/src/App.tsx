@@ -10,8 +10,10 @@ import SettingsTab from './components/SettingsTab'
 import Splash from './components/Splash'
 import { hideNativeSplash } from './lib/nativeSplash'
 import TabSwitcher from './components/TabSwitcher'
+import ChordHost from './components/ChordHost'
+import TextFieldMenu from './components/TextFieldMenu'
 import { getAppState, setAppState } from './lib/appState'
-import { isShortcut, shortcutLabel, TAB_SWITCHER_LETTER } from './lib/keyboard'
+import { chordLabel, useChord } from './lib/chords'
 
 type Tab = 'system' | 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
 
@@ -36,16 +38,8 @@ export default function App() {
   const [tab, setTabState] = useState<Tab | null>(null)
   const [switching, setSwitching] = useState(false)
 
-  // The tab switcher opens from anywhere in the admin-app.
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (!isShortcut(e, TAB_SWITCHER_LETTER)) return
-      e.preventDefault()
-      setSwitching((open) => !open)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  // The tab switcher opens from anywhere in the admin-app: Ctrl+K, T.
+  useChord('t', 'Switch to another tab', () => setSwitching((open) => !open))
 
   useEffect(() => {
     getAppState<Tab>(ACTIVE_TAB_KEY).then((stored) => {
@@ -79,7 +73,7 @@ export default function App() {
               key={t.id}
               className={`tab-button ${tab === t.id ? 'active' : ''}`}
               onClick={() => setTab(t.id)}
-              title={`${t.label} — tab ${i + 1} (${shortcutLabel(TAB_SWITCHER_LETTER)}, then ${i + 1})`}
+              title={`${t.label} — tab ${i + 1} (${chordLabel('t')}, then ${i + 1})`}
             >
               <Icon size={18} strokeWidth={2} aria-hidden="true" />
               <span>{t.label}</span>
@@ -107,6 +101,8 @@ export default function App() {
           onClose={() => setSwitching(false)}
         />
       )}
+      <TextFieldMenu />
+      <ChordHost />
     </div>
   )
 }

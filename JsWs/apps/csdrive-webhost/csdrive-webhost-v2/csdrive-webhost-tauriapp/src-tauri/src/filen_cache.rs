@@ -118,6 +118,36 @@ pub async fn filen_cache_write(app: AppHandle, cache: State<'_, Cache>, request:
     cache.write(&remote, user_id as i64, branch, &path, &bytes).await
 }
 
+/// The thumbnail (a JPEG) kept for this version of a file — its modification time and size, as the listing gave them — or an
+/// empty answer when there is none yet (raw binary response).
+#[tauri::command]
+pub async fn filen_cache_thumb_get(
+    cache: State<'_, Cache>,
+    user_id: u64,
+    branch: Option<i64>,
+    path: String,
+    mtime_ms: u64,
+    size: u64,
+) -> Result<Response, String> {
+    Ok(Response::new(cache.thumb_get(user_id as i64, branch, &path, mtime_ms, size).await?.unwrap_or_default()))
+}
+
+/// Keeps a thumbnail (its bytes are the request body; `userId`, `path`, `mtimeMs`, `size` and, optionally, `branch` are
+/// arguments — see `ipc::body_bytes`/`field`). It goes with the account's thumbnails, or — for a file the branch changed —
+/// with the branch's, and is gone with them.
+#[tauri::command]
+pub async fn filen_cache_thumb_put(cache: State<'_, Cache>, request: Request<'_>) -> Result<(), String> {
+    let number = |name: &str| -> Result<u64, String> { crate::ipc::field(&request, name)?.parse().map_err(|_| format!("\"{name}\" must be a number.")) };
+    let user_id = number("userId")?;
+    let branch = crate::ipc::field(&request, "branch").ok().filter(|b| !b.is_empty()).map(|b| b.parse::<i64>()).transpose().map_err(|_| "\"branch\" must be a number.".to_string())?;
+    let path = crate::ipc::field(&request, "path")?;
+    let bytes = crate::ipc::body_bytes(&request)?;
+    if bytes.len() > 512 * 1024 {
+        return Err("A thumbnail is at most 512 KiB.".to_string());
+    }
+    cache.thumb_put(user_id as i64, branch, &path, number("mtimeMs")?, number("size")?, &bytes).await
+}
+
 #[tauri::command]
 pub async fn filen_cache_mkdir(app: AppHandle, cache: State<'_, Cache>, user_id: u64, branch: Option<i64>, path: String) -> Result<(), String> {
     let remote = prepare(&app, &cache, user_id).await?;

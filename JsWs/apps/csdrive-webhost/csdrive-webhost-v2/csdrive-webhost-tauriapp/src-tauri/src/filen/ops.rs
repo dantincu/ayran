@@ -18,6 +18,8 @@ const CHUNK_SIZE: usize = 1_048_576;
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
+    /// Filen's id for the file or folder (its uuid).
+    pub id: String,
     pub name: String,
     pub is_directory: bool,
     pub size: Option<u64>,
@@ -94,9 +96,9 @@ impl Child {
 
     fn entry(&self) -> Entry {
         match self.kind {
-            Kind::Dir { modified_ms } => Entry { name: self.name.clone(), is_directory: true, size: None, mtime_ms: Some(modified_ms) },
+            Kind::Dir { modified_ms } => Entry { id: self.uuid.clone(), name: self.name.clone(), is_directory: true, size: None, mtime_ms: Some(modified_ms) },
             Kind::File { size, modified_ms } => {
-                Entry { name: self.name.clone(), is_directory: false, size: Some(size), mtime_ms: Some(modified_ms) }
+                Entry { id: self.uuid.clone(), name: self.name.clone(), is_directory: false, size: Some(size), mtime_ms: Some(modified_ms) }
             }
         }
     }
@@ -206,7 +208,7 @@ pub async fn readdir(s: &Session, path: &str) -> Result<Vec<Entry>, String> {
 pub async fn stat(s: &Session, path: &str) -> Result<Entry, String> {
     let names = split_path(path)?;
     if names.is_empty() {
-        return Ok(Entry { name: String::new(), is_directory: true, size: None, mtime_ms: None });
+        return Ok(Entry { id: s.base_folder_uuid.clone(), name: String::new(), is_directory: true, size: None, mtime_ms: None });
     }
     Ok(locate(s, &names).await?.child.entry())
 }
@@ -574,9 +576,9 @@ mod tests {
     #[test]
     fn children_become_entries() {
         let dir = Child { uuid: "u".into(), name: "d".into(), kind: Kind::Dir { modified_ms: 5 } };
-        assert_eq!(dir.entry(), Entry { name: "d".into(), is_directory: true, size: None, mtime_ms: Some(5) });
+        assert_eq!(dir.entry(), Entry { id: "u".into(), name: "d".into(), is_directory: true, size: None, mtime_ms: Some(5) });
         let file = Child { uuid: "u".into(), name: "f".into(), kind: Kind::File { size: 9, modified_ms: 7 } };
-        assert_eq!(file.entry(), Entry { name: "f".into(), is_directory: false, size: Some(9), mtime_ms: Some(7) });
+        assert_eq!(file.entry(), Entry { id: "u".into(), name: "f".into(), is_directory: false, size: Some(9), mtime_ms: Some(7) });
     }
 
     #[test]

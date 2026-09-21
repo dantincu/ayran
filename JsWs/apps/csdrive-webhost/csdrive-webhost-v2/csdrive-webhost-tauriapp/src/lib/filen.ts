@@ -13,6 +13,8 @@ export interface FilenAccount {
 }
 
 export interface FilenEntry {
+  /** Filen's own id for the file or folder (its uuid). */
+  id: string
   name: string
   isDirectory: boolean
   size: number | null

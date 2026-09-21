@@ -8,8 +8,6 @@ export function isShortcut(e: KeyboardEvent, letter: string): boolean {
   return (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === letter
 }
 
-/** Opens the list of the admin-app's tabs (admin-app only). */
-export const TAB_SWITCHER_LETTER = 'k'
 /** Opens the page list of a paginated list ("go to page"). */
 export const PAGE_LIST_LETTER = 'g'
 
@@ -33,7 +31,7 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 
 /** A dialog, the editor or a popover is open: the page behind it doesn't take navigation keys. */
 export function overlayOpen(): boolean {
-  return document.querySelector('.modal-overlay, .editor-overlay, .page-popover') !== null
+  return document.querySelector('.modal-overlay, .editor-overlay, .page-popover, .media-viewer') !== null
 }
 
 /** How far PageUp / PageDown move. */

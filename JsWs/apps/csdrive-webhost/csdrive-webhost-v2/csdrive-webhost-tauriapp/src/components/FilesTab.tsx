@@ -10,6 +10,8 @@ import {
   FilePlus,
   Folder,
   FolderPlus,
+  Info,
+  Navigation,
   Pencil,
   RefreshCw,
   Rocket,
@@ -21,6 +23,10 @@ import {
   ClipboardPaste,
 } from 'lucide-react'
 import IconButton from './IconButton'
+import CodeEditor from './CodeEditor'
+import EditorPanel from './EditorPanel'
+import DetailsModal, { type DetailField } from './DetailsModal'
+import GoToPathModal from './GoToPathModal'
 import Modal from './Modal'
 import Pagination from './Pagination'
 import { TagList } from './Tags'
@@ -30,6 +36,9 @@ import { kbdItem, useListKeyboard } from '../lib/keyboard'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
 import { joinRelative } from '../lib/localFs'
+import { formatBytesExact } from '../lib/format'
+import { pathForInput } from '../lib/pathInput'
+import type { FileInfo } from '../lib/fs'
 import {
   copyRootPath,
   forgetRoot,
@@ -52,7 +61,8 @@ import {
   writeRootTextFile,
 } from '../lib/fileRoots'
 import { rootTagGuid } from '../lib/rootTags'
-import { listTags, openNewSecondaryWindow, type TagRecord } from '../lib/secondaryWindows'
+import { listTags, notifyFileSaved, openNewSecondaryWindow, openWebAddress, type TagRecord } from '../lib/secondaryWindows'
+import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../lib/textLinks'
 
 /** A file that can be opened as a web app: a page, or a markdown document (rendered to a page by the backend). */
 function isHtmlFile(name: string): boolean {
@@ -72,6 +82,12 @@ function formatBytes(bytes: number): string {
 }
 
 type EntryRow = RootEntry
+
+/** What the details popup is about: an entry of the folder, the folder itself, or a root (whose tags are edited there). */
+type Details =
+  | { kind: 'entry'; entry: EntryRow; info: FileInfo | null }
+  | { kind: 'here'; info: FileInfo | null }
+  | { kind: 'root'; root: FileRoot }
 
 interface ClipboardItem {
   rootId: string
@@ -168,6 +184,8 @@ export default function FilesTab() {
   const [activeRootId, setActiveRootId] = useState<string>(USER_ROOT_ID)
   const [path, setPath] = useState('')
   const [entries, setEntries] = useState<EntryRow[]>([])
+  // The sizes of the files on the pages shown so far, by name (the listing itself doesn't carry them).
+  const [sizes, setSizes] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ path: string; content: string; dirty: boolean } | null>(null)
@@ -178,6 +196,8 @@ export default function FilesTab() {
   const [pickingAppToDeploy, setPickingAppToDeploy] = useState(false)
   const [deployingApp, setDeployingApp] = useState<DeployableAppInfo | null>(null)
   const [rootTags, setRootTags] = useState<TagRecord[]>([])
+  const [details, setDetails] = useState<Details | null>(null)
+  const [goingTo, setGoingTo] = useState(false)
   // Where each root really is, for its tooltip — the admin-app may ask; nothing else may.
   const [rootPaths, setRootPaths] = useState<Record<string, string>>({})
   const [hydrated, setHydrated] = useState(false)
@@ -273,21 +293,12 @@ export default function FilesTab() {
     setError(null)
     try {
       const list = await listRootDir(activeRoot, path)
-      const withSizes = await Promise.all(
-        list.map(async (e) => {
-          // Some roots hand the size over with the listing, so it needs no further call.
-          if (e.isDirectory || e.size !== undefined) return { ...e }
-          try {
-            const info = await statRootPath(activeRoot, joinRelative(path, e.name))
-            return { ...e, size: info.size }
-          } catch {
-            return { ...e }
-          }
-        }),
-      )
       if (requestId !== latestRequestRef.current) return
       restoredPathRef.current = false
-      setEntries(withSizes)
+      // Only the names come with the listing: a size is asked for the entries of the page on screen (below), never for a
+      // whole folder — a folder of a hundred thousand files would otherwise be a hundred thousand calls before it showed.
+      setSizes({})
+      setEntries(list)
       if (restoredOffsetRef.current !== null) {
         setPage(pageOfOffset(restoredOffsetRef.current, pageSizeRef.current)) // the page that holds the record it was at
         restoredOffsetRef.current = null
@@ -342,9 +353,9 @@ export default function FilesTab() {
     if (activeRootId === root.id) switchRoot(USER_ROOT_ID)
   }
 
-  async function openEntry(entry: EntryRow) {
+  async function openEntry(entry: EntryRow, at?: string) {
     if (!activeRoot) return
-    const rel = joinRelative(path, entry.name)
+    const rel = at ?? joinRelative(path, entry.name)
     if (entry.isDirectory) {
       setPath(rel)
       return
@@ -361,6 +372,8 @@ export default function FilesTab() {
     if (!editing || !activeRoot) return
     try {
       await writeRootTextFile(activeRoot, editing.path, editing.content)
+      // Web apps that show the file reload.
+      notifyFileSaved({ storage: activeRoot.id === USER_ROOT_ID ? 'UserFolder' : 'DeviceFolder', root: activeRoot.id, path: editing.path }).catch(() => {})
       setEditing({ ...editing, dirty: false })
       await refresh()
     } catch (e) {
@@ -548,6 +561,31 @@ export default function FilesTab() {
   const currentPage = Math.min(page, pageCount - 1)
   const pagedEntries = entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)
 
+  // The sizes of the page on screen.
+  useEffect(() => {
+    if (!activeRoot || loading) return
+    const wanted = pagedEntries.filter((e) => !e.isDirectory && e.size === undefined && sizes[e.name] === undefined)
+    if (wanted.length === 0) return
+    let cancelled = false
+    Promise.all(
+      wanted.map(async (e) => {
+        try {
+          return [e.name, (await statRootPath(activeRoot, joinRelative(path, e.name))).size] as const
+        } catch {
+          return null
+        }
+      }),
+    ).then((found) => {
+      if (cancelled) return
+      const got = found.filter((f): f is readonly [string, number] => f !== null)
+      if (got.length > 0) setSizes((current) => ({ ...current, ...Object.fromEntries(got) }))
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRoot, path, loading, currentPage, pageSize, entries])
+
   // ── Keyboard ──
 
   // A new folder: nothing is focused until a key is pressed — unless the folder was entered with the
@@ -586,6 +624,116 @@ export default function FilesTab() {
     },
   })
 
+  /** Opens the details of an entry, of the folder shown or of a root; what the file system says about the first two (its
+   * date) is asked for and fills in when it arrives. */
+  async function showDetails(target: { kind: 'entry'; entry: EntryRow } | { kind: 'here' } | { kind: 'root'; root: FileRoot }) {
+    if (target.kind === 'root') {
+      setDetails(target)
+      return
+    }
+    if (!activeRoot) return
+    const rel = target.kind === 'entry' ? joinRelative(path, target.entry.name) : path
+    const opened: Details = { ...target, info: null }
+    setDetails(opened)
+    try {
+      const info = await statRootPath(activeRoot, rel)
+      setDetails((current) => (current === opened ? { ...opened, info } : current))
+    } catch {
+      // no date, then: what the listing already said is shown
+    }
+  }
+
+  function detailFields(): { title: string; fields: DetailField[] } | null {
+    if (!details) return null
+    if (details.kind === 'root') {
+      const root = details.root
+      const where = rootPaths[root.id]
+      return {
+        title: root.id === USER_ROOT_ID ? 'The user folder' : `Folder "${root.label}"`,
+        fields: [
+          { label: 'Name', value: root.id === USER_ROOT_ID ? 'user' : root.label },
+          { label: 'Root identifier', value: root.id, mono: true },
+          ...(where ? [{ label: 'Location on this device', value: where, mono: true }] : []),
+        ],
+      }
+    }
+    const rel = details.kind === 'entry' ? joinRelative(path, details.entry.name) : path
+    const isDirectory = details.kind === 'entry' ? details.entry.isDirectory : true
+    const name = details.kind === 'entry' ? details.entry.name : (rel.split('/').pop() || activeRoot?.label || '')
+    const info = details.info
+    const size = info && !isDirectory ? info.size : details.kind === 'entry' ? (details.entry.size ?? sizes[details.entry.name]) : undefined
+    const base = activeRoot ? rootPaths[activeRoot.id] : undefined
+    const sep = base?.includes('\\') ? '\\' : '/'
+    const fields: DetailField[] = [
+      { label: 'Name', value: name },
+      { label: 'Kind', value: details.kind === 'entry' && details.entry.isSymlink ? 'Link' : isDirectory ? 'Folder' : 'File', copy: false },
+      { label: 'Path', value: pathForInput(rel), mono: true },
+      { label: 'In', value: activeRoot ? (activeRoot.id === USER_ROOT_ID ? 'user' : activeRoot.label) : '' },
+    ]
+    if (base) fields.push({ label: 'Location on this device', value: rel === '' ? base : base.replace(/[\\/]+$/, '') + sep + rel.split('/').join(sep), mono: true })
+    if (size !== undefined) fields.push({ label: 'Size', value: formatBytesExact(size) })
+    if (info?.mtimeMs != null) fields.push({ label: 'Modified', value: new Date(info.mtimeMs).toLocaleString() })
+    return { title: isDirectory ? 'Folder' : 'File', fields }
+  }
+
+  /** "Go to a path": a folder of this root — or a file, whose folder is opened with the file focused. */
+  async function goToPath(segments: string[], query: string | null = null): Promise<string | null> {
+    if (!activeRoot) return 'No folder is open.'
+    if (isNoteQuery(query)) return "A note's address is opened in the Notes app."
+    const rel = segments.join('/')
+    if (rel === '') {
+      setPath('')
+      return null
+    }
+    let info: FileInfo
+    try {
+      info = await statRootPath(activeRoot, rel)
+    } catch {
+      return `There is nothing at ${pathForInput(rel)} in ${activeRoot.id === USER_ROOT_ID ? 'the user folder' : activeRoot.label}.`
+    }
+    if (info.isDirectory) {
+      setPath(rel)
+    } else {
+      // A file: the view its own kind has — the editor — in its folder.
+      const cut = rel.lastIndexOf('/')
+      const folder = cut < 0 ? '' : rel.slice(0, cut)
+      setPath(folder)
+      await openEntry({ name: rel.slice(cut + 1), isDirectory: false, isFile: true, isSymlink: false }, rel)
+    }
+    return null
+  }
+
+  const shownDetails = detailFields()
+
+  /** "Open link" in the editor: a web address goes to the OS browser (after the person agrees); a path — relative to the
+   * file, or absolute from the root — opens its folder, or the file in the editor. What the editor holds must be saved first:
+   * the linked file replaces it. */
+  async function openLinkFromEditor(link: LinkHit) {
+    if (!editing || !activeRoot) return
+    if (link.kind === 'web') {
+      await openWebAddress(link.target)
+      return
+    }
+    const target = resolveLinkedPath(editing.path, link.target)
+    if (!target) throw new Error('That path leaves the folder.')
+    if (isNoteQuery(target.query)) throw new Error("Notes can't be opened from a link yet.")
+    let info: FileInfo
+    try {
+      info = target.path === '' ? { isFile: false, isDirectory: true, isSymlink: false, size: 0, mtimeMs: null } : await statRootPath(activeRoot, target.path)
+    } catch {
+      throw new Error(`There is nothing at ${pathForInput(target.path)}.`)
+    }
+    if (editing.dirty) throw new Error('Save the changes first — the linked file takes this one\'s place in the editor.')
+    setEditing(null)
+    if (info.isDirectory) {
+      setPath(target.path)
+    } else {
+      const cut = target.path.lastIndexOf('/')
+      setPath(cut < 0 ? '' : target.path.slice(0, cut))
+      await openEntry({ name: target.path.slice(cut + 1), isDirectory: false, isFile: true, isSymlink: false }, target.path)
+    }
+  }
+
   return (
     <div className="tab-panel files-tab">
       <div className="root-switcher">
@@ -594,6 +742,9 @@ export default function FilesTab() {
             <span className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
               <button className="link-button" onClick={() => switchRoot(root.id)} title={rootPaths[root.id] ?? root.label}>
                 <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
+              </button>
+              <button className="root-pill-remove" onClick={() => showDetails({ kind: 'root', root })} title="Details — and tags">
+                <Info size={12} strokeWidth={2} aria-hidden="true" />
               </button>
               {root.id !== USER_ROOT_ID && (
                 <button className="root-pill-remove" onClick={() => removeRoot(root)} title="Stop browsing this folder">
@@ -628,6 +779,8 @@ export default function FilesTab() {
           })}
         </div>
         <div className="toolbar-actions">
+          <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
+          <IconButton icon={Info} label="Details of this folder" onClick={() => showDetails({ kind: 'here' })} />
           <IconButton icon={FilePlus} label="New file" onClick={createFile} />
           <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
           <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
@@ -684,8 +837,9 @@ export default function FilesTab() {
                     </button>
                   )}
                 </td>
-                <td className="muted">{!entry.isDirectory && entry.size != null ? formatBytes(entry.size) : ''}</td>
+                <td className="muted">{!entry.isDirectory && (entry.size ?? sizes[entry.name]) != null ? formatBytes((entry.size ?? sizes[entry.name])!) : ''}</td>
                 <td className="row-actions">
+                  <IconButton icon={Info} label="Details" onClick={() => showDetails({ kind: 'entry', entry })} />
                   {!entry.isDirectory && activeRootId === USER_ROOT_ID && isHtmlFile(entry.name) && (
                     <IconButton icon={ExternalLink} label="Open as web app" onClick={() => openAsWebApp(entry)} />
                   )}
@@ -710,22 +864,37 @@ export default function FilesTab() {
       />
 
       {editing && (
-        <div className="editor-overlay">
-          <div className="editor-panel">
-            <div className="editor-header">
-              <strong>{editing.path}</strong>
-              <div>
-                <IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />
-                <IconButton icon={X} label="Close" onClick={() => setEditing(null)} />
-              </div>
-            </div>
-            <textarea
-              value={editing.content}
-              onChange={(e) => setEditing({ ...editing, content: e.target.value, dirty: true })}
-              spellCheck={false}
-            />
-          </div>
-        </div>
+        <EditorPanel
+          title={editing.path}
+          actions={<IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />}
+          onClose={() => setEditing(null)}
+        >
+          <CodeEditor
+            value={editing.content}
+            fileName={editing.path}
+            onChange={(content) => setEditing({ ...editing, content, dirty: true })}
+            onOpenLink={openLinkFromEditor}
+          />
+        </EditorPanel>
+      )}
+
+      {shownDetails && details && (
+        <DetailsModal
+          title={shownDetails.title}
+          fields={shownDetails.fields}
+          tags={details.kind === 'root' ? { guid: rootTagGuid(details.root.id), tags: rootTags.filter((t) => t.guid === rootTagGuid(details.root.id)), onChanged: refreshRootTags } : undefined}
+          onClose={() => setDetails(null)}
+          onError={setError}
+        />
+      )}
+
+      {goingTo && (
+        <GoToPathModal
+          current={pathForInput(path)}
+          hint={`A path in ${activeRoot?.id === USER_ROOT_ID ? 'the user folder' : (activeRoot?.label ?? 'this folder')} — /folder/subfolder`}
+          onGo={goToPath}
+          onClose={() => setGoingTo(false)}
+        />
       )}
 
       {pickingAppToDeploy && (

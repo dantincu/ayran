@@ -1319,3 +1319,768 @@ select {
   word-break: break-all;
   user-select: all;
 }
+
+/* ---- Details popups (components/DetailsModal.tsx) ---- */
+
+.details-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.details-status {
+  min-height: 16px;
+  font-size: 12px;
+}
+
+/* ---- Tabs grouped by root (System Apps tab) ---- */
+
+.root-group-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px 6px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--border);
+}
+
+.root-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+/* ---- The clipboard menu of the text boxes (components/TextFieldMenu.tsx) ---- */
+
+/* Above every dialog (their overlays are at 1000). */
+.text-menu {
+  position: fixed;
+  z-index: 3000;
+  width: 24px;
+  height: 22px;
+}
+
+.text-menu-trigger {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.text-menu-trigger:hover,
+.text-menu-trigger[aria-expanded='true'] {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
+.text-menu-list {
+  position: absolute;
+  top: 26px;
+  min-width: 230px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.text-menu-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.text-menu-list button:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+
+.text-menu-list button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.text-menu-message {
+  position: absolute;
+  top: 26px;
+  right: 0;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--status-bg);
+  color: var(--status-fg);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ---- Slim windows and phones ----
+   A row's action buttons fall below its text and its tags: the text has the whole width, the buttons get a line of their
+   own (a row that kept them beside the text left the text a column a few letters wide). `display: contents` lets the
+   header's children join the row's own flow, so the buttons — last in `order` — come after the tags as well. */
+@media (max-width: 600px) {
+  .window-item {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    column-gap: 8px;
+  }
+
+  .window-item > .window-item-row,
+  .window-item > .tab-row-header {
+    display: contents;
+  }
+
+  .window-item > .window-item-tags,
+  .window-item > .tab-tags-line {
+    flex: 1 1 100%;
+  }
+
+  .window-item .row-actions {
+    order: 99;
+    flex: 1 1 100%;
+    justify-content: flex-start;
+  }
+
+  .window-item-main {
+    flex: 1 1 0;
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  /* A file listing: one block per entry — the name over the size and date, the buttons below. */
+  .file-table,
+  .file-table tbody {
+    display: block;
+  }
+
+  .file-table thead {
+    display: none;
+  }
+
+  .file-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .file-table td {
+    padding: 2px 8px;
+    border-bottom: none;
+  }
+
+  .file-table td.muted {
+    padding-right: 12px;
+  }
+
+  .file-table td:first-child,
+  .file-table td[colspan],
+  .file-table td.row-actions,
+  .notes-page .file-table td.row-actions {
+    flex: 1 1 100%;
+  }
+
+  .file-table td.row-actions,
+  .notes-page .file-table td.row-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}
+
+/* A box in a dialog that holds something the dialog refused. */
+.modal-panel input.invalid {
+  border-color: var(--error-fg);
+  background: var(--error-bg);
+}
+
+/* ---- The text editor: a textarea over a highlighted copy of its text (components/CodeEditor.tsx, lib/highlight.ts) ---- */
+
+:root {
+  --tok-heading: #1d4ed8;
+  --tok-quote: #6b7280;
+  --tok-list: #be185d;
+  --tok-code: #b45309;
+  --tok-url: #0e7490;
+  --tok-tag: #15803d;
+  --tok-attr: #b45309;
+  --tok-string: #0f766e;
+  --tok-entity: #7c3aed;
+  --tok-quiet: #6b7280;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tok-heading: #93c5fd;
+    --tok-quote: #9ca3af;
+    --tok-list: #f9a8d4;
+    --tok-code: #fbbf24;
+    --tok-url: #67e8f9;
+    --tok-tag: #86efac;
+    --tok-attr: #fdba74;
+    --tok-string: #5eead4;
+    --tok-entity: #c4b5fd;
+    --tok-quiet: #9ca3af;
+  }
+}
+
+.code-editor {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.code-editor:focus-within {
+  border-color: var(--accent);
+}
+
+/* The coloured copy and the box share everything that decides where a character goes. */
+.code-editor-highlight,
+.code-editor .code-editor-input {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 8px 10px;
+  border: 0;
+  font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  letter-spacing: 0;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 4;
+}
+
+.code-editor-highlight {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  color: var(--fg);
+  pointer-events: none;
+  user-select: none;
+}
+
+.code-editor .code-editor-input {
+  display: block;
+  position: relative;
+  width: 100%;
+  min-height: 100%;
+  resize: none;
+  overflow: hidden;
+  border-radius: 0;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--fg);
+  outline: none;
+}
+
+.code-editor .code-editor-input::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.tok-heading,
+.tok-strong {
+  font-weight: 700;
+}
+.tok-heading { color: var(--tok-heading); }
+/* No italics: a synthesized slant can change a glyph's advance on some fonts, and the two layers must line up. */
+.tok-emphasis { color: var(--tok-entity); }
+.tok-strike { text-decoration: line-through; color: var(--tok-quiet); }
+.tok-code,
+.tok-fence { color: var(--tok-code); }
+.tok-fence { opacity: 0.75; }
+.tok-quote { color: var(--tok-quote); }
+.tok-list { color: var(--tok-list); font-weight: 700; }
+.tok-rule,
+.tok-punct,
+.tok-doctype,
+.tok-embedded { color: var(--tok-quiet); }
+.tok-comment { color: var(--tok-quiet); }
+.tok-url { color: var(--tok-url); text-decoration: underline; }
+.tok-linktext { color: var(--tok-heading); }
+.tok-tag { color: var(--tok-tag); }
+.tok-attr { color: var(--tok-attr); }
+.tok-string { color: var(--tok-string); }
+.tok-entity { color: var(--tok-entity); }
+
+/* JavaScript and CSS */
+.tok-keyword { color: var(--tok-list); font-weight: 700; }
+.tok-number { color: var(--tok-code); }
+.tok-literal { color: var(--tok-entity); }
+.tok-regex { color: var(--tok-string); }
+.tok-function { color: var(--tok-heading); }
+.tok-property { color: var(--tok-attr); }
+.tok-selector { color: var(--tok-url); }
+.tok-atrule { color: var(--tok-entity); }
+
+/* ---- Maximized popups (lib/modalStack.ts): the window less a margin — thin on a phone, up to 40px on a Full HD screen ---- */
+
+.modal-header-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.modal-overlay.maximized,
+.editor-overlay.maximized {
+  padding: clamp(6px, 2.1vw, 40px);
+}
+
+.modal-panel.maximized,
+.editor-panel.maximized {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+}
+
+/* ---- The hint of a two-key shortcut that is waiting for its second key (components/ChordHost.tsx) ---- */
+
+.chord-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + var(--csdrive-safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 3500;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* A chord is waiting: the hint glows (in dialogs too — it is above them), and the entry of the shortcut that was just pressed lights up. */
+.chord-hint.waiting,
+.chord-hint.matched {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 0 18px 3px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 6px 24px rgba(0, 0, 0, 0.3);
+  animation: chord-glow 1.4s ease-in-out infinite alternate;
+}
+
+.chord-hint .hit {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 600;
+}
+
+.chord-hint .hit kbd {
+  color: var(--fg);
+}
+
+@keyframes chord-glow {
+  from {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+      0 0 10px 1px color-mix(in srgb, var(--accent) 40%, transparent),
+      0 6px 24px rgba(0, 0, 0, 0.3);
+  }
+  to {
+    box-shadow:
+      0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent),
+      0 0 24px 6px color-mix(in srgb, var(--accent) 65%, transparent),
+      0 6px 24px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.chord-hint kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  font: inherit;
+  font-weight: 700;
+}
+
+/* ---- The note pages (system/notes/NotePage.tsx, NoteEditPage.tsx) ---- */
+
+.note-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  font-size: 13px;
+}
+
+.note-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.note-crumbs .link-button:disabled {
+  color: var(--fg);
+  font-weight: 600;
+  cursor: default;
+  text-decoration: none;
+}
+
+.note-self {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.note-edit-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* ---- A menu of actions that opens where it was asked for (components/ContextMenu.tsx) ---- */
+
+.context-menu {
+  position: fixed;
+  z-index: 3200;
+  min-width: 220px;
+  /* Its own natural width, whatever room is left at its corner, so that measuring it where it first appears
+     (ContextMenu.tsx) tells how far to move it. */
+  width: max-content;
+  max-width: min(360px, calc(100vw - 8px));
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu button svg {
+  flex-shrink: 0;
+}
+
+.context-menu button.separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  padding-top: 10px;
+}
+
+.context-menu button:hover:not(:disabled) {
+  background: var(--row-hover);
+}
+
+.context-menu button.danger {
+  color: var(--error-fg);
+}
+
+.context-menu button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+/* ---- The notes' rows, and the Notes settings ---- */
+
+.note-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.note-index {
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.note-row.selected td {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.note-selection {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notes-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel-bg);
+  border-radius: 8px;
+}
+
+.notes-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ---- The media viewer (components/MediaViewer.tsx) ---- */
+
+.media-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 3000; /* above the dialogs; the shortcut hint (3500) and the menus (3200) are above it */
+  background: #000;
+  color: #fff;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.media-stage {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.media-stage-image {
+  touch-action: none; /* the picture is dragged and pinched by the viewer itself */
+  cursor: grab;
+}
+
+.media-image {
+  position: absolute;
+  left: 0;
+  top: 0;
+  max-width: none;
+  max-height: none;
+  transform-origin: 0 0;
+  will-change: transform;
+  image-rendering: auto;
+}
+
+.media-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.media-sound {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.85);
+  word-break: break-word;
+}
+
+.media-message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
+.media-notice {
+  position: absolute;
+  left: 50%;
+  top: 64px;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.75);
+  font-size: 13px;
+}
+
+.media-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.6);
+  transition: opacity 0.2s ease;
+}
+
+.media-bar-top {
+  top: 0;
+  padding-top: calc(8px + var(--csdrive-safe-area-inset-top, 0px));
+}
+
+.media-bar-bottom {
+  bottom: 0;
+  justify-content: center;
+  padding-bottom: calc(8px + var(--csdrive-safe-area-inset-bottom, 0px));
+}
+
+.media-bar-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.media-bar .icon-button {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.media-bar .icon-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.media-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.media-count,
+.media-time,
+.media-zoom {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+}
+
+.media-zoom {
+  min-width: 3.5em;
+  text-align: center;
+}
+
+.media-player {
+  justify-content: stretch;
+}
+
+.media-progress {
+  flex: 1;
+  min-width: 60px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.media-skip {
+  width: auto;
+  min-width: 34px;
+  padding: 0 6px;
+  gap: 2px;
+  font-size: 11px;
+}
+
+/* ---- Folders listed as thumbnails (system/notes/ThumbnailGrid.tsx) ---- */
+
+.thumb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.thumb-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  overflow: hidden;
+}
+
+.thumb-card[data-kbd-focused] {
+  outline: 2px solid var(--accent);
+}
+
+.thumb-open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 120px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--row-hover);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.thumb-open img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.thumb-name {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.thumb-name span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumb-name .icon-button {
+  width: 26px;
+  height: 26px;
+}

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { FolderOpen, House, Pencil, Plus, Trash2 } from 'lucide-react'
+import { BookOpen, FolderOpen, House, Info, Pencil, Plus, Trash2 } from 'lucide-react'
+import DetailsModal from '../../components/DetailsModal'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
+import { pathForInput } from '../../lib/pathInput'
 import LocationPicker, { type Picked } from './LocationPicker'
 import {
   addExistingNotebook,
@@ -35,7 +37,15 @@ type Adding =
 /** The page for managing notebooks: the list of the ones this app knows, with what can be done to each — show its folder,
  * give it another title, take it out of the list — and how to add one: an existing notebook (one that is on this device or
  * in a Filen account but isn't listed) or a new one. */
-export default function NotebooksPage({ onHome, onShowFolder }: { onHome: () => void; onShowFolder: (entry: NotebookEntry) => void }) {
+export default function NotebooksPage({
+  onHome,
+  onShowFolder,
+  onOpenNotebook,
+}: {
+  onHome: () => void
+  onShowFolder: (entry: NotebookEntry) => void
+  onOpenNotebook: (entry: NotebookEntry) => void
+}) {
   const { roots, accounts, ready, addRoot, sourceOf } = useNotesSources()
   const [notebooks, setNotebooks] = useState<NotebookEntry[] | null>(null)
   const [checks, setChecks] = useState<Record<string, NotebookCheck>>({})
@@ -43,6 +53,7 @@ export default function NotebooksPage({ onHome, onShowFolder }: { onHome: () => 
   const [notice, setNotice] = useState<string | null>(null)
   const [adding, setAdding] = useState<Adding | null>(null)
   const [editing, setEditing] = useState<NotebookEntry | null>(null)
+  const [details, setDetails] = useState<NotebookEntry | null>(null)
   const [busy, setBusy] = useState(false)
   const [kbdFocus, setKbdFocus] = useState(-1)
   const mounted = useRef(true)
@@ -80,7 +91,7 @@ export default function NotebooksPage({ onHome, onShowFolder }: { onHome: () => 
     setFocused: setKbdFocus,
     onOpen: (index) => list[index] && onShowFolder(list[index]),
     onParent: onHome,
-    enabled: !adding && !editing,
+    enabled: !adding && !editing && !details,
   })
 
   async function guarded(work: () => Promise<void>) {
@@ -218,6 +229,8 @@ export default function NotebooksPage({ onHome, onShowFolder }: { onHome: () => 
                         {check?.state === 'problem' && <div className="notebook-problem">{check.reason}</div>}
                       </td>
                       <td className="row-actions">
+                        <IconButton icon={Info} label="Details" onClick={() => setDetails(entry)} />
+                        <IconButton icon={BookOpen} label="Open the notebook — its notes" onClick={() => onOpenNotebook(entry)} />
                         <IconButton icon={FolderOpen} label="Show its folder in the file manager" onClick={() => onShowFolder(entry)} />
                         <IconButton icon={Pencil} label="Change its title" onClick={() => setEditing(entry)} disabled={busy} />
                         <IconButton icon={Trash2} label="Take it out of the list (its files stay where they are)" variant="danger" onClick={() => remove(entry)} disabled={busy} />
@@ -230,6 +243,22 @@ export default function NotebooksPage({ onHome, onShowFolder }: { onHome: () => 
           )}
         </div>
       </main>
+
+      {details && (
+        <DetailsModal
+          title="Notebook"
+          fields={[
+            { label: 'Title', value: details.title },
+            { label: 'Where', value: describeLocation(details, roots, accounts) },
+            { label: 'Root folder', value: pathForInput(details.folder), mono: true },
+            { label: 'Notebook file', value: pathForInput(details.folder ? `${details.folder}/${details.fileName}` : details.fileName), mono: true },
+            { label: 'Notebook GUID', value: details.guid, mono: true, hidden: true },
+            { label: 'Added', value: new Date(details.addedAt).toLocaleString(), copy: false },
+          ]}
+          onClose={() => setDetails(null)}
+          onError={setError}
+        />
+      )}
 
       {adding?.step === 'choose' && (
         <Modal title="Add a notebook" onClose={() => setAdding(null)}>

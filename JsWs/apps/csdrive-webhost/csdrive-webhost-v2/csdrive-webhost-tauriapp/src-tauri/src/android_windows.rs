@@ -109,6 +109,29 @@ pub fn open(_app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
     })
 }
 
+/// The page an open window is at now.
+pub fn page_of(guid: &str) -> Option<Page> {
+    state().windows.get(guid).map(|w| w.page.clone())
+}
+
+/// Reloads the page the window shows.
+pub fn reload(guid: &str) {
+    if is_open(guid) {
+        let _ = call_strings("eval", &[guid, "location.reload()"]);
+    }
+}
+
+/// Takes the window to `page`: its navigation rule is told first (the load below is one it must let through).
+pub fn navigate(guid: &str, page: &Page) -> Result<(), String> {
+    let url = window_host::navigation_url(&page.url()?);
+    match state().windows.get_mut(guid) {
+        Some(window) => window.page = page.clone(),
+        None => return Err("That window isn't open.".to_string()),
+    }
+    let target = serde_json::to_string(url.as_str()).map_err(|e| e.to_string())?;
+    call_strings("eval", &[guid, &format!("location.replace({target})")])
+}
+
 /// The card of the window in the Recents screen shows `title`.
 pub fn set_title(guid: &str, title: &str) {
     if is_open(guid) {
@@ -246,11 +269,22 @@ pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_na
 }
 
 /// The WebView of window `guid` asks for `url`: the answer as `status(4) | header json length(4) | header json | body`.
+/// `range` and `origin` are the request's `Range` and `Origin` headers ("" when it has none): a media file is answered a
+/// piece at a time (see `file_serving`), so no file is ever held whole.
 #[no_mangle]
-pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeServe(mut env: JNIEnv, _class: JClass, guid: JString, url: JString) -> jbyteArray {
+pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeServe(
+    mut env: JNIEnv,
+    _class: JClass,
+    guid: JString,
+    url: JString,
+    range: JString,
+    origin: JString,
+) -> jbyteArray {
     let (guid, url) = (string_of(&mut env, &guid), string_of(&mut env, &url));
+    let (range, origin) = (string_of(&mut env, &range), string_of(&mut env, &origin));
+    let meta = crate::file_serving::RequestMeta { range: Some(range).filter(|r| !r.is_empty()), origin: Some(origin).filter(|o| !o.is_empty()) };
     let response = match (crate::android_jni::app(), Url::parse(&url)) {
-        (Some(app), Ok(url)) => tauri::async_runtime::block_on(serve(app, &guid, &url)),
+        (Some(app), Ok(url)) => tauri::async_runtime::block_on(serve(app, &guid, &url, &meta)),
         _ => plain(StatusCode::NOT_FOUND, "Not found"),
     };
     let mut headers = serde_json::Map::new();
@@ -280,6 +314,13 @@ pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_na
         crate::Nav::Allow => JNI_TRUE,
         crate::Nav::Browser => {
             crate::external_sites::open_in_browser(&url);
+            JNI_FALSE
+        }
+        crate::Nav::Request => {
+            if let Some(app) = crate::android_jni::app() {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move { crate::link_navigation::request(&app, &guid, url).await });
+            }
             JNI_FALSE
         }
         crate::Nav::Block => JNI_FALSE,
@@ -403,7 +444,7 @@ fn serve_app_asset(app: &AppHandle, path: &str, csp: &str) -> Response<Vec<u8>> 
 
 /// The answer to a request the WebView of window `guid` makes. Only the window's own kind of origin is served (web apps: the
 /// user origin; system apps: the frontend's) — anything else is refused, a second wall behind the CSP.
-async fn serve(app: &AppHandle, guid: &str, url: &Url) -> Response<Vec<u8>> {
+async fn serve(app: &AppHandle, guid: &str, url: &Url, meta: &crate::file_serving::RequestMeta) -> Response<Vec<u8>> {
     let path = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy().into_owned();
     let csp = crate::content_security_policy(app);
 
@@ -440,8 +481,11 @@ async fn serve(app: &AppHandle, guid: &str, url: &Url) -> Response<Vec<u8>> {
             .unwrap();
     }
     let response = match kind {
-        Kind::User if window_host::is_user_url(url) => crate::serve_user_path(app, &path).await,
+        Kind::User if window_host::is_user_url(url) => crate::serve_user_path(app, &path, meta).await,
         Kind::System if window_host::is_app_origin(url) => serve_app_asset(app, &path, &csp),
+        // A system app shows files of the user origin — a picture, a video — but only as such: its CSP lets it load them as
+        // images and media, never as a script or a page.
+        Kind::System if window_host::is_user_url(url) => crate::serve_user_path(app, &path, meta).await,
         _ => crate::respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp),
     };
     // Every page gets the bridge first in its head.

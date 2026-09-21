@@ -34,16 +34,33 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-async fn caller_app_id(pool: &SqlitePool, caller_guid: Option<&str>) -> Result<String, String> {
+/// The app a caller's state belongs to. `hosted`: the page a *system app's* window is showing when it is a web page (a note's
+/// markdown in a Notes tab) — that page has its own state, never the system app's.
+async fn caller_app_id(pool: &SqlitePool, caller_guid: Option<&str>, hosted: Option<String>) -> Result<String, String> {
     let Some(guid) = caller_guid else {
         return Ok(crate::layout::ADMIN_APP_ID.to_string());
     };
-    sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
+    let path: String = sqlx::query_scalar("SELECT relative_path FROM secondary_windows WHERE guid = ?1")
         .bind(guid)
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "This window isn't a registered app window.".to_string())
+        .ok_or_else(|| "This window isn't a registered app window.".to_string())?;
+    Ok(match hosted {
+        Some(page) if path.starts_with("system:") => page,
+        _ => path,
+    })
+}
+
+/// The page the calling window shows when it is a web page (not a system app's or the admin-app's page): its path, which is
+/// what names it as an app. `None` for the pages the window was made for.
+pub(crate) fn hosted_page_id(app: &tauri::AppHandle, window: &crate::window_host::CallerWindow) -> Option<String> {
+    if crate::window_host::is_system_page(window) {
+        return None;
+    }
+    let guid = crate::window_host::caller_guid(window)?;
+    let url = crate::window_host::current_page_url(app, &guid)?;
+    Some(percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy().trim_start_matches('/').to_string())
 }
 
 /// A setting that belongs to no one app but to the whole app — e.g. the page size every list uses, in
@@ -72,10 +89,11 @@ pub async fn set_global_setting(state: tauri::State<'_, AppDbState>, key: String
 #[tauri::command]
 pub async fn get_app_state(
     window: crate::window_host::CallerWindow,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppDbState>,
     key: String,
 ) -> Result<Option<String>, String> {
-    let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref()).await?;
+    let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref(), hosted_page_id(&app, &window)).await?;
     sqlx::query_scalar("SELECT value FROM app_state WHERE app_id = ?1 AND key = ?2")
         .bind(&app_id)
         .bind(&key)
@@ -87,11 +105,12 @@ pub async fn get_app_state(
 #[tauri::command]
 pub async fn set_app_state(
     window: crate::window_host::CallerWindow,
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppDbState>,
     key: String,
     value: String,
 ) -> Result<(), String> {
-    let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref()).await?;
+    let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref(), hosted_page_id(&app, &window)).await?;
     sqlx::query(
         "INSERT INTO app_state (app_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT(app_id, key) DO UPDATE SET value = excluded.value",
@@ -109,7 +128,7 @@ pub async fn set_app_state(
 /// For other modules' tests: the app id state is kept under for a window.
 #[cfg(test)]
 pub(crate) async fn caller_app_id_for_test(pool: &SqlitePool, guid: &str) -> String {
-    caller_app_id(pool, Some(guid)).await.unwrap()
+    caller_app_id(pool, Some(guid), None).await.unwrap()
 }
 
 #[cfg(test)]
@@ -170,9 +189,14 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert_eq!(caller_app_id(&pool, None).await.unwrap(), crate::layout::ADMIN_APP_ID);
-            assert_eq!(caller_app_id(&pool, Some("win-1")).await.unwrap(), "qwer/index1.html");
-            assert!(caller_app_id(&pool, Some("unknown")).await.is_err());
+            assert_eq!(caller_app_id(&pool, None, None).await.unwrap(), crate::layout::ADMIN_APP_ID);
+            assert_eq!(caller_app_id(&pool, Some("win-1"), None).await.unwrap(), "qwer/index1.html");
+            assert!(caller_app_id(&pool, Some("unknown"), None).await.is_err());
+            // A web page shown in a tab of a system app's window never gets the system app's state.
+            sqlx::query("INSERT INTO secondary_windows (guid, relative_path, created_at) VALUES ('win-notes', 'system:notes', 0)").execute(&pool).await.unwrap();
+            assert_eq!(caller_app_id(&pool, Some("win-notes"), None).await.unwrap(), "system:notes");
+            assert_eq!(caller_app_id(&pool, Some("win-notes"), Some("@filen/1/-/Book/001/n.md".to_string())).await.unwrap(), "@filen/1/-/Book/001/n.md");
+            assert_eq!(caller_app_id(&pool, Some("win-1"), Some("elsewhere.html".to_string())).await.unwrap(), "qwer/index1.html", "an ordinary window keeps its own");
         });
     }
 

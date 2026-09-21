@@ -341,6 +341,29 @@ pub fn focus(app: &AppHandle, guid: &str) -> Result<(), String> {
     platform::focus(app, guid)
 }
 
+/// The address of the page an open web app window is at now — what its navigation rule compares with (it moves when
+/// the person opens a link in the window's tab, see `navigate`). `None` when the window isn't open.
+pub fn current_page_url(app: &AppHandle, guid: &str) -> Option<Url> {
+    platform::current_page_url(app, guid)
+}
+
+/// Reloads the page an open window shows (what `location.reload()` does). A no-op for a window that isn't open.
+pub fn reload(app: &AppHandle, guid: &str) {
+    platform::reload(app, guid)
+}
+
+/// Takes the open window to `page`: what it is allowed to be at from now on, and shown there. (Only the person's choice
+/// in the link prompt, or a tab they activate, does this — a page never moves itself.)
+pub fn navigate(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
+    platform::navigate(app, guid, page)
+}
+
+/// Asks the person something in a native box that belongs to the window (`labels`: two or three buttons); the answer is the
+/// index of the button pressed — `None` when the box was dismissed, or the window isn't open (any more).
+pub async fn choose(app: &AppHandle, guid: &str, title: &str, message: &str, labels: &[&str]) -> Option<usize> {
+    platform::choose(app, guid, title, message, labels).await
+}
+
 // ── Desktop: real OS windows ──────────────────────────────────────────────────
 
 #[cfg(desktop)]
@@ -356,6 +379,55 @@ mod platform {
 
     pub fn is_open(app: &AppHandle, guid: &str) -> bool {
         app.get_webview_window(guid).is_some()
+    }
+
+    /// The page each open web app or system app window is at: what its navigation rule compares with.
+    fn owns() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<Url>>>> {
+        static OWNS: OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<Url>>>>> = OnceLock::new();
+        OWNS.get_or_init(Default::default).lock().unwrap()
+    }
+
+    pub fn current_page_url(app: &AppHandle, guid: &str) -> Option<Url> {
+        app.get_webview_window(guid)?;
+        owns().get(guid).map(|own| own.lock().unwrap().clone())
+    }
+
+    pub fn reload(app: &AppHandle, guid: &str) {
+        if let Some(window) = app.get_webview_window(guid) {
+            let _ = window.eval("location.reload()");
+        }
+    }
+
+    pub fn navigate(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
+        let url = page.url()?;
+        let window = app.get_webview_window(guid).ok_or("That window isn't open.")?;
+        // The rule is told first: the navigation below is one it must let through.
+        if let Some(own) = owns().get(guid) {
+            *own.lock().unwrap() = url.clone();
+        }
+        window.navigate(navigation_url(&url)).map_err(|e| e.to_string())
+    }
+
+    pub async fn choose(app: &AppHandle, guid: &str, title: &str, message: &str, labels: &[&str]) -> Option<usize> {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
+        app.get_webview_window(guid)?; // the window must still be open
+        let buttons = match labels {
+            [a] => MessageDialogButtons::OkCustom(a.to_string()),
+            [a, b] => MessageDialogButtons::OkCancelCustom(a.to_string(), b.to_string()),
+            [a, b, c] => MessageDialogButtons::YesNoCancelCustom(a.to_string(), b.to_string(), c.to_string()),
+            _ => return None,
+        };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        app.dialog().message(message).title(title).kind(MessageDialogKind::Info).buttons(buttons).show_with_result(move |answer| {
+            let _ = sender.send(answer);
+        });
+        let labels: Vec<String> = labels.iter().map(|l| l.to_string()).collect();
+        match receiver.await.ok()? {
+            MessageDialogResult::Custom(label) => labels.iter().position(|l| *l == label),
+            MessageDialogResult::Ok | MessageDialogResult::Yes => Some(0),
+            MessageDialogResult::No => Some(1),
+            _ => None,
+        }
     }
 
     pub fn set_title(app: &AppHandle, guid: &str, title: &str) {
@@ -377,8 +449,20 @@ mod platform {
             ),
         };
 
-        // A web app's or system app's window stays at its own page (see `lock_down_navigation`).
-        let window = crate::lock_down_navigation(WebviewWindowBuilder::new(app, guid, url), Allowed::for_kind(page.kind), Some(page.url()?))
+        // A web app's or system app's window stays at its own page (see `lock_down_navigation`); what it asks for beyond that
+        // is put to the person (`link_navigation`).
+        let own = std::sync::Arc::new(std::sync::Mutex::new(page.url()?));
+        owns().insert(guid.to_string(), own.clone());
+        let (app_for_request, guid_for_request) = (app.clone(), guid.to_string());
+        let on_request: std::sync::Arc<dyn Fn(Url) + Send + Sync> = std::sync::Arc::new(move |target| {
+            let (app, guid) = (app_for_request.clone(), guid_for_request.clone());
+            tauri::async_runtime::spawn(async move { crate::link_navigation::request(&app, &guid, target).await });
+        });
+        let window = crate::lock_down_navigation(
+            WebviewWindowBuilder::new(app, guid, url),
+            Allowed::for_kind(page.kind),
+            Some(crate::OwnPage { url: own, on_request }),
+        )
             .title(page.title())
             .inner_size(1024.0, 768.0)
             // Without this, wry hands the page the *real paths* of files dropped on it (Tauri's
@@ -392,6 +476,7 @@ mod platform {
         let guid_for_event = guid.to_string();
         window.on_window_event(move |event| {
             if let WindowEvent::Destroyed = event {
+                owns().remove(&guid_for_event);
                 let app_handle = app_for_event.clone();
                 let guid = guid_for_event.clone();
                 tauri::async_runtime::spawn(async move {
@@ -454,6 +539,22 @@ mod platform {
 
     pub fn is_open(_app: &AppHandle, guid: &str) -> bool {
         host::is_open(guid)
+    }
+
+    pub fn current_page_url(_app: &AppHandle, guid: &str) -> Option<Url> {
+        host::page_of(guid)?.url().ok()
+    }
+
+    pub fn navigate(_app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
+        host::navigate(guid, page)
+    }
+
+    pub fn reload(_app: &AppHandle, guid: &str) {
+        host::reload(guid)
+    }
+
+    pub async fn choose(_app: &AppHandle, guid: &str, title: &str, message: &str, labels: &[&str]) -> Option<usize> {
+        host::ask(guid, title, message, labels).await
     }
 
     pub fn set_title(_app: &AppHandle, guid: &str, title: &str) {

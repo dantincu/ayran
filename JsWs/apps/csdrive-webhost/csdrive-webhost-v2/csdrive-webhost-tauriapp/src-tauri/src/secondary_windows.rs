@@ -129,6 +129,9 @@ pub struct TabRecord {
     /// The web apps opened from this tab (a Notes tab) — pages of files in a folder or a Filen account — as
     /// windows of their own that are listed here rather than among the apps (see `notes_pages`).
     pub opened_apps: Vec<crate::notes_pages::OpenedAppRecord>,
+    /// Whether an open window is showing this tab right now — the only case in which it can be reloaded. (Filled in by
+    /// `list_secondary_windows`; false everywhere else.)
+    pub showing: bool,
 }
 
 /// The Filen account (and branch) a page was opened from — see `Origin`.
@@ -330,6 +333,27 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
         sqlx::query("ALTER TABLE tabs ADD COLUMN app_title TEXT").execute(&pool).await?;
     }
 
+    // `link_page`: the page a tab shows when the person opened a link in it (`link_navigation`) — its path (as a URL has it) and
+    // query — instead of the page its window was opened at. NULL for every other tab: an app that keeps several tabs in one
+    // page decides for itself what each shows (a tab switch is an event, not a navigation).
+    let has_link_page_column: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('tabs') WHERE name = 'link_page'")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    if has_link_page_column == 0 {
+        sqlx::query("ALTER TABLE tabs ADD COLUMN link_page TEXT").execute(&pool).await?;
+    }
+
+    // `syncs`: the file (its served path) whose editor this tab follows — the tab reloads when the file is saved. Only the tab a note
+    // was first opened in has one; NULL for every other tab.
+    let has_syncs_column: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_table_info('tabs') WHERE name = 'syncs'")
+        .fetch_one(&pool)
+        .await
+        .unwrap_or(0);
+    if has_syncs_column == 0 {
+        sqlx::query("ALTER TABLE tabs ADD COLUMN syncs TEXT").execute(&pool).await?;
+    }
+
     // `resource_type` was added after `tabs` first shipped — add it to any table
     // that predates it (a plain nullable column, so existing rows are unaffected).
     let has_resource_type_column: i64 = sqlx::query_scalar(
@@ -409,6 +433,185 @@ pub(crate) async fn page_of(pool: &SqlitePool, guid: &str) -> Result<Page, Strin
     Ok(Page::new(Kind::parse(Some(&kind))?, row.get::<String, _>("relative_path")))
 }
 
+/// The page a window shows when it shows `tab_guid`: the one its entry was made for — or, for a tab the person opened a link in
+/// (`link_page`), the page that link led to.
+pub(crate) async fn page_to_show(pool: &SqlitePool, tab_guid: &str, window_page: &Page) -> Result<Page, String> {
+    let link: Option<String> = sqlx::query_scalar("SELECT link_page FROM tabs WHERE guid = ?1").bind(tab_guid).fetch_optional(pool).await.map_err(|e| e.to_string())?.flatten();
+    // A web page is a web page whatever kind of window it is shown in: in a tab of a system app's window (Notes shows a note's
+    // markdown that way) it has a web page's rights — who is calling follows the page the window shows.
+    Ok(match link.filter(|l| !l.is_empty()) {
+        Some(link) => Page::new(Kind::User, link),
+        None => window_page.clone(),
+    })
+}
+
+/// The tab the window shows: the one its page bound to — or, for a page that never registers a tab (a plain html file needs no
+/// library), the one made ready for it when it was opened.
+async fn tab_showing(state: &SecondaryWindowsState, window_guid: &str, window_page: &Page) -> Result<String, String> {
+    let pending = state.pending_tab_activation.lock().unwrap().get(window_guid).map(|(tab, _)| tab.clone());
+    match state.current_tab_of(window_guid).or(pending) {
+        Some(tab) => Ok(tab),
+        None => Ok(tab_for_opening(&state.pool, window_guid, &window_page.relative_path, None).await?.0),
+    }
+}
+
+/// The tab of `window_guid` that follows the editor of `syncs` (a file's served path), if there is one.
+pub(crate) async fn syncing_tab(pool: &SqlitePool, window_guid: &str, syncs: &str) -> Result<Option<String>, String> {
+    sqlx::query_scalar("SELECT guid FROM tabs WHERE window_guid = ?1 AND syncs = ?2 ORDER BY created_at ASC LIMIT 1")
+        .bind(window_guid)
+        .bind(syncs)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The tab of `window_guid` that shows the app itself (no linked page) — where a window goes back to when a tab that showed a
+/// web page is suspended or closed. The newest, if there are several.
+pub(crate) async fn home_tab(pool: &SqlitePool, window_guid: &str) -> Result<Option<String>, String> {
+    sqlx::query_scalar("SELECT guid FROM tabs WHERE window_guid = ?1 AND (link_page IS NULL OR link_page = '') ORDER BY created_at DESC LIMIT 1")
+        .bind(window_guid)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Whether `window_guid` shows `tab_guid` now.
+pub(crate) fn window_shows(state: &SecondaryWindowsState, window_guid: &str, tab_guid: &str) -> bool {
+    state.current_tab_of(window_guid).as_deref() == Some(tab_guid)
+}
+
+/// The open windows that show a tab that follows the editor of `syncs` — only those reload when the file is saved.
+pub(crate) async fn syncing_windows(app: &AppHandle, syncs: &str) -> Result<Vec<String>, String> {
+    let state = app.state::<SecondaryWindowsState>();
+    let rows = sqlx::query("SELECT guid, window_guid FROM tabs WHERE syncs = ?1").bind(syncs).fetch_all(&state.pool).await.map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let (tab, window): (String, String) = (row.get("guid"), row.get("window_guid"));
+            (window_shows(&state, &window, &tab) && crate::window_host::is_open(app, &window)).then_some(window)
+        })
+        .collect())
+}
+
+/// Adds a tab that shows the web page `link_page` (a path as a URL has it, with its query) to the group of the tab `window_guid`
+/// shows, without showing it. `syncs`: the file whose editor it follows. Resolves to the new tab's guid.
+pub(crate) async fn add_page_tab(app: &AppHandle, window_guid: &str, link_page: &str, syncs: Option<&str>) -> Result<String, String> {
+    let state = app.state::<SecondaryWindowsState>();
+    let window_page = page_of(&state.pool, window_guid).await?;
+    let current = tab_showing(&state, window_guid, &window_page).await?;
+    let row = sqlx::query("SELECT group_guid, app_version FROM tabs WHERE guid = ?1 AND window_guid = ?2")
+        .bind(&current)
+        .bind(window_guid)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("The window's tab is gone.")?;
+    let (group, app_version): (String, i64) = (row.get("group_guid"), row.get("app_version"));
+    let tab_guid = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, link_page, syncs, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?6, ?7, ?8)",
+    )
+    .bind(&tab_guid)
+    .bind(&group)
+    .bind(window_guid)
+    .bind(&window_page.relative_path)
+    .bind(app_version)
+    .bind(link_page)
+    .bind(syncs)
+    .bind(current_millis())
+    .execute(&state.pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(tab_guid)
+}
+
+/// Opens a window of the Notes app whose only tab shows the web page `link_page` (see `add_page_tab`; `syncs` likewise) — a note
+/// followed by its editor from a window of its own. Resolves to the new window's guid.
+pub(crate) async fn open_notes_window_with_page(app: &AppHandle, link_page: &str, syncs: Option<&str>) -> Result<String, String> {
+    let state = app.state::<SecondaryWindowsState>();
+    let page = Page::new(Kind::System, crate::system_apps::relative_path_of("notes"));
+    validate_page(app, &page)?;
+    let (guid, _) = insert_entry(&state.pool, &page).await?;
+    let (tab_guid, _) = tab_for_opening(&state.pool, &guid, &page.relative_path, None).await?;
+    sqlx::query("UPDATE tabs SET resource_id = ?1, link_page = ?1, syncs = ?2 WHERE guid = ?3")
+        .bind(link_page)
+        .bind(syncs)
+        .bind(&tab_guid)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid.clone(), true));
+    let shown = page_to_show(&state.pool, &tab_guid, &page).await?;
+    crate::window_host::open(app, &guid, &shown)?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(guid)
+}
+
+/// Shows the page `url` (a page of the same web app space as the window's — see `link_navigation`) in the open window
+/// `window_guid`, **in its current tab** (the tab now shows that page) or **in a new tab of the same tab group** (which
+/// becomes the window's current tab); the window is taken there. The tab remembers the page (`link_page`), so reopening the
+/// window or coming back to the tab shows it again.
+pub(crate) async fn open_link_in_window(app: &AppHandle, window_guid: &str, url: &Url, new_tab: bool) -> Result<(), String> {
+    let state = app.state::<SecondaryWindowsState>();
+    let window_page = page_of(&state.pool, window_guid).await?;
+    if !crate::window_host::is_open(app, window_guid) {
+        return Err("That window isn't open.".to_string());
+    }
+    let current = tab_showing(&state, window_guid, &window_page).await?;
+    // The tab stays a tab *of the window's app* (its `relative_path` is the app's, which is what lets it move to another window
+    // of the same app); what it shows is `link_page`.
+    let (_, resource_id) = split_url_into_path_and_resource_id(url.as_str())?;
+    let link_page = resource_id.clone();
+
+    let tab_guid = if new_tab {
+        let row = sqlx::query("SELECT group_guid, app_version FROM tabs WHERE guid = ?1 AND window_guid = ?2")
+            .bind(&current)
+            .bind(window_guid)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("The window's tab is gone.")?;
+        let (group, app_version): (String, i64) = (row.get("group_guid"), row.get("app_version"));
+        let tab_guid = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, link_page, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, ?7, ?8)",
+        )
+        .bind(&tab_guid)
+        .bind(&group)
+        .bind(window_guid)
+        .bind(&window_page.relative_path)
+        .bind(app_version)
+        .bind(&resource_id)
+        .bind(&link_page)
+        .bind(current_millis())
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        tab_guid
+    } else {
+        sqlx::query(
+            "UPDATE tabs SET resource_id = ?1, resource_type = NULL, tab_text = NULL, app_title = NULL, link_page = ?2 WHERE guid = ?3",
+        )
+        .bind(&resource_id)
+        .bind(&link_page)
+        .bind(&current)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        current
+    };
+
+    state.pending_tab_activation.lock().unwrap().remove(window_guid);
+    state.current_tabs.lock().unwrap().insert(window_guid.to_string(), tab_guid);
+    crate::window_host::navigate(app, window_guid, &Page::new(Kind::User, link_page))?;
+    refresh_window_title(app, window_guid).await;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(())
+}
+
 /// The page a caller means: a web app is named by its html file, a system app by `system:<id>` — or
 /// just its id.
 fn page_from_request(kind: Kind, relative_path: &str) -> Page {
@@ -455,6 +658,20 @@ pub(crate) async fn origin_row(pool: &SqlitePool, window_guid: &str) -> Result<(
 
 /// Opens a web app that belongs to `parent_tab` (a Notes tab): its own window entry, listed under that tab.
 /// Resolves to the entry's guid.
+/// Opens the user-folder page `relative_path` in a window of its own, listed among the apps like one opened from the admin-app —
+/// what a web page does when it opens another one (`open_related_web_app`). Resolves to the new window's guid.
+pub(crate) async fn open_page_window(app: &AppHandle, relative_path: String) -> Result<String, String> {
+    let state = app.state::<SecondaryWindowsState>();
+    let page = Page::new(Kind::User, relative_path);
+    validate_page(app, &page)?;
+    let (guid, _) = insert_entry(&state.pool, &page).await?;
+    let (tab_guid, created) = tab_for_opening(&state.pool, &guid, &page.relative_path, None).await?;
+    state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, !created));
+    crate::window_host::open(app, &guid, &page)?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(guid)
+}
+
 pub(crate) async fn open_child_window(app: &AppHandle, relative_path: String, origin: Origin, parent_tab: String) -> Result<String, String> {
     let state = app.state::<SecondaryWindowsState>();
     let page = Page::new(Kind::User, relative_path);
@@ -889,6 +1106,7 @@ async fn fetch_tabs(pool: &SqlitePool, group_guids: &[String]) -> Result<Vec<Tab
                 tags,
                 external_pages,
                 opened_apps,
+                showing: false,
             }
         })
         .collect())
@@ -1003,6 +1221,7 @@ pub async fn list_secondary_windows(
         })
         .collect();
     for tab in records.iter_mut().flat_map(|w| w.tab_groups.iter_mut()).flat_map(|g| g.tabs.iter_mut()) {
+        tab.showing = crate::window_host::is_open(&app, &tab.window_guid) && window_shows(&state, &tab.window_guid, &tab.guid);
         for external in tab.external_pages.iter_mut() {
             external.is_open = crate::external_sites::is_open(&app, &external.guid);
         }
@@ -1235,9 +1454,12 @@ pub async fn reopen_secondary_window(
     }
 
     // The window shows the tab it showed when it was suspended (else its first one, else a new
-    // placeholder), and its page's init request binds to that tab — no new tab appears.
+    // placeholder), and its page's init request binds to that tab — no new tab appears. A tab the person opened a link
+    // in shows that link's page.
     let showed = state.current_tabs.lock().unwrap().get(&guid).cloned();
     let (tab_guid, created) = tab_for_opening(&state.pool, &guid, &page.relative_path, showed.as_deref()).await?;
+    let page = page_to_show(&state.pool, &tab_guid, &page).await?;
+    validate_page(&app, &page)?;
     state.pending_tab_activation.lock().unwrap().insert(guid.clone(), (tab_guid, !created));
 
     crate::window_host::open(&app, &guid, &page)?;
@@ -1336,6 +1558,29 @@ pub fn focus_secondary_window(app: AppHandle, guid: String) -> Result<(), String
     crate::window_host::focus(&app, &guid)
 }
 
+/// Reloads the page an **open** window shows — the same as `location.reload()` in it, whichever tab that is.
+#[tauri::command]
+pub fn reload_secondary_window(app: AppHandle, guid: String) -> Result<(), String> {
+    if !crate::window_host::is_open(&app, &guid) {
+        return Err("That window isn't open.".into());
+    }
+    crate::window_host::reload(&app, &guid);
+    Ok(())
+}
+
+/// Reloads a tab — when it is **the one an open window is showing** (a tab that isn't shown has no page to reload).
+#[tauri::command]
+pub async fn reload_tab(app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, tab_guid: String) -> Result<(), String> {
+    let window_guid: Option<String> =
+        sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1").bind(&tab_guid).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
+    let window_guid = window_guid.ok_or("That tab doesn't exist.")?;
+    if !crate::window_host::is_open(&app, &window_guid) || !window_shows(&state, &window_guid, &tab_guid) {
+        return Err("That tab isn't shown in an open window, so there is nothing to reload.".into());
+    }
+    crate::window_host::reload(&app, &window_guid);
+    Ok(())
+}
+
 /// Splits a page's full `location.href` into the window's own html-file relative
 /// path (no query — used to group tabs under the right app/window) and the tab's
 /// resource identifier (relative path *with* its query string, if any — the piece
@@ -1412,9 +1657,9 @@ async fn next_group_name(pool: &SqlitePool, window_guid: &str) -> Result<String,
 /// app_version is new/newer for this html file, alongside the usual response.
 /// Tells a page how it was opened (see `Origin`): its own path, who opened it and where it is stored. The
 /// window it runs in is found from its tab.
-async fn fill_origin(pool: &SqlitePool, response: &mut TabInitResponse) -> Result<(), String> {
+async fn fill_origin(pool: &SqlitePool, app: Option<&AppHandle>, response: &mut TabInitResponse) -> Result<(), String> {
     let row = sqlx::query(
-        "SELECT w.kind AS kind, w.relative_path AS relative_path, w.origin AS origin
+        "SELECT w.kind AS kind, w.relative_path AS relative_path, w.origin AS origin, t.link_page AS link_page
          FROM tabs t JOIN secondary_windows w ON w.guid = t.window_guid WHERE t.guid = ?1",
     )
     .bind(&response.tab_guid)
@@ -1425,6 +1670,36 @@ async fn fill_origin(pool: &SqlitePool, response: &mut TabInitResponse) -> Resul
     let kind: String = row.get("kind");
     let origin: Origin = row.get::<Option<String>, _>("origin").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
     response.relative_path = origin.path.unwrap_or_else(|| row.get("relative_path"));
+    // A tab the person opened a link in shows another file of the same storage than the one the window was opened for.
+    if let Some(link) = row.get::<Option<String>, _>("link_page") {
+        let path = percent_encoding::percent_decode_str(link.split('?').next().unwrap_or("")).decode_utf8_lossy().to_string();
+        // Where the page is, from its address: what it is told about itself follows the page (in a tab of a system app's window
+        // the window's own origin — bundled — is not the page's).
+        response.relative_path = match crate::notes_pages::parse_special(&format!("/{path}")) {
+            Some(Ok(crate::notes_pages::Special::Filen { user_id, branch, path })) => {
+                response.storage = "FilenCloud".to_string();
+                let email = match app {
+                    Some(app) => crate::filen::email_of(app, user_id).await.unwrap_or_default(),
+                    None => String::new(),
+                };
+                response.filen = Some(FilenOrigin { account_id: user_id as i64, email, branch: None, branch_index: branch });
+                path
+            }
+            Some(Ok(crate::notes_pages::Special::Device { path, .. })) => {
+                response.storage = "DeviceFolder".to_string();
+                response.filen = None;
+                path
+            }
+            _ => {
+                response.storage = "UserFolder".to_string();
+                response.filen = None;
+                path
+            }
+        };
+        if kind == "system" {
+            response.opened_by = "NotesApp".to_string();
+        }
+    }
     response.opened_by = origin.opened_by.unwrap_or_else(|| "AdminApp".to_string());
     response.storage = origin.storage.unwrap_or_else(|| if kind == "system" { "Bundled" } else { "UserFolder" }.to_string());
     response.filen = origin.filen;
@@ -1575,7 +1850,7 @@ pub async fn init_window_tab(
 
     let _ = app.emit(EVENT_CHANGED, ());
     result.code_snippets = crate::code_snippets::code_snippets();
-    fill_origin(&state.pool, &mut result).await?;
+    fill_origin(&state.pool, Some(&app), &mut result).await?;
     Ok(result)
 }
 
@@ -1650,7 +1925,7 @@ pub async fn add_window_tab(
     }
     let _ = app.emit(EVENT_CHANGED, ());
     result.code_snippets = crate::code_snippets::code_snippets();
-    fill_origin(&state.pool, &mut result).await?;
+    fill_origin(&state.pool, Some(&app), &mut result).await?;
     Ok(result)
 }
 
@@ -1679,6 +1954,10 @@ async fn update_tab_resource_impl(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
+    if resource_id.is_some() {
+        // A tab that shows a page a link led to keeps showing what its page says it is at now.
+        sqlx::query("UPDATE tabs SET link_page = resource_id WHERE guid = ?1 AND link_page IS NOT NULL").bind(tab_guid).execute(pool).await.map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1774,7 +2053,13 @@ pub async fn submit_resource_icons(
         .fetch_optional(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
-    let relative_path = relative_path.ok_or_else(|| "Window not found.".to_string())?;
+    let mut relative_path = relative_path.ok_or_else(|| "Window not found.".to_string())?;
+    // A web page shown in a tab of a system app's window submits icons for itself, never over the system app's.
+    if relative_path.starts_with("system:") {
+        if let Some(page) = crate::app_state::hosted_page_id(&app, &window) {
+            relative_path = page;
+        }
+    }
 
     for (resource_type, svg) in icons {
         sqlx::query(
@@ -1903,6 +2188,7 @@ pub async fn add_blank_tab(
         tags: Vec::new(),
         external_pages: Vec::new(),
         opened_apps: Vec::new(),
+        showing: false,
     })
 }
 
@@ -1929,8 +2215,8 @@ pub async fn clone_tab(
     let new_guid = uuid::Uuid::new_v4().to_string();
     let created_at = current_millis();
     sqlx::query(
-        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, created_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, NULL, NULL, ?6)",
+        "INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, link_page, created_at)
+         VALUES (?1, ?2, ?3, ?4, 0, ?5, NULL, NULL, (SELECT link_page FROM tabs WHERE guid = ?7), ?6)",
     )
     .bind(&new_guid)
     .bind(&group_guid)
@@ -1938,6 +2224,7 @@ pub async fn clone_tab(
     .bind(&relative_path)
     .bind(&resource_id)
     .bind(created_at)
+    .bind(&tab_guid)
     .execute(&state.pool)
     .await
     .map_err(|e| e.to_string())?;
@@ -1959,6 +2246,7 @@ pub async fn clone_tab(
         tags: Vec::new(),
         external_pages: Vec::new(),
         opened_apps: Vec::new(),
+        showing: false,
     })
 }
 
@@ -1981,10 +2269,18 @@ pub async fn activate_tab(
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "Tab not found.".to_string())?;
-    let page = page_of(&state.pool, &window_guid).await?;
+    let page = page_to_show(&state.pool, &tab_guid, &page_of(&state.pool, &window_guid).await?).await?;
     let payload = navigation_payload(&state.pool, &tab_guid).await?;
 
-    if crate::window_host::emit_if_open(&app, &window_guid, EVENT_TAB_NAVIGATE, payload) {
+    // A tab of a web app's window that shows another *page* than the window is at (a link was opened in it) is shown by
+    // taking the window there; every other tab switch is the event, and the page shows the tab in place.
+    let elsewhere = crate::window_host::current_page_url(&app, &window_guid).zip(page.url().ok()).is_some_and(|(now, wanted)| !crate::same_page(&wanted, &now));
+    if elsewhere {
+        state.pending_tab_activation.lock().unwrap().remove(&window_guid);
+        state.current_tabs.lock().unwrap().insert(window_guid.clone(), tab_guid);
+        crate::window_host::navigate(&app, &window_guid, &page)?;
+        refresh_window_title(&app, &window_guid).await;
+    } else if crate::window_host::emit_if_open(&app, &window_guid, EVENT_TAB_NAVIGATE, payload) {
         // The window shows it now; if its page loads again (it reloads itself in response, or the
         // person presses reload), its init request binds to the window's current tab.
         state.pending_tab_activation.lock().unwrap().remove(&window_guid);
@@ -2102,7 +2398,7 @@ async fn navigation_payload(pool: &SqlitePool, tab_guid: &str) -> Result<TabInit
         code_snippets: crate::code_snippets::code_snippets(),
         ..Default::default()
     };
-    fill_origin(pool, &mut response).await?;
+    fill_origin(pool, None, &mut response).await?;
     Ok(response)
 }
 
@@ -2285,6 +2581,37 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_a_link_was_opened_in_shows_that_page_and_follows_the_resource_id_the_page_reports() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("link-page").await;
+            insert_window(&pool, "win1", "docs/a.md").await;
+            let tab = init_tab(&pool, "win1", "docs/a.md", "docs/a.md", 1).await;
+            let window_page = Page::new(Kind::User, "docs/a.md");
+
+            // An ordinary tab shows the page its window was opened for.
+            assert_eq!(page_to_show(&pool, &tab.tab_guid, &window_page).await.unwrap(), window_page);
+
+            // A link opened in it: it shows that page from then on.
+            sqlx::query("UPDATE tabs SET link_page = 'docs/b.md?x=1', resource_id = 'docs/b.md?x=1' WHERE guid = ?1").bind(&tab.tab_guid).execute(&pool).await.unwrap();
+            assert_eq!(page_to_show(&pool, &tab.tab_guid, &window_page).await.unwrap(), Page::new(Kind::User, "docs/b.md?x=1"));
+
+            // The page says it is at another address of its own: the tab follows it.
+            let blank = TabText { first_row: vec![], second_row: vec![] };
+            update_tab_resource_impl(&pool, &tab.tab_guid, &blank, None, None, Some("docs/b.md?x=2")).await.unwrap();
+            assert_eq!(page_to_show(&pool, &tab.tab_guid, &window_page).await.unwrap(), Page::new(Kind::User, "docs/b.md?x=2"));
+
+            // A tab of a system app's window can show a page too — a web page, in a window that is the system app's.
+            let system = Page::new(Kind::System, "system:notes");
+            assert_eq!(page_to_show(&pool, &tab.tab_guid, &system).await.unwrap(), Page::new(Kind::User, "docs/b.md?x=2"));
+
+            // A tab that no link touched is not made to follow anything.
+            let other = init_tab(&pool, "win1", "docs/a.md", "docs/a.md?k=1", 1).await;
+            update_tab_resource_impl(&pool, &other.tab_guid, &blank, None, None, Some("docs/a.md?k=2")).await.unwrap();
+            assert_eq!(page_to_show(&pool, &other.tab_guid, &window_page).await.unwrap(), window_page);
+        });
+    }
+
+    #[test]
     fn tab_text_round_trips_through_json_storage() {
         tauri::async_runtime::block_on(async {
             let pool = test_pool("tab-text").await;
@@ -2391,6 +2718,64 @@ mod tests {
 
             let groups = fetch_tab_groups(&pool, &["win2".to_string()]).await.unwrap();
             assert_eq!(groups[0].tabs.len(), 2, "the moved tab should now be alongside win2's own tab");
+        });
+    }
+
+    #[test]
+    fn a_web_page_in_a_tab_of_a_system_window_is_a_web_page_and_only_one_tab_follows_the_editor() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("syncs").await;
+            insert_window(&pool, "win1", "system:notes").await;
+            let home = init_tab(&pool, "win1", "system:notes", "system:notes?v=home", 1).await;
+            let notes_page = Page::new(Kind::System, "system:notes");
+            // A tab of the Notes window that shows a note's markdown: its page is a web page's, whatever the window is.
+            let note_tab = uuid::Uuid::new_v4().to_string();
+            let group: String = sqlx::query_scalar("SELECT group_guid FROM tabs WHERE guid = ?1").bind(&home.tab_guid).fetch_one(&pool).await.unwrap();
+            sqlx::query("INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, link_page, syncs, created_at) VALUES (?1, ?2, 'win1', 'system:notes', 1, 'Book/001/n.md', NULL, NULL, 'Book/001/n.md', '/Book/001/n.md', 5)")
+                .bind(&note_tab)
+                .bind(&group)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(page_to_show(&pool, &note_tab, &notes_page).await.unwrap(), Page::new(Kind::User, "Book/001/n.md"));
+            assert_eq!(page_to_show(&pool, &home.tab_guid, &notes_page).await.unwrap(), notes_page, "the app's own tab shows the app");
+
+            // The tab that follows the editor of a file: found by the file, per window.
+            assert_eq!(syncing_tab(&pool, "win1", "/Book/001/n.md").await.unwrap(), Some(note_tab.clone()));
+            assert_eq!(syncing_tab(&pool, "win1", "/Book/001/other.md").await.unwrap(), None);
+            assert_eq!(syncing_tab(&pool, "win2", "/Book/001/n.md").await.unwrap(), None, "another window has none");
+            // A tab that shows the same page but does not follow the editor is not it.
+            let plain = uuid::Uuid::new_v4().to_string();
+            sqlx::query("INSERT INTO tabs (guid, group_guid, window_guid, relative_path, app_version, resource_id, resource_type, tab_text, link_page, created_at) VALUES (?1, ?2, 'win1', 'system:notes', 1, 'Book/001/n.md', NULL, NULL, 'Book/001/n.md', 6)")
+                .bind(&plain)
+                .bind(&group)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(syncing_tab(&pool, "win1", "/Book/001/n.md").await.unwrap(), Some(note_tab.clone()), "still only the syncing one");
+            // Where a window goes back to when the page's tab is left: the tab of the app itself.
+            assert_eq!(home_tab(&pool, "win1").await.unwrap(), Some(home.tab_guid));
+        });
+    }
+
+    #[test]
+    fn a_tab_that_shows_a_linked_page_still_moves_to_another_window_of_its_app_and_keeps_showing_it() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("move-linked").await;
+            insert_window(&pool, "win1", "docs/a.md").await;
+            insert_window(&pool, "win2", "docs/a.md").await;
+            let tab = init_tab(&pool, "win1", "docs/a.md", "docs/a.md", 1).await;
+            let target_tab = init_tab(&pool, "win2", "docs/a.md", "docs/a.md", 1).await;
+            // What opening a link in the tab does: the tab stays the app's, and remembers the page.
+            sqlx::query("UPDATE tabs SET resource_id = 'docs/b.md', link_page = 'docs/b.md' WHERE guid = ?1").bind(&tab.tab_guid).execute(&pool).await.unwrap();
+            let target_group = group_guid_of_tab(&pool, &target_tab.tab_guid).await;
+
+            move_tab_to_group_impl(&pool, &tab.tab_guid, &target_group).await.unwrap();
+
+            let window_page = Page::new(Kind::User, "docs/a.md");
+            assert_eq!(page_to_show(&pool, &tab.tab_guid, &window_page).await.unwrap(), Page::new(Kind::User, "docs/b.md"));
+            let in_win2: String = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1").bind(&tab.tab_guid).fetch_one(&pool).await.unwrap();
+            assert_eq!(in_win2, "win2");
         });
     }
 
