@@ -9,8 +9,11 @@ export interface DataFolderInfo {
   defaultPath: string
   customPath: string | null
   effectivePath: string
-  /** False where the data folder can't be moved (Android/iOS). */
+  /** False only on iOS, which has no folder-picking dialog of any kind yet. */
   canRelocate: boolean
+  /** Whether picking a new folder (or wiping data) can restart the app itself afterward: true on
+   * desktop only. Independent of `canRelocate` — Android can do the first without the second. */
+  canRestart: boolean
 }
 
 export async function getDataFolderInfo(): Promise<DataFolderInfo> {

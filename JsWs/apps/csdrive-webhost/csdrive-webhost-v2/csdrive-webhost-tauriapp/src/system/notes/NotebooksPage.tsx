@@ -3,6 +3,7 @@ import { confirm } from '../../lib/dialogs'
 import { BookOpen, FolderOpen, House, Info, Pencil, Plus, Trash2 } from 'lucide-react'
 import DetailsModal from '../../components/DetailsModal'
 import IconButton from '../../components/IconButton'
+import RowActions from '../../components/RowActions'
 import Modal from '../../components/Modal'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
 import { pathForInput } from '../../lib/pathInput'
@@ -229,15 +230,18 @@ export default function NotebooksPage({
                           )}
                         </div>
                         <div className="muted notebook-where">{describeLocation(entry, roots, accounts)}</div>
-                        {check?.state === 'problem' && <div className="notebook-problem">{check.reason}</div>}
                       </td>
                       <td className="row-actions">
                         <CacheMenu source={sourceOf(entry.sourceId)} path={entry.folder} isDirectory onDone={async () => { await refresh(); setChecks((all) => { const { [entry.guid]: _gone, ...rest } = all; return rest }) }} onError={setError} onNotice={setNotice} />
-                        <IconButton icon={Info} label="Details" onClick={() => setDetails(entry)} />
-                        <IconButton icon={BookOpen} label="Open the notebook — its notes" onClick={() => onOpenNotebook(entry)} />
-                        <IconButton icon={FolderOpen} label="Show its folder in the file manager" onClick={() => onShowFolder(entry)} />
-                        <IconButton icon={Pencil} label="Change its title" onClick={() => setEditing(entry)} disabled={busy} />
-                        <IconButton icon={Trash2} label="Take it out of the list (its files stay where they are)" variant="danger" onClick={() => remove(entry)} disabled={busy} />
+                        <RowActions
+                          actions={[
+                            { icon: Info, label: 'Details', onClick: () => setDetails(entry) },
+                            { icon: BookOpen, label: 'Open the notebook — its notes', onClick: () => onOpenNotebook(entry) },
+                            { icon: FolderOpen, label: 'Show its folder in the file manager', onClick: () => onShowFolder(entry) },
+                            { icon: Pencil, label: 'Change its title', onClick: () => setEditing(entry), disabled: busy },
+                            { icon: Trash2, label: 'Take it out of the list (its files stay where they are)', danger: true, onClick: () => remove(entry), disabled: busy },
+                          ]}
+                        />
                       </td>
                     </tr>
                   )

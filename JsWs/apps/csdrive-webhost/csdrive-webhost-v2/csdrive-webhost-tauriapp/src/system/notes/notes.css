@@ -186,11 +186,6 @@
   word-break: break-all;
 }
 
-.notebook-problem {
-  font-size: 12px;
-  color: var(--error-fg);
-}
-
 .notes-title-field {
   display: flex;
   flex-direction: column;

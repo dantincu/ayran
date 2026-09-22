@@ -177,6 +177,14 @@ pub fn allow_saved(pool: &SqlitePool, scope: &FsScope) {
 
 // ── Commands ──────────────────────────────────────────────────────────────────
 
+/// The OS's own "choose a folder" dialog, unguarded (callers go through `prompt_guard::os_dialog`, as `pick_folder`
+/// below does): the desktop dialog plugin, or — on Android, which needs a real path rather than the system picker's
+/// opaque `content://` URI — `FolderPicker.kt`. Shared with `data_location`'s data-folder relocation, which needs
+/// exactly the same thing (it used to be desktop-only for exactly the reason `FolderPicker.kt` was built to fix).
+pub(crate) async fn choose_folder(app: &AppHandle) -> Result<Option<String>, String> {
+    platform::pick(app).await
+}
+
 /// Opens the folder picker. A picked folder is allowed in the file scope, remembered, and returned
 /// (its id and label — not its path); `None` if the person cancelled.
 #[tauri::command]
@@ -188,7 +196,7 @@ pub async fn pick_folder(
 ) -> Result<Option<PickedRoot>, String> {
     // The OS dialog is a prompt like the others: one at a time, never when the person prevented prompts, and counted (`prompt_guard`).
     let guid = crate::window_host::caller_guid(&window);
-    let Some(picked) = crate::prompt_guard::os_dialog(&app, guid.as_deref(), platform::pick(&app)).await? else { return Ok(None) };
+    let Some(picked) = crate::prompt_guard::os_dialog(&app, guid.as_deref(), choose_folder(&app)).await? else { return Ok(None) };
     let Some(path) = picked? else { return Ok(None) };
     let real = crate::fs_scope::resolve(Path::new(&path), true).map_err(|_| "The chosen folder isn't available.".to_string())?;
     if !real.is_dir() {

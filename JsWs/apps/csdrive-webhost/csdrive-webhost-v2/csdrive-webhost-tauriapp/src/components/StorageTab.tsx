@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Clock, Database as DatabaseIcon, HardDrive, Plus, RefreshCw, Save, Trash2, X } from 'lucide-react'
 import IconButton from './IconButton'
+import RowActions from './RowActions'
 import { getAppState, setAppState } from '../lib/appState'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
 import { isObject, usePersistedState } from '../lib/tabState'
@@ -141,7 +142,7 @@ function WebStoragePanel({ storage, label }: { storage: Storage; label: string }
                 )}
               </td>
               <td className="row-actions">
-                <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => removeItem(row.key)} />
+                <RowActions actions={[{ icon: Trash2, label: 'Delete', danger: true, onClick: () => removeItem(row.key) }]} />
               </td>
             </tr>
           ))}

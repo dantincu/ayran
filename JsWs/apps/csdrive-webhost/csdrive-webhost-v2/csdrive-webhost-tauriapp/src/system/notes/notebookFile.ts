@@ -7,11 +7,13 @@ import { MAX_NAME_PART_CHARS, NOTEBOOK_FILE } from '../../lib/appConfig'
 /** A file is a notebook's when its name is this or ends with it (case doesn't matter: Windows and Filen don't care). */
 export const NOTEBOOK_FILE_SUFFIX = NOTEBOOK_FILE
 
-/** What the notebook file holds. The keys are PascalCase, as in the strategy. */
+/** What the notebook file holds. The keys are PascalCase, as in the strategy. Only `Title` and `NoteBookGuid` are
+ * ever required — `CreatedAt` is cosmetic (a notebook made before it was tracked, or a file damaged some other way,
+ * simply doesn't have it) and is never invented for a notebook found without one. */
 export interface NotebookFile {
   Title: string
   /** ISO 8601, UTC, seven fractional digits: `2026-09-19T07:34:04.0283216Z`. */
-  CreatedAt: string
+  CreatedAt?: string
   NoteBookGuid: string
 }
 
@@ -40,8 +42,11 @@ export type ParsedNotebookFile =
     }
   | { ok: false; reason: string }
 
-/** Reads a notebook file's text: it must be a JSON object with a non-empty `Title`, a `CreatedAt` that is a date and a
- * `NoteBookGuid` that is a GUID. `reason` says, for a person, what is wrong when it isn't one. */
+/** Reads a notebook file's text: it must be a JSON object with a non-empty `Title` and a `NoteBookGuid` that is a
+ * GUID \u2014 the only two properties a notebook file is ever required to have (the GUID because it's what makes two
+ * files the same notebook wherever each is found, and nothing else could stand in for it). `CreatedAt` is read when
+ * it's there and a valid date, and simply left out otherwise \u2014 never a reason to refuse the file. `reason` says, for
+ * a person, what is wrong when it isn't a notebook file at all. */
 export function parseNotebookFile(text: string): ParsedNotebookFile {
   let value: unknown
   try {
@@ -53,10 +58,10 @@ export function parseNotebookFile(text: string): ParsedNotebookFile {
   const raw = value as Record<string, unknown>
   const { Title, CreatedAt, NoteBookGuid } = raw
   if (typeof Title !== 'string' || Title.trim() === '') return { ok: false, reason: 'It has no "Title".' }
-  if (typeof CreatedAt !== 'string' || Number.isNaN(Date.parse(CreatedAt))) return { ok: false, reason: 'Its "CreatedAt" isn\'t a date.' }
+  const createdAt = typeof CreatedAt === 'string' && !Number.isNaN(Date.parse(CreatedAt)) ? CreatedAt : undefined
   const guid = typeof NoteBookGuid === 'string' ? normalizeGuid(NoteBookGuid) : null
   if (!guid) return { ok: false, reason: 'Its "NoteBookGuid" isn\'t a GUID.' }
-  return { ok: true, notebook: { Title, CreatedAt, NoteBookGuid: guid }, guid, raw }
+  return { ok: true, notebook: { Title, ...(createdAt ? { CreatedAt: createdAt } : {}), NoteBookGuid: guid }, guid, raw }
 }
 
 /** `2026-09-19T07:34:04.0283216Z`: the way the strategy writes moments (seven fractional digits, as .NET does). JavaScript

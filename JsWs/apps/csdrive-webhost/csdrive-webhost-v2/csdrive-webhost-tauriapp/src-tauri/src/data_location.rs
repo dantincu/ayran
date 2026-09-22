@@ -85,9 +85,13 @@ pub struct DataFolderInfo {
     pub default_path: String,
     pub custom_path: Option<String>,
     pub effective_path: String,
-    /// Whether the data folder can be moved somewhere else on this platform (mobile
-    /// folder pickers hand back opaque URIs, not paths the app could keep a database in).
+    /// Whether the data folder can be moved somewhere else on this platform. False only on iOS, which has no
+    /// folder-picking dialog of any kind yet (see `secure_store.rs`'s "not done" note — the same platform gap).
     pub can_relocate: bool,
+    /// Whether picking a new folder (or wiping data) can **restart the app itself** afterward (`restart_app`,
+    /// below): true on desktop only — mobile OSes have no "relaunch this process", so there the person is told to
+    /// reopen the app by hand. Independent of `can_relocate` (Android can do the first without the second).
+    pub can_restart: bool,
 }
 
 #[tauri::command]
@@ -101,43 +105,48 @@ pub fn get_data_folder_info(window: crate::window_host::CallerWindow, app: AppHa
         default_path: default_dir.display().to_string(),
         custom_path: custom_dir.map(|p| p.display().to_string()),
         effective_path: effective_dir.display().to_string(),
-        can_relocate: cfg!(desktop),
+        can_relocate: !cfg!(target_os = "ios"),
+        can_restart: cfg!(desktop),
     })
 }
 
 /// Opens a native folder picker (from the Rust side) and, if the user picks a
 /// folder, records it as the new custom data location. Does not move or touch any
 /// existing files — the change only takes effect after the app is restarted.
+///
+/// The same folder-choosing mechanism as "Add root folder" (`picked_roots::choose_folder`): the OS's own dialog on
+/// desktop, and on Android `FolderPicker.kt` — which, unlike the system's own folder picker, hands back a real
+/// absolute path rather than an opaque `content://` URI, so relocation now works there too (it used to be
+/// desktop-only for exactly that reason, before `FolderPicker.kt` existed for "Add root folder"). Not on iOS yet
+/// (no folder-picking dialog exists there at all).
 #[tauri::command]
-pub fn pick_and_set_custom_data_folder(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<Option<String>, String> {
+pub async fn pick_and_set_custom_data_folder(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<Option<String>, String> {
     crate::window_host::require_admin(&window)?;
 
-    // Mobile folder pickers hand back opaque URIs, not paths the app could keep its
-    // database in, so the data folder can't be relocated there.
-    #[cfg(mobile)]
+    #[cfg(target_os = "ios")]
     {
         let _ = app;
-        Err("Choosing a different data folder isn't available on this platform.".to_string())
+        return Err("Choosing a different data folder isn't available on this platform.".to_string());
     }
 
-    #[cfg(desktop)]
+    #[cfg(not(target_os = "ios"))]
     {
-        use tauri_plugin_dialog::DialogExt;
-
         let default_dir = default_app_data_dir(&app)?;
-        let picked = app
-            .dialog()
-            .file()
-            .set_title("Choose a folder to store Ayran CsDrive WebHost's data in")
-            .blocking_pick_folder();
-
-        let Some(picked) = picked else {
+        // The OS dialog is a prompt like the others: one at a time, never when the person prevented prompts, and
+        // counted (`prompt_guard`) — the admin-app has no window guid of its own, so the burst counter (which is
+        // keyed by who is asking) simply doesn't apply to it, as for its other prompts.
+        let guid = crate::window_host::caller_guid(&window);
+        let Some(picked) = crate::prompt_guard::os_dialog(&app, guid.as_deref(), crate::picked_roots::choose_folder(&app)).await? else {
             return Ok(None);
         };
-        let picked_path = picked.into_path().map_err(|e| e.to_string())?;
+        let Some(path) = picked? else { return Ok(None) };
+        let chosen = PathBuf::from(&path);
+        if !chosen.is_dir() {
+            return Err("The chosen item isn't a folder.".to_string());
+        }
 
-        write_custom_dir(&default_dir, Some(&picked_path))?;
-        Ok(Some(picked_path.display().to_string()))
+        write_custom_dir(&default_dir, Some(&chosen))?;
+        Ok(Some(chosen.display().to_string()))
     }
 }
 

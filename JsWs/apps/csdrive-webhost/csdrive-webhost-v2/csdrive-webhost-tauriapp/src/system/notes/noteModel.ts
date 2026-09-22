@@ -38,10 +38,12 @@ export interface NoteRef {
   updatedAt?: string
 }
 
-/** What `[note-children].json` holds, as JSON. */
+/** What `[note-children].json` holds, as JSON. Only `Title` is ever required of a note anywhere — `CreatedAt` and
+ * `UpdatedAt` are cosmetic and optional (a note made before one of them was tracked, or an entry damaged some other
+ * way, simply doesn't have it). */
 interface ChildEntry {
-  Title: string
-  CreatedAt: string
+  Title?: string
+  CreatedAt?: string
   UpdatedAt?: string
 }
 
@@ -120,52 +122,129 @@ async function writeJson(source: FileSource, path: string, content: Record<strin
   await source.write(path, new TextEncoder().encode(`${JSON.stringify(content, null, 2)}\n`))
 }
 
-const isChild = (value: unknown): value is ChildEntry =>
-  value !== null && typeof value === 'object' && typeof (value as ChildEntry).Title === 'string' && typeof (value as ChildEntry).CreatedAt === 'string'
+const asChildEntry = (value: unknown): ChildEntry | null => (value !== null && typeof value === 'object' ? (value as ChildEntry) : null)
+/** A usable title: a string with something other than whitespace in it. */
+const validTitle = (title: unknown): title is string => typeof title === 'string' && title.trim() !== ''
+
+/** Recovers a note's title when the caller's own idea of it (a `[note-children].json` entry, possibly `undefined`)
+ * doesn't have a usable one: its own `[note].json` next, else the first heading of its markdown — and when the
+ * markdown had to supply it, `[note].json` is repaired (written with the recovered title) so it isn't extracted
+ * from the markdown again next time. `null` when nothing anywhere names the note (its folder isn't shown as one).
+ * `Title` is the only property ever required of a note; `CreatedAt`/`UpdatedAt` are carried along from wherever
+ * they're found (the child entry, then `[note].json`) and never invented — except a fresh `CreatedAt` stamp for a
+ * `[note].json` that had none at all, so a repaired note still sorts sensibly by age. */
+async function recoverNoteTitle(
+  source: FileSource,
+  folder: string,
+  fromChildEntry?: ChildEntry,
+): Promise<{ title: string; createdAt: string; updatedAt?: string } | null> {
+  const json = await readJson(source, join(folder, NOTE_JSON))
+  const createdAt = (typeof json?.CreatedAt === 'string' && json.CreatedAt) || fromChildEntry?.CreatedAt || ''
+  const updatedAt = (typeof json?.UpdatedAt === 'string' && json.UpdatedAt) || fromChildEntry?.UpdatedAt
+  if (validTitle(json?.Title)) {
+    return { title: json!.Title as string, createdAt, ...(updatedAt ? { updatedAt } : {}) }
+  }
+  const markdown = await findMarkdown(source, folder)
+  const title = markdown ? titleFromMarkdown(new TextDecoder().decode(await source.read(markdown))) : null
+  if (!title) return null
+  const stamp = createdAt || dotNetTimestamp(new Date())
+  await writeJson(source, join(folder, NOTE_JSON), { ...(json ?? {}), Title: title, CreatedAt: stamp })
+  return { title, createdAt: stamp, ...(updatedAt ? { updatedAt } : {}) }
+}
 
 /** The notes in `folder` (a notebook's root or a note's short folder) as its `[note-children].json` lists them, oldest index
- * first. When the file is missing or unreadable the folder is scanned instead — each short folder's own `[note].json` — so a
- * notebook made by hand, or damaged, still shows its notes (`repaired` says so). */
+ * first. An entry with no usable `Title` of its own (missing, blank, or the whole file damaged in some other way — `CreatedAt`
+ * is never required) has its title recovered from the note itself (`recoverNoteTitle`) rather than being left out; whichever
+ * entries needed that are written back to `[note-children].json` at once, so the recovery isn't repeated next time. When the
+ * whole file is missing or unreadable the folder is scanned instead — each short folder's own `[note].json`, with the same
+ * recovery — so a notebook made by hand, or damaged, still shows its notes (`repaired` says so). */
 export async function readChildren(source: FileSource, folder: string): Promise<{ notes: NoteRef[]; repaired: boolean }> {
   const file = await readJson(source, join(folder, CHILDREN_JSON))
   const children = file?.ChildNotes
   if (children !== null && typeof children === 'object' && !Array.isArray(children)) {
-    const notes = Object.entries(children as Record<string, unknown>)
-      .filter(([index, value]) => NOTE_INDEX.test(index) && isChild(value))
-      .map(([index, value]) => {
-        const c = value as ChildEntry
-        return { index, folder: join(folder, index), title: c.Title, createdAt: c.CreatedAt, ...(c.UpdatedAt ? { updatedAt: c.UpdatedAt } : {}) }
-      })
+    const entries = Object.entries(children as Record<string, unknown>).filter(([index]) => NOTE_INDEX.test(index))
+    let anyRecovered = false
+    // Every entry that needs a look at its own files — a missing CreatedAt to backfill, or no usable Title at
+    // all — is resolved **concurrently**, not one at a time: each such look is a real read through the
+    // source (for Filen, a network round trip through the cache, not a local read — `resolve_dir` alone
+    // walks every path segment with its own API call), so a notebook with many such notes used to pay for
+    // the sum of all of them, sequentially, on its first load; now it pays for the slowest one (found live:
+    // a Filen notebook with several dozen untracked notes took "dozens of seconds" to load even with the
+    // one-time-only fix below, because that "once" was still done one note after another).
+    const resolved = await Promise.all(
+      entries.map(async ([index, value]): Promise<NoteRef | null> => {
+        const childFolder = join(folder, index)
+        const c = asChildEntry(value)
+        if (c && validTitle(c.Title)) {
+          if (typeof c.CreatedAt === 'string') {
+            // Already resolved: a real date, or an explicit '' an earlier repair recorded meaning "looked,
+            // there's nothing" (see below) — either way, nothing to look up again.
+            return { index, folder: childFolder, title: c.Title as string, createdAt: c.CreatedAt, ...(c.UpdatedAt ? { updatedAt: c.UpdatedAt } : {}) }
+          }
+          // The title is fine but the key itself is missing, not just blank — CreatedAt was never recorded
+          // at all (an older note) — worth a one-time look at its own [note].json, so the list doesn't show
+          // a blank date next to some notes and not others (which reads as a broken, uneven-height list).
+          // Whatever is found (even nothing) is written back as an explicit value below, so this lookup
+          // happens once per note, not on every load (leaving it unwritten when nothing was found, as an
+          // earlier version of this fix did, meant every note with no CreatedAt anywhere paid that cost
+          // again on every single load).
+          const json = await readJson(source, join(childFolder, NOTE_JSON))
+          const createdAt = typeof json?.CreatedAt === 'string' ? json.CreatedAt : ''
+          const updatedAt = typeof json?.UpdatedAt === 'string' ? json.UpdatedAt : c.UpdatedAt
+          anyRecovered = true // resolved either way — write the entry back so it's never looked up again
+          return { index, folder: childFolder, title: c.Title as string, createdAt, ...(updatedAt ? { updatedAt } : {}) }
+        }
+        const recovered = await recoverNoteTitle(source, childFolder, c ?? undefined)
+        if (!recovered) return null // nothing anywhere names this note — left out, as before
+        anyRecovered = true
+        return { index, folder: childFolder, title: recovered.title, createdAt: recovered.createdAt, ...(recovered.updatedAt ? { updatedAt: recovered.updatedAt } : {}) }
+      }),
+    )
+    const notes = resolved.filter((n): n is NoteRef => n !== null)
+    if (anyRecovered) {
+      const map = { ...(children as Record<string, unknown>) }
+      for (const n of notes) map[n.index] = childEntry(n)
+      await writeJson(source, join(folder, CHILDREN_JSON), { ...file, ChildNotes: map })
+    }
     return { notes: notes.sort((a, b) => a.index.localeCompare(b.index)), repaired: false }
   }
-  const entries = (await source.list(folder, true)).entries
-  const notes: NoteRef[] = []
-  for (const entry of entries.filter((e) => e.isDirectory && NOTE_INDEX.test(e.name)).sort((a, b) => a.name.localeCompare(b.name))) {
-    const note = await readJson(source, join(folder, entry.name, NOTE_JSON))
-    if (typeof note?.Title === 'string') {
-      notes.push({
-        index: entry.name,
-        folder: join(folder, entry.name),
-        title: note.Title,
-        createdAt: typeof note.CreatedAt === 'string' ? note.CreatedAt : '',
-        ...(typeof note.UpdatedAt === 'string' ? { updatedAt: note.UpdatedAt } : {}),
-      })
-    }
-  }
-  return { notes, repaired: true }
+  const entries = (await source.list(folder, true)).entries.filter((e) => e.isDirectory && NOTE_INDEX.test(e.name)).sort((a, b) => a.name.localeCompare(b.name))
+  const resolved = await Promise.all(
+    entries.map(async (entry): Promise<NoteRef | null> => {
+      const childFolder = join(folder, entry.name)
+      const note = await readJson(source, join(childFolder, NOTE_JSON))
+      if (validTitle(note?.Title)) {
+        return {
+          index: entry.name,
+          folder: childFolder,
+          title: note!.Title as string,
+          createdAt: typeof note!.CreatedAt === 'string' ? note!.CreatedAt : '',
+          ...(typeof note!.UpdatedAt === 'string' ? { updatedAt: note!.UpdatedAt } : {}),
+        }
+      }
+      const recovered = await recoverNoteTitle(source, childFolder)
+      return recovered ? { index: entry.name, folder: childFolder, title: recovered.title, createdAt: recovered.createdAt, ...(recovered.updatedAt ? { updatedAt: recovered.updatedAt } : {}) } : null
+    }),
+  )
+  return { notes: resolved.filter((n): n is NoteRef => n !== null), repaired: true }
 }
 
-/** The note whose short folder is `folder` (its `[note].json`), or `null` when the folder isn't a note. */
+/** The note whose short folder is `folder` (its `[note].json`, recovered from its markdown when that has no usable `Title` —
+ * see `recoverNoteTitle`), or `null` when nothing anywhere names it as a note. */
 export async function readNote(source: FileSource, folder: string): Promise<NoteRef | null> {
   const note = await readJson(source, join(folder, NOTE_JSON))
-  if (typeof note?.Title !== 'string') return null
-  return {
-    index: baseOf(folder),
-    folder,
-    title: note.Title,
-    createdAt: typeof note.CreatedAt === 'string' ? note.CreatedAt : '',
-    ...(typeof note.UpdatedAt === 'string' ? { updatedAt: note.UpdatedAt } : {}),
+  if (validTitle(note?.Title)) {
+    return {
+      index: baseOf(folder),
+      folder,
+      title: note!.Title as string,
+      createdAt: typeof note!.CreatedAt === 'string' ? note!.CreatedAt : '',
+      ...(typeof note!.UpdatedAt === 'string' ? { updatedAt: note!.UpdatedAt } : {}),
+    }
   }
+  const recovered = await recoverNoteTitle(source, folder)
+  if (!recovered) return null
+  return { index: baseOf(folder), folder, title: recovered.title, createdAt: recovered.createdAt, ...(recovered.updatedAt ? { updatedAt: recovered.updatedAt } : {}) }
 }
 
 /** The path of a note's markdown file, or `null` when the folder has none. */

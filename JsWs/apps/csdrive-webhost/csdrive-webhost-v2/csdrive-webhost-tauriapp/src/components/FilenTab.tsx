@@ -5,6 +5,7 @@ import { Cloud, Download, File, Folder, FolderPlus, Info, LogOut, Navigation, Pe
 import DetailsModal, { type DetailField } from './DetailsModal'
 import GoToPathModal from './GoToPathModal'
 import IconButton from './IconButton'
+import RowActions from './RowActions'
 import Pagination from './Pagination'
 import { getAppState, setAppState } from '../lib/appState'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
@@ -481,15 +482,19 @@ export default function FilenTab() {
                       </button>
                     </td>
                     <td className="row-actions">
-                      <IconButton icon={Info} label="Details" onClick={() => showDetails({ kind: 'entry', entry })} />
-                      {!entry.isDirectory && (
-                        <>
-                          <IconButton icon={Download} label="Export…" onClick={() => downloadToComputer(entry)} />
-                          <IconButton icon={Save} label="Save to user folder" onClick={() => saveToUserFolder(entry)} />
-                        </>
-                      )}
-                      <IconButton icon={Pencil} label="Rename" onClick={() => renameEntry(entry)} />
-                      <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => deleteEntry(entry)} />
+                      <RowActions
+                        actions={[
+                          { icon: Info, label: 'Details', onClick: () => showDetails({ kind: 'entry', entry }) },
+                          ...(!entry.isDirectory
+                            ? [
+                                { icon: Download, label: 'Export…', onClick: () => downloadToComputer(entry) },
+                                { icon: Save, label: 'Save to user folder', onClick: () => saveToUserFolder(entry) },
+                              ]
+                            : []),
+                          { icon: Pencil, label: 'Rename', onClick: () => renameEntry(entry) },
+                          { icon: Trash2, label: 'Delete', danger: true, onClick: () => deleteEntry(entry) },
+                        ]}
+                      />
                     </td>
                   </tr>
                 ))}

@@ -35,6 +35,11 @@ plain debug run, an installer you built to try something. It is not a separate "
    Delete the scratch folder afterwards.
 3. Never point a test at the production data folder, and never run the demo seeder against it. If something must be checked against
    real data, copy the data folder somewhere else first and work on the copy.
-4. Android is not affected: it has no custom data folder, and the emulator's app data is its own.
+4. The emulator's app data is its own, separate from a real device or the desktop build, so testing on the emulator is safe by construction.
+   A real Android **device**, though, is no longer exempt now that the data folder can be relocated there too (see "Android"/"Admin-app
+   differences" in [CLAUDE.md](CLAUDE.md)): a debug build and a release build share the same `applicationId` (no `applicationIdSuffix`
+   is configured), so they share the same private storage and thus the same default data folder and the same pointer file
+   (`data-location.enc`) — a debug run against a phone that has a real custom data folder set reads and writes it exactly as an
+   unisolated desktop run would. Isolate the same way as on desktop before testing folder relocation on a real device.
 
 The isolation switch and its caveats are also described under "Folder layout" in [CLAUDE.md](CLAUDE.md).

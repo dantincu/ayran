@@ -38,21 +38,20 @@ export default function ContextMenu({ items, x, y, onClose }: Props) {
   }, [x, y, items.length])
 
   useEffect(() => {
-    function onPointerDown(e: PointerEvent) {
-      if (!ref.current?.contains(e.target as Node)) onClose()
-    }
+    // The backdrop below (a real element under the pointer, covering everything but the menu) is what
+    // actually catches a press outside and closes the menu without it reaching whatever is behind it —
+    // this listener only needs to catch a scroll/resize, and Escape from anywhere (a text box's own key
+    // handling can stop it reaching here, which is why it's a capturing window listener, not the menu's own).
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.stopPropagation()
         onClose()
       }
     }
-    window.addEventListener('pointerdown', onPointerDown, true)
     window.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('scroll', onClose, true)
     window.addEventListener('resize', onClose)
     return () => {
-      window.removeEventListener('pointerdown', onPointerDown, true)
       window.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('scroll', onClose, true)
       window.removeEventListener('resize', onClose)
@@ -60,26 +59,34 @@ export default function ContextMenu({ items, x, y, onClose }: Props) {
   }, [onClose])
 
   return createPortal(
-    <div ref={ref} className="context-menu" role="menu" style={{ left: at.left, top: at.top }} data-no-text-menu>
-      {items.map((item) => {
-        const Icon = item.icon
-        return (
-          <button
-            key={item.label}
-            type="button"
-            role="menuitem"
-            className={`${item.danger ? 'danger' : ''} ${item.separated ? 'separated' : ''}`}
-            disabled={item.disabled}
-            onClick={() => {
-              onClose()
-              item.onSelect()
-            }}
-          >
-            {Icon && <Icon size={14} aria-hidden="true" />} {item.label}
-          </button>
-        )
-      })}
-    </div>,
+    <>
+      {/* Transparent, covers the whole window beneath the menu: a press anywhere outside the menu lands on
+       * this (not on whatever the menu happens to be sitting over), closing the menu without also acting on
+       * that background element — the actual fix for "clicking outside also clicks through to what's under
+       * the menu" (found live: closing the row-actions overflow menu this way could press the button under
+       * it). `onPointerDown`, not `onClick`, so it can't be reached by a synthesized click from something else. */}
+      <div className="context-menu-backdrop" onPointerDown={onClose} />
+      <div ref={ref} className="context-menu" role="menu" style={{ left: at.left, top: at.top }} data-no-text-menu>
+        {items.map((item) => {
+          const Icon = item.icon
+          return (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className={`${item.danger ? 'danger' : ''} ${item.separated ? 'separated' : ''}`}
+              disabled={item.disabled}
+              onClick={() => {
+                onClose()
+                item.onSelect()
+              }}
+            >
+              {Icon && <Icon size={14} aria-hidden="true" />} {item.label}
+            </button>
+          )
+        })}
+      </div>
+    </>,
     document.body,
   )
 }

@@ -840,7 +840,8 @@ select {
   min-width: 0;
 }
 
-.custom-order-toggle {
+.custom-order-toggle,
+.checkbox-row {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1784,6 +1785,15 @@ select {
 }
 
 /* ---- A menu of actions that opens where it was asked for (components/ContextMenu.tsx) ---- */
+
+/* Transparent, catches a press anywhere outside the menu so it closes the menu without that press also
+   reaching whatever element is behind it (a button under an overflow menu, say). Sits just under the menu. */
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3199;
+  background: transparent;
+}
 
 .context-menu {
   position: fixed;

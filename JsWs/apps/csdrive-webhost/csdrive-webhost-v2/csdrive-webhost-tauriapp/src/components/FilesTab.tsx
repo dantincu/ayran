@@ -23,6 +23,7 @@ import {
   ClipboardPaste,
 } from 'lucide-react'
 import IconButton from './IconButton'
+import RowActions from './RowActions'
 import CodeEditor from './CodeEditor'
 import EditorPanel from './EditorPanel'
 import DetailsModal, { type DetailField } from './DetailsModal'
@@ -853,15 +854,19 @@ export default function FilesTab() {
                 </td>
                 <td className="muted">{!entry.isDirectory && (entry.size ?? sizes[entry.name]) != null ? formatBytes((entry.size ?? sizes[entry.name])!) : ''}</td>
                 <td className="row-actions">
-                  <IconButton icon={Info} label="Details" onClick={() => showDetails({ kind: 'entry', entry })} />
-                  {!entry.isDirectory && activeRootId === USER_ROOT_ID && isHtmlFile(entry.name) && (
-                    <IconButton icon={ExternalLink} label="Open as web app" onClick={() => openAsWebApp(entry)} />
-                  )}
-                  {!entry.isDirectory && <IconButton icon={Download} label="Export" onClick={() => downloadEntry(entry)} />}
-                  <IconButton icon={Copy} label="Copy" onClick={() => copyEntry(entry)} />
-                  <IconButton icon={Scissors} label="Cut" onClick={() => cutEntry(entry)} />
-                  <IconButton icon={Pencil} label="Rename" onClick={() => startRename(entry)} />
-                  <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => deleteEntry(entry)} />
+                  <RowActions
+                    actions={[
+                      { icon: Info, label: 'Details', onClick: () => showDetails({ kind: 'entry', entry }) },
+                      ...(!entry.isDirectory && activeRootId === USER_ROOT_ID && isHtmlFile(entry.name)
+                        ? [{ icon: ExternalLink, label: 'Open as web app', onClick: () => openAsWebApp(entry) }]
+                        : []),
+                      ...(!entry.isDirectory ? [{ icon: Download, label: 'Export', onClick: () => downloadEntry(entry) }] : []),
+                      { icon: Copy, label: 'Copy', onClick: () => copyEntry(entry) },
+                      { icon: Scissors, label: 'Cut', onClick: () => cutEntry(entry) },
+                      { icon: Pencil, label: 'Rename', onClick: () => startRename(entry) },
+                      { icon: Trash2, label: 'Delete', danger: true, onClick: () => deleteEntry(entry) },
+                    ]}
+                  />
                 </td>
               </tr>
             ))}

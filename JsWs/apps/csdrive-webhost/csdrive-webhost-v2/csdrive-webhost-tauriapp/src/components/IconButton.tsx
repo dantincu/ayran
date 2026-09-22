@@ -1,4 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
+import { forwardRef } from 'react'
 import type { ButtonHTMLAttributes } from 'react'
 
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -9,17 +10,15 @@ interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 /** A square, icon-only button. `label` becomes the tooltip and accessible name —
- * always pass a clear one since there's no visible text to fall back on. */
-export default function IconButton({
-  icon: Icon,
-  label,
-  size = 16,
-  variant = 'default',
-  className,
-  ...rest
-}: IconButtonProps) {
+ * always pass a clear one since there's no visible text to fall back on. Forwards its
+ * ref (e.g. `RowActions`' "more actions" button, which needs its own position to open its menu at). */
+const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
+  { icon: Icon, label, size = 16, variant = 'default', className, ...rest },
+  ref,
+) {
   return (
     <button
+      ref={ref}
       type="button"
       className={`icon-button ${variant === 'danger' ? 'icon-button-danger' : ''} ${className ?? ''}`}
       title={label}
@@ -29,4 +28,6 @@ export default function IconButton({
       <Icon size={size} strokeWidth={2} aria-hidden="true" />
     </button>
   )
-}
+})
+
+export default IconButton

@@ -27,6 +27,7 @@ import {
 } from 'lucide-react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import IconButton from './IconButton'
+import RowActions from './RowActions'
 import Modal from './Modal'
 import { TagList } from './Tags'
 import DetailsModal, { type DetailField } from './DetailsModal'
@@ -407,13 +408,17 @@ function TabRow({
           {tab.externalPages.length + tab.openedApps.length > 0 && (
             <span className="muted tab-row-external-count">{tab.externalPages.length + tab.openedApps.length}</span>
           )}
-          {tab.showing && <IconButton icon={RefreshCw} label="Reload this tab's page" onClick={onReload} />}
-          <IconButton icon={Info} label="Details" onClick={onShowDetails} />
-          <IconButton icon={Hash} label="Resource identifier — view and copy" onClick={onShowResourceId} />
-          <IconButton icon={ArrowRightLeft} label="Move to…" onClick={onMove} />
-          <IconButton icon={Scissors} label="Cut (paste into another tab group)" onClick={onCut} />
-          <IconButton icon={CopyPlus} label="Clone tab" onClick={onClone} />
-          <IconButton icon={X} label="Close tab (suspends its window if the window is showing it)" variant="danger" onClick={onClose} />
+          <RowActions
+            actions={[
+              ...(tab.showing ? [{ icon: RefreshCw, label: "Reload this tab's page", onClick: onReload }] : []),
+              { icon: Info, label: 'Details', onClick: onShowDetails },
+              { icon: Hash, label: 'Resource identifier — view and copy', onClick: onShowResourceId },
+              { icon: ArrowRightLeft, label: 'Move to…', onClick: onMove },
+              { icon: Scissors, label: 'Cut (paste into another tab group)', onClick: onCut },
+              { icon: CopyPlus, label: 'Clone tab', onClick: onClone },
+              { icon: X, label: 'Close tab (suspends its window if the window is showing it)', danger: true, onClick: onClose },
+            ]}
+          />
         </div>
       </div>
       {/* A row of tags only where there are tags: the first one is added from the details. */}
@@ -503,22 +508,24 @@ function ExternalRow({
         </button>
         <div className="row-actions">
           <span className={`status-dot ${page.isOpen ? 'status-open' : 'status-suspended'}`} title={page.isOpen ? 'Open' : 'Suspended'} />
-          <IconButton icon={Info} label="Details" onClick={onDetails} />
-          <IconButton icon={Copy} label="Copy the address to the clipboard" onClick={() => onCopy(page.url)} />
-          <IconButton
-            icon={Link}
-            label={`Copy the address it was first opened at${redirected ? '' : ' (the same as its address now)'}`}
-            onClick={() => onCopy(page.initialUrl)}
+          <RowActions
+            actions={[
+              { icon: Info, label: 'Details', onClick: onDetails },
+              { icon: Copy, label: 'Copy the address to the clipboard', onClick: () => onCopy(page.url) },
+              {
+                icon: Link,
+                label: `Copy the address it was first opened at${redirected ? '' : ' (the same as its address now)'}`,
+                onClick: () => onCopy(page.initialUrl),
+              },
+              ...(page.isOpen
+                ? [
+                    { icon: ExternalLink, label: 'Bring its window to the front', onClick: onFocus },
+                    { icon: Pause, label: SUSPEND_HINT, onClick: onSuspend },
+                  ]
+                : [{ icon: Play, label: 'Reopen its window', onClick: onOpen }]),
+              { icon: X, label: CLOSE_HINT, danger: true, onClick: onClose },
+            ]}
           />
-          {page.isOpen ? (
-            <>
-              <IconButton icon={ExternalLink} label="Bring its window to the front" onClick={onFocus} />
-              <IconButton icon={Pause} label={SUSPEND_HINT} onClick={onSuspend} />
-            </>
-          ) : (
-            <IconButton icon={Play} label="Reopen its window" onClick={onOpen} />
-          )}
-          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={onClose} />
         </div>
       </div>
       <TagList guid={page.guid} tags={page.tags} className="window-item-tags" onError={onError} />
@@ -563,17 +570,19 @@ function OpenedAppRow({
         </button>
         <div className="row-actions">
           <span className={`status-dot ${app.isOpen ? 'status-open' : 'status-suspended'}`} title={app.isOpen ? 'Open' : 'Suspended'} />
-          <IconButton icon={Info} label="Details" onClick={onDetails} />
-          {app.isOpen ? (
-            <>
-              <IconButton icon={ExternalLink} label="Bring its window to the front" onClick={onFocus} />
-              <IconButton icon={RefreshCw} label="Reload its page" onClick={onReload} />
-              <IconButton icon={Pause} label={SUSPEND_HINT} onClick={onSuspend} />
-            </>
-          ) : (
-            <IconButton icon={Play} label="Reopen its window" onClick={onOpen} />
-          )}
-          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={onClose} />
+          <RowActions
+            actions={[
+              { icon: Info, label: 'Details', onClick: onDetails },
+              ...(app.isOpen
+                ? [
+                    { icon: ExternalLink, label: 'Bring its window to the front', onClick: onFocus },
+                    { icon: RefreshCw, label: 'Reload its page', onClick: onReload },
+                    { icon: Pause, label: SUSPEND_HINT, onClick: onSuspend },
+                  ]
+                : [{ icon: Play, label: 'Reopen its window', onClick: onOpen }]),
+              { icon: X, label: CLOSE_HINT, danger: true, onClick: onClose },
+            ]}
+          />
         </div>
       </div>
       <TagList guid={app.guid} tags={app.tags} className="window-item-tags" onError={onError} />
@@ -1386,11 +1395,15 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       </span>
                     </button>
                     <div className="row-actions">
-                      <IconButton icon={Info} label="Details" onClick={() => setDetailsKey({ kind: 'app', path: g.relativePath })} />
-                      {isSystem && <IconButton icon={ExternalLink} label="Open in a new window" onClick={() => handleOpenNew(g.relativePath)} />}
-                      <IconButton icon={FilePlus} label="Add a new window entry without opening it" onClick={() => handleAddEntry(g.relativePath)} />
-                      <IconButton icon={PauseCircle} label={SUSPEND_ALL_HINT} onClick={() => handleSuspendAll(g.relativePath)} />
-                      <IconButton icon={XCircle} label={CLOSE_ALL_HINT} variant="danger" onClick={() => handleCloseAll(g.relativePath)} />
+                      <RowActions
+                        actions={[
+                          { icon: Info, label: 'Details', onClick: () => setDetailsKey({ kind: 'app', path: g.relativePath }) },
+                          ...(isSystem ? [{ icon: ExternalLink, label: 'Open in a new window', onClick: () => handleOpenNew(g.relativePath) }] : []),
+                          { icon: FilePlus, label: 'Add a new window entry without opening it', onClick: () => handleAddEntry(g.relativePath) },
+                          { icon: PauseCircle, label: SUSPEND_ALL_HINT, onClick: () => handleSuspendAll(g.relativePath) },
+                          { icon: XCircle, label: CLOSE_ALL_HINT, danger: true, onClick: () => handleCloseAll(g.relativePath) },
+                        ]}
+                      />
                     </div>
                   </div>
                 </div>
@@ -1448,20 +1461,19 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       <span className="muted window-item-state">{w.isOpen ? 'Open' : 'Suspended'}</span>
                     </button>
                     <div className="row-actions">
-                      <IconButton icon={Info} label="Details" onClick={() => setDetailsKey({ kind: 'window', guid: w.guid })} />
-                      {w.isOpen ? (
-                        <>
-                          <IconButton icon={ExternalLink} label="Focus" onClick={() => handleFocus(w.guid)} />
-                          <IconButton icon={RefreshCw} label="Reload the page the window shows" onClick={() => handleReload(w.guid)} />
-                          <IconButton icon={Pause} label={SUSPEND_HINT} onClick={() => handleSuspend(w.guid)} />
-                          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(w.guid)} />
-                        </>
-                      ) : (
-                        <>
-                          <IconButton icon={Play} label="Reopen" onClick={() => handleReopen(w)} />
-                          <IconButton icon={X} label={CLOSE_HINT} variant="danger" onClick={() => handleClose(w.guid)} />
-                        </>
-                      )}
+                      <RowActions
+                        actions={[
+                          { icon: Info, label: 'Details', onClick: () => setDetailsKey({ kind: 'window', guid: w.guid }) },
+                          ...(w.isOpen
+                            ? [
+                                { icon: ExternalLink, label: 'Focus', onClick: () => handleFocus(w.guid) },
+                                { icon: RefreshCw, label: 'Reload the page the window shows', onClick: () => handleReload(w.guid) },
+                                { icon: Pause, label: SUSPEND_HINT, onClick: () => handleSuspend(w.guid) },
+                              ]
+                            : [{ icon: Play, label: 'Reopen', onClick: () => handleReopen(w) }]),
+                          { icon: X, label: CLOSE_HINT, danger: true, onClick: () => handleClose(w.guid) },
+                        ]}
+                      />
                     </div>
                   </div>
                   <TagList guid={w.guid} tags={w.tags} className="window-item-tags" onError={setError} />
@@ -1514,13 +1526,12 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       </span>
                     </button>
                     <div className="row-actions">
-                      <IconButton icon={Info} label="Details" onClick={() => setDetailsKey({ kind: 'group', guid: g.guid })} />
-                      <IconButton icon={Pencil} label="Rename tab group" onClick={() => setRenamingGroup(g)} />
-                      <IconButton
-                        icon={Trash2}
-                        label="Delete tab group (and its tabs)"
-                        variant="danger"
-                        onClick={() => handleDeleteTabGroup(g)}
+                      <RowActions
+                        actions={[
+                          { icon: Info, label: 'Details', onClick: () => setDetailsKey({ kind: 'group', guid: g.guid }) },
+                          { icon: Pencil, label: 'Rename tab group', onClick: () => setRenamingGroup(g) },
+                          { icon: Trash2, label: 'Delete tab group (and its tabs)', danger: true, onClick: () => handleDeleteTabGroup(g) },
+                        ]}
                       />
                     </div>
                   </div>

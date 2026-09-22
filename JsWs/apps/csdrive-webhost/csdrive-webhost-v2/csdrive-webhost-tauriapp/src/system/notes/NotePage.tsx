@@ -31,6 +31,7 @@ import {
 import ContextMenu, { contextTrigger, type MenuItem } from '../../components/ContextMenu'
 import GoToPathModal from '../../components/GoToPathModal'
 import IconButton from '../../components/IconButton'
+import RowActions from '../../components/RowActions'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
 import { pathForInput } from '../../lib/pathInput'
 import { noteTabAction, noteTabState, openNoteTab, type SyncingTab } from '../../lib/secondaryWindows'
@@ -52,9 +53,14 @@ import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
 import UserActionButton from './UserActionButton'
 
+// A non-breaking space, never an empty string: a block element with truly no content collapses to zero height
+// (no line box at all), so a note with no date next to siblings that have one would sit in a visibly shorter
+// row — found live, from real data, right after the CreatedAt-backfill fix shipped (some notes have no
+// CreatedAt anywhere to backfill from, `[note].json` included, and that's a legitimate, permanent state, not
+// something to keep trying to repair). The blank second line keeps every row the same height either way.
 const formatWhen = (stamp: string) => {
   const date = new Date(stamp)
-  return Number.isNaN(date.getTime()) ? '' : date.toLocaleString()
+  return Number.isNaN(date.getTime()) ? ' ' : date.toLocaleString()
 }
 
 /** The menu of a note: where it opens, and what the tab that follows the note's editor is doing (if there is one). */
@@ -590,12 +596,16 @@ export default function NotePage({
                       </td>
                       <td className="row-actions">
                         <CacheMenu source={source} path={n.folder} isDirectory onDone={() => load()} onError={setError} onNotice={setNotice} />
-                        <IconButton icon={FilePenLine} label="Edit its markdown" onClick={() => edit(n)} />
-                        <IconButton icon={FolderTree} label="Its child notes" onClick={() => showChildren(n)} />
-                        <IconButton icon={Paperclip} label="Its files" onClick={() => showFiles(n)} />
-                        <IconButton icon={FolderOpen} label="Show its folder in the File Manager" onClick={() => showInFileManager(n.folder)} />
-                        <IconButton icon={Pencil} label="Change its title (F2)" onClick={() => startEdit('title', n)} />
-                        <IconButton icon={Trash2} label="Delete it" variant="danger" onClick={() => setDeleting([n])} />
+                        <RowActions
+                          actions={[
+                            { icon: FilePenLine, label: 'Edit its markdown', onClick: () => edit(n) },
+                            { icon: FolderTree, label: 'Its child notes', onClick: () => showChildren(n) },
+                            { icon: Paperclip, label: 'Its files', onClick: () => showFiles(n) },
+                            { icon: FolderOpen, label: 'Show its folder in the File Manager', onClick: () => showInFileManager(n.folder) },
+                            { icon: Pencil, label: 'Change its title (F2)', onClick: () => startEdit('title', n) },
+                            { icon: Trash2, label: 'Delete it', danger: true, onClick: () => setDeleting([n]) },
+                          ]}
+                        />
                         <IconButton
                           icon={MoreHorizontal}
                           label="More…"

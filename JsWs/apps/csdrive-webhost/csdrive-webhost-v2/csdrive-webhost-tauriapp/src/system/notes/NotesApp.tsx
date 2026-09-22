@@ -43,6 +43,7 @@ import EditorPanel from '../../components/EditorPanel'
 import DetailsModal, { type DetailField } from '../../components/DetailsModal'
 import GoToPathModal from '../../components/GoToPathModal'
 import IconButton from '../../components/IconButton'
+import RowActions from '../../components/RowActions'
 import Modal from '../../components/Modal'
 import MediaViewer, { type MediaItem } from '../../components/MediaViewer'
 import { type MenuItem } from '../../components/ContextMenu'
@@ -1597,32 +1598,40 @@ export default function NotesApp({
                       <td className="muted">{!entry.isDirectory && size !== null ? formatBytes(size) : ''}</td>
                       <td className="muted">{mtimeMs !== null ? formatTime(mtimeMs) : ''}</td>
                       <td className="row-actions">
-                        <IconButton icon={Info} label="Details" onClick={() => showDetails(entry)} />
-                        {scope && <IconButton icon={FolderSearch} label="Open in File Manager" onClick={() => scope.onOpenInFileManager(joinRelative(path, entry.name))} />}
-                        {!entry.isDirectory && mediaKindOf(entry.name) && <IconButton icon={Eye} label="View" onClick={() => openEntry(entry)} />}
-                        {!entry.isDirectory && /\.svg$/i.test(entry.name) && <IconButton icon={Pencil} label="Edit as text" onClick={() => openEntry(entry, path, true)} />}
-                        {!entry.isDirectory && source?.openAsWebApp && /\.(html?|md|markdown)$/i.test(entry.name) && (
-                          <IconButton icon={AppWindow} label="Open as web app — in a window of its own, listed under this tab" onClick={() => openAsWebApp(entry)} />
-                        )}
-                        {!entry.isDirectory && <IconButton icon={Download} label="Export" onClick={() => exportEntry(entry)} />}
                         <CacheMenu {...cacheTargetFor(entry)} />
-                        {account && !entry.isDirectory && (
-                          <IconButton
-                            icon={entry.locked ? Unlock : Lock}
-                            label={entry.locked ? 'Unlock — let it be refreshed like the rest of the cache' : 'Lock against caching — keep this copy: never refresh, expire or clear it'}
-                            onClick={() => toggleLock(entry)}
-                          />
-                        )}
-                        {branchApi && branch !== null && !entry.isDirectory && !entry.changed && (
-                          <IconButton icon={FileCheck} label="Check out into this branch — it then appears in the pending changes" onClick={() => checkoutEntry(entry)} />
-                        )}
-                        {branchApi && branch !== null && entry.changed === 'checkout' && (
-                          <IconButton icon={Undo2} label="Let go of the checkout" onClick={() => releaseEntry(entry)} />
-                        )}
-                        <IconButton icon={Copy} label="Copy" onClick={() => clip(entry, 'copy')} />
-                        <IconButton icon={Scissors} label="Cut" onClick={() => clip(entry, 'cut')} />
-                        <IconButton icon={Pencil} label="Rename" onClick={() => startRename(entry)} />
-                        <IconButton icon={Trash2} label="Delete" variant="danger" onClick={() => deleteEntry(entry)} />
+                        <RowActions
+                          actions={[
+                            { icon: Info, label: 'Details', onClick: () => showDetails(entry) },
+                            ...(scope ? [{ icon: FolderSearch, label: 'Open in File Manager', onClick: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) }] : []),
+                            ...(!entry.isDirectory && mediaKindOf(entry.name) ? [{ icon: Eye, label: 'View', onClick: () => openEntry(entry) }] : []),
+                            ...(!entry.isDirectory && /\.svg$/i.test(entry.name) ? [{ icon: Pencil, label: 'Edit as text', onClick: () => openEntry(entry, path, true) }] : []),
+                            ...(!entry.isDirectory && source?.openAsWebApp && /\.(html?|md|markdown)$/i.test(entry.name)
+                              ? [{ icon: AppWindow, label: 'Open as web app — in a window of its own, listed under this tab', onClick: () => openAsWebApp(entry) }]
+                              : []),
+                            ...(!entry.isDirectory ? [{ icon: Download, label: 'Export', onClick: () => exportEntry(entry) }] : []),
+                            ...(account && !entry.isDirectory
+                              ? [
+                                  {
+                                    icon: entry.locked ? Unlock : Lock,
+                                    label: entry.locked
+                                      ? 'Unlock — let it be refreshed like the rest of the cache'
+                                      : 'Lock against caching — keep this copy: never refresh, expire or clear it',
+                                    onClick: () => toggleLock(entry),
+                                  },
+                                ]
+                              : []),
+                            ...(branchApi && branch !== null && !entry.isDirectory && !entry.changed
+                              ? [{ icon: FileCheck, label: 'Check out into this branch — it then appears in the pending changes', onClick: () => checkoutEntry(entry) }]
+                              : []),
+                            ...(branchApi && branch !== null && entry.changed === 'checkout'
+                              ? [{ icon: Undo2, label: 'Let go of the checkout', onClick: () => releaseEntry(entry) }]
+                              : []),
+                            { icon: Copy, label: 'Copy', onClick: () => clip(entry, 'copy') },
+                            { icon: Scissors, label: 'Cut', onClick: () => clip(entry, 'cut') },
+                            { icon: Pencil, label: 'Rename', onClick: () => startRename(entry) },
+                            { icon: Trash2, label: 'Delete', danger: true, onClick: () => deleteEntry(entry) },
+                          ]}
+                        />
                       </td>
                     </tr>
                   )

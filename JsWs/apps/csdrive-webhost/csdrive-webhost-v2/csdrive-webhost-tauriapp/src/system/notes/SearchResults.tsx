@@ -1,13 +1,17 @@
 import type { ReactNode } from 'react'
 import { AppWindow, ChevronLeft, ChevronRight, File as FileIcon, FilePenLine, Folder, FolderOpen, FolderTree, Loader } from 'lucide-react'
 import IconButton from '../../components/IconButton'
+import RowActions from '../../components/RowActions'
 import { formatBytes } from '../../lib/format'
 import { searchFiles, searchNotes, MAX_CONTENT_BYTES, type FileHit, type NoteHit, type SearchCriteria, type SortSpec } from './search'
 import type { FileSource } from './sources'
 import CacheMenu from './CacheMenu'
 import { useResultPager, type PagedResults } from './useResultPager'
 
-const formatWhen = (ms: number | null | undefined) => (ms === null || ms === undefined ? '' : new Date(ms).toLocaleString())
+// A non-breaking space, not an empty string, when there's nothing to show: a block element with truly no
+// content collapses to zero height, so a result with no date would sit in a visibly shorter row than its
+// neighbors (see NotePage.tsx's own `formatWhen`, which has the same fix for the same reason).
+const formatWhen = (ms: number | null | undefined) => (ms === null || ms === undefined ? ' ' : new Date(ms).toLocaleString())
 
 /** The status line and the page buttons of a search that is pulled a page at a time: how many were found so far (the total once the
  * whole tree was looked at), what it is looking at, and what could not be searched. */
@@ -100,7 +104,7 @@ export function FileSearchResults({
                 <td className="muted">{formatWhen(hit.entry.mtimeMs)}</td>
                 <td className="row-actions">
                   <CacheMenu source={source} path={hit.path} isDirectory={hit.entry.isDirectory} onDone={() => {}} onError={(m) => onError?.(m)} onNotice={(m) => onNotice?.(m)} />
-                  <IconButton icon={FolderOpen} label="Show it in its folder" onClick={() => onShow(hit)} />
+                  <RowActions actions={[{ icon: FolderOpen, label: 'Show it in its folder', onClick: () => onShow(hit) }]} />
                 </td>
               </tr>
             ))}
@@ -168,11 +172,15 @@ export function NoteSearchResults({
                   <div className="muted notebook-where">{formatWhen(Date.parse(hit.note.updatedAt ?? hit.note.createdAt))}</div>
                 </td>
                 <td className="row-actions">
-                  <IconButton icon={AppWindow} label="Open it as a web app (in a tab of this window)" onClick={() => onOpen(hit)} />
-                  <IconButton icon={FilePenLine} label="Edit its markdown" onClick={() => onEdit(hit)} />
-                  <IconButton icon={FolderTree} label="Its child notes" onClick={() => onChildren(hit)} />
                   <CacheMenu source={source} path={hit.note.folder} isDirectory onDone={() => {}} onError={(m) => onError?.(m)} onNotice={(m) => onNotice?.(m)} />
-                  <IconButton icon={FolderOpen} label="Show it among the notes next to it" onClick={() => onShow(hit)} />
+                  <RowActions
+                    actions={[
+                      { icon: AppWindow, label: 'Open it as a web app (in a tab of this window)', onClick: () => onOpen(hit) },
+                      { icon: FilePenLine, label: 'Edit its markdown', onClick: () => onEdit(hit) },
+                      { icon: FolderTree, label: 'Its child notes', onClick: () => onChildren(hit) },
+                      { icon: FolderOpen, label: 'Show it among the notes next to it', onClick: () => onShow(hit) },
+                    ]}
+                  />
                 </td>
               </tr>
             ))}

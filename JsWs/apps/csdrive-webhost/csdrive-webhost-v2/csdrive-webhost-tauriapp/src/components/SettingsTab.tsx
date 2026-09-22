@@ -13,6 +13,7 @@ import {
   resetDataFolderToDefault,
   type DataFolderInfo,
 } from '../lib/dataFolder'
+import { setRowActionsCompact, subscribeRowActionsCompact } from '../lib/rowActionsCompact'
 
 export default function SettingsTab() {
   const [info, setInfo] = useState<DataFolderInfo | null>(null)
@@ -22,6 +23,9 @@ export default function SettingsTab() {
   // What the app's own clipboard holds (`null`: not read yet) and whether its text is shown.
   const [clipboardText, setClipboardText] = useState<string | null>(null)
   const [clipboardShown, setClipboardShown] = useState(false)
+  // Whether every list's row of icon buttons collapses into a single "more actions" menu (`rowActionsCompact.ts`).
+  const [rowActionsCompact, setRowActionsCompactState] = useState(false)
+  useEffect(() => subscribeRowActionsCompact(setRowActionsCompactState), [])
   // Whether prompts are prevented, and how many windows are open of how many are allowed (`prompt_guard.rs`).
   const [guard, setGuard] = useState<{ promptsPrevented: boolean; openWindows: number; maxWindows: number } | null>(null)
   const readGuard = useCallback(() => {
@@ -140,6 +144,23 @@ export default function SettingsTab() {
       <AppearanceSettings />
 
       <div className="toolbar">
+        <strong>Lists</strong>
+      </div>
+      <p className="muted">
+        Every list in the app — Files, Filen.io, the System/User Apps tabs, Storage, Notes — shows each record's own
+        row of icon buttons (edit, delete, details, …) inline. Turning this on collapses them all into a single{' '}
+        <strong>⋯</strong> button per row instead, everywhere at once.
+      </p>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={rowActionsCompact}
+          onChange={(e) => setRowActionsCompact(e.target.checked).catch((err) => setError(String(err)))}
+        />
+        Compact row actions
+      </label>
+
+      <div className="toolbar">
         <strong>Data folder</strong>
         <div className="toolbar-actions">
           <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />
@@ -250,7 +271,7 @@ export default function SettingsTab() {
         These delete files immediately and cannot be undone. Before deleting, the app closes
         every open secondary window, any open SQLite connections, and its own browser
         storage, then closes its database connection — and restarts itself once the deletion
-        finishes{info && !info.canRelocate ? ' (on this device it just closes — open it again)' : ''}.
+        finishes{info && !info.canRestart ? ' (on this device it just closes — open it again)' : ''}.
       </p>
       <div className="toolbar-actions">
         {info?.canRelocate && (
