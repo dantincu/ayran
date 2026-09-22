@@ -13,6 +13,20 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// ── Release signing (docs/build-and-install.md) ──
+// The keystore and its password never go in git: they live in docs/private (gitignored — see CLAUDE.md's "docs/private"),
+// by default at csdrive-webhost-v2/docs/private/android-release-signing.properties (CSDRIVE_ANDROID_KEYSTORE_PROPERTIES
+// overrides the path, for a machine that keeps it somewhere else). A machine that hasn't made one yet just gets an
+// unsigned release build (a warning below says so) rather than one silently signed with the debug key.
+val releaseSigningPropsFile: File? = run {
+    val override = System.getenv("CSDRIVE_ANDROID_KEYSTORE_PROPERTIES")
+    val candidate = if (override != null) file(override) else File(rootProject.projectDir, "../../../../docs/private/android-release-signing.properties")
+    if (candidate.exists()) candidate else null
+}
+val releaseSigningProps: Properties? = releaseSigningPropsFile?.let { propsFile ->
+    Properties().apply { propsFile.inputStream().use { load(it) } }
+}
+
 android {
     compileSdk = 36
     namespace = "com.ayran.csdrive_webhost_tauriapp"
@@ -23,6 +37,17 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (releaseSigningProps != null) {
+            create("release") {
+                val propsDir = releaseSigningPropsFile!!.parentFile
+                storeFile = File(propsDir, releaseSigningProps.getProperty("storeFile"))
+                storePassword = releaseSigningProps.getProperty("storePassword")
+                keyAlias = releaseSigningProps.getProperty("keyAlias")
+                keyPassword = releaseSigningProps.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -43,6 +68,11 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
+            if (releaseSigningProps != null) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                logger.warn("No release keystore found (see docs/build-and-install.md) — the release APK/AAB will be built unsigned.")
+            }
         }
     }
     kotlinOptions {
