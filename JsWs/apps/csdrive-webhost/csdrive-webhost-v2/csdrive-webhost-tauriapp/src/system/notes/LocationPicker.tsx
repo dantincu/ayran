@@ -9,6 +9,7 @@ import { joinRelative } from '../../lib/localFs'
 import { FILEN_PREFIX, LOCAL_PREFIX, type DirListing, type FilenAccountInfo, type FileSource } from './sources'
 import { notebookFilesIn, readNotebookFile, resolveSource, type NotebookEntry } from './notebooks'
 import { isNotebookFileName } from './notebookFile'
+import { isPageFileName } from './userAction'
 
 /** What the person chose: a folder of a source — and, when a notebook file was asked for, the file in it. */
 export interface Picked {
@@ -18,8 +19,9 @@ export interface Picked {
 }
 
 interface Props {
-  /** `folder`: a folder is chosen (for a notebook's root); `notebook`: a notebook file is (the folder it is in is then its root). */
-  mode: 'folder' | 'notebook'
+  /** `folder`: a folder is chosen (for a notebook's root); `notebook`: a notebook file is (the folder it is in is then its root);
+   * `page`: an html file is (the page of a User Action). */
+  mode: 'folder' | 'notebook' | 'page'
   title: string
   roots: FileRoot[]
   accounts: FilenAccountInfo[]
@@ -97,7 +99,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
     if (!source) return
     let alive = true
     for (const entry of shown) {
-      if (entry.isDirectory || !isNotebookFileName(entry.name)) continue
+      if (entry.isDirectory || mode === 'page' || !isNotebookFileName(entry.name)) continue
       const key = `${source.viewKey}|${path}|${entry.name}`
       if (infos[key]) continue
       readNotebookFile(source, path, entry.name).then(
@@ -220,7 +222,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
                   </li>
                 )
               }
-              const isNotebook = isNotebookFileName(entry.name)
+              const isNotebook = mode !== 'page' && isNotebookFileName(entry.name)
               const info = isNotebook ? infoOf(entry.name) : undefined
               const inList = isNotebook ? listedAs(entry.name, info) : undefined
               const badges = isNotebook && (
@@ -240,6 +242,15 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
                     <button className="link-button entry-name" onClick={() => source && onPick({ source, folder: path, fileName: entry.name })}>
                       <FileIcon size={15} strokeWidth={2} aria-hidden="true" /> {entry.name}
                       {badges}
+                    </button>
+                  </li>
+                )
+              }
+              if (mode === 'page' && isPageFileName(entry.name)) {
+                return (
+                  <li key={entry.name}>
+                    <button className="link-button entry-name" onClick={() => source && onPick({ source, folder: path, fileName: entry.name })}>
+                      <FileIcon size={15} strokeWidth={2} aria-hidden="true" /> {entry.name}
                     </button>
                   </li>
                 )
@@ -274,7 +285,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
               makeFolder()
             }}
           >
-            <input autoFocus value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="Name of the new folder" aria-label="Name of the new folder" />
+            <input autoFocus data-ua-field="notes.locationPicker.newFolder" value={newFolder} onChange={(e) => setNewFolder(e.target.value)} placeholder="Name of the new folder" aria-label="Name of the new folder" />
             <button type="submit" disabled={!newFolder.trim()}>
               Create
             </button>
@@ -302,7 +313,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
             </>
           ) : (
             <>
-              <span className="muted picker-info">Pick a file whose name ends with [note-book].json.</span>
+              <span className="muted picker-info">{mode === 'page' ? 'Pick an html file (.html or .htm).' : 'Pick a file whose name ends with [note-book].json.'}</span>
               <button type="button" onClick={onCancel}>
                 Cancel
               </button>

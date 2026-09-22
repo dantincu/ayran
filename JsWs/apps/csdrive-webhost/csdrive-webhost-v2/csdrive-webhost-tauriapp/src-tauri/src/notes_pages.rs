@@ -35,10 +35,20 @@ pub fn is_page_file(name: &str) -> bool {
 /// Where a request for a page or one of its resources is answered from.
 #[derive(Debug, PartialEq)]
 pub enum Special {
-    /// A picked folder: its root id and a path inside it.
+    /// A folder of this device — the user folder (`user`) or a picked one — and a path inside it. In a *branch* of the folder the
+    /// root reads `<root id>~<branch index>` (`ab12cd34ef56~2`): the page is then served as that branch has it (see
+    /// `split_root`); a link, being relative to the page, keeps the branch without knowing of it.
     Device { root: String, path: String },
     /// A Filen account, in a branch (its index) or the account itself, and a path in the drive.
     Filen { user_id: u64, branch: Option<i64>, path: String },
+}
+
+/// A root as an address names it: the root id, and the branch when it reads `<id>~<branch>`.
+pub fn split_root(root: &str) -> Result<(&str, Option<i64>), String> {
+    match root.split_once('~') {
+        None => Ok((root, None)),
+        Some((id, branch)) => Ok((id, Some(branch.parse::<i64>().map_err(|_| "That isn't a branch.".to_string())?))),
+    }
 }
 
 /// Reads a (percent-decoded) request path. `None`: an ordinary path of the user folder. `Some(Err)`: an
@@ -76,7 +86,13 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
     match special {
         Special::Device { root, path } => {
             let scope = app.state::<FsScope>();
-            match scope.check_in(&root, &path, true) {
+            let Ok((root_id, branch)) = split_root(&root) else { return forbidden() };
+            // In a branch: the branch's own copy of the file if it changed it, else the folder's.
+            let real = match branch {
+                None => scope.check_in(root_id, &path, true),
+                Some(branch) => branch_file(app, root_id, branch, &path).await,
+            };
+            match real {
                 Ok(real) if real.is_file() => crate::file_serving::respond_file(&real, meta, csp),
                 Ok(_) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
                 Err(_) => forbidden(),
@@ -96,6 +112,13 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
             }
         }
     }
+}
+
+/// Where the file is on disk, as the branch `branch` of the folder `root` has it (changed there, or the folder's own).
+async fn branch_file(app: &AppHandle, root: &str, branch: i64, path: &str) -> Result<std::path::PathBuf, String> {
+    let guid = crate::picked_roots::root_guid_of(&app.state::<crate::app_state::AppDbState>().pool, root).await?;
+    let scope = app.state::<FsScope>().inner().clone();
+    app.state::<Cache>().local_file(&crate::files_cache::local_branches::Base { scope: &scope, root }, &guid, branch, path).await
 }
 
 // ── Opening ───────────────────────────────────────────────────────────────────
@@ -136,6 +159,11 @@ pub fn join_relative(base: &str, relative: &str) -> Result<String, String> {
     Ok(parts.join("/"))
 }
 
+/// The window entry's path, and how it was opened, for `file` (also for `user_action`, which opens a page the same way).
+pub(crate) async fn resolve_file(app: &AppHandle, file: &FileRef) -> Result<(String, Origin), String> {
+    resolve(app, file).await
+}
+
 /// The window entry's path, and how it was opened, for `file`.
 async fn resolve(app: &AppHandle, file: &FileRef) -> Result<(String, Origin), String> {
     if !is_page_file(&file.path) {
@@ -151,12 +179,17 @@ async fn resolve(app: &AppHandle, file: &FileRef) -> Result<(String, Origin), St
         "DeviceFolder" => {
             let root = file.root.clone().ok_or("A folder on the device needs its root.")?;
             let path = file.path.trim_start_matches('/').to_string();
-            if !app.state::<FsScope>().check_in(&root, &path, true)?.is_file() {
+            let (root_id, branch) = split_root(&root)?;
+            let there = match branch {
+                None => app.state::<FsScope>().check_in(root_id, &path, true)?,
+                Some(branch) => branch_file(app, root_id, branch, &path).await?,
+            };
+            if !there.is_file() {
                 return Err(format!("\"{path}\" isn't a file."));
             }
             Ok((
                 format!("@device/{root}/{path}"),
-                Origin { opened_by: notes, storage: Some("DeviceFolder".into()), path: Some(path), root: Some(root), filen: None },
+                Origin { opened_by: notes, storage: Some("DeviceFolder".into()), path: Some(path), root: Some(root), filen: None, role: None },
             ))
         }
         "FilenCloud" => {
@@ -178,6 +211,7 @@ async fn resolve(app: &AppHandle, file: &FileRef) -> Result<(String, Origin), St
                     storage: Some("FilenCloud".into()),
                     path: Some(path),
                     root: None,
+                    role: None,
                     filen: Some(FilenOrigin { account_id: user_id as i64, email, branch: branch_name, branch_index: file.branch }),
                 },
             ))
@@ -186,7 +220,7 @@ async fn resolve(app: &AppHandle, file: &FileRef) -> Result<(String, Origin), St
     }
 }
 
-/// Opens `file` as a web app, listed under the Notes tab that asked. Only Notes (or the admin-app) may.
+/// Opens `file` as a web app, listed under the tab of the window that asked (Notes, or any web app that has registered a tab).
 /// Resolves to the new window's guid.
 #[tauri::command]
 pub async fn open_file_as_web_app(
@@ -195,9 +229,6 @@ pub async fn open_file_as_web_app(
     windows: State<'_, SecondaryWindowsState>,
     file: FileRef,
 ) -> Result<String, String> {
-    if !crate::window_host::is_system_page(&window) {
-        return Err("Only the Notes app can open its files as web apps.".to_string());
-    }
     let window_guid = crate::window_host::caller_guid(&window).ok_or("The admin-app has no tab to list the page under.")?;
     let parent = windows.current_tab_of(&window_guid).ok_or("This window hasn't registered a tab yet.")?;
     let (relative_path, origin) = resolve(&app, &file).await?;
@@ -268,12 +299,11 @@ fn served_path_of(file: &FileRef) -> Result<String, String> {
     }
 }
 
-/// The address at which a system app's page can load `file` as a picture or as media (`<img>`, `<video>`, `<audio>`): on the
+/// The address at which a page can load `file` as a picture or as media (`<img>`, `<video>`, `<audio>`): on the
 /// web apps' origin, where the file is served — a piece at a time when a player asks (see `file_serving`). Nothing in it is a
 /// real path.
 #[tauri::command]
-pub fn media_url(window: crate::window_host::CallerWindow, file: FileRef) -> Result<String, String> {
-    crate::window_host::require_trusted(&window)?;
+pub fn media_url(file: FileRef) -> Result<String, String> {
     let served = served_path_of(&file)?;
     let mut url = tauri::Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).map_err(|e| e.to_string())?;
     // Segment by segment, so a `#` or a `?` in a file's name is part of the name.
@@ -311,7 +341,7 @@ pub struct SyncingTab {
 /// - not `sync`: a tab of its own that never reloads by itself; every call makes another.
 /// - `new_window`: a window of the Notes app of its own whose only tab is the page (syncing, if `sync`) — what the editor uses,
 ///   so that the editor stays where it is.
-/// Resolves to the tab's guid (the window's, for `new_window`). Notes only.
+/// Resolves to the tab's guid (the window's, for `new_window`).
 #[tauri::command]
 pub async fn open_note_tab(
     window: crate::window_host::CallerWindow,
@@ -321,8 +351,7 @@ pub async fn open_note_tab(
     sync: bool,
     new_window: bool,
 ) -> Result<String, String> {
-    crate::window_host::require_trusted(&window)?;
-    let window_guid = crate::window_host::caller_guid(&window).ok_or("Only the Notes app can open a note in a tab.")?;
+    let window_guid = crate::window_host::caller_guid(&window).ok_or("The admin-app has no tabs to open a page in.")?;
     let (relative_path, _) = resolve(&app, &file).await?;
     let link = link_page_of(&relative_path)?;
     let key = sync_key_of(&relative_path);
@@ -347,8 +376,7 @@ pub async fn note_tab_state(
     windows: State<'_, SecondaryWindowsState>,
     file: FileRef,
 ) -> Result<Option<SyncingTab>, String> {
-    crate::window_host::require_trusted(&window)?;
-    let window_guid = crate::window_host::caller_guid(&window).ok_or("Only the Notes app can ask.")?;
+    let window_guid = crate::window_host::caller_guid(&window).ok_or("The admin-app has no tabs.")?;
     let key = sync_key_of(&served_path_of(&file)?);
     let _ = &app;
     Ok(crate::secondary_windows::syncing_tab(windows.pool(), &window_guid, &key)
@@ -358,7 +386,7 @@ pub async fn note_tab_state(
 
 /// What to do with the tab that follows `file`'s editor (`show`, `suspend`, `close`): *show* brings it to the front; *suspend* leaves
 /// it — the window goes back to a tab of the app itself, the syncing tab stays listed and is shown again by *show* or by
-/// opening the note; *close* removes it (leaving it first when the window shows it). Notes only.
+/// opening the note; *close* removes it (leaving it first when the window shows it).
 #[tauri::command]
 pub async fn note_tab_action(
     window: crate::window_host::CallerWindow,
@@ -367,8 +395,7 @@ pub async fn note_tab_action(
     file: FileRef,
     action: String,
 ) -> Result<(), String> {
-    crate::window_host::require_trusted(&window)?;
-    let window_guid = crate::window_host::caller_guid(&window).ok_or("Only the Notes app can do that.")?;
+    let window_guid = crate::window_host::caller_guid(&window).ok_or("The admin-app has no tabs.")?;
     let key = sync_key_of(&served_path_of(&file)?);
     let tab = crate::secondary_windows::syncing_tab(windows.pool(), &window_guid, &key).await?.ok_or("This note has no tab that follows its editor.")?;
     let showing = crate::secondary_windows::window_shows(&windows, &window_guid, &tab);
@@ -388,18 +415,11 @@ pub async fn note_tab_action(
     }
 }
 
-/// A file that web apps may be showing was **saved** (by the admin-app's or Notes' editor): the tab that **follows its editor**
+/// A file that web apps may be showing was **saved** (by any window: the admin-app's or Notes' editor, a web app): the tab that **follows its editor**
 /// (`open_note_tab` with `sync`) reloads — only that one; any other window or tab that shows the same page is left as it is —
-/// when a window shows it. Resolves to how many windows were reloaded. Admin-app and system apps only.
+/// when a window shows it. Resolves to how many windows were reloaded.
 #[tauri::command]
-pub async fn notify_file_saved(
-    window: crate::window_host::CallerWindow,
-    app: AppHandle,
-    windows: State<'_, SecondaryWindowsState>,
-    file: FileRef,
-) -> Result<usize, String> {
-    crate::window_host::require_trusted(&window)?;
-    let _ = &windows;
+pub async fn notify_file_saved(app: AppHandle, file: FileRef) -> Result<usize, String> {
     let guids = crate::secondary_windows::syncing_windows(&app, &sync_key_of(&served_path_of(&file)?)).await?;
     for guid in &guids {
         crate::window_host::reload(&app, guid);

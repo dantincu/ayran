@@ -50,6 +50,8 @@ pub struct NoteFilesConfig {
     pub notebook: String,
     pub note: String,
     pub children: String,
+    #[allow(dead_code)] // read by the frontend (same file); checked here as a file name
+    pub user_action: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,7 +151,7 @@ pub fn validate(config: &Config) -> Result<(), String> {
         return Err("the longest name part must be 10 to 200 characters".into());
     }
     let notes = &config.notes;
-    for name in [&notes.files.notebook, &notes.files.note, &notes.files.children, &notes.markdown.suffix] {
+    for name in [&notes.files.notebook, &notes.files.note, &notes.files.children, &notes.files.user_action, &notes.markdown.suffix] {
         if invalid_name(name) {
             return Err(format!("\"{name}\" isn't a usable file name"));
         }

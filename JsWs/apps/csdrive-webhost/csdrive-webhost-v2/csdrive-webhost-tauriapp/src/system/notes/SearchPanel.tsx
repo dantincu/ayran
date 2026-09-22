@@ -52,7 +52,7 @@ export default function SearchPanel({
       <div className="search-grid">
         <fieldset>
           <legend>{files ? 'Name' : 'Title'}</legend>
-          <input value={form.nameText} onChange={(e) => set('nameText', e.target.value)} placeholder={files ? 'Part of a file or folder name' : 'Part of a title'} />
+          <input data-ua-field="notes.search.name" value={form.nameText} onChange={(e) => set('nameText', e.target.value)} placeholder={files ? 'Part of a file or folder name' : 'Part of a title'} />
           <div className="search-options">
             {check('Regular expression', 'nameRegex')}
             {check('Match case', 'nameCase')}
@@ -61,7 +61,7 @@ export default function SearchPanel({
 
         <fieldset>
           <legend>Contents</legend>
-          <input value={form.contentText} onChange={(e) => set('contentText', e.target.value)} placeholder={files ? 'Text inside the files' : 'Text inside the notes'} />
+          <input data-ua-field="notes.search.content" value={form.contentText} onChange={(e) => set('contentText', e.target.value)} placeholder={files ? 'Text inside the files' : 'Text inside the notes'} />
           <div className="search-options">
             {check('Regular expression', 'contentRegex')}
             {check('Match case', 'contentCase')}
@@ -78,7 +78,7 @@ export default function SearchPanel({
         {files && (
           <fieldset>
             <legend>Extension</legend>
-            <input value={form.extText} onChange={(e) => set('extText', e.target.value)} placeholder="jpg, png — or a regular expression" />
+            <input data-ua-field="notes.search.extension" value={form.extText} onChange={(e) => set('extText', e.target.value)} placeholder="jpg, png — or a regular expression" />
             <div className="search-options">{check('Regular expression', 'extRegex')}</div>
           </fieldset>
         )}
@@ -108,10 +108,10 @@ export default function SearchPanel({
           <fieldset>
             <legend>Size (files)</legend>
             <label className="search-range">
-              from <input inputMode="decimal" value={form.sizeFrom} onChange={(e) => set('sizeFrom', e.target.value)} placeholder="no minimum" />
+              from <input data-ua-field="notes.search.sizeFrom" inputMode="decimal" value={form.sizeFrom} onChange={(e) => set('sizeFrom', e.target.value)} placeholder="no minimum" />
             </label>
             <label className="search-range">
-              to <input inputMode="decimal" value={form.sizeTo} onChange={(e) => set('sizeTo', e.target.value)} placeholder="no maximum" />
+              to <input data-ua-field="notes.search.sizeTo" inputMode="decimal" value={form.sizeTo} onChange={(e) => set('sizeTo', e.target.value)} placeholder="no maximum" />
             </label>
             <select value={form.sizeUnit} onChange={(e) => set('sizeUnit', e.target.value as SearchForm['sizeUnit'])} aria-label="Unit">
               <option value="B">bytes</option>

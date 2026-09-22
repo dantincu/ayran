@@ -50,6 +50,7 @@ export default function ThumbnailGrid({ source, path, entries, meta, firstIndex,
               {renaming?.name === entry.name ? (
                 <input
                   autoFocus
+                  data-ua-field="notes.thumbnails.rename"
                   value={renaming.value}
                   onChange={(e) => renaming.onChange(e.target.value)}
                   onFocus={(e) => selectBaseName(e.currentTarget, renaming.isDirectory)}

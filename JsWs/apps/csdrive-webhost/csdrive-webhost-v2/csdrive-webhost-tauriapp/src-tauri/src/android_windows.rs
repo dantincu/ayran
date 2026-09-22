@@ -7,7 +7,7 @@
 //! - **Which window is calling is what the activity said** (`nativeInvoke`'s `guid`), carried to the command as a header only
 //!   this process can write ([`CALLER_HEADER`], with a secret made at startup) and read back by `window_host::CallerWindow`.
 //!   Nothing a page sends decides it.
-//! - A window may call the commands the capability files grant to windows (`user-apps.json` + `system-apps.json`) — the same
+//! - A window may call the commands the capability file grants to windows (`user-apps.json`) — the same
 //!   rule Tauri applies to a desktop window by its label — and nothing under `plugin:` (its events and dialogs are the bridge's
 //!   own, in `scripts/window-bridge.js` / `WindowActivity.kt`).
 
@@ -97,6 +97,16 @@ fn call_strings(method: &str, args: &[&str]) -> Result<(), String> {
 
 pub fn is_open(guid: &str) -> bool {
     state().windows.contains_key(guid)
+}
+
+/// The windows that are showing.
+pub fn guids() -> Vec<String> {
+    state().windows.keys().cloned().collect()
+}
+
+/// How many windows are showing.
+pub fn open_count() -> usize {
+    state().windows.len()
 }
 
 /// Starts the window's activity (or, if it is showing already, brings it to the front); it asks for its page when it is up
@@ -327,6 +337,19 @@ pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_na
     }
 }
 
+/// A window's page is about to show its own `alert`/`confirm`/`prompt`: 0 — it may (the right to show a prompt is taken, and given
+/// back by `nativeDialogEnd`), 1 — the person prevented prompts, 2 — another prompt is showing. See `prompt_guard`.
+#[no_mangle]
+pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeDialogBegin(_env: JNIEnv, _class: JClass) -> jint {
+    crate::prompt_guard::begin_dialog()
+}
+
+/// The page's own dialog is over (`prevent`: the person chose to prevent prompts in it).
+#[no_mangle]
+pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeDialogEnd(_env: JNIEnv, _class: JClass, prevent: jboolean) {
+    crate::prompt_guard::end_dialog(prevent != JNI_FALSE);
+}
+
 /// The person answered a question asked with [`ask`] (`index` is -1 when the dialog was dismissed).
 #[no_mangle]
 pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeAnswer(_env: JNIEnv, _class: JClass, id: jint, index: jint) {
@@ -483,8 +506,8 @@ async fn serve(app: &AppHandle, guid: &str, url: &Url, meta: &crate::file_servin
     let response = match kind {
         Kind::User if window_host::is_user_url(url) => crate::serve_user_path(app, &path, meta).await,
         Kind::System if window_host::is_app_origin(url) => serve_app_asset(app, &path, &csp),
-        // A system app shows files of the user origin — a picture, a video — but only as such: its CSP lets it load them as
-        // images and media, never as a script or a page.
+        // A system app shows files of the user origin — a picture, a video, and a web page in a frame (Notes' User Action popup) —
+        // but only as such: its CSP lets it load them as images, media and frames, never as a script of its own.
         Kind::System if window_host::is_user_url(url) => crate::serve_user_path(app, &path, meta).await,
         _ => crate::respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp),
     };

@@ -193,19 +193,26 @@ pub fn is_system_url(url: &Url) -> bool {
 
 // ── Who is calling ────────────────────────────────────────────────────────────
 
-/// The commands a window (of a web app or a system app) may call: what `capabilities/user-apps.json` and `system-apps.json`
-/// grant every window (`allow-some-command` → `some_command`). Tauri applies those files to a desktop window by its label;
+/// Whether an `Origin` header (`http://csuser.localhost`) names the origin `page` is at. `null` (a sandboxed frame) and anything that
+/// isn't an address is not the same as any page's.
+#[cfg_attr(not(desktop), allow(dead_code))]
+pub(crate) fn same_origin_as(origin: &str, page: &Url) -> bool {
+    same_origin(origin, page)
+}
+
+#[cfg_attr(not(desktop), allow(dead_code))]
+fn same_origin(origin: &str, page: &Url) -> bool {
+    let Ok(origin) = Url::parse(origin) else { return false };
+    origin.scheme() == page.scheme() && origin.host_str() == page.host_str() && origin.port_or_known_default() == page.port_or_known_default()
+}
+
+/// The commands a window (of a web app or a system app — they have the same rights) may call: what `capabilities/user-apps.json`
+/// grants every window (`allow-some-command` → `some_command`). Tauri applies that file to a desktop window by its label;
 /// the Android bridge (`android_windows.rs`) applies the same list itself, so there is one.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub fn window_commands() -> &'static HashSet<String> {
     static COMMANDS: OnceLock<HashSet<String>> = OnceLock::new();
-    COMMANDS.get_or_init(|| {
-        let mut commands = HashSet::new();
-        for file in [include_str!("../capabilities/user-apps.json"), include_str!("../capabilities/system-apps.json")] {
-            commands.extend(granted_commands(file));
-        }
-        commands
-    })
+    COMMANDS.get_or_init(|| granted_commands(include_str!("../capabilities/user-apps.json")).into_iter().collect())
 }
 
 /// The commands a capability file grants (its `allow-some-command` permissions).
@@ -256,9 +263,14 @@ impl<'de, R: Runtime> CommandArg<'de, R> for CallerWindow<R> {
         let headers = command.message.headers().clone();
         let window = WebviewWindow::<R>::from_command(command)?;
         let (guid, system) = platform::identify(&headers, &window).map_err(InvokeError::from)?;
+        *LAST_CALLER.lock().unwrap() = guid.clone();
         Ok(Self { window, guid, system })
     }
 }
+
+/// Who called last (the window's guid, `None` for the admin-app) — only to choose where to show a warning that nobody asked for
+/// (the window limit): never used to decide what anyone may do.
+static LAST_CALLER: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Whether the calling window is the admin-app.
 pub fn is_admin_page<R: Runtime>(window: &CallerWindow<R>) -> bool {
@@ -292,17 +304,6 @@ pub fn is_system_page<R: Runtime>(window: &CallerWindow<R>) -> bool {
     window.system
 }
 
-/// For the few commands that reach beyond what a web app may do and that the app's own code —
-/// the admin-app and the system apps — needs (today: exporting a file to the device, see
-/// `device_files`). A user web app is refused.
-pub fn require_trusted<R: Runtime>(window: &CallerWindow<R>) -> Result<(), String> {
-    if is_admin_page(window) || is_system_page(window) {
-        Ok(())
-    } else {
-        Err("Only the admin-app and the system apps can do that.".to_string())
-    }
-}
-
 // ── Opening, closing, focusing ────────────────────────────────────────────────
 
 pub fn is_open(app: &AppHandle, guid: &str) -> bool {
@@ -311,13 +312,54 @@ pub fn is_open(app: &AppHandle, guid: &str) -> bool {
 
 /// Shows the page for entry `guid`.
 pub fn open(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
+    ensure_room(app, guid)?;
     platform::open(app, guid, page)
+}
+
+/// **At most this many secondary windows are open at once** (`docs/app-security.md`): the person's device isn't the app's to fill.
+/// Suspending or closing one makes room. The windows of the apps and the external web sites' windows both count (on Android the
+/// sites are activities of their own, counted from `external_sites`).
+pub const MAX_OPEN_WINDOWS: usize = 10;
+
+/// Whether one more window may open when `open` are open and the one to open is (`already_open`) or isn't showing already — a
+/// window that is showing is only brought to the front.
+fn has_room(open: usize, already_open: bool) -> bool {
+    already_open || open < MAX_OPEN_WINDOWS
+}
+
+/// How many secondary windows are open now.
+pub fn open_windows(app: &AppHandle) -> usize {
+    platform::open_windows(app)
+}
+
+/// `Ok` when the window `guid` may open — or is open already. At the limit it answers with why, and the person is told in a native box
+/// (in the window that asked last, or the admin-app's): no window opens until an existing one closes or suspends.
+pub fn ensure_room(app: &AppHandle, guid: &str) -> Result<(), String> {
+    if has_room(open_windows(app), is_open(app, guid)) {
+        return Ok(());
+    }
+    let message = format!("{MAX_OPEN_WINDOWS} windows are open already. Close or suspend one to open another.");
+    let (app, asker, shown) = (app.clone(), LAST_CALLER.lock().unwrap().clone(), message.clone());
+    tauri::async_runtime::spawn(async move {
+        crate::prompt_guard::notice(&app, asker.as_deref(), "Too many windows", &shown).await;
+    });
+    Err(message)
 }
 
 /// Sends `event` to entry `guid`'s window — to that window only, not to every window — if it is
 /// showing, and returns whether it was.
 pub fn emit_if_open<S: serde::Serialize + Clone>(app: &AppHandle, guid: &str, event: &str, payload: S) -> bool {
     platform::emit_if_open(app, guid, event, payload)
+}
+
+/// Sends `event` to the admin-app and to every open window of a web app or a system app (never to an external web site's window,
+/// which has no way into the backend). Whoever doesn't listen ignores it.
+pub fn emit_to_all<S: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: &S) {
+    use tauri::Emitter;
+    let _ = app.emit_to(MAIN_WINDOW_LABEL, event, payload.clone());
+    for guid in platform::window_guids(app) {
+        emit_if_open(app, &guid, event, payload.clone());
+    }
 }
 
 /// Asks entry `guid`'s window to close. Once it has, `secondary_windows` deletes the
@@ -360,7 +402,14 @@ pub fn navigate(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> 
 
 /// Asks the person something in a native box that belongs to the window (`labels`: two or three buttons); the answer is the
 /// index of the button pressed — `None` when the box was dismissed, or the window isn't open (any more).
+///
+/// **Every box goes through `prompt_guard`** — one at a time, and never when the person prevented prompts — so this is the guarded one.
 pub async fn choose(app: &AppHandle, guid: &str, title: &str, message: &str, labels: &[&str]) -> Option<usize> {
+    crate::prompt_guard::ask(app, guid, title, message, labels).await
+}
+
+/// The box itself, with none of the rules: only `prompt_guard` may call it.
+pub(crate) async fn choose_unguarded(app: &AppHandle, guid: &str, title: &str, message: &str, labels: &[&str]) -> Option<usize> {
     platform::choose(app, guid, title, message, labels).await
 }
 
@@ -373,12 +422,34 @@ mod platform {
 
     /// Who a call comes from: the window's label (the admin-app is `main`; every other window's label is its guid), and
     /// whether the page it shows is a system app's.
-    pub fn identify<R: Runtime>(_headers: &tauri::http::HeaderMap, window: &WebviewWindow<R>) -> Result<(Option<String>, bool), String> {
+    pub fn identify<R: Runtime>(headers: &tauri::http::HeaderMap, window: &WebviewWindow<R>) -> Result<(Option<String>, bool), String> {
+        // **A frame of another origin is not the window.** Tauri's IPC reaches every frame of a webview on Windows (WebView2 injects it
+        // into each of them), so a page shown in a frame of a window could call any command *as the window*: its own app state, its
+        // tabs. The browser says which origin a call comes from (the `Origin` header, which no script can set); a call whose origin
+        // isn't the one the window's own page is at is refused. (The app itself shows no page in a frame: the User Action has a window
+        // of its own, `user_action.rs`.)
+        if let (Some(origin), Ok(page)) = (headers.get("Origin").and_then(|v| v.to_str().ok()), window.url()) {
+            if !same_origin(origin, &page) {
+                return Err("A frame of another origin can't call the app: it asks the window that shows it.".to_string());
+            }
+        }
         Ok(((window.label() != MAIN_WINDOW_LABEL).then(|| window.label().to_string()), window.url().is_ok_and(|url| is_system_url(&url))))
     }
 
     pub fn is_open(app: &AppHandle, guid: &str) -> bool {
         app.get_webview_window(guid).is_some()
+    }
+
+    /// The windows of web apps and system apps that are showing.
+    pub fn window_guids(app: &AppHandle) -> Vec<String> {
+        let open = app.webview_windows();
+        owns().keys().filter(|guid| open.contains_key(guid.as_str())).cloned().collect()
+    }
+
+    /// Every window but the admin-app's (the apps' windows and the external web sites').
+    pub fn open_windows(app: &AppHandle) -> usize {
+        // (Not the windows that show a page's own dialog: they are the app's, and gone when the question is answered.)
+        app.webview_windows().keys().filter(|label| label.as_str() != MAIN_WINDOW_LABEL && !crate::page_dialogs::is_prompt_window(label)).count()
     }
 
     /// The page each open web app or system app window is at: what its navigation rule compares with.
@@ -471,6 +542,8 @@ mod platform {
             .disable_drag_drop_handler()
             .build()
             .map_err(|e| e.to_string())?;
+        // The page's own `alert`/`confirm`/`prompt` follow the prompt rules (`page_dialogs.rs`).
+        crate::page_dialogs::install(&window);
 
         let app_for_event = app.clone();
         let guid_for_event = guid.to_string();
@@ -541,6 +614,15 @@ mod platform {
         host::is_open(guid)
     }
 
+    /// The windows of the apps and the external web sites' activities.
+    pub fn open_windows(_app: &AppHandle) -> usize {
+        host::open_count() + crate::external_sites::open_count()
+    }
+
+    pub fn window_guids(_app: &AppHandle) -> Vec<String> {
+        host::guids()
+    }
+
     pub fn current_page_url(_app: &AppHandle, guid: &str) -> Option<Url> {
         host::page_of(guid)?.url().ok()
     }
@@ -596,6 +678,14 @@ mod platform {
 
     pub fn is_open(_app: &AppHandle, _guid: &str) -> bool {
         false
+    }
+
+    pub fn open_windows(_app: &AppHandle) -> usize {
+        0
+    }
+
+    pub fn window_guids(_app: &AppHandle) -> Vec<String> {
+        Vec::new()
     }
 
     pub fn set_title(_app: &AppHandle, _guid: &str, _title: &str) {}
@@ -660,7 +750,7 @@ mod tests {
     #[test]
     fn what_a_window_may_call_is_what_the_capability_files_grant_to_every_window_and_nothing_of_the_admin_apps() {
         let windows = window_commands();
-        for command in ["list_secondary_windows", "init_window_tab", "fs_read_file", "sqlite_select", "open_external_site", "filen_cache_list", "save_to_device"] {
+        for command in ["list_secondary_windows", "init_window_tab", "fs_read_file", "sqlite_select", "open_external_site", "filen_cache_list", "save_to_device", "choose_save_location", "export_local_file", "filen_cache_export", "media_url", "open_note_tab", "notify_file_saved", "open_file_as_web_app"] {
             assert!(windows.contains(command), "{command}");
         }
         // What only the admin-app may do (admin.json) is never on the list — nor is anything of Tauri's own plugins.
@@ -676,6 +766,36 @@ mod tests {
         for command in windows {
             assert!(build.contains(&format!("\"{command}\"")), "{command} is granted to windows but isn't a command of the app");
         }
+    }
+
+    #[test]
+    fn a_call_is_the_windows_only_if_it_comes_from_the_origin_the_window_is_at() {
+        let notes = Url::parse("http://tauri.localhost/system/notes/index.html").unwrap();
+        assert!(same_origin("http://tauri.localhost", &notes), "the window's own page");
+        assert!(!same_origin("http://csuser.localhost", &notes), "a page of the web apps' origin in a frame of Notes");
+        assert!(!same_origin("null", &notes), "a sandboxed frame");
+        assert!(!same_origin("http://tauri.localhost.evil.example", &notes) && !same_origin("https://tauri.localhost", &notes) && !same_origin("http://tauri.localhost:81", &notes));
+        let user = Url::parse("csuser://localhost/qwer/index1.html").unwrap();
+        assert!(same_origin("csuser://localhost", &user) && !same_origin("tauri://localhost", &user));
+        assert!(same_origin("http://localhost:1420", &Url::parse("http://localhost:1420/").unwrap()), "the dev server");
+    }
+
+    #[test]
+    fn at_most_ten_windows_are_open_and_one_that_is_showing_is_only_brought_to_the_front() {
+        assert_eq!(MAX_OPEN_WINDOWS, 10, "the limit the person asked for (docs/app-security.md)");
+        assert!(has_room(0, false) && has_room(MAX_OPEN_WINDOWS - 1, false), "room up to the tenth");
+        assert!(!has_room(MAX_OPEN_WINDOWS, false), "the eleventh doesn't open");
+        assert!(!has_room(MAX_OPEN_WINDOWS + 3, false));
+        assert!(has_room(MAX_OPEN_WINDOWS, true), "a window that is showing already only comes to the front");
+    }
+
+    #[test]
+    fn windows_ask_their_questions_with_confirm_dialog_and_the_dialog_plugin_is_the_admin_apps() {
+        assert!(window_commands().contains("confirm_dialog"));
+        assert!(!window_commands().contains("prompt_guard_status"), "the prompt flag and window count are for Settings");
+        let user = include_str!("../capabilities/user-apps.json");
+        assert!(!user.contains("dialog:"), "no window may use the dialog plugin: its boxes are outside the prompt rules");
+        assert!(include_str!("../capabilities/admin.json").contains("dialog:allow-confirm"));
     }
 
     #[test]

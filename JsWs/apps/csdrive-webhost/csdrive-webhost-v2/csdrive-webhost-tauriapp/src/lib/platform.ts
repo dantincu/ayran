@@ -5,13 +5,26 @@ import { isMobile } from './isMobile'
 
 export { isMobile }
 
+/** What the backend answers when the person declined the confirmation Android asks before writing into Downloads. */
+const EXPORT_CANCELLED = 'Cancelled.'
+
+/** Runs an Android export; a declined confirmation is "nothing was saved" (`null`), not an error. */
+async function unlessDeclined(run: () => Promise<string>): Promise<string | null> {
+  try {
+    return await run()
+  } catch (e) {
+    if (String(e) === EXPORT_CANCELLED) return null
+    throw e
+  }
+}
+
 /** Gives a file to the device's own storage. Desktop: a native "save as" dialog (shown by the backend,
- * which then writes the file wherever the person chose). Android: straight into the Downloads folder
- * (its save dialog yields content URIs; see `device_files.rs`). `read` is only called once we know
+ * which then writes the file wherever the person chose). Android: into the Downloads folder after a native
+ * confirmation (its save dialog yields content URIs; see `device_files.rs`). `read` is only called once we know
  * where to save. Resolves to where the file went, or null if the user cancelled. */
 export async function exportToDevice(name: string, read: () => Promise<Uint8Array>): Promise<string | null> {
   if (isMobile) {
-    return invokeWithBytes<string>('save_to_device', await read(), { name })
+    return unlessDeclined(async () => invokeWithBytes<string>('save_to_device', await read(), { name }))
   }
   const token = await invoke<string | null>('choose_save_location', { name })
   if (!token) return null
@@ -26,9 +39,9 @@ export interface PickedFile {
 /** Exports a file that is already on this device — one Rust copies itself (`export_local_file`,
  * `filen_cache_export`), so its bytes never pass through the page. On desktop this asks where to save
  * first (`run` gets the one-time token for the backend to use), on Android the file goes to
- * Downloads (`run` gets null). Resolves to the name it was saved as, or null if the person cancelled. */
+ * Downloads once the person confirms (`run` gets null). Resolves to the name it was saved as, or null if the person cancelled. */
 export async function exportPathToDevice(name: string, run: (token: string | null) => Promise<string>): Promise<string | null> {
-  if (isMobile) return run(null)
+  if (isMobile) return unlessDeclined(() => run(null))
   const token = await invoke<string | null>('choose_save_location', { name })
   return token ? run(token) : null
 }

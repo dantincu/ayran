@@ -43,6 +43,13 @@ object WindowBridge {
 
     @JvmStatic external fun nativeAnswer(id: Int, index: Int)
 
+    /** A page is about to show its own dialog (alert, confirm, prompt): 0 — go ahead (and call [nativeDialogEnd] when it is over), 1 — the
+     * person prevented prompts, 2 — another prompt is showing. One prompt at a time, and none once they are prevented: `prompt_guard.rs`. */
+    @JvmStatic external fun nativeDialogBegin(): Int
+
+    /** The page's own dialog is over; `prevent`: the person pressed *Prevent this app from showing prompts* in it. */
+    @JvmStatic external fun nativeDialogEnd(prevent: Boolean)
+
     /**
      * Makes the native functions usable and gives Rust this class. Called by the app's own activity and by every window: a
      * window the system brings back after the process was killed may run before the app's activity does, so it loads the

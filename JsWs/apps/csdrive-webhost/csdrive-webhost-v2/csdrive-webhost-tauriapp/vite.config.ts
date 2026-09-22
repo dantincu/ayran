@@ -34,6 +34,8 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
         notes: resolve(__dirname, 'system/notes/index.html'),
+        // Not an app: the window that shows a page's own JavaScript dialog (`src-tauri/src/page_dialogs_windows.rs`).
+        prompt: resolve(__dirname, 'system/prompt/index.html'),
       },
     },
   },

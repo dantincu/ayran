@@ -3,7 +3,7 @@
   --fg: #1a1a1a;
   --muted: #6b7280;
   --border: #e2e8f0;
-  --accent: #2563eb;
+  --accent: #d04a0b;
   --accent-fg: #ffffff;
   --panel-bg: #f8fafc;
   --error-bg: #fee2e2;
@@ -19,7 +19,7 @@
     --fg: #e5e7eb;
     --muted: #9ca3af;
     --border: #30343c;
-    --accent: #3b82f6;
+    --accent: #fb923c;
     --accent-fg: #0b0d10;
     --panel-bg: #1c1f26;
     --error-bg: #3f1d1d;
@@ -1358,7 +1358,9 @@ select {
 .text-menu {
   position: fixed;
   z-index: 3000;
-  width: 24px;
+  width: auto;
+  display: flex;
+  gap: 2px;
   height: 22px;
 }
 
@@ -1516,7 +1518,7 @@ select {
 /* ---- The text editor: a textarea over a highlighted copy of its text (components/CodeEditor.tsx, lib/highlight.ts) ---- */
 
 :root {
-  --tok-heading: #1d4ed8;
+  --tok-heading: #c2410c;
   --tok-quote: #6b7280;
   --tok-list: #be185d;
   --tok-code: #b45309;
@@ -1530,7 +1532,7 @@ select {
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --tok-heading: #93c5fd;
+    --tok-heading: #fdba74;
     --tok-quote: #9ca3af;
     --tok-list: #f9a8d4;
     --tok-code: #fbbf24;
@@ -1541,6 +1543,21 @@ select {
     --tok-entity: #c4b5fd;
     --tok-quiet: #9ca3af;
   }
+}
+
+/* The editor and its toolbar (undo, redo): the wrap takes the room the frame used to. */
+.code-editor-wrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.code-editor-toolbar {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .code-editor {
@@ -2352,4 +2369,222 @@ select {
 
 .spin {
   animation: app-spin 1s linear infinite;
+}
+
+/* ---- User Action (system/notes/UserActionModal.tsx): the popup that shows a page of the person's own in a frame ---- */
+
+.modal-panel.user-action-panel {
+  max-width: min(1100px, 100%);
+  height: 85vh;
+  max-height: 85vh;
+}
+
+.modal-panel.user-action-panel .modal-body {
+  padding: 0;
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.user-action {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.user-action-scope {
+  padding: 6px 14px;
+  font-size: 0.85em;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-action .error-banner {
+  margin: 8px 14px 0;
+}
+
+.user-action-frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #fff;
+}
+
+.user-action-empty {
+  padding: 24px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.modal-panel.user-action-panel.maximized {
+  max-width: none;
+  height: 100%;
+  max-height: none;
+}
+
+/* ---- Settings → Appearance (components/AppearanceSettings.tsx) ---- */
+
+.appearance-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 24px;
+}
+
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.segmented button {
+  border: 0;
+  border-radius: 0;
+  background: var(--panel-bg);
+  color: var(--fg);
+  padding: 6px 14px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--border);
+}
+
+.segmented button.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.theme-family-name {
+  margin: 6px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 2px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--fg);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.theme-card:hover {
+  background: var(--row-hover);
+}
+
+.theme-card.active {
+  border-color: var(--accent);
+}
+
+/* A small picture of the theme: its page, with a panel, an accent and a text colour on it. */
+.theme-swatch {
+  display: flex;
+  gap: 4px;
+  height: 34px;
+  padding: 6px;
+  border: 1px solid;
+  border-radius: 5px;
+}
+
+.theme-swatch span {
+  flex: 1;
+  border-radius: 3px;
+}
+
+.theme-name {
+  font-size: 13px;
+}
+
+/* A change of theme slides the colours over instead of flashing (lib/appearance.ts); nothing moves for a person who asked for less motion. */
+:root.theme-fade,
+:root.theme-fade * {
+  transition:
+    background-color 0.6s ease,
+    color 0.6s ease,
+    border-color 0.6s ease,
+    fill 0.6s ease,
+    stroke 0.6s ease !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root.theme-fade,
+  :root.theme-fade * {
+    transition: none !important;
+  }
+}
+
+.appearance-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.theme-swatch.small {
+  width: 34px;
+  height: 22px;
+  padding: 3px;
+}
+
+.rotation-box {
+  margin: 14px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rotation-box legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+.rotation-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.rotation-row input[type='number'] {
+  width: 5.5em;
+}
+
+.rotation-warning {
+  color: var(--error-fg);
+  font-size: 13px;
+}
+
+/* In a dialog (a column that scrolls) these keep their height instead of being squeezed. */
+.segmented,
+.rotation-box,
+.theme-family,
+.theme-grid {
+  flex-shrink: 0;
 }

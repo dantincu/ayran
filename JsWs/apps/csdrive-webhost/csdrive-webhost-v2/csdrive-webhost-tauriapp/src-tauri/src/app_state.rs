@@ -31,6 +31,11 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await?;
 
+    // State that belongs to one *window* (its entry in the window manager): gone with the entry.
+    sqlx::query("CREATE TABLE IF NOT EXISTS window_state (window_guid TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY (window_guid, key))")
+        .execute(pool)
+        .await?;
+
     Ok(())
 }
 
@@ -77,9 +82,40 @@ pub async fn get_global_setting(state: tauri::State<'_, AppDbState>, key: String
 
 #[tauri::command]
 pub async fn set_global_setting(state: tauri::State<'_, AppDbState>, key: String, value: String) -> Result<(), String> {
+    // The theme and the light/dark mode are the admin-app's to choose (`appearance::set_appearance`).
+    if key.starts_with(crate::appearance::RESERVED_PREFIX) {
+        return Err("That setting can only be changed by the admin-app.".to_string());
+    }
     sqlx::query("INSERT INTO global_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .bind(key)
         .bind(value)
+        .execute(&state.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// What belongs to *this window* and to no other — unlike `get_app_state`, which every window of the same app shares (Notes'
+/// windows all see one state): the branch a Notes window works in, say. A window reaches only its own; it is deleted with the
+/// window's entry (`secondary_windows::delete_window_rows`) and kept while the window is suspended.
+#[tauri::command]
+pub async fn get_window_state(window: crate::window_host::CallerWindow, state: tauri::State<'_, AppDbState>, key: String) -> Result<Option<String>, String> {
+    let guid = crate::window_host::caller_guid(&window).ok_or("Only the windows of apps have a state of their own.")?;
+    sqlx::query_scalar("SELECT value FROM window_state WHERE window_guid = ?1 AND key = ?2")
+        .bind(&guid)
+        .bind(&key)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_window_state(window: crate::window_host::CallerWindow, state: tauri::State<'_, AppDbState>, key: String, value: String) -> Result<(), String> {
+    let guid = crate::window_host::caller_guid(&window).ok_or("Only the windows of apps have a state of their own.")?;
+    sqlx::query("INSERT INTO window_state (window_guid, key, value) VALUES (?1, ?2, ?3) ON CONFLICT(window_guid, key) DO UPDATE SET value = excluded.value")
+        .bind(&guid)
+        .bind(&key)
+        .bind(&value)
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;

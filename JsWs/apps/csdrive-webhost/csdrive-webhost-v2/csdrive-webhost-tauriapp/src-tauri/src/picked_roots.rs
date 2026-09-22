@@ -72,8 +72,42 @@ pub async fn ensure_schema(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     }
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS picked_roots_id ON picked_roots (id)").execute(pool).await?;
 
+    // Every root also has a guid — a name for it that is the same wherever it is shown, and the one the Notes app's folders for it
+    // (branches, thumbnails) are named after (`files/b/NNN-local-fs@@<guid>`).
+    sqlx::query("CREATE TABLE IF NOT EXISTS root_guids (root_id TEXT PRIMARY KEY, guid TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL)")
+        .execute(pool)
+        .await?;
+
     migrate_path_based_ids(pool).await;
     Ok(())
+}
+
+/// The guid of a root (the user folder, `user`, or a picked folder's id), made the first time it is asked for and kept in
+/// `data.db`: the same one for as long as the root's id lives — which, for a picked folder, is also when it is picked again.
+pub async fn root_guid_of(pool: &SqlitePool, root_id: &str) -> Result<String, String> {
+    let known = root_id == "user" || label_of(pool, root_id).await.is_some();
+    if !known {
+        return Err("That folder isn't available: it was never chosen, or it has been forgotten.".to_string());
+    }
+    if let Some(guid) = sqlx::query_scalar::<_, String>("SELECT guid FROM root_guids WHERE root_id = ?1").bind(root_id).fetch_optional(pool).await.map_err(|e| e.to_string())? {
+        return Ok(guid);
+    }
+    let guid = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+    sqlx::query("INSERT OR IGNORE INTO root_guids (root_id, guid, created_at) VALUES (?1, ?2, ?3)")
+        .bind(root_id)
+        .bind(&guid)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query_scalar("SELECT guid FROM root_guids WHERE root_id = ?1").bind(root_id).fetch_one(pool).await.map_err(|e| e.to_string())
+}
+
+/// The guid of a folder of this device, for showing (the root pills' menu) and copying. It names no place: it is only an id.
+#[tauri::command]
+pub async fn root_guid(state: tauri::State<'_, AppDbState>, root: String) -> Result<String, String> {
+    root_guid_of(&state.pool, &root).await
 }
 
 /// A picked folder used to be named by its path (`ext:<path>`), which ended up inside other data: the
@@ -147,11 +181,15 @@ pub fn allow_saved(pool: &SqlitePool, scope: &FsScope) {
 /// (its id and label — not its path); `None` if the person cancelled.
 #[tauri::command]
 pub async fn pick_folder(
+    window: crate::window_host::CallerWindow,
     app: AppHandle,
     scope: tauri::State<'_, FsScope>,
     state: tauri::State<'_, AppDbState>,
 ) -> Result<Option<PickedRoot>, String> {
-    let Some(path) = platform::pick(&app).await? else { return Ok(None) };
+    // The OS dialog is a prompt like the others: one at a time, never when the person prevented prompts, and counted (`prompt_guard`).
+    let guid = crate::window_host::caller_guid(&window);
+    let Some(picked) = crate::prompt_guard::os_dialog(&app, guid.as_deref(), platform::pick(&app)).await? else { return Ok(None) };
+    let Some(path) = picked? else { return Ok(None) };
     let real = crate::fs_scope::resolve(Path::new(&path), true).map_err(|_| "The chosen folder isn't available.".to_string())?;
     if !real.is_dir() {
         return Err("The chosen item isn't a folder.".to_string());
@@ -172,8 +210,13 @@ pub async fn list_picked_roots(state: tauri::State<'_, AppDbState>) -> Result<Ve
 pub async fn remove_picked_root(
     scope: tauri::State<'_, FsScope>,
     state: tauri::State<'_, AppDbState>,
+    cache: tauri::State<'_, crate::files_cache::Cache>,
     id: String,
 ) -> Result<(), String> {
+    // Its thumbnails go (they are made again if it is picked again); its branches, with their pending changes, stay.
+    if let Ok(guid) = root_guid_of(&state.pool, &id).await {
+        cache.local_drop_thumbnails(&guid);
+    }
     scope.revoke_picked_id(&id);
     sqlx::query("DELETE FROM picked_roots WHERE id = ?1").bind(&id).execute(&state.pool).await.map_err(|e| e.to_string())?;
     Ok(())

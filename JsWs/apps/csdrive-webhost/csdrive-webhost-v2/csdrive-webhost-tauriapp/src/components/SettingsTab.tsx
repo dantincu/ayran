@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { Eye, EyeOff, Eraser, FolderOpen, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import IconButton from './IconButton'
+import AppearanceSettings from './AppearanceSettings'
 import { internalClipboard } from '../lib/clipboard'
+import { invoke } from '@tauri-apps/api/core'
 import {
   clearCustomDataFolderContents,
   deleteAppData,
@@ -20,6 +22,11 @@ export default function SettingsTab() {
   // What the app's own clipboard holds (`null`: not read yet) and whether its text is shown.
   const [clipboardText, setClipboardText] = useState<string | null>(null)
   const [clipboardShown, setClipboardShown] = useState(false)
+  // Whether prompts are prevented, and how many windows are open of how many are allowed (`prompt_guard.rs`).
+  const [guard, setGuard] = useState<{ promptsPrevented: boolean; openWindows: number; maxWindows: number } | null>(null)
+  const readGuard = useCallback(() => {
+    invoke<{ promptsPrevented: boolean; openWindows: number; maxWindows: number }>('prompt_guard_status').then(setGuard, () => setGuard(null))
+  }, [])
 
   const readClipboard = useCallback(async () => {
     try {
@@ -51,7 +58,8 @@ export default function SettingsTab() {
   useEffect(() => {
     refresh()
     readClipboard()
-  }, [refresh, readClipboard])
+    readGuard()
+  }, [refresh, readClipboard, readGuard])
 
   async function changeFolder() {
     setError(null)
@@ -129,6 +137,8 @@ export default function SettingsTab() {
 
   return (
     <div className="tab-panel">
+      <AppearanceSettings />
+
       <div className="toolbar">
         <strong>Data folder</strong>
         <div className="toolbar-actions">
@@ -210,6 +220,28 @@ export default function SettingsTab() {
           {clipboardText.length > 2000 ? `${clipboardText.slice(0, 2000)}…` : clipboardText}
         </pre>
       )}
+
+      <div className="toolbar" style={{ marginTop: 24 }}>
+        <strong>Prompts and windows</strong>
+        <div className="toolbar-actions">
+          <IconButton icon={RefreshCw} label="Read them again" onClick={readGuard} />
+        </div>
+      </div>
+      <p className="muted">
+        Every question the app asks you — a link, a file to save, a web site to open — is one box at a time. Each has a button, <em>Prevent this
+        app from showing prompts</em>, that stops all of them until the app is <strong>restarted</strong> (nothing is remembered: they are allowed
+        again after a restart). At most {guard?.maxWindows ?? 10} windows are open at once; close or suspend one to open another.
+      </p>
+      <div className="toolbar-actions">
+        <span className={guard?.promptsPrevented ? 'error-banner' : 'muted'}>
+          {guard === null ? 'Reading…' : guard.promptsPrevented ? 'Prompts are prevented until the app is restarted.' : 'Prompts are allowed.'}
+        </span>
+        {guard && (
+          <span className="muted">
+            {guard.openWindows} of {guard.maxWindows} windows open.
+          </span>
+        )}
+      </div>
 
       <div className="toolbar" style={{ marginTop: 24 }}>
         <strong>Danger zone</strong>

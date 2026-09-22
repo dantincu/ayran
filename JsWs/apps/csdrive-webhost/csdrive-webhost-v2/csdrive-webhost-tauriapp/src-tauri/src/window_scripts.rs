@@ -27,6 +27,10 @@ const TAG: &str = "<script src=\"/@csdrive/window.js\"></script>";
 /// `html` with the script tag first in its `<head>` — or, for a document with no head, right after its `<html>` tag, or
 /// after its doctype, or at the very start. (Before the doctype only as the last resort: it would put the page in quirks mode.)
 pub fn with_script_in_head(html: &str) -> String {
+    with_tag_in_head(html, TAG)
+}
+
+fn with_tag_in_head(html: &str, tag: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let after_tag = |name: &str| -> Option<usize> {
         let mut from = 0;
@@ -50,7 +54,7 @@ pub fn with_script_in_head(html: &str) -> String {
         }
     });
     let at = at.unwrap_or(0);
-    format!("{}{TAG}{}", &html[..at], &html[at..])
+    format!("{}{tag}{}", &html[..at], &html[at..])
 }
 
 #[cfg(test)]

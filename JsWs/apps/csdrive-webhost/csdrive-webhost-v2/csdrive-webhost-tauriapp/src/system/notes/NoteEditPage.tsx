@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { confirm } from '@tauri-apps/plugin-dialog'
+import { confirm } from '../../lib/dialogs'
 import { AppWindow, ArrowLeft, Paperclip, Save } from 'lucide-react'
 import CodeEditor from '../../components/CodeEditor'
 import IconButton from '../../components/IconButton'
@@ -10,6 +10,8 @@ import { findMarkdown, readNote, renameNote, titleFromMarkdown, touchNote, type 
 import type { FileVersion } from './sources'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
+import UserActionButton from './UserActionButton'
+import CacheMenu from './CacheMenu'
 
 /** The unsaved text of note editors that were left (a tab switched away from, a window closed): `<source>|<markdown path>` → text. */
 const DRAFTS_KEY = 'notes.noteDrafts'
@@ -198,9 +200,11 @@ export default function NoteEditPage({
             <IconButton icon={ArrowLeft} label="Back to the notes" onClick={() => leave({ view: 'notes', sourceId, folder: parentOf(folder) })} />
             <h2>{note?.title ?? 'Note'}</h2>
             {dirty && <span className="muted">unsaved changes</span>}
+            <CacheMenu source={source} path={path ?? folder} isDirectory={false} editing={dirty ? 'dirty' : 'open'} onDone={(kind) => (kind === 'soft' ? load() : undefined)} onError={setError} onNotice={setNotice} />
             <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
             <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
             <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
+            <UserActionButton sourceId={sourceId} folder={folder} />
           </div>
           {error && <div className="error-banner">{error}</div>}
           {notice && <div className="status-banner">{notice}</div>}

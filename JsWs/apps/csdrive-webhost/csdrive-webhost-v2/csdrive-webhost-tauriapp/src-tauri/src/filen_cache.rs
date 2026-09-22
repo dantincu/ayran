@@ -250,6 +250,22 @@ pub async fn filen_cache_set_locked(app: AppHandle, cache: State<'_, Cache>, use
     cache.set_locked(&remote, user_id as i64, &path, locked).await
 }
 
+/// **Hard refresh** of one item of the account's cache: its listing (a folder), or its version and content (a file), are fetched
+/// from Filen again whatever the interval says — and everything below a folder is looked at again when it is next opened. A file
+/// locked against caching is refused (unlock it first).
+#[tauri::command]
+pub async fn filen_cache_hard_refresh(app: AppHandle, cache: State<'_, Cache>, user_id: u64, path: String) -> Result<(), String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    cache.hard_refresh(&remote, user_id as i64, &path).await
+}
+
+/// **Clear the cache** of one item: the content of a file (or of every file below a folder) and its listings and thumbnails are
+/// thrown away; files locked against caching, and branches, are kept.
+#[tauri::command]
+pub async fn filen_cache_clear_item(cache: State<'_, Cache>, user_id: u64, path: String) -> Result<(), String> {
+    cache.clear_item(user_id as i64, &path).await
+}
+
 /// Takes a file into the branch without changing it, so it is among the branch's pending changes.
 #[tauri::command]
 pub async fn filen_cache_checkout(app: AppHandle, cache: State<'_, Cache>, user_id: u64, branch: i64, path: String) -> Result<(), String> {
@@ -380,7 +396,7 @@ pub async fn filen_cache_download_to(
 
 /// Exports a file from the account (or a branch) to the person's device — see `device_files`; the
 /// desktop's `token` comes from `choose_save_location`. Fetched into the cache as a stream if need be,
-/// then copied: it never goes through the window. Trusted windows only, like every export.
+/// then copied: it never goes through the window. Every window may — the person is asked every time (see `device_files`).
 #[tauri::command]
 pub async fn filen_cache_export(
     window: crate::window_host::CallerWindow,
@@ -393,7 +409,7 @@ pub async fn filen_cache_export(
     name: String,
     token: Option<String>,
 ) -> Result<String, String> {
-    crate::window_host::require_trusted(&window)?;
+    crate::device_files::confirm_export(&app, &window, &name).await?;
     let remote = prepare(&app, &cache, user_id).await?;
     let cached = cache.cached_file(&remote, user_id as i64, branch, &path).await?;
     crate::device_files::export_file(exports.inner(), name, token, cached).await

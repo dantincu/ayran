@@ -190,6 +190,13 @@ pub fn is_open(app: &AppHandle, guid: &str) -> bool {
     host::is_open(app, guid)
 }
 
+/// How many external sites are showing on Android (their activities are not windows of `window_host`; on desktop they are, and the
+/// window count has them already).
+#[cfg(target_os = "android")]
+pub fn open_count() -> usize {
+    host::open_count()
+}
+
 /// Asks the windows of these pages to close (their entries were already deleted).
 pub fn close_windows(app: &AppHandle, guids: &[String]) {
     for guid in guids {
@@ -290,6 +297,7 @@ pub async fn open_external_site(
     url: String,
 ) -> Result<String, String> {
     let url = check_url(&url)?;
+    crate::prompt_guard::refuse_if_blocked()?;
     let window_guid = crate::window_host::caller_guid(&window).ok_or("Only web apps can open external web sites.")?;
     let tab_guid = windows.current_tab_of(&window_guid).ok_or("This window hasn't registered a tab yet.")?;
     // A page that was itself opened from a Notes tab lists its sites directly under that Notes tab.
@@ -365,36 +373,17 @@ pub async fn open_web_address(
     Ok(confirmed)
 }
 
-/// The OS native box: who asks, and the address to be opened.
+/// The native box: who asks, and the address to be opened — shown by the window that asks (on Android a dialog of the app's main
+/// activity would not be visible over it), under the rules of `prompt_guard` (one box at a time, and the person can prevent them).
 async fn confirm(app: &AppHandle, asker: &str, app_name: &str, url: &Url) -> bool {
-    let message = format!("\"{app_name}\" wants to open this web site in a window of CsDrive WebHost:\n\n{url}\n\nOpen it?");
-    // On Android the box is shown by the window that asks: a dialog of the app's main activity would not be visible over it.
-    #[cfg(target_os = "android")]
-    {
-        let _ = app;
-        crate::android_windows::ask(asker, "Open an external web site?", &message, &["Open", "Cancel"]).await == Some(0)
-    }
-    #[cfg(not(target_os = "android"))]
-    {
-        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-        let _ = asker;
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        app.dialog()
-            .message(message)
-            .title("Open an external web site?")
-            .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom("Open".to_string(), "Cancel".to_string()))
-            .show(move |answer| {
-                let _ = sender.send(answer);
-            });
-        receiver.await.unwrap_or(false)
-    }
+    let message = format!("\"{app_name}\" wants to open this web site in a window of Ayran CsDrive WebHost:\n\n{url}\n\nOpen it?");
+    crate::window_host::choose(app, asker, "Open an external web site?", &message, &["Open", "Cancel"]).await == Some(0)
 }
 
 /// The person said yes: the page is listed under its tab, and its window opens.
 async fn open_confirmed(app: &AppHandle, pool: &SqlitePool, window_guid: &str, tab_guid: &str, url: &Url) -> Result<String, String> {
     let guid = insert_page(pool, window_guid, tab_guid, url.as_str()).await.map_err(|e| e.to_string())?;
-    if let Err(e) = host::open(app, &guid, url) {
+    if let Err(e) = crate::window_host::ensure_room(app, &guid).and_then(|()| host::open(app, &guid, url)) {
         delete_where(pool, "guid", &[guid]).await;
         let _ = app.emit(EVENT_CHANGED, ());
         return Err(e);
@@ -418,6 +407,7 @@ async fn url_of(pool: &SqlitePool, guid: &str) -> Result<Url, String> {
 pub async fn reopen_external_site(app: AppHandle, windows: State<'_, SecondaryWindowsState>, guid: String) -> Result<(), String> {
     let url = url_of(windows.pool(), &guid).await?;
     if !host::is_open(&app, &guid) {
+        crate::window_host::ensure_room(&app, &guid)?;
         host::open(&app, &guid, &url)?;
     }
     let _ = app.emit(EVENT_CHANGED, ());
@@ -526,6 +516,8 @@ mod host {
             })
             .build()
             .map_err(|e| e.to_string())?;
+        // An external web site's `alert`/`confirm`/`prompt` follow the prompt rules too (`page_dialogs.rs`).
+        crate::page_dialogs::install(&window);
 
         window.on_window_event(move |event| {
             if let WindowEvent::Destroyed = event {
@@ -588,6 +580,10 @@ mod host {
 
     pub fn is_open(_app: &AppHandle, guid: &str) -> bool {
         with_open(|open| open.contains(guid))
+    }
+
+    pub fn open_count() -> usize {
+        with_open(|open| open.len())
     }
 
     pub fn open(app: &AppHandle, guid: &str, url: &Url) -> Result<(), String> {

@@ -18,7 +18,7 @@ Tauri creates exactly one webview on Android (the one in `MainActivity`), and it
 `WebView` we create ourselves has none of that, so `WindowActivity` brings its own, and everything security-relevant is decided in Rust:
 
 ```
-page JS ──▶ window.__TAURI_INTERNALS__.invoke ──▶ CsdriveBridge.invoke(...)      (@JavascriptInterface, per activity)
+page JS ──▶ window.__TAURI_INTERNALS__.invoke ──▶ CsdriveInvoke.postMessage(...)  (a web message listener, per activity: only its MAIN FRAME is heard)
         ──▶ WindowBridge.nativeInvoke(guid, cmd, args, cb, err)  (JNI, in-process: only our own Kotlin can call it)
         ──▶ Rust: Webview::on_message(InvokeRequest{… secret header naming the window …})   (Tauri's own dispatcher, on `main`)
         ──▶ command runs, extracting `CallerWindow` ──▶ identity = the window named in the header
@@ -32,12 +32,15 @@ page JS ──▶ window.__TAURI_INTERNALS__.invoke ──▶ CsdriveBridge.invo
   own JavaScript included): a claim without it is refused, never treated as the admin-app.
 - **`CallerWindow`** (`window_host.rs`) is a command argument (`impl CommandArg`) that replaces `WebviewWindow` in the commands that need to know
   who is calling. On desktop it says what the window's label says (`main` = the admin-app, else the guid); on Android it says what the header
-  says. `caller_guid`, `require_admin`, `require_trusted`, `is_system_page`, `is_admin_page` take it. A page's *address* is no longer used
+  says. `caller_guid`, `require_admin`, `is_system_page`, `is_admin_page` take it. A page's *address* is no longer used
   to tell callers apart on Android (a window can't be at another window's address anyway — see the frozen address).
 - **Tauri's ACL** (capability files) is resolved against the `main` webview for these calls, i.e. everything is granted; on Android it always
-  was (one webview), which is why `require_admin`/`require_trusted` exist. They are now checked against the *real* caller, so nothing is weaker.
+  was (one webview), which is why `require_admin` exists. They are now checked against the *real* caller, so nothing is weaker.
   `plugin:event|*` and `plugin:dialog|*` are **not** forwarded to Tauri's plugins (their targets would be `main`): the bridge handles them
-  itself (events: below; dialogs: a native `AlertDialog` on the window's own activity).
+  itself (events: below; dialogs: **refused** — a window asks with `confirm_dialog`, and a page's own `alert`/`confirm`/`prompt` are Kotlin dialogs under the
+  backend's prompt rules, `docs/app-security.md`). **Why a message port and not a JavaScript interface:** an interface is injected into every frame and can't tell
+  which one calls, so a page shown in a frame of a window (Notes' User Action popup) could have called as the window; the listener is told
+  `isMainFrame` and is offered only to the window's own origins.
 - **Events** (`tab-navigate`, `external-site-*`, `request-resource-icons`): `plugin:event|listen`/`unlisten` never leave the page — its bridge keeps the
   listeners — and `window_host::emit_if_open(guid, …)` evaluates `__csdriveEmit(event, payload)` in that window's WebView only, which hands it to them.
   Same contract as `emit_to` on desktop (the two `window.emit` calls that used to broadcast now go to the one window they were meant for).
@@ -66,7 +69,7 @@ The old cascade rules now apply on Android unchanged: suspending a window suspen
 
 ## Decisions made while building it
 
-- **Deny by default, from the capability files.** A window may call the commands `user-apps.json` + `system-apps.json` grant to every window
+- **Deny by default, from the capability files.** A window may call the commands `user-apps.json` grants to every window
   (`window_host::window_commands`) — read from those files, not copied — and nothing under `plugin:`. Dispatching through `main`'s ACL alone would
   have granted a page everything the admin-app has (`core:default` and the like), which on desktop a window's label keeps away from it.
 - **A claim that fails is an error, not the admin-app.** Both the unknown-secret and the window-is-gone cases refuse the call; only a call with *no*

@@ -44,11 +44,13 @@ import { ancestorsOf, changeNoteIndex, createNote, deleteNote, findMarkdown, nor
 import PasteNotesModal from './PasteNotesModal'
 import SearchPanel from './SearchPanel'
 import { NoteSearchResults } from './SearchResults'
+import CacheMenu from './CacheMenu'
 import { DEFAULT_SORT, isSorted, sortNotes, type SearchCriteria, type SortSpec } from './search'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize } from '../../lib/listPageSize'
 import { useNotesSettings } from './settings'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
+import UserActionButton from './UserActionButton'
 
 const formatWhen = (stamp: string) => {
   const date = new Date(stamp)
@@ -107,6 +109,8 @@ export default function NotePage({
   const [repaired, setRepaired] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  /** What the cache options say when they are done. */
+  const [notice, setNotice] = useState<string | null>(null)
   const [goingTo, setGoingTo] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [menu, setMenu] = useState<OpenMenu | null>(null)
@@ -265,6 +269,7 @@ export default function NotePage({
   const editBox = (n: NoteRef, kind: Editing['kind']) => (
     <input
       autoFocus
+      data-ua-field={kind === 'index' ? 'notes.notes.renameIndex' : 'notes.notes.renameTitle'}
       className={kind === 'index' ? 'note-index-input' : 'note-title-input'}
       value={editing?.value ?? ''}
       inputMode={kind === 'index' ? 'numeric' : undefined}
@@ -470,6 +475,7 @@ export default function NotePage({
             )}
             <IconButton icon={Navigation} label="Go to a path or a note's address…" onClick={() => setGoingTo(true)} />
             <IconButton icon={RefreshCw} label="Refresh" onClick={load} />
+            <UserActionButton sourceId={sourceId} folder={folder} />
           </div>
 
           {note && (
@@ -495,6 +501,8 @@ export default function NotePage({
 
           {criteria && source && (
             <NoteSearchResults
+              onError={setError}
+              onNotice={setNotice}
               source={source}
               folder={folder}
               criteria={criteria}
@@ -522,6 +530,7 @@ export default function NotePage({
           )}
 
           {error && <div className="error-banner">{error}</div>}
+          {notice && <div className="status-banner">{notice}</div>}
           {repaired && children.length > 0 && (
             <div className="status-banner">
               The list of notes here was missing or damaged, so it was rebuilt from the [note].json files of the child notes. It is written again with the next change.
@@ -580,6 +589,7 @@ export default function NotePage({
                         <div className="muted notebook-where">{formatWhen(n.updatedAt ?? n.createdAt)}</div>
                       </td>
                       <td className="row-actions">
+                        <CacheMenu source={source} path={n.folder} isDirectory onDone={() => load()} onError={setError} onNotice={setNotice} />
                         <IconButton icon={FilePenLine} label="Edit its markdown" onClick={() => edit(n)} />
                         <IconButton icon={FolderTree} label="Its child notes" onClick={() => showChildren(n)} />
                         <IconButton icon={Paperclip} label="Its files" onClick={() => showFiles(n)} />

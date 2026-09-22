@@ -16,6 +16,8 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
 import android.webkit.ValueCallback
@@ -91,6 +93,19 @@ class WindowActivity : Activity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         }
         view.addJavascriptInterface(Bridge(id), "CsdriveBridge")
+        // A page calls the backend through a message port that **only the window's own page** — its main frame — can use. (A
+        // JavaScript interface is injected into every frame, and can't tell which one calls: a page shown in a frame of a window, Notes'
+        // User Action popup, could call as the window. A message listener is told whether the message came from the main frame, and
+        // is only offered to the origins the window's pages are at.) No listener, no bridge: it fails closed.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
+            WebViewCompat.addWebMessageListener(view, "CsdriveInvoke", setOf("http://csuser.localhost", "http://tauri.localhost")) { _, message, _, isMainFrame, _ ->
+                if (!isMainFrame) return@addWebMessageListener
+                val call = try { JSONObject(message.data ?: return@addWebMessageListener) } catch (e: Exception) { return@addWebMessageListener }
+                WindowBridge.nativeInvoke(id, call.getString("cmd"), call.getString("args"), call.getInt("callback"), call.getInt("error"))
+            }
+        } else {
+            Log.e("CsdriveWindow", "This WebView can't tell which frame calls: the window has no bridge.")
+        }
         view.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(v: WebView, request: WebResourceRequest): WebResourceResponse? = serve(request)
 
@@ -105,38 +120,49 @@ class WindowActivity : Activity() {
                 return true
             }
 
-            // alert(), confirm() and prompt() of the page: native dialogs on this window.
+            // alert(), confirm() and prompt() of the page: native dialogs on this window — under the rules of the backend's prompt guard
+            // (one prompt at a time, none once the person prevented them; docs/app-security.md), titled so that it is plain that it is the
+            // *page* that is talking, not the app, and with the option to prevent prompts.
             override fun onJsAlert(v: WebView, url: String?, message: String?, result: JsResult): Boolean {
+                if (!beginPageDialog(result)) return true
                 AlertDialog.Builder(this@WindowActivity)
+                    .setTitle(PAGE_SAYS)
                     .setMessage(message)
-                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
-                    .setOnCancelListener { result.cancel() }
+                    .setPositiveButton(android.R.string.ok) { _, _ -> WindowBridge.nativeDialogEnd(false); result.confirm() }
+                    .setNeutralButton(PREVENT_PROMPTS) { _, _ -> WindowBridge.nativeDialogEnd(true); result.cancel() }
+                    .setOnCancelListener { WindowBridge.nativeDialogEnd(false); result.cancel() }
                     .show()
                 return true
             }
 
             override fun onJsConfirm(v: WebView, url: String?, message: String?, result: JsResult): Boolean {
+                if (!beginPageDialog(result)) return true
                 AlertDialog.Builder(this@WindowActivity)
+                    .setTitle(PAGE_SAYS)
                     .setMessage(message)
-                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm() }
-                    .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
-                    .setOnCancelListener { result.cancel() }
+                    .setPositiveButton(android.R.string.ok) { _, _ -> WindowBridge.nativeDialogEnd(false); result.confirm() }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> WindowBridge.nativeDialogEnd(false); result.cancel() }
+                    .setNeutralButton(PREVENT_PROMPTS) { _, _ -> WindowBridge.nativeDialogEnd(true); result.cancel() }
+                    .setOnCancelListener { WindowBridge.nativeDialogEnd(false); result.cancel() }
                     .show()
                 return true
             }
 
             override fun onJsPrompt(v: WebView, url: String?, message: String?, defaultValue: String?, result: JsPromptResult): Boolean {
+                if (!beginPageDialog(result)) return true
                 val input = EditText(this@WindowActivity).apply {
                     setText(defaultValue ?: "")
                     setSingleLine()
                     selectAll()
                 }
                 AlertDialog.Builder(this@WindowActivity)
+                    .setTitle(PAGE_SAYS)
                     .setMessage(message)
                     .setView(input)
-                    .setPositiveButton(android.R.string.ok) { _, _ -> result.confirm(input.text.toString()) }
-                    .setNegativeButton(android.R.string.cancel) { _, _ -> result.cancel() }
-                    .setOnCancelListener { result.cancel() }
+                    .setPositiveButton(android.R.string.ok) { _, _ -> WindowBridge.nativeDialogEnd(false); result.confirm(input.text.toString()) }
+                    .setNegativeButton(android.R.string.cancel) { _, _ -> WindowBridge.nativeDialogEnd(false); result.cancel() }
+                    .setNeutralButton(PREVENT_PROMPTS) { _, _ -> WindowBridge.nativeDialogEnd(true); result.cancel() }
+                    .setOnCancelListener { WindowBridge.nativeDialogEnd(false); result.cancel() }
                     .show()
                 return true
             }
@@ -329,31 +355,29 @@ class WindowActivity : Activity() {
         else -> if (status in 200..299) "OK" else "Error"
     }
 
+    /** May the page's own dialog be shown now? If not (prompts prevented, or another showing) the page's call is cancelled at once. */
+    private fun beginPageDialog(result: JsResult): Boolean {
+        if (WindowBridge.nativeDialogBegin() == 0) return true
+        result.cancel()
+        return false
+    }
+
     /**
-     * What the page can call: [WindowBridge]'s functions on behalf of **this** window (the guid is fixed here), and a native
-     * dialog on this activity. Nothing else is exposed to the page.
+     * What every frame of the page can see: this window's label, and nothing else — no way to call the backend (that is the message
+     * port above, for the main frame only) and none to show a native dialog of its own (the questions a page may ask go through
+     * the backend's `confirm_dialog`, under the rules of its prompt guard).
      */
     private inner class Bridge(private val id: String) {
         @JavascriptInterface
         fun label(): String = id
 
-        @JavascriptInterface
-        fun invoke(cmd: String, args: String, callback: Int, error: Int) {
-            WindowBridge.nativeInvoke(id, cmd, args, callback, error)
-        }
-
-        /** `plugin-dialog`'s message dialog: up to three buttons (`labels` is a json array); `answer` is called with the index pressed. */
-        @JavascriptInterface
-        fun dialog(title: String, message: String, labels: String, answer: Int) {
-            runOnUiThread {
-                showDialog(title, message, labels) { index -> evaluate("window.__TAURI_INTERNALS__.runCallback($answer, $index)") }
-            }
-        }
     }
 
     companion object {
         const val EXTRA_GUID = "guid"
         const val EXTRA_TITLE = "title"
         private const val CHOOSE_FILE = 1
+        private const val PAGE_SAYS = "A web page says"
+        private const val PREVENT_PROMPTS = "Prevent this app from showing prompts"
     }
 }

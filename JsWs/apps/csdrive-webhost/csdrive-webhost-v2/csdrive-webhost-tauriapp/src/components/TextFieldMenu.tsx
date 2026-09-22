@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ClipboardCopy, ClipboardPaste, ClipboardType, Copy, Ellipsis, ExternalLink, TextCursorInput } from 'lucide-react'
 import { copyToOsClipboard, internalClipboard, readOsClipboard } from '../lib/clipboard'
@@ -53,7 +53,7 @@ interface Placement {
  * Copying takes the selected text; pasting replaces it (or is put at the caret). The box keeps the focus and its selection
  * the whole time: pressing the button or a menu item doesn't take the focus (a box that is renamed or committed when it
  * loses the focus is not disturbed). Mounted once per page. */
-export default function TextFieldMenu() {
+export default function TextFieldMenu({ extra }: { /** More buttons beside the trigger, for the box that has the focus (the Notes app's User Action launch and close). */ extra?: (field: Field) => ReactNode } = {}) {
   const [field, setField] = useState<Field | null>(null)
   const [placement, setPlacement] = useState<Placement | null>(null)
   const [open, setOpen] = useState(false)
@@ -118,7 +118,8 @@ export default function TextFieldMenu() {
         // it is at the top of the screen.
         const inside = field instanceof HTMLTextAreaElement
         const top = inside ? Math.max(4, box.top + 4) : box.top >= 30 ? box.top - 26 : box.top + 2
-        const left = Math.max(4, Math.min(box.right - (inside ? 46 : 28), window.innerWidth - 32))
+        const room = extra ? 26 * 2 : 0 // the buttons of `extra` are left of the trigger
+        const left = Math.max(4, Math.min(box.right - (inside ? 46 : 28) - room, window.innerWidth - 32 - room))
         setPlacement((current) => (current && current.top === top && current.left === left ? current : { top, left }))
       }
       frame = requestAnimationFrame(update)
@@ -211,6 +212,7 @@ export default function TextFieldMenu() {
 
   return createPortal(
     <div ref={rootRef} className="text-menu" style={{ top: placement.top, left: placement.left }}>
+      {extra?.(field)}
       <button
         type="button"
         className="text-menu-trigger"

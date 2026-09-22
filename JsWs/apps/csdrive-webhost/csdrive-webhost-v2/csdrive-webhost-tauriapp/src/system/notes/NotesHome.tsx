@@ -1,4 +1,5 @@
 import { FolderOpen, Notebook, Settings } from 'lucide-react'
+import UserActionButton from './UserActionButton'
 
 /** The page a Notes tab opens at: two ways in — the file manager, and the page for managing notebooks. */
 export default function NotesHome({ onFiles, onNotebooks, onSettings }: { onFiles: () => void; onNotebooks: () => void; onSettings: () => void }) {
@@ -6,7 +7,10 @@ export default function NotesHome({ onFiles, onNotebooks, onSettings }: { onFile
     <div className="app-shell">
       <main className="tab-content">
         <div className="tab-panel notes-home">
-          <h1 className="notes-home-title">Notes</h1>
+          <div className="notes-page-header">
+            <h1 className="notes-home-title">Notes</h1>
+            <UserActionButton />
+          </div>
           <div className="notes-cards">
             <button type="button" className="notes-card" onClick={onNotebooks}>
               <Notebook size={28} strokeWidth={1.75} aria-hidden="true" />

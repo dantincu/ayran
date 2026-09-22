@@ -3,6 +3,7 @@ import { Eraser, House } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import { internalClipboard } from '../../lib/clipboard'
 import { useNotesSettings } from './settings'
+import UserActionButton from './UserActionButton'
 
 /** The Notes app's settings: what it shows (the notes' indexes) and the app's clipboard, which can be cleared here. */
 export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
@@ -38,6 +39,7 @@ export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
           <div className="notes-page-header">
             <IconButton icon={House} label="Notes home" onClick={onHome} />
             <h2>Notes settings</h2>
+            <UserActionButton />
           </div>
           {error && <div className="error-banner">{error}</div>}
 

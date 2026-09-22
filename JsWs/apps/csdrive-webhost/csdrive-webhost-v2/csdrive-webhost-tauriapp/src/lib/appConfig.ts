@@ -27,7 +27,7 @@ interface AppConfig {
     defaultNumbering: NumberingDef
   }
   notes: {
-    files: { notebook: string; note: string; children: string }
+    files: { notebook: string; note: string; children: string; userAction: string }
     markdown: { prefix: string; suffix: string }
     numberings: { noteItems: NumberingDef; primarySections: NumberingDef; secondarySections: NumberingDef; ternarySections: NumberingDef }
     internals: { noteFiles: NumberingDef; noteInternals: NumberingDef; notebook: NumberingDef }
@@ -46,5 +46,7 @@ export const MAX_NAME_PART_CHARS = config.folderPairs.maxNamePartChars
 export const NOTEBOOK_FILE = config.notes.files.notebook
 export const NOTE_JSON = config.notes.files.note
 export const CHILDREN_JSON = config.notes.files.children
+/** The file in the notebook's own internals folder (`03`) that names the page of its User Action. */
+export const USER_ACTION_JSON = config.notes.files.userAction
 export const MARKDOWN_PREFIX = config.notes.markdown.prefix
 export const NOTE_MARKDOWN_SUFFIX = config.notes.markdown.suffix

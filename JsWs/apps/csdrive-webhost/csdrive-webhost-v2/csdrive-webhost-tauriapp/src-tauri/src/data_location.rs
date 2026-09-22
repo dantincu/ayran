@@ -128,7 +128,7 @@ pub fn pick_and_set_custom_data_folder(window: crate::window_host::CallerWindow,
         let picked = app
             .dialog()
             .file()
-            .set_title("Choose a folder to store CsDrive WebHost's data in")
+            .set_title("Choose a folder to store Ayran CsDrive WebHost's data in")
             .blocking_pick_folder();
 
         let Some(picked) = picked else {

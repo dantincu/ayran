@@ -446,29 +446,58 @@ impl Cache {
         let options = sqlx::sqlite::SqliteConnectOptions::new().filename(files_dir.join(crate::layout::FILES_DB)).create_if_missing(true);
         let pool = SqlitePool::connect_with(options).await.map_err(sql)?;
         let cache = Self::with_pool(pool, files_dir.to_path_buf(), Arc::new(now_real)).await?;
+        cache.migrate_old_layout().await;
         cache.remove_leftover_uploads();
         cache.keep_pairs_marked();
-        let _ = std::fs::create_dir_all(cache.t_dir());
-        let _ = std::fs::create_dir_all(cache.tb_dir());
         Ok(cache)
     }
 
     /// Every full folder holds its `.keep` (see `folder_pairs::keep_file()`) — including the ones made before that rule
     /// existed, which get theirs at the next start. Best effort: a folder that can't be written to is left for next time.
     fn keep_pairs_marked(&self) {
-        let _ = NUMBERING.repair(&self.a_dir());
-        let b = self.b_dir();
-        for (account, _) in NUMBERING.list(&b).unwrap_or_default() {
-            let _ = NUMBERING.repair(&account.short_dir); // the account's branches
+        let a = self.a_dir();
+        let _ = NUMBERING.repair(&a);
+        for (source, _) in NUMBERING.list(&a).unwrap_or_default() {
+            // The branches of the account or folder, and its branches' thumbnails, are pairs too.
+            let _ = NUMBERING.repair(&source.short_dir.join(crate::layout::FILES_BRANCHES_FOLDER));
+            let _ = NUMBERING.repair(&source.short_dir.join(crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER));
         }
-        let _ = NUMBERING.repair(&b);
-        // The thumbnails' folders follow the same rule.
-        let _ = NUMBERING.repair(&self.t_dir());
-        let tb = self.tb_dir();
-        for (account, _) in NUMBERING.list(&tb).unwrap_or_default() {
-            let _ = NUMBERING.repair(&account.short_dir);
+    }
+
+    /// **The old layout kept the branches and thumbnails beside `a`** (`files/b/NNN-<source>/MMM`, `files/t/NNN-<source>`,
+    /// `files/tb/NNN-<source>/MMM`, each with a numbering of its own); they now live **inside the folder of the account or of the folder of
+    /// this device they belong to** — `files/a/NNN/b`, `t` and `tb`. Whatever is found in the old places is moved (the folder is renamed, so a
+    /// big branch is not copied), the old marker pair goes, and the old folders are removed when empty. Safe to run again, and it leaves alone
+    /// anything it can't move (a target that exists already).
+    async fn migrate_old_layout(&self) {
+        let a = self.a_dir();
+        for (old_name, new_name) in [
+            (crate::layout::FILES_BRANCHES_FOLDER, crate::layout::FILES_BRANCHES_FOLDER),
+            (crate::layout::FILES_THUMBNAILS_FOLDER, crate::layout::FILES_THUMBNAILS_FOLDER),
+            (crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER, crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER),
+        ] {
+            let old = self.root.join(old_name);
+            let Ok(pairs) = NUMBERING.list(&old) else { continue };
+            for (pair, part) in pairs {
+                // Whose it was: a Filen account (found by its user id — its email may have changed) or a folder of this device.
+                let owner: Option<PathBuf> = match part.strip_prefix(&format!("{}@@", provider())).and_then(|rest| rest.rsplit("@@").next()).and_then(|id| id.parse::<i64>().ok()) {
+                    Some(user_id) => match sqlx::query_scalar::<_, i64>("SELECT pair_index FROM accounts WHERE user_id = ?1").bind(user_id).fetch_optional(&self.pool).await {
+                        Ok(Some(index)) => Some(a.join(NUMBERING.short_name(index as u32))),
+                        _ => NUMBERING.ensure(&a, &part).ok().map(|p| p.short_dir),
+                    },
+                    None => NUMBERING.ensure(&a, &part).ok().map(|p| p.short_dir),
+                };
+                let Some(owner) = owner else { continue };
+                let target = owner.join(new_name);
+                if target.exists() {
+                    continue;
+                }
+                if std::fs::create_dir_all(&owner).is_ok() && std::fs::rename(&pair.short_dir, &target).is_ok() {
+                    let _ = std::fs::remove_dir_all(&pair.full_dir);
+                }
+            }
+            let _ = std::fs::remove_dir(&old);
         }
-        let _ = NUMBERING.repair(&tb);
     }
 
     /// An upload in flight when the app stopped left its temporary file behind: they all go.
@@ -492,6 +521,10 @@ impl Cache {
             // Files locked against caching. Kept apart from `entries` so that a lock survives its row being
             // dropped and made again (a commit, or a listing that briefly lacks the file).
             "CREATE TABLE IF NOT EXISTS file_locks (user_id INTEGER NOT NULL, path TEXT NOT NULL, PRIMARY KEY (user_id, path))",
+            // The branches of the folders of this device (`local_branches.rs`): a root is named by its guid.
+            "CREATE TABLE IF NOT EXISTS local_branches (root_guid TEXT NOT NULL, pair_index INTEGER NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (root_guid, pair_index))",
+            "CREATE TABLE IF NOT EXISTS local_branch_changes (root_guid TEXT NOT NULL, branch INTEGER NOT NULL, path TEXT NOT NULL, parent TEXT NOT NULL, kind TEXT NOT NULL, base_exists INTEGER NOT NULL, base_size INTEGER, base_mtime_ms INTEGER, changed_at INTEGER NOT NULL, PRIMARY KEY (root_guid, branch, path))",
+            "CREATE INDEX IF NOT EXISTS local_branch_changes_parent ON local_branch_changes (root_guid, branch, parent)",
         ] {
             sqlx::query(statement).execute(&pool).await.map_err(sql)?;
         }
@@ -523,16 +556,10 @@ impl Cache {
         self.root.join(crate::layout::FILES_ACCOUNTS_FOLDER)
     }
 
-    fn b_dir(&self) -> PathBuf {
-        self.root.join(crate::layout::FILES_BRANCHES_FOLDER)
-    }
-
-    fn t_dir(&self) -> PathBuf {
-        self.root.join(crate::layout::FILES_THUMBNAILS_FOLDER)
-    }
-
-    fn tb_dir(&self) -> PathBuf {
-        self.root.join(crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER)
+    /// `files/a/NNN` — the folder of an account: its cached content (`c`), its branches (`b`), its thumbnails (`t`) and its branches'
+    /// thumbnails (`tb`) — each holding the account's own files' folder hierarchy.
+    async fn account_dir(&self, user_id: i64) -> Result<PathBuf, String> {
+        Ok(self.content_root(user_id).await?.parent().ok_or("The account's folder is missing.")?.to_path_buf())
     }
 
     // ── Thumbnails ───────────────────────────────────────────────────────────
@@ -541,16 +568,18 @@ impl Cache {
     /// `files/tb/NNN/MMM`, each with its readable half beside it, like the folders of the contents and of the branches). `None`
     /// when it doesn't exist and `make` is off.
     async fn thumb_root(&self, user_id: i64, branch: Option<i64>, make: bool) -> Result<Option<PathBuf>, String> {
-        let part = account_part(&self.account_info(user_id).await?.email, user_id);
-        let parent = if branch.is_some() { self.tb_dir() } else { self.t_dir() };
-        let account = if make { Some(NUMBERING.ensure(&parent, &part).map_err(io)?) } else { NUMBERING.find(&parent, &part).map_err(io)? };
-        let Some(account) = account else { return Ok(None) };
-        let Some(branch) = branch else { return Ok(Some(account.short_dir)) };
+        let parent = self.account_dir(user_id).await?.join(if branch.is_some() { crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER } else { crate::layout::FILES_THUMBNAILS_FOLDER });
+        if make {
+            std::fs::create_dir_all(&parent).map_err(io)?;
+        } else if !parent.is_dir() {
+            return Ok(None);
+        }
+        let Some(branch) = branch else { return Ok(Some(parent)) };
         self.branch_exists(user_id, branch).await?;
-        let short = account.short_dir.join(NUMBERING.short_name(branch as u32));
+        let short = parent.join(NUMBERING.short_name(branch as u32));
         if make {
             let name = self.branch_name(user_id, branch).await?;
-            let marker = account.short_dir.join(NUMBERING.full_name(branch as u32, &name));
+            let marker = parent.join(NUMBERING.full_name(branch as u32, &name));
             std::fs::create_dir_all(&short).map_err(io)?;
             std::fs::create_dir_all(&marker).map_err(io)?;
             let keep = marker.join(folder_pairs::keep_file());
@@ -610,8 +639,8 @@ impl Cache {
 
     /// Throws away the account's thumbnails (its own, not its branches').
     async fn drop_thumbs_of_account(&self, user_id: i64) {
-        if let Ok(part) = self.account_branch_part(user_id).await {
-            let _ = NUMBERING.delete(&self.t_dir(), &part);
+        if let Ok(dir) = self.account_dir(user_id).await {
+            let _ = std::fs::remove_dir_all(dir.join(crate::layout::FILES_THUMBNAILS_FOLDER));
         }
     }
 
@@ -684,12 +713,11 @@ impl Cache {
     /// branch) and every row. Called when it is disconnected.
     pub async fn forget_account(&self, user_id: i64) -> Result<(), String> {
         let _guard = self.lock(user_id).await;
-        for parent in [self.a_dir(), self.b_dir(), self.t_dir(), self.tb_dir()] {
-            for (pair, part) in NUMBERING.list(&parent).map_err(io)? {
-                if is_account_part_for(&part, user_id) {
-                    NUMBERING.delete(&parent, &part).map_err(io)?;
-                    let _ = pair;
-                }
+        // The account's folder holds everything of it — content, branches, thumbnails.
+        let a = self.a_dir();
+        for (_, part) in NUMBERING.list(&a).map_err(io)? {
+            if is_account_part_for(&part, user_id) {
+                NUMBERING.delete(&a, &part).map_err(io)?;
             }
         }
         for table in ["branch_changes", "branches", "listings", "entries", "file_locks", "accounts"] {
@@ -750,6 +778,89 @@ impl Cache {
             sqlx::query("DELETE FROM entries WHERE user_id = ?1 AND path = ?2").bind(user_id).bind(path).execute(&self.pool).await.map_err(sql)?;
         }
         sqlx::query("DELETE FROM listings WHERE user_id = ?1").bind(user_id).execute(&self.pool).await.map_err(sql)?;
+        Ok(())
+    }
+
+    // ── One item of the cache ────────────────────────────────────────────────
+
+    /// **Hard refresh** of one item: what the cache holds of it is fetched from Filen again, whatever the interval says. A file's
+    /// listing entry (its version) and its content are fetched anew; a folder's listing is, and everything below it is looked at
+    /// again the next time it is opened. A file locked against caching is frozen and refuses — unlock it first.
+    pub async fn hard_refresh(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let _guard = self.lock(user_id).await;
+        let Some(parent) = parent_of(&path) else {
+            self.forget_listings_below(user_id, "/").await?;
+            self.list_account(remote, user_id, "/", true).await?;
+            return Ok(());
+        };
+        if self.entry(user_id, &path).await?.is_some_and(|e| e.locked != 0 && e.is_dir == 0) {
+            return Err(format!("\"{path}\" is locked against caching: unlock it to refresh it."));
+        }
+        self.list_account(remote, user_id, &parent, true).await?; // Filen's own idea of it — and of its version
+        let entry = self.entry(user_id, &path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist in Filen (any more)."))?;
+        if entry.is_dir != 0 {
+            self.forget_listings_below(user_id, &path).await?;
+            self.list_account(remote, user_id, &path, true).await?;
+        } else {
+            self.drop_content(user_id, &path).await?;
+            self.cached_file_account(remote, user_id, &path).await?;
+        }
+        Ok(())
+    }
+
+    /// **Clear the cache** of one item: the cached content of a file — of every file below a folder, its listing and theirs — and its
+    /// thumbnails are thrown away; it is fetched again when it is next needed. Files locked against caching stay as they are.
+    pub async fn clear_item(&self, user_id: i64, path: &str) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let _guard = self.lock(user_id).await;
+        let below = format!("{}/", path.trim_end_matches('/'));
+        let rows: Vec<(String, i64, i64)> = sqlx::query_as(
+            "SELECT e.path, e.is_dir, EXISTS(SELECT 1 FROM file_locks l WHERE l.user_id = e.user_id AND l.path = e.path)
+             FROM entries e WHERE e.user_id = ?1 AND (e.path = ?2 OR substr(e.path, 1, ?3) = ?4 OR ?2 = '/')",
+        )
+        .bind(user_id)
+        .bind(&path)
+        .bind(below.chars().count() as i64)
+        .bind(&below)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(sql)?;
+        for (file, is_dir, locked) in &rows {
+            if *is_dir == 0 && *locked == 0 {
+                self.drop_content(user_id, file).await?;
+            }
+        }
+        // The listings of the item and below (a locked file's folders keep their rows: they name it).
+        self.forget_listings_below(user_id, &path).await?;
+        self.invalidate_listings(user_id, &[path.clone()]).await?;
+        // The thumbnails of the item: a file's, or the folder's whole subtree.
+        if let Some(root) = self.thumb_root(user_id, None, false).await? {
+            let target = path.split('/').filter(|p| !p.is_empty()).fold(root.clone(), |dir, part| dir.join(mirror_name(part)));
+            if rows.iter().any(|(p, d, _)| p == &path && *d == 0) {
+                let file = thumb_file(&root, &path, 0, 0);
+                if let Some(folder) = file.parent() {
+                    remove_older_thumbs(folder, &thumb_prefix(&path), String::new());
+                }
+            } else {
+                let _ = std::fs::remove_dir_all(target);
+            }
+        }
+        Ok(())
+    }
+
+    /// The cached content of one file goes (its listing entry stays, so the file is still shown).
+    async fn drop_content(&self, user_id: i64, path: &str) -> Result<(), String> {
+        let local = self.mirror_path(user_id, path).await?;
+        let _ = std::fs::remove_file(&local);
+        sqlx::query("UPDATE entries SET content_at = NULL WHERE user_id = ?1 AND path = ?2").bind(user_id).bind(path).execute(&self.pool).await.map_err(sql)?;
+        Ok(())
+    }
+
+    /// Forgets that the folders *below* `path` were listed (the folder's own listing is not touched).
+    async fn forget_listings_below(&self, user_id: i64, path: &str) -> Result<(), String> {
+        let below = format!("{}/", path.trim_end_matches('/'));
+        sqlx::query("DELETE FROM listings WHERE user_id = ?1 AND substr(path, 1, ?2) = ?3").bind(user_id).bind(below.chars().count() as i64).bind(&below).execute(&self.pool).await.map_err(sql)?;
         Ok(())
     }
 
@@ -1261,16 +1372,9 @@ impl Cache {
 
     // ── Branches ─────────────────────────────────────────────────────────────
 
-    async fn account_branch_part(&self, user_id: i64) -> Result<String, String> {
-        let info = self.account_info(user_id).await?;
-        Ok(account_part(&info.email, user_id))
-    }
-
-    /// `files/b/NNN/MMM` — the branch's short folder.
+    /// `files/a/NNN/b/MMM` — the branch's short folder.
     async fn branch_dir(&self, user_id: i64, branch: i64) -> Result<PathBuf, String> {
-        let part = self.account_branch_part(user_id).await?;
-        let account = NUMBERING.find(&self.b_dir(), &part).map_err(io)?.ok_or("That branch doesn't exist.")?;
-        Ok(account.short_dir.join(NUMBERING.short_name(branch as u32)))
+        Ok(self.account_dir(user_id).await?.join(crate::layout::FILES_BRANCHES_FOLDER).join(NUMBERING.short_name(branch as u32)))
     }
 
     async fn branch_exists(&self, user_id: i64, branch: i64) -> Result<(), String> {
@@ -1303,12 +1407,12 @@ impl Cache {
     pub async fn create_branch(&self, user_id: i64, name: &str) -> Result<BranchInfo, String> {
         folder_pairs::validate_part(name)?;
         let _guard = self.lock(user_id).await;
-        let info = self.account_info(user_id).await?;
         if self.branches(user_id).await?.iter().any(|b| b.name.to_lowercase() == name.to_lowercase()) {
             return Err(format!("There is a branch called \"{name}\" already."));
         }
-        let account = NUMBERING.ensure(&self.b_dir(), &account_part(&info.email, user_id)).map_err(io)?;
-        let pair = NUMBERING.create(&account.short_dir, name).map_err(io)?;
+        let branches = self.account_dir(user_id).await?.join(crate::layout::FILES_BRANCHES_FOLDER);
+        std::fs::create_dir_all(&branches).map_err(io)?;
+        let pair = NUMBERING.create(&branches, name).map_err(io)?;
         sqlx::query("INSERT INTO branches (user_id, pair_index, name, created_at) VALUES (?1, ?2, ?3, ?4)")
             .bind(user_id)
             .bind(pair.index as i64)
@@ -1321,21 +1425,15 @@ impl Cache {
     }
 
     async fn delete_branch_files_and_rows(&self, user_id: i64, branch: i64, name: &str) -> Result<(), String> {
-        if let Ok(part) = self.account_branch_part(user_id).await {
-            if let Some(account) = NUMBERING.find(&self.b_dir(), &part).map_err(io)? {
-                NUMBERING.delete(&account.short_dir, name).map_err(io)?;
-                // With no branches left, the account's own pair in `b` goes too.
-                if NUMBERING.list(&account.short_dir).map_err(io)?.is_empty() {
-                    NUMBERING.delete(&self.b_dir(), &part).map_err(io)?;
-                }
-            }
-            // The branch's thumbnails go with it — a second place, beside its folder in `b`: `tb/NNN/MMM` and its marker.
-            if let Some(account) = NUMBERING.find(&self.tb_dir(), &part).map_err(io)? {
-                let _ = NUMBERING.delete(&account.short_dir, name);
-                if NUMBERING.list(&account.short_dir).map(|l| l.is_empty()).unwrap_or(false) {
-                    let _ = NUMBERING.delete(&self.tb_dir(), &part);
-                }
-            }
+        if let Ok(account) = self.account_dir(user_id).await {
+            // Its folder in `b`; with no branches left, `b` itself goes.
+            let b = account.join(crate::layout::FILES_BRANCHES_FOLDER);
+            NUMBERING.delete(&b, name).map_err(io)?;
+            let _ = std::fs::remove_dir(&b);
+            // The branch's thumbnails go with it — a second place, beside `b`: `tb/MMM` and its marker.
+            let tb = account.join(crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER);
+            let _ = NUMBERING.delete(&tb, name);
+            let _ = std::fs::remove_dir(&tb);
         }
         sqlx::query("DELETE FROM branch_changes WHERE user_id = ?1 AND branch = ?2").bind(user_id).bind(branch).execute(&self.pool).await.map_err(sql)?;
         sqlx::query("DELETE FROM branches WHERE user_id = ?1 AND pair_index = ?2").bind(user_id).bind(branch).execute(&self.pool).await.map_err(sql)?;
@@ -1973,6 +2071,8 @@ async fn upload_local_file<R: Remote>(remote: &R, path: &str, src: &Path) -> Res
     remote.finish_upload(upload).await
 }
 
+pub mod local_branches;
+
 /// Folders first, then by name (case-insensitively).
 fn sort_entries(entries: &mut [CacheEntry]) {
     entries.sort_by(|a, b| b.is_directory.cmp(&a.is_directory).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -2224,6 +2324,78 @@ mod tests {
     }
 
     #[test]
+    fn hard_refresh_fetches_one_item_again_whatever_the_interval_says() {
+        run(async {
+            let f = Fixture::new("hard").await;
+            f.remote.put("/d/a.txt", "one");
+            f.remote.put("/d/b.txt", "bee");
+            f.remote.put("/d/sub/c.txt", "sea");
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap(), b"one");
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/b.txt").await.unwrap(), b"bee");
+            f.cache.list(&f.remote, 7, None, "/d/sub", false).await.unwrap();
+
+            // Changed in Filen, inside the interval: the cache still shows what it has.
+            f.remote.put("/d/a.txt", "one, changed elsewhere");
+            f.remote.put("/d/b.txt", "bee, changed elsewhere");
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap(), b"one");
+
+            // A hard refresh of one file: that file is fetched again (with its folder's listing, which the other files learn from).
+            f.cache.hard_refresh(&f.remote, 7, "/d/a.txt").await.unwrap();
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap(), b"one, changed elsewhere");
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/b.txt").await.unwrap(), b"bee, changed elsewhere", "the folder's listing is one: its other files learn of their changes too");
+
+            // A hard refresh of a folder: its listing is fetched again, and what is below it is looked at again when it is opened.
+            f.remote.put("/d/new.txt", "new");
+            f.remote.put("/d/sub/e.txt", "eee");
+            let before = f.remote.listings.load(Ordering::SeqCst);
+            f.cache.hard_refresh(&f.remote, 7, "/d").await.unwrap();
+            assert!(f.remote.listings.load(Ordering::SeqCst) > before);
+            assert_eq!(Fixture::names(&f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap()), ["sub", "a.txt", "b.txt", "new.txt"]);
+            assert_eq!(Fixture::names(&f.cache.list(&f.remote, 7, None, "/d/sub", false).await.unwrap()), ["c.txt", "e.txt"], "below it too");
+            assert!(f.cache.hard_refresh(&f.remote, 7, "/d/none.txt").await.is_err(), "nothing to refresh");
+        });
+    }
+
+    #[test]
+    fn a_locked_file_refuses_a_hard_refresh_and_survives_clearing_an_item() {
+        run(async {
+            let f = Fixture::new("hard-lock").await;
+            f.remote.put("/d/a.txt", "one");
+            f.remote.put("/d/b.txt", "bee");
+            f.cache.set_locked(&f.remote, 7, "/d/a.txt", true).await.unwrap();
+            f.cache.read(&f.remote, 7, None, "/d/b.txt").await.unwrap();
+            assert!(f.cache.hard_refresh(&f.remote, 7, "/d/a.txt").await.unwrap_err().contains("locked"));
+            f.cache.clear_item(7, "/d").await.unwrap();
+            assert!(f.base.join("a/001/c/d/a.txt").is_file(), "the locked file stays");
+            assert!(!f.base.join("a/001/c/d/b.txt").exists(), "the rest of the folder's content goes");
+            assert_eq!(f.cache.read(&f.remote, 7, None, "/d/b.txt").await.unwrap(), b"bee", "and is fetched again when needed");
+        });
+    }
+
+    #[test]
+    fn clearing_one_item_drops_its_content_and_thumbnails_and_nothing_else() {
+        run(async {
+            let f = Fixture::new("clear-item").await;
+            f.remote.put("/d/a.txt", "one");
+            f.remote.put("/d/b.txt", "bee");
+            f.remote.put("/e/c.txt", "sea");
+            for p in ["/d/a.txt", "/d/b.txt", "/e/c.txt"] {
+                f.cache.read(&f.remote, 7, None, p).await.unwrap();
+                f.cache.thumb_put(7, None, p, 5, 3, b"jpeg").await.unwrap();
+            }
+            f.cache.clear_item(7, "/d/a.txt").await.unwrap();
+            assert!(!f.base.join("a/001/c/d/a.txt").exists() && f.base.join("a/001/c/d/b.txt").is_file());
+            assert!(f.cache.thumb_get(7, None, "/d/a.txt", 5, 3).await.unwrap().is_none() && f.cache.thumb_get(7, None, "/d/b.txt", 5, 3).await.unwrap().is_some());
+            let listed = f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap().entries;
+            assert!(!listed.iter().find(|e| e.name == "a.txt").unwrap().cached, "still listed, no longer cached");
+
+            f.cache.clear_item(7, "/d").await.unwrap();
+            assert!(!f.base.join("a/001/c/d/b.txt").exists() && f.base.join("a/001/c/e/c.txt").is_file(), "a folder clears itself and what is below it, not its neighbours");
+            assert!(f.cache.thumb_get(7, None, "/d/b.txt", 5, 3).await.unwrap().is_none() && f.cache.thumb_get(7, None, "/e/c.txt", 5, 3).await.unwrap().is_some());
+        });
+    }
+
+    #[test]
     fn a_locked_file_stays_locked_when_written_and_forgets_it_when_deleted() {
         run(async {
             let f = Fixture::new("lock-write").await;
@@ -2415,20 +2587,19 @@ mod tests {
             let f = Fixture::new("thumbs").await;
             f.remote.put("/pics/a.png", "one");
             f.remote.put("/pics/a.png.bak", "two");
-            let t = f.base.join("t");
+            let t = f.base.join("a/001/t");
 
-            // Nothing yet; then one for the version (modified 1000, 3 bytes) — laid out like the files, in the account's pair.
+            // Nothing yet; then one for the version (modified 1000, 3 bytes) — laid out like the files, inside the account's own folder.
             assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 1000, 3).await.unwrap(), None);
             f.cache.thumb_put(7, None, "/pics/a.png", 1000, 3, b"jpeg-1").await.unwrap();
-            assert!(t.join("001-filen@@me@example.com@@7").is_dir(), "the readable half is beside it");
-            assert!(t.join("001/pics/a.png.1000-3.jpg").is_file());
+            assert!(t.join("pics/a.png.1000-3.jpg").is_file());
             assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 1000, 3).await.unwrap().as_deref(), Some(&b"jpeg-1"[..]));
             // A changed file has none until one is made for its new version, and that one replaces the old.
             assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 2000, 5).await.unwrap(), None);
             f.cache.thumb_put(7, None, "/pics/a.png.bak", 1000, 3, b"bak").await.unwrap();
             f.cache.thumb_put(7, None, "/pics/a.png", 2000, 5, b"jpeg-2").await.unwrap();
-            assert!(!t.join("001/pics/a.png.1000-3.jpg").exists(), "the older version's is removed");
-            assert!(t.join("001/pics/a.png.bak.1000-3.jpg").is_file(), "…and another file's is not");
+            assert!(!t.join("pics/a.png.1000-3.jpg").exists(), "the older version's is removed");
+            assert!(t.join("pics/a.png.bak.1000-3.jpg").is_file(), "…and another file's is not");
 
             // A branch: a file it hasn't changed shows the account's thumbnail; one it changed has its own, with the branch.
             let branch = f.cache.create_branch(7, "draft").await.unwrap();
@@ -2437,22 +2608,62 @@ mod tests {
             f.cache.write(&f.remote, 7, b, "/pics/a.png", b"changed").await.unwrap();
             assert_eq!(f.cache.thumb_get(7, b, "/pics/a.png", 2000, 5).await.unwrap(), None, "changed in the branch: not the account's");
             f.cache.thumb_put(7, b, "/pics/a.png", 3000, 7, b"branch").await.unwrap();
-            let tb = f.base.join("tb");
-            assert!(tb.join("001/001/pics/a.png.3000-7.jpg").is_file() && tb.join("001/001-draft").is_dir(), "the branch's pair, in the second place");
+            let tb = f.base.join("a/001/tb");
+            assert!(tb.join("001/pics/a.png.3000-7.jpg").is_file() && tb.join("001-draft").is_dir(), "the branch's pair, inside the account's own folder");
             assert_eq!(f.cache.thumb_get(7, None, "/pics/a.png", 3000, 7).await.unwrap(), None, "the account never sees the branch's");
 
             // Discarding the branch deletes both of its places.
             f.cache.discard_branch(7, branch.index).await.unwrap();
-            assert!(!f.base.join("b/001/001").exists());
-            assert!(std::fs::read_dir(&tb).unwrap().next().is_none(), "the branch's thumbnails are gone with it");
-            assert!(t.join("001/pics/a.png.2000-5.jpg").is_file(), "the account's stay");
+            assert!(!f.base.join("a/001/b/001").exists());
+            assert!(!tb.exists(), "the branch's thumbnails are gone with it");
+            assert!(t.join("pics/a.png.2000-5.jpg").is_file(), "the account's stay");
 
             // Clearing the cache drops the account's thumbnails; disconnecting drops them too.
             f.cache.clear(7).await.unwrap();
-            assert!(std::fs::read_dir(&t).unwrap().next().is_none());
+            assert!(!t.exists());
             f.cache.thumb_put(7, None, "/pics/a.png", 2000, 5, b"again").await.unwrap();
             f.cache.forget_account(7).await.unwrap();
-            assert!(std::fs::read_dir(&t).unwrap().next().is_none());
+            assert!(!t.exists(), "the account's folder — thumbnails included — is gone with it");
+        });
+    }
+
+    #[test]
+    fn the_old_layout_of_b_t_and_tb_beside_a_is_moved_inside_the_owner_at_the_next_open() {
+        run(async {
+            let base = std::env::temp_dir().join(format!("csdrive-files-cache-migrate-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            // Build the old layout by hand: an account already in `a`, its branch in the old top-level `b`, a thumbnail in the old
+            // top-level `t`, and its branch's thumbnail in the old top-level `tb` — each under the account's own `NNN-<part>` pair.
+            let part = "filen@@me@example.com@@7";
+            for (parent, extra) in [("a", Some("c")), ("b", None), ("t", None), ("tb", None)] {
+                let full = base.join(parent).join(format!("001-{part}"));
+                std::fs::create_dir_all(&full).unwrap();
+                std::fs::write(full.join(".keep"), "-").unwrap();
+                let short = base.join(parent).join("001");
+                if let Some(sub) = extra {
+                    std::fs::create_dir_all(short.join(sub)).unwrap();
+                } else {
+                    std::fs::create_dir_all(&short).unwrap();
+                }
+            }
+            std::fs::write(base.join("b/001/x.txt"), "in the branch").unwrap();
+            std::fs::write(base.join("t/001/pic.jpg"), "thumb").unwrap();
+            std::fs::create_dir_all(base.join("tb/001/001")).unwrap();
+            std::fs::write(base.join("tb/001/001/pic.jpg"), "branch thumb").unwrap();
+
+            let cache = Cache::open(&base).await.unwrap();
+            let a = base.join("a/001");
+            assert_eq!(std::fs::read_to_string(a.join("b/x.txt")).unwrap(), "in the branch", "the branch moved inside the account's own folder");
+            assert_eq!(std::fs::read_to_string(a.join("t/pic.jpg")).unwrap(), "thumb");
+            assert_eq!(std::fs::read_to_string(a.join("tb/001/pic.jpg")).unwrap(), "branch thumb");
+            assert!(!base.join("b").exists() && !base.join("t").exists() && !base.join("tb").exists(), "the old top-level folders are gone");
+            // Idempotent — opening again changes nothing more (there is no accounts row here — the folders were made by hand — so
+            // ensure_account never ran; the migration still found the pair through its part, not through the database).
+            drop(cache);
+            let cache2 = Cache::open(&base).await.unwrap();
+            assert_eq!(std::fs::read_to_string(a.join("b/x.txt")).unwrap(), "in the branch", "running the migration again is harmless");
+            let _ = cache2;
+            let _ = std::fs::remove_dir_all(&base);
         });
     }
 
@@ -2484,10 +2695,9 @@ mod tests {
             assert!(a.join("001-filen@@new@example.com@@7").is_dir() && !a.join("001-filen@@me@example.com@@7").exists());
 
             f.cache.create_branch(7, "draft").await.unwrap();
-            assert!(f.base.join("b").join("001-filen@@new@example.com@@7").is_dir());
+            assert!(a.join("001/b/001-draft").is_dir(), "the branch's pair lives inside the account's own folder now");
             f.cache.forget_account(7).await.unwrap();
-            assert!(!a.join("001").exists() && !a.join("001-filen@@new@example.com@@7").exists());
-            assert!(std::fs::read_dir(f.base.join("b")).unwrap().next().is_none(), "the branches' pair goes too");
+            assert!(!a.join("001").exists() && !a.join("001-filen@@new@example.com@@7").exists(), "the branches inside it go too");
             assert!(f.cache.account_info(7).await.is_err());
             assert!(a.join("002").exists(), "other accounts are untouched");
         });
@@ -2642,8 +2852,8 @@ mod tests {
             f.remote.put("/docs/b.txt", "two");
             let branch = f.cache.create_branch(7, "my draft").await.unwrap();
             assert_eq!(branch.index, 1);
-            let account_b = f.base.join("b/001-filen@@me@example.com@@7");
-            assert!(account_b.is_dir() && f.base.join("b/001/001").is_dir() && f.base.join("b/001/001-my draft").is_dir(), "the branch's pair");
+            let account = f.base.join("a/001-filen@@me@example.com@@7");
+            assert!(account.is_dir() && f.base.join("a/001/b/001").is_dir() && f.base.join("a/001/b/001-my draft").is_dir(), "the branch's pair, inside the account's own folder");
             assert!(f.cache.create_branch(7, "MY DRAFT").await.is_err(), "names are unique");
             assert!(f.cache.create_branch(7, "bad/name").await.is_err());
 
@@ -2873,9 +3083,9 @@ mod tests {
             let two = f.cache.create_branch(7, "second").await.unwrap();
             assert_eq!((one.index, two.index), (1, 2));
             f.cache.discard_branch(7, one.index).await.unwrap();
-            assert!(f.base.join("b/001/002-second").is_dir() && !f.base.join("b/001/001-first").exists());
+            assert!(f.base.join("a/001/b/002-second").is_dir() && !f.base.join("a/001/b/001-first").exists());
             assert_eq!(f.cache.create_branch(7, "third").await.unwrap().index, 1, "the gap the discarded branch left is filled");
-            assert!(f.base.join("b/001/001-third").is_dir());
+            assert!(f.base.join("a/001/b/001-third").is_dir());
             assert_eq!(f.cache.create_branch(7, "fourth").await.unwrap().index, 3, "and with no gap left: the largest plus one");
         });
     }

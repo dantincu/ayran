@@ -143,8 +143,13 @@ pub(crate) fn shown_address(url: &Url) -> String {
 async fn describe_space(app: &AppHandle, url: &Url) -> String {
     match space_of(&decoded(url.path())).map(|(space, _, _)| space) {
         Ok(Space::Device(root)) => {
-            let label = crate::picked_roots::label_of(app.state::<crate::secondary_windows::SecondaryWindowsState>().pool(), &root).await;
-            label.map_or_else(|| "a folder of this device".to_string(), |l| format!("the folder \"{l}\""))
+            let (id, branch) = crate::notes_pages::split_root(&root).unwrap_or((root.as_str(), None));
+            let label = if id == "user" { Some("user".to_string()) } else { crate::picked_roots::label_of(app.state::<crate::secondary_windows::SecondaryWindowsState>().pool(), id).await };
+            let place = label.map_or_else(|| "a folder of this device".to_string(), |l| format!("the folder \"{l}\""));
+            match branch {
+                Some(b) => format!("{place} (branch {b})"),
+                None => place,
+            }
         }
         Ok(Space::Filen { user_id, branch }) => {
             let email = crate::filen::email_of(app, user_id).await.unwrap_or_else(|_| format!("account {user_id}"));
@@ -254,6 +259,15 @@ async fn note_page(app: &AppHandle, note: &Url) -> Result<Url, String> {
     let (space, path, _) = space_of(&decoded(note.path()))?;
     let folder = path.trim_matches('/').to_string();
     let entries: Vec<(String, bool)> = match &space {
+        Space::Device(root) if crate::notes_pages::split_root(root)?.1.is_some() => {
+            // In a branch of a folder of this device: the folder as the branch sees it.
+            let (id, branch) = crate::notes_pages::split_root(root)?;
+            let guid = crate::picked_roots::root_guid_of(&app.state::<crate::app_state::AppDbState>().pool, id).await?;
+            let scope = app.state::<crate::fs_scope::FsScope>().inner().clone();
+            let cache = app.state::<crate::files_cache::Cache>();
+            let listing = cache.local_list(&crate::files_cache::local_branches::Base { scope: &scope, root: id }, &guid, branch.unwrap_or(0), &format!("/{folder}")).await?;
+            listing.entries.into_iter().map(|e| (e.name, e.is_directory)).collect()
+        }
         Space::User | Space::Device(_) => {
             let root = if let Space::Device(root) = &space { root.as_str() } else { "user" };
             let real = app.state::<crate::fs_scope::FsScope>().check_in(root, &folder, true)?;

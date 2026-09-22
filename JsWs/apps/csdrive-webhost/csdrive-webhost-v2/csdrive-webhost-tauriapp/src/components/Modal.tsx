@@ -8,6 +8,10 @@ interface ModalProps {
   title: string
   /** A wider panel, for a dialog with a list or several fields (it is still at most the window). */
   wide?: boolean
+  /** More buttons in the header, before the maximize and close buttons (they are the popup's, outside whatever it shows). */
+  actions?: React.ReactNode
+  /** An extra class of the panel, for a popup that is laid out in its own way. */
+  panelClass?: string
   onClose: () => void
   children: React.ReactNode
 }
@@ -17,7 +21,7 @@ interface ModalProps {
  * take its parent down with it. */
 const openModals: symbol[] = []
 
-export default function Modal({ title, onClose, children, wide }: ModalProps) {
+export default function Modal({ title, onClose, children, wide, actions, panelClass }: ModalProps) {
   const { maximized, toggle } = useMaximizable()
   useEffect(() => {
     const token = Symbol('modal')
@@ -34,10 +38,11 @@ export default function Modal({ title, onClose, children, wide }: ModalProps) {
 
   return (
     <div className={`modal-overlay ${maximized ? 'maximized' : ''}`} onClick={onClose}>
-      <div className={`modal-panel ${wide ? 'wide' : ''} ${maximized ? 'maximized' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div className={`modal-panel ${wide ? 'wide' : ''} ${maximized ? 'maximized' : ''} ${panelClass ?? ''}`} onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <strong>{title}</strong>
           <div className="modal-header-actions">
+            {actions}
             <IconButton
               icon={maximized ? Minimize2 : Maximize2}
               label={`${maximized ? 'Restore the size' : 'Maximize'} (${chordLabel('m')})`}

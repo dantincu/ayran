@@ -1,6 +1,6 @@
 # Folder Pairs Strategy
 
-How CsDrive WebHost gives *a thing* — a cached Filen account, a branch, and whatever comes next — a home on disk.
+How Ayran CsDrive WebHost gives *a thing* — a cached Filen account, a branch, and whatever comes next — a home on disk.
 It is used a lot, and it is central to the Notes app, so it lives in one place:
 `csdrive-webhost-tauriapp/src-tauri/src/folder_pairs.rs`. Everything that needs a pair goes through that module.
 

@@ -83,6 +83,7 @@ export default function PasteNotesModal({
             <li key={n.index} className="indexes-row">
               {how === 'custom' ? (
                 <input
+                  data-ua-field="notes.pasteNotes.customIndex"
                   className={`indexes-input ${chosen[i] === null || duplicates.has(chosen[i] as number) ? 'invalid' : ''}`}
                   value={texts[i]}
                   inputMode="numeric"

@@ -57,6 +57,19 @@ export interface VersionCheck {
   current: FileVersion
 }
 
+/** The branches of an account or of a folder of this device: one interface for both, so the file manager, its editors and the
+ * page for a note treat them the same. `source(branch)` is the same account or folder seen through that branch (`null`: itself). */
+export interface BranchApi {
+  /** Whose branches these are: `filen:123` or `local:<root id>`. */
+  id: string
+  list(): Promise<BranchInfo[]>
+  create(name: string): Promise<BranchInfo>
+  changes(branch: number): Promise<BranchChange[]>
+  commit(branch: number, force: boolean): Promise<CommitReport>
+  discard(branch: number): Promise<void>
+  source(branch: number | null): FileSource
+}
+
 export interface DirListing {
   entries: Entry[]
   /** Filen: when the listing was fetched from the account (ms since 1970). */
@@ -79,8 +92,11 @@ export interface FileSource {
   viewKey: string
   kind: 'local' | 'filen'
   label: string
-  /** Filen: the branch this works in, or `null` for the account itself. */
+  /** The branch this works in, or `null` for the account (Filen) or folder (this device) itself. */
   branch?: number | null
+  /** The branches of this source's account or folder — what a branch is made, listed, committed and discarded through (a Filen
+   * account and a folder of this device both have them; a scoped source has none of its own). */
+  branches?: BranchApi
   /** `force` skips the cache (Filen only). */
   list(path: string, force?: boolean): Promise<DirListing>
   /** A folder of this device: the same, with every entry's size and dates — one call for the whole folder (searching and sorting by
@@ -121,6 +137,15 @@ export interface FileSource {
   /** Opens the html or markdown file as a web app (a window of its own, listed under this Notes tab). */
   openAsWebApp?(path: string): Promise<void>
 
+  /** What a source that caches can do to the cache of one item — a file, a folder (Filen accounts). `undefined` for a source with no
+   * cache. The *soft* refresh needs nothing of the backend (the item is read again the ordinary way: from the cache while it is valid). */
+  cache?: {
+    /** Fetches the item from Filen again and replaces what the cache holds of it (a locked file refuses). */
+    hardRefresh(path: string): Promise<void>
+    /** Throws away what the cache holds of it — content, listing, thumbnails (a locked file keeps its frozen copy). */
+    clear(path: string): Promise<void>
+  }
+
   // Filen only ────────────────────────────────────────────────────────────────
   /** The version of the file as the cache knows it — call it right after opening the file, to know what
    * is being worked on. */
@@ -147,42 +172,131 @@ function sortEntries(entries: Entry[]): Entry[] {
 export const LOCAL_PREFIX = 'local:'
 export const FILEN_PREFIX = 'filen:'
 
-/** A folder on this device: the user folder or one the person picked. */
-export function localSource(root: FileRoot): FileSource {
+/** The root's guid — its name in the folders the Notes app keeps for it (`files/b/NNN-local-fs@@<guid>`), shown on its pill's menu. */
+export const rootGuid = (rootId: string) => invoke<string>('root_guid', { root: rootId })
+
+const slashed = (path: string) => `/${path.replace(/^\/+/, '')}`
+
+/** The branches of a folder of this device (`files_cache/local_branches.rs`): changes that stay in the app's own folder until they
+ * are committed to the real one. There is no cache — the folder is always read as it is. */
+export function localBranchApi(root: FileRoot): BranchApi {
   return {
     id: `${LOCAL_PREFIX}${root.id}`,
-    viewKey: `${LOCAL_PREFIX}${root.id}`,
-    kind: 'local',
+    list: () => invoke<BranchInfo[]>('local_branches', { root: root.id }),
+    create: (name) => invoke<BranchInfo>('local_branch_create', { root: root.id, name }),
+    changes: (branch) => invoke<BranchChange[]>('local_branch_changes', { root: root.id, branch }),
+    commit: (branch, force) => invoke<CommitReport>('local_branch_commit', { root: root.id, branch, force }),
+    discard: (branch) => invoke<void>('local_branch_discard', { root: root.id, branch }),
+    source: (branch) => localSource(root, branch),
+  }
+}
+
+/** A folder on this device: the user folder or one the person picked — with `branch`, that branch of it (its changes stay in the
+ * branch until it is committed). */
+export function localSource(root: FileRoot, branch: number | null = null): FileSource {
+  const storage = root.id === 'user' ? 'UserFolder' : 'DeviceFolder'
+  const thumbnails: ThumbnailStore = {
+    async get(path, mtimeMs, size) {
+      const bytes = new Uint8Array(await invoke<ArrayBuffer>('local_thumb_get', { root: root.id, branch, path: slashed(path), mtimeMs, size }))
+      return bytes.length > 0 ? bytes : null
+    },
+    async put(path, mtimeMs, size, jpeg) {
+      const fields: Record<string, string> = { root: root.id, path: slashed(path), mtimeMs: String(mtimeMs), size: String(size) }
+      if (branch !== null) fields.branch = String(branch)
+      await invokeWithBytes('local_thumb_put', jpeg, fields)
+    },
+  }
+  const common = {
+    id: `${LOCAL_PREFIX}${root.id}`,
+    kind: 'local' as const,
     label: root.label,
+    branches: localBranchApi(root),
+    thumbnails,
+  }
+  if (branch === null) {
+    const ref = (path: string): FileRef => ({ storage, root: root.id, path })
+    return {
+      ...common,
+      viewKey: `${LOCAL_PREFIX}${root.id}`,
+      async list(path) {
+        const entries = await listRootDir(root, path)
+        return {
+          entries: sortEntries(entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory, size: null, mtimeMs: null }))),
+        }
+      },
+      async listDetailed(path) {
+        const entries = await listRootDirDetailed(root, path)
+        return {
+          entries: sortEntries(entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory, size: e.size, mtimeMs: e.mtimeMs, createdMs: e.createdMs }))),
+        }
+      },
+      async stat(path) {
+        const info = await statRootPath(root, path)
+        return { size: info.isDirectory ? null : info.size, mtimeMs: info.mtimeMs }
+      },
+      rootId: root.id,
+      fileRef: ref,
+      notifySaved: (path) => notifyFileSaved(ref(path)),
+      openAsWebApp: async (path) => {
+        await openFileAsWebApp(ref(path))
+      },
+      read: (path) => readRootFile(root, path),
+      write: (path, data) => writeRootFile(root, path, data),
+      writeFromFile: (path, file) => writeRootFileFrom(root, path, file),
+      exportFile: (path, name, token) => invoke<string>('export_local_file', { root: root.id, path, name, token }),
+      mkdir: (path) => mkdirRoot(root, path),
+      remove: (path, isDirectory) => removeRootPath(root, path, isDirectory),
+      rename: (from, to) => renameRootPath(root, from, to),
+    }
+  }
+
+  // The folder seen through a branch. It isn't "a folder of this device" for the copies that go straight from disk to disk
+  // (no `rootId`): what the branch shows isn't on the folder.
+  const target = { root: root.id, branch }
+  const ref = (path: string): FileRef => ({ storage: 'DeviceFolder', root: `${root.id}~${branch}`, path })
+  return {
+    ...common,
+    viewKey: `${LOCAL_PREFIX}${root.id}#${branch}`,
+    branch,
     async list(path) {
-      const entries = await listRootDir(root, path)
-      return {
-        entries: sortEntries(entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory, size: null, mtimeMs: null }))),
+      const listing = await invoke<RawListing>('local_branch_list', { ...target, path: slashed(path) })
+      return { entries: sortEntries(listing.entries), fetchedAt: listing.fetchedAt, stale: false }
+    },
+    async read(path) {
+      return new Uint8Array(await invoke<ArrayBuffer>('local_branch_read', { ...target, path: slashed(path) }))
+    },
+    async write(path, data) {
+      await invokeWithBytes('local_branch_write', data, { root: root.id, branch: String(branch), path: slashed(path) })
+    },
+    async writeFromFile(path, file) {
+      const id = await invoke<string>('local_branch_upload_begin', { ...target, path: slashed(path) })
+      try {
+        for (let at = 0; at < file.size; at += UPLOAD_PIECE) {
+          const piece = new Uint8Array(await file.slice(at, at + UPLOAD_PIECE).arrayBuffer())
+          await invokeWithBytes('fs_upload_chunk', piece, { id })
+        }
+        await invoke('local_branch_upload_finish', { id })
+      } catch (e) {
+        await invoke('fs_upload_abort', { id }).catch(() => {})
+        throw e
       }
     },
-    async listDetailed(path) {
-      const entries = await listRootDirDetailed(root, path)
-      return {
-        entries: sortEntries(entries.map((e) => ({ name: e.name, isDirectory: e.isDirectory, size: e.size, mtimeMs: e.mtimeMs, createdMs: e.createdMs }))),
-      }
-    },
-    async stat(path) {
-      const info = await statRootPath(root, path)
-      return { size: info.isDirectory ? null : info.size, mtimeMs: info.mtimeMs }
-    },
-    rootId: root.id,
-    fileRef: (path) => ({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path }),
-    notifySaved: (path) => notifyFileSaved({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path }),
+    exportFile: (path, name, token) => invoke<string>('local_branch_export', { ...target, path: slashed(path), name, token }),
+    copyFromLocal: (path, fromRoot, source) => invoke<void>('local_branch_put_from_path', { ...target, path: slashed(path), fromRoot, source }),
+    copyToLocal: (path, toRoot, dest) => invoke<void>('local_branch_copy_to', { ...target, path: slashed(path), toRoot, dest }),
+    mkdir: (path) => invoke<void>('local_branch_mkdir', { ...target, path: slashed(path) }),
+    remove: (path) => invoke<void>('local_branch_rm', { ...target, path: slashed(path) }),
+    rename: (from, to) => invoke<void>('local_branch_rename', { ...target, from: slashed(from), to: slashed(to) }),
+    fileRef: ref,
+    notifySaved: (path) => notifyFileSaved(ref(path)),
     openAsWebApp: async (path) => {
-      await openFileAsWebApp({ storage: root.id === 'user' ? 'UserFolder' : 'DeviceFolder', root: root.id, path })
+      await openFileAsWebApp(ref(path))
     },
-    read: (path) => readRootFile(root, path),
-    write: (path, data) => writeRootFile(root, path, data),
-    writeFromFile: (path, file) => writeRootFileFrom(root, path, file),
-    exportFile: (path, name, token) => invoke<string>('export_local_file', { root: root.id, path, name, token }),
-    mkdir: (path) => mkdirRoot(root, path),
-    remove: (path, isDirectory) => removeRootPath(root, path, isDirectory),
-    rename: (from, to) => renameRootPath(root, from, to),
+    version: (path) => invoke<RawVersion>('local_branch_version', { ...target, path: slashed(path) }),
+    checkVersion: (path, base) => invoke<VersionCheck>('local_branch_check_version', { root: root.id, path: slashed(path), base }),
+    rebase: (path) => invoke<void>('local_branch_rebase', { ...target, path: slashed(path) }),
+    checkout: (path) => invoke<void>('local_branch_checkout', { ...target, path: slashed(path) }),
+    release: (path) => invoke<void>('local_branch_release', { ...target, path: slashed(path) }),
   }
 }
 
@@ -246,8 +360,22 @@ export const filenCache = {
   discardBranch: (userId: number, branch: number) => invoke<void>('filen_cache_discard_branch', { userId, branch }),
 }
 
-/** How big a piece of a file is read and sent at a time when it goes up to Filen. */
+/** How big a piece of a file is read and sent at a time when it goes up to Filen (or into a branch). */
 const UPLOAD_PIECE = 4 * 1024 * 1024
+
+/** The branches of a Filen account. */
+export function filenBranchApi(account: FilenAccountInfo): BranchApi {
+  const { userId } = account
+  return {
+    id: `${FILEN_PREFIX}${userId}`,
+    list: () => filenCache.branches(userId),
+    create: (name) => filenCache.createBranch(userId, name),
+    changes: (branch) => filenCache.branchChanges(userId, branch),
+    commit: (branch, force) => filenCache.commitBranch(userId, branch, force),
+    discard: (branch) => filenCache.discardBranch(userId, branch),
+    source: (branch) => filenSource(account, branch),
+  }
+}
 
 /** A Filen account, seen through the cache; with `branch`, a branch of it (changes stay in the
  * branch until it is committed). */
@@ -260,6 +388,7 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     kind: 'filen',
     label: account.email,
     branch,
+    branches: filenBranchApi(account),
     async list(path, force) {
       const listing = await invoke<RawListing>('filen_cache_list', { ...target, path: filenPath(path), force: !!force })
       return { entries: sortEntries(listing.entries), fetchedAt: listing.fetchedAt, stale: listing.stale }
@@ -301,6 +430,10 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     openAsWebApp: async (path) => {
       await openFileAsWebApp({ storage: 'FilenCloud', userId, branch, path: filenPath(path) })
     },
+    cache: {
+      hardRefresh: (path) => invoke<void>('filen_cache_hard_refresh', { userId, path: filenPath(path) }),
+      clear: (path) => invoke<void>('filen_cache_clear_item', { userId, path: filenPath(path) }),
+    },
     exportFile: (path, name, token) => invoke<string>('filen_cache_export', { ...target, path: filenPath(path), name, token }),
     copyFromLocal: (path, root, source) => invoke<void>('filen_cache_upload_from_path', { ...target, path: filenPath(path), root, source }),
     copyToLocal: (path, root, dest) => invoke<void>('filen_cache_download_to', { ...target, path: filenPath(path), root, dest }),
@@ -335,6 +468,7 @@ export function scopedSource(base: FileSource, root: string, label: string): Fil
     remove: (path, isDirectory) => base.remove(at(path), isDirectory),
     rename: (from, to) => base.rename(at(from), at(to)),
     rootPrefix: base.rootId === undefined ? undefined : joinRelative(base.rootPrefix ?? '', root),
+    branches: undefined, // the branches are the whole source's, not a folder's
   }
   if (base.stat) scoped.stat = (path) => base.stat!(at(path))
   if (base.writeFromFile) scoped.writeFromFile = (path, file) => base.writeFromFile!(at(path), file)
@@ -350,6 +484,10 @@ export function scopedSource(base: FileSource, root: string, label: string): Fil
       put: (path, mtimeMs, size, jpeg) => store.put(at(path), mtimeMs, size, jpeg),
     }
   }
+  if (base.cache) {
+    const cache = base.cache
+    scoped.cache = { hardRefresh: (path) => cache.hardRefresh(at(path)), clear: (path) => cache.clear(at(path)) }
+  } else scoped.cache = undefined
   if (base.version) scoped.version = (path) => base.version!(at(path))
   if (base.checkVersion) scoped.checkVersion = (path, known) => base.checkVersion!(at(path), known)
   if (base.rebase) scoped.rebase = (path) => base.rebase!(at(path))

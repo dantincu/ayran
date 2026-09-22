@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { confirm } from '@tauri-apps/plugin-dialog'
+import { confirm } from '../../lib/dialogs'
 import {
   ArrowLeft,
   ClipboardPaste,
@@ -70,14 +70,18 @@ import { offsetOfPage, pageOfOffset } from '../../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
 import {
   copyTree,
+  filenBranchApi,
   filenCache,
   filenSource,
   FILEN_PREFIX,
   isSameOrWithin,
   LOCAL_PREFIX,
+  localBranchApi,
   localSource,
+  rootGuid,
   scopedSource,
   uniqueName,
+  type BranchApi,
   type BranchChange,
   type BranchInfo,
   type CacheInfo,
@@ -89,6 +93,19 @@ import {
   type VersionCheck,
 } from './sources'
 import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
+import UserActionButton from './UserActionButton'
+import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
+import { draftsInTheWay, setWindowBranch, windowBranchOf, type UnsavedEdit } from './windowBranch'
+import { listSecondaryWindows } from '../../lib/secondaryWindows'
+import ContextMenu, { contextTrigger, type MenuItem as ContextMenuItem } from '../../components/ContextMenu'
+
+/** What a right click (or a long press) on a root's pill offers: showing the ids it is known by. */
+interface RootMenu {
+  x: number
+  y: number
+  root: FileRoot | null
+  account: FilenAccountInfo | null
+}
 
 const LAST_LOCATION_KEY = 'notes.lastLocation'
 /** Unsaved text of files being edited, kept per tab so that it survives switching tabs and restarting the
@@ -216,7 +233,8 @@ export default function NotesApp({
   const [ready, setReady] = useState(false)
 
   const [sourceId, setSourceId] = useState(initial?.sourceId ?? `${LOCAL_PREFIX}user`)
-  const [branch, setBranch] = useState<number | null>(initial?.branch ?? null)
+  // (A window's tabs share the branch: a place's own `b` only counts in a scoped explorer — see `showLocation`.)
+  const [branch, setBranch] = useState<number | null>(scope ? (initial?.branch ?? null) : null)
   const [path, setPath] = useState(initial?.path ?? '')
 
   const [listing, setListing] = useState<DirListing | null>(null)
@@ -248,6 +266,9 @@ export default function NotesApp({
   const [kbdFocus, setKbdFocus] = useState(-1)
   const pendingFocusRef = useRef<string | 'first' | null>(null)
   const [details, setDetails] = useState<DetailsOf | null>(null)
+  const [rootMenu, setRootMenu] = useState<RootMenu | null>(null)
+  /** The ids of a root being shown (its guid comes from the backend). */
+  const [rootIds, setRootIds] = useState<{ title: string; fields: DetailField[] } | null>(null)
   const [goingTo, setGoingTo] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -279,10 +300,13 @@ export default function NotesApp({
   const earlyNavigationRef = useRef<Tab | null>(null)
   const sourcesRef = useRef<{ roots: FileRoot[]; accounts: FilenAccountInfo[] } | null>(null)
 
-  /** Shows `target` if its source still exists, otherwise the start of the user folder. */
-  function showLocation(target: Location | null, allRoots: FileRoot[], filen: FilenAccountInfo[]) {
+  /** Shows `target` if its source still exists, otherwise the start of the user folder. The branch is **the window's**: a place
+   * names one too (it was the tab's own), but every tab of a window works in the branch the window is in, and a new window starts on
+   * the main view. */
+  async function showLocation(target: Location | null, allRoots: FileRoot[], filen: FilenAccountInfo[]) {
     const exists = (id: string) =>
       allRoots.some((r) => `${LOCAL_PREFIX}${r.id}` === id) || filen.some((a) => `${FILEN_PREFIX}${a.userId}` === id)
+    const windowBranch = target && exists(target.sourceId) && !scope ? await windowBranchOf(target.sourceId) : null
     restoredOffsetRef.current = null
     setRestoringPage(false)
     // The editor follows the place: a tab that was editing a file opens it again, any other closes it (what
@@ -291,7 +315,7 @@ export default function NotesApp({
     if (!target?.edit) setEditing(null)
     if (target && exists(target.sourceId)) {
       setSourceId(target.sourceId)
-      setBranch(target.branch ?? null)
+      setBranch(scope ? (target.branch ?? null) : windowBranch)
       setPath(target.path ?? '')
       // Where in the folder's listing it was, restored when the listing is there (see load).
       if (target.offset) {
@@ -326,7 +350,7 @@ export default function NotesApp({
       earlyNavigationRef.current = null
       if (early) setTab(early)
       sourcesRef.current = { roots: allRoots, accounts: filen }
-      showLocation((early ? (decodeLocation(early.resourceId) ?? withoutEdit(last)) : (initial ?? withoutEdit(last))) ?? null, allRoots, filen)
+      await showLocation((early ? (decodeLocation(early.resourceId) ?? withoutEdit(last)) : (initial ?? withoutEdit(last))) ?? null, allRoots, filen)
       setReady(true)
     })()
   }, [])
@@ -347,50 +371,57 @@ export default function NotesApp({
         }
         flushDraft() // the tab being left keeps what it hadn't saved
         setTab(next)
-        showLocation(decodeLocation(next.resourceId) ?? withoutEdit(lastRef.current), sources.roots, sources.accounts)
+        void showLocation(decodeLocation(next.resourceId) ?? withoutEdit(lastRef.current), sources.roots, sources.accounts)
       }),
     [],
   )
 
   const account = useMemo(() => accounts.find((a) => `${FILEN_PREFIX}${a.userId}` === sourceId) ?? null, [accounts, sourceId])
+  const localRoot = useMemo(() => roots.find((r) => `${LOCAL_PREFIX}${r.id}` === sourceId) ?? null, [roots, sourceId])
+  /** The branches of what is shown — of the Filen account, or of the folder of this device (a scoped explorer has none of its own). */
+  const branchApi = useMemo<BranchApi | null>(
+    () => (scope ? null : account ? filenBranchApi(account) : localRoot ? localBranchApi(localRoot) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [account, localRoot, !!scope],
+  )
   const source = useMemo<FileSource | null>(() => {
     let base: FileSource | null
     if (account) base = filenSource(account, branch)
-    else {
-      const root = roots.find((r) => `${LOCAL_PREFIX}${r.id}` === sourceId)
-      base = root ? localSource(root) : null
-    }
+    else base = localRoot ? localSource(localRoot, branch) : null
     return base && scope ? scopedSource(base, scope.root, scope.label) : base
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [account, branch, roots, sourceId, scope?.root, scope?.label])
+  }, [account, branch, localRoot, sourceId, scope?.root, scope?.label])
 
   const currentBranch = branches.find((b) => b.index === branch) ?? null
 
   // ── Filen account settings and branches ──
 
   const reloadBranches = useCallback(async () => {
-    if (!account) return
+    if (!branchApi) return
     try {
-      setBranches(await filenCache.branches(account.userId))
+      setBranches(await branchApi.list())
       setBranchesLoaded(true)
     } catch (e) {
       setError(String(e))
     }
-  }, [account])
+  }, [branchApi])
 
   useEffect(() => {
     setCacheInfo(null)
     setBranches([])
     setBranchesLoaded(false)
-    if (!account) return
-    filenCache.account(account.userId).then(setCacheInfo, (e) => setError(String(e)))
+    if (account) filenCache.account(account.userId).then(setCacheInfo, (e) => setError(String(e)))
     reloadBranches()
   }, [account, reloadBranches])
 
   // A branch that no longer exists (committed or discarded elsewhere) is left.
   useEffect(() => {
-    if (branch !== null && account && branchesLoaded && !branches.some((b) => b.index === branch)) setBranch(null)
-  }, [branch, branches, branchesLoaded, account])
+    if (branch !== null && branchApi && branchesLoaded && !branches.some((b) => b.index === branch)) {
+      setBranch(null)
+      setWindowBranch(sourceId, null).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branch, branches, branchesLoaded, branchApi])
 
   // ── Listing ──
 
@@ -508,7 +539,12 @@ export default function NotesApp({
         if (saved === null) throw new Error(`"${wanted}" isn't a text file this small any more.`)
         const version = (await source.version?.(wanted).catch(() => null)) ?? null
         const draft = drafts[draftKey()]
-        const mine = draft && draft.sourceId === source.id && (draft.branch ?? null) === (source.branch ?? null) && draft.path === wanted
+        // The draft comes back whichever branch it was started in — the window may have moved to a branch since (from the main
+        // view to a new one, which is allowed); it is saved wherever the window is now.
+        const mine = draft && draft.sourceId === source.id && draft.path === wanted
+        if (mine && (draft.branch ?? null) !== (source.branch ?? null)) {
+          setNotice(`Your unsaved changes were made ${draft.branch === null ? 'on the main view' : 'in another branch'}; saving now puts them in ${source.branch === null || source.branch === undefined ? 'the main view' : 'this window\'s branch'}.`)
+        }
         setEditing({
           source,
           path: wanted,
@@ -575,10 +611,48 @@ export default function NotesApp({
   }
 
   // (The clipboard deliberately survives switching sources: copying between them is the point.)
-  function selectSource(id: string) {
+  async function selectSource(id: string) {
+    const windowBranch = scope ? null : await windowBranchOf(id)
     setSourceId(id)
-    setBranch(null)
+    setBranch(windowBranch)
     setPath('')
+  }
+
+  /** What other tabs of this window have not saved and that a change of the window's branch to `toBranch` would strand. */
+  async function otherTabsEditsInTheWay(toBranch: number | null): Promise<UnsavedEdit[]> {
+    const mine = tabRef.current?.tabGuid
+    if (!mine || !branchApi) return []
+    const windows = await listSecondaryWindows('system').catch(() => [])
+    const here = windows.find((w) => w.tabGroups.some((g) => g.tabs.some((t) => t.guid === mine)))
+    if (!here) return []
+    const others = new Set(here.tabGroups.flatMap((g) => g.tabs.map((t) => t.guid)).filter((guid) => guid !== mine))
+    const drafts = await readDrafts()
+    const edits: UnsavedEdit[] = Object.entries(drafts)
+      .filter(([tab, d]) => others.has(tab) && d.sourceId === sourceId)
+      .map(([, d]) => ({ path: d.path, branch: d.branch ?? null }))
+    return draftsInTheWay(edits, toBranch, async (b) => new Set((await branchApi.changes(b)).filter((c) => c.kind === 'put' || c.kind === 'delete').map((c) => c.path)))
+  }
+
+  /** Whether the window may leave its branch for `toBranch` now (says why not when it may not). */
+  async function changeBranchAllowed(toBranch: number | null): Promise<boolean> {
+    const stuck = await otherTabsEditsInTheWay(toBranch)
+    if (stuck.length === 0) return true
+    const files = stuck.slice(0, 5).map((e) => `/${e.path}`).join(', ')
+    setError(`Another tab of this window has unsaved changes to ${files}, which ${stuck.length === 1 ? 'is' : 'are'} not the same in the branch you are going to. Save or discard them in that tab first.`)
+    return false
+  }
+
+  /** Puts this **window** in another branch (or, with `null`, on the main view): every tab of it follows, no other window does.
+   * Refused when another tab of the window holds unsaved edits to a file that isn't the same in the two views — unless the window
+   * goes from the main view to a branch that has just been made (`fresh`): that branch starts as the main view, so what the other
+   * tab has open carries on into it. */
+  async function changeBranch(next: number | null, fresh = false): Promise<boolean> {
+    if (!(fresh && branch === null)) {
+      if (!(await changeBranchAllowed(next))) return false
+    }
+    setBranch(next)
+    setWindowBranch(sourceId, next).catch(() => {})
+    return true
   }
 
   async function addFolder() {
@@ -714,22 +788,22 @@ export default function NotesApp({
    * out there, an edited one is saved into it with the next Save. */
   async function newBranchFromEditor() {
     if (!editing) return
-    const editedAccount = accounts.find((a) => `${FILEN_PREFIX}${a.userId}` === editing.source.id)
-    if (!editedAccount) return
+    const editedBranches = editing.source.branches
+    if (!editedBranches) return
     const name = window.prompt(`Name of the new branch (up to ${MAX_BRANCH_NAME_CHARS} characters):`)?.trim()
     if (!name) return
     if ([...name].length > MAX_BRANCH_NAME_CHARS) return setError(`A branch name has at most ${MAX_BRANCH_NAME_CHARS} characters.`)
     setError(null)
     try {
-      const created = await filenCache.createBranch(editedAccount.userId, name)
-      const inBranch = filenSource(editedAccount, created.index)
-      // (The file the editor shows came from the account, so that is what is checked out — a file open
-      // from another branch isn't the account's.)
-      if (!editing.dirty && editing.source.branch === null) await inBranch.checkout?.(editing.path)
+      const created = await editedBranches.create(name)
+      const inBranch = editedBranches.source(created.index)
+      // (The file the editor shows came from the account or folder itself, so that is what is checked out — a file open
+      // from another branch isn't its.)
+      if (!editing.dirty && !editing.source.branch) await inBranch.checkout?.(editing.path)
       setEditing((e) => (e ? { ...e, source: inBranch } : e))
-      if (editedAccount.userId === account?.userId) {
+      if (editedBranches.id === branchApi?.id) {
         await reloadBranches()
-        setBranch(created.index)
+        await changeBranch(created.index, true)
       }
       setNotice(`Working in the new branch "${name}".`)
     } catch (e) {
@@ -802,8 +876,8 @@ export default function NotesApp({
   async function deleteEntry(entry: Entry) {
     if (!source) return
     const where =
-      account && branch !== null
-        ? 'in this branch (the account is only changed when you commit it)'
+      branchApi && branch !== null
+        ? `in this branch (${account ? 'the account' : 'the folder'} is only changed when you commit it)`
         : account
           ? "from the account — it goes to Filen's trash"
           : 'for good'
@@ -922,45 +996,48 @@ export default function NotesApp({
   }
 
   async function newBranch() {
-    if (!account) return
+    if (!branchApi) return
     const name = window.prompt(`Name of the new branch (up to ${MAX_BRANCH_NAME_CHARS} characters):`)?.trim()
     if (!name) return
     if ([...name].length > MAX_BRANCH_NAME_CHARS) return setError(`A branch name has at most ${MAX_BRANCH_NAME_CHARS} characters.`)
     try {
-      const created = await filenCache.createBranch(account.userId, name)
+      const created = await branchApi.create(name)
       await reloadBranches()
-      setBranch(created.index)
+      await changeBranch(created.index, true)
     } catch (e) {
       setError(String(e))
     }
   }
 
   async function showChanges() {
-    if (!account || branch === null) return
+    if (!branchApi || branch === null) return
     try {
-      setChanges(await filenCache.branchChanges(account.userId, branch))
+      setChanges(await branchApi.changes(branch))
     } catch (e) {
       setError(String(e))
     }
   }
 
   async function commitBranch() {
-    if (!account || branch === null) return
+    if (!branchApi || branch === null) return
+    if (!(await changeBranchAllowed(null))) return
     const name = currentBranch?.name ?? 'this branch'
-    if (!(await confirm(`Apply the changes of "${name}" to the account and delete the branch?`))) return
+    const whole = account ? 'the account' : 'the folder'
+    if (!(await confirm(`Apply the changes of "${name}" to ${whole} and delete the branch?`))) return
     try {
-      let report = await filenCache.commitBranch(account.userId, branch, false)
+      let report = await branchApi.commit(branch, false)
       if (!report.committed && report.conflicts.length > 0) {
         const shown = report.conflicts.slice(0, 8).join('\n') + (report.conflicts.length > 8 ? '\n…' : '')
         const overwrite = await confirm(
-          `The account changed since "${name}" touched these:\n\n${shown}\n\nNothing was applied. Apply the branch anyway and overwrite them?`,
+          `${account ? 'The account' : 'The folder'} changed since "${name}" touched these:\n\n${shown}\n\nNothing was applied. Apply the branch anyway and overwrite them?`,
         )
         if (!overwrite) return
-        report = await filenCache.commitBranch(account.userId, branch, true)
+        report = await branchApi.commit(branch, true)
       }
       if (report.committed) {
         setNotice(`Committed "${name}": ${report.applied} change${report.applied === 1 ? '' : 's'} applied.`)
         setBranch(null)
+        setWindowBranch(sourceId, null).catch(() => {})
         await reloadBranches()
         await load(false)
       }
@@ -970,17 +1047,55 @@ export default function NotesApp({
   }
 
   async function discardBranch() {
-    if (!account || branch === null) return
+    if (!branchApi || branch === null) return
+    if (!(await changeBranchAllowed(null))) return
     const name = currentBranch?.name ?? 'this branch'
     if (!(await confirm(`Discard "${name}" and everything changed in it? This cannot be undone.`))) return
     try {
-      await filenCache.discardBranch(account.userId, branch)
+      await branchApi.discard(branch)
       setBranch(null)
+      setWindowBranch(sourceId, null).catch(() => {})
       await reloadBranches()
       await load(false)
     } catch (e) {
       setError(String(e))
     }
+  }
+
+  /** The menu of a root's pill: its ids — for a folder of this device its guid (the name the app's own folders for it carry), for a
+   * Filen account its user id — each copyable. */
+  function rootMenuItems(menu: RootMenu): ContextMenuItem[] {
+    return [
+      {
+        label: 'Show its ids…',
+        icon: Info,
+        onSelect: async () => {
+          try {
+            if (menu.root) {
+              const guid = await rootGuid(menu.root.id)
+              setRootIds({
+                title: menu.root.id === 'user' ? 'The user folder' : `Folder "${menu.root.label}"`,
+                fields: [
+                  { label: 'Name', value: menu.root.id === 'user' ? 'user' : menu.root.label },
+                  { label: 'Guid', value: guid, mono: true },
+                  { label: 'Root identifier', value: menu.root.id, mono: true },
+                ],
+              })
+            } else if (menu.account) {
+              setRootIds({
+                title: 'Filen account',
+                fields: [
+                  { label: 'Email', value: menu.account.email },
+                  { label: 'User id', value: String(menu.account.userId), mono: true },
+                ],
+              })
+            }
+          } catch (e) {
+            setError(String(e))
+          }
+        },
+      },
+    ]
   }
 
   // ── Keyboard ──
@@ -1087,8 +1202,31 @@ export default function NotesApp({
     items.push({ label: 'Copy', icon: Copy, onSelect: () => clip(entry, 'copy') })
     items.push({ label: 'Cut', icon: Scissors, onSelect: () => clip(entry, 'cut') })
     items.push({ label: 'Rename', icon: Pencil, onSelect: () => startRename(entry) })
+    items.push(...cacheMenuItems(cacheTargetFor(entry), true))
     items.push({ label: 'Delete', icon: Trash2, danger: true, onSelect: () => deleteEntry(entry), separated: true })
     return items
+  }
+
+  /** The cache options of an item of the folder shown: a list is listed again when they are done. The item's editor, if one is open on it,
+   * says so: a file being edited can't be hard-refreshed. */
+  function cacheTargetFor(entry: Entry): CacheTarget {
+    const rel = joinRelative(path, entry.name)
+    const open = editing && source && editing.path === rel && editing.source.viewKey === source.viewKey
+    return { source, path: rel, isDirectory: entry.isDirectory, editing: open ? (editing.dirty ? 'dirty' : 'open') : null, onDone: () => load(false), onError: setError, onNotice: setNotice }
+  }
+
+  /** The editor's cache options: the file is read again (soft refresh — only when nothing is unsaved), or its cache cleared. */
+  async function refreshEditor(kind: 'soft' | 'hard' | 'clear') {
+    const now = editingRef.current
+    if (!now) return
+    if (kind === 'soft' && !now.dirty) {
+      const bytes = await now.source.read(now.path)
+      const text = decodeText(bytes)
+      if (text === null) throw new Error(`"${now.path}" isn't a text file this small any more.`)
+      const version = (await now.source.version?.(now.path).catch(() => null)) ?? null
+      setEditing((e) => (e && e.path === now.path ? { ...e, content: text, dirty: false, version: version ?? e.version } : e))
+    }
+    await load(false)
   }
 
   async function showDetails(entry: Entry | null) {
@@ -1209,7 +1347,7 @@ export default function NotesApp({
             {!scope && roots.map((root) => {
               const id = `${LOCAL_PREFIX}${root.id}`
               return (
-                <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`}>
+                <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`} {...contextTrigger((x, y) => setRootMenu({ x, y, root, account: null }))}>
                   <button className="link-button" onClick={() => selectSource(id)} title={root.label}>
                     <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.label}
                   </button>
@@ -1225,7 +1363,7 @@ export default function NotesApp({
             {!scope && accounts.map((a) => {
               const id = `${FILEN_PREFIX}${a.userId}`
               return (
-                <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`}>
+                <span key={id} className={`root-pill ${id === sourceId ? 'active' : ''}`} {...contextTrigger((x, y) => setRootMenu({ x, y, root: null, account: a }))}>
                   <button className="link-button" onClick={() => selectSource(id)} title="Filen account">
                     <Cloud size={14} strokeWidth={2} aria-hidden="true" /> {a.email}
                   </button>
@@ -1235,8 +1373,9 @@ export default function NotesApp({
             {!scope && accounts.length === 0 && <span className="muted">Connect a Filen account in the admin-app's Filen.io tab to see it here.</span>}
           </div>
 
-          {account && !scope && (
+          {branchApi && !scope && (
             <div className="notes-filen-panel">
+              {account && (
               <div className="notes-panel-row">
                 <label className="notes-field">
                   <span className="muted">Cache expires after</span>
@@ -1264,11 +1403,12 @@ export default function NotesApp({
                   </span>
                 )}
               </div>
+              )}
               <div className="notes-panel-row">
                 <label className="notes-field">
                   <GitBranch size={14} aria-hidden="true" />
-                  <select value={branch === null ? '' : String(branch)} onChange={(e) => setBranch(e.target.value === '' ? null : Number(e.target.value))}>
-                    <option value="">Account (no branch)</option>
+                  <select value={branch === null ? '' : String(branch)} onChange={(e) => void changeBranch(e.target.value === '' ? null : Number(e.target.value))}>
+                    <option value="">{account ? 'Account (no branch)' : 'The folder itself (no branch)'}</option>
                     {branches.map((b) => (
                       <option key={b.index} value={String(b.index)}>
                         {b.name} ({b.changes} change{b.changes === 1 ? '' : 's'})
@@ -1280,7 +1420,7 @@ export default function NotesApp({
                 {branch !== null && (
                   <>
                     <IconButton icon={ListChecks} label="Show the branch's changes" onClick={showChanges} />
-                    <IconButton icon={GitMerge} label="Commit the branch to the account" onClick={commitBranch} />
+                    <IconButton icon={GitMerge} label={`Commit the branch to the ${account ? 'account' : 'folder'}`} onClick={commitBranch} />
                     <IconButton icon={Trash2} label="Discard the branch" variant="danger" onClick={discardBranch} />
                   </>
                 )}
@@ -1303,6 +1443,7 @@ export default function NotesApp({
               })}
             </div>
             <div className="toolbar-actions">
+              <UserActionButton sourceId={sourceId} folder={scope ? joinRelative(scope.root, path) : path} />
               <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
               <IconButton icon={Search} label="Search and sort…" onClick={() => setSearchOpen((open) => !open)} />
               <IconButton
@@ -1340,6 +1481,8 @@ export default function NotesApp({
 
           {criteria && source && (
             <FileSearchResults
+              onError={setError}
+              onNotice={setNotice}
               source={source}
               folder={searchRoot}
               criteria={criteria}
@@ -1415,6 +1558,7 @@ export default function NotesApp({
                         {renaming === entry.name ? (
                           <input
                             autoFocus
+                            data-ua-field="notes.fileManager.rename"
                             value={renameValue}
                             onChange={(e) => setRenameValue(e.target.value)}
                             onFocus={(e) => selectBaseName(e.currentTarget, entry.isDirectory)}
@@ -1461,6 +1605,7 @@ export default function NotesApp({
                           <IconButton icon={AppWindow} label="Open as web app — in a window of its own, listed under this tab" onClick={() => openAsWebApp(entry)} />
                         )}
                         {!entry.isDirectory && <IconButton icon={Download} label="Export" onClick={() => exportEntry(entry)} />}
+                        <CacheMenu {...cacheTargetFor(entry)} />
                         {account && !entry.isDirectory && (
                           <IconButton
                             icon={entry.locked ? Unlock : Lock}
@@ -1468,10 +1613,10 @@ export default function NotesApp({
                             onClick={() => toggleLock(entry)}
                           />
                         )}
-                        {account && branch !== null && !entry.isDirectory && !entry.changed && (
+                        {branchApi && branch !== null && !entry.isDirectory && !entry.changed && (
                           <IconButton icon={FileCheck} label="Check out into this branch — it then appears in the pending changes" onClick={() => checkoutEntry(entry)} />
                         )}
-                        {account && branch !== null && entry.changed === 'checkout' && (
+                        {branchApi && branch !== null && entry.changed === 'checkout' && (
                           <IconButton icon={Undo2} label="Let go of the checkout" onClick={() => releaseEntry(entry)} />
                         )}
                         <IconButton icon={Copy} label="Copy" onClick={() => clip(entry, 'copy')} />
@@ -1503,14 +1648,24 @@ export default function NotesApp({
         />
       )}
 
-      {viewer && <MediaViewer items={viewer.items} start={viewer.start} onClose={() => setViewer(null)} />}
+      {viewer && (
+        <MediaViewer
+          items={viewer.items}
+          start={viewer.start}
+          onClose={() => setViewer(null)}
+          renderCache={(item, reload) => (
+            <CacheMenu source={source} path={item.file.path.replace(/^\/+/, '')} isDirectory={false} onDone={async () => { reload(); await load(false) }} onError={setError} onNotice={setNotice} />
+          )}
+        />
+      )}
 
       {editing && (
         <EditorPanel
           title={`${editing.source.label} · ${editing.path}`}
           actions={
             <>
-              {editing.source.kind === 'filen' && <IconButton icon={GitBranchPlus} label="New branch… — carry on in a branch of the account" onClick={newBranchFromEditor} />}
+              {editing.source.branches && <IconButton icon={GitBranchPlus} label={`New branch… — carry on in a branch of the ${editing.source.kind === 'filen' ? 'account' : 'folder'}`} onClick={newBranchFromEditor} />}
+              <CacheMenu source={editing.source} path={editing.path} isDirectory={false} editing={editing.dirty ? 'dirty' : 'open'} onDone={refreshEditor} onError={setError} onNotice={setNotice} />
               <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
             </>
           }
@@ -1524,6 +1679,10 @@ export default function NotesApp({
           />
         </EditorPanel>
       )}
+
+      {rootMenu && <ContextMenu items={rootMenuItems(rootMenu)} x={rootMenu.x} y={rootMenu.y} onClose={() => setRootMenu(null)} />}
+
+      {rootIds && <DetailsModal title={rootIds.title} fields={rootIds.fields} onClose={() => setRootIds(null)} onError={setError} />}
 
       {details && (
         <DetailsModal

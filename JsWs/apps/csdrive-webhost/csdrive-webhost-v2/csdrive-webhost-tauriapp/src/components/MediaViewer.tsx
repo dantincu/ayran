@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, FastForward, Maximize, Minimize, Minus, Music, Pause, Play, Plus, Rewind, RectangleHorizontal, Volume2, VolumeX, X } from 'lucide-react'
 import IconButton from './IconButton'
 import { clock, mediaUrl, type MediaKind } from '../lib/media'
@@ -27,6 +27,9 @@ interface Props {
   /** The one shown first. */
   start: number
   onClose: () => void
+  /** What the host puts in the bar for the item shown — the cache options of a file that has a cache. `reload` loads the media again
+   * (after its cache was refreshed or cleared). */
+  renderCache?: (item: MediaItem, reload: () => void) => ReactNode
 }
 
 /** How long the bars of a playing video stay after they were brought back. */
@@ -34,7 +37,7 @@ const HIDE_AFTER_MS = 3000
 const SKIP_SECONDS = 10
 const MAX_ZOOM = 16
 
-export default function MediaViewer({ items, start, onClose }: Props) {
+export default function MediaViewer({ items, start, onClose, renderCache }: Props) {
   const [index, setIndex] = useState(Math.min(Math.max(start, 0), items.length - 1))
   const item = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -42,6 +45,8 @@ export default function MediaViewer({ items, start, onClose }: Props) {
   const [bars, setBars] = useState(true)
   const [fullscreen, setFullscreen] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  /** How many times the media was asked to load again: the address gets it as a query, so the webview doesn't show what it kept. */
+  const [reloads, setReloads] = useState(0)
   const root = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -50,13 +55,13 @@ export default function MediaViewer({ items, start, onClose }: Props) {
     setError(null)
     setBars(true)
     mediaUrl(item.file).then(
-      (address) => !cancelled && setUrl(address),
+      (address) => !cancelled && setUrl(reloads > 0 ? `${address}${address.includes('?') ? '&' : '?'}r=${reloads}` : address),
       (e) => !cancelled && setError(String(e)),
     )
     return () => {
       cancelled = true
     }
-  }, [item])
+  }, [item, reloads])
 
   const step = useCallback(
     (by: number) => setIndex((i) => Math.min(items.length - 1, Math.max(0, i + by))),
@@ -123,6 +128,7 @@ export default function MediaViewer({ items, start, onClose }: Props) {
         </span>
         <IconButton icon={ChevronLeft} label="Previous (PageUp)" onClick={() => step(-1)} disabled={index === 0} />
         <IconButton icon={ChevronRight} label="Next (PageDown)" onClick={() => step(1)} disabled={index === items.length - 1} />
+        {renderCache?.(item, () => setReloads((n) => n + 1))}
         <IconButton icon={fullscreen ? Minimize : Maximize} label={fullscreen ? 'Leave full screen (F)' : 'Full screen (F)'} onClick={toggleFullscreen} />
         <IconButton icon={X} label="Close (Esc)" onClick={onClose} />
       </div>

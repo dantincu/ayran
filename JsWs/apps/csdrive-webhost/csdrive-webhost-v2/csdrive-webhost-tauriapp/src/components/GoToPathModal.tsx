@@ -59,6 +59,7 @@ export default function GoToPathModal({ title = 'Go to a path', current, hint, o
     <Modal title={title} onClose={onClose}>
       <div className="modal-field-label">{hint}</div>
       <input
+        data-ua-field="notes.goToPath.path"
         autoFocus
         className={error ? 'invalid' : ''}
         value={text}

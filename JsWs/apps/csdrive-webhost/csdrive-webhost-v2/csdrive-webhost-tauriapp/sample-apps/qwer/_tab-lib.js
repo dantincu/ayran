@@ -160,6 +160,43 @@ window.TabLib = (function () {
     clear: function () { return invoke('internal_clipboard_clear') },
   }
 
+  // ── Appearance ──
+  // The theme and whether the app is light or dark are one choice for the whole app (Settings → Appearance in the admin-app); a web app keeps
+  // its own colours, but may follow the light/dark mode — and may choose the theme: set(theme, mode) with a theme id from themes() and mode
+  // 'system', 'light' or 'dark' (every window sees the change at once). Only the admin-app sets the rotation through the themes.
+  // get() resolves to { theme, mode, dark, rotation }: mode is 'system' (the device decides —
+  // then dark is null and prefers-color-scheme tells), 'light' or 'dark' (chosen by hand, dark is true or false).
+  // onChange(handler) calls handler with the same object whenever the admin-app changes it (heard on this window only).
+  var appearance = {
+    get: function () { return invoke('get_appearance') },
+    themes: function () { return invoke('list_themes') },
+    set: function (theme, mode) { return invoke('set_appearance', { theme: theme, mode: mode }) },
+    onChange: function (handler) {
+      return window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('appearance-changed', function (e) { handler(e.payload) })
+    },
+  }
+
+  // ── The User Action ──
+  // A page that Notes launches as its User Action (init's answer says role: 'UserAction') is one window, reused: it is told what happens
+  // through two events, which it may listen to or ignore, and can ask for the last launch it missed.
+  //   onLaunched(handler)   the person launched it (again): { resourceId, context, launchedAt } — resourceId names what opened it (the
+  //                         Notes tab's resource identifier), context says where from: { kind: 'button' }, or for a text box
+  //                         { kind: 'input', fieldId, element, type, readOnly } — fieldId is a stable id distinct for every text box of Notes
+  //                         (its data-ua-field, e.g. "notes.search.name"), so a page can tell which box without learning what is in it; to
+  //                         hand text over, the person copies it to the app's clipboard (TabLib.internalClipboard.get()). If the window was
+  //                         closed, the event comes once the page has registered its tab (openTab / init_window_tab).
+  //   onScopeLeft(handler)  the person went elsewhere in Notes: { resourceId, now } — what opened it is out of scope (go to the default state).
+  //   context()             resolves to the last launch this window was told of, or null.
+  var userAction = {
+    onLaunched: function (handler) {
+      return window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('user-action-launched', function (e) { handler(e.payload) })
+    },
+    onScopeLeft: function (handler) {
+      return window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('user-action-scope-left', function (e) { handler(e.payload) })
+    },
+    context: function () { return invoke('user_action_context') },
+  }
+
   // Registers this app's icon set (a plain object of resourceType -> SVG markup)
   // and arranges to report it whenever the backend asks — which happens once per
   // app_version this app ever passes to openTab/init_window_tab (including the
@@ -182,6 +219,8 @@ window.TabLib = (function () {
     onExternalSite: onExternalSite,
     openPage: openPage,
     internalClipboard: internalClipboard,
+    appearance: appearance,
+    userAction: userAction,
     updateTab: updateTab,
     registerIcons: registerIcons,
     applySnippets: applySnippets,

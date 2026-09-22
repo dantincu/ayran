@@ -864,6 +864,8 @@ dependencies = [
  "tauri-plugin-dialog",
  "tokio",
  "uuid",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

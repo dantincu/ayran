@@ -300,17 +300,31 @@ export async function deleteNote(source: FileSource, note: NoteRef): Promise<voi
   if (marker) await source.remove(join(parent, marker.name), true)
 }
 
-/** The folder that holds a note's files, made (with its marker) when the note has none yet. */
-export async function ensureNoteFiles(source: FileSource, folder: string): Promise<string> {
-  const files = join(folder, NOTE_FILES_INDEX)
+/** An internals pair of `folder` — the short folder `index` and its marker `index-name` (holding only a `.keep`) — made when it isn't
+ * there. Returns the short folder's path. */
+async function ensureInternalsPair(source: FileSource, folder: string, index: string, name: string): Promise<string> {
+  const short = join(folder, index)
   const entries: Entry[] = (await source.list(folder, true)).entries
-  if (!entries.some((e) => e.isDirectory && e.name === NOTE_FILES_INDEX)) await source.mkdir(files)
-  const markerName = `${NOTE_FILES_INDEX}-${NOTE_FILES_NAME}`
+  if (!entries.some((e) => e.isDirectory && e.name === index)) await source.mkdir(short)
+  const markerName = `${index}-${name}`
   if (!entries.some((e) => e.isDirectory && e.name === markerName)) {
     await source.mkdir(join(folder, markerName))
     await source.write(join(folder, markerName, KEEP), new TextEncoder().encode(KEEP_CONTENT))
   }
-  return files
+  return short
+}
+
+/** The folder that holds a note's files, made (with its marker) when the note has none yet. */
+export function ensureNoteFiles(source: FileSource, folder: string): Promise<string> {
+  return ensureInternalsPair(source, folder, NOTE_FILES_INDEX, NOTE_FILES_NAME)
+}
+
+/** The notebook's own internals pair (`03` + `03-[note-book]`, from the config file): what belongs to the notebook and to none of its
+ * notes — today the setting that names the page of its User Action. Made when the notebook has none yet. */
+export const NOTEBOOK_INTERNALS_INDEX = String(config.notes.internals.notebook.from).padStart(config.notes.internals.notebook.digits, '0')
+export const NOTEBOOK_INTERNALS_NAME = config.notes.internals.notebook.name ?? '[note-book]'
+export function ensureNotebookInternals(source: FileSource, folder: string): Promise<string> {
+  return ensureInternalsPair(source, folder, NOTEBOOK_INTERNALS_INDEX, NOTEBOOK_INTERNALS_NAME)
 }
 
 // ── Giving many notes new indexes at once ─────────────────────────────────────

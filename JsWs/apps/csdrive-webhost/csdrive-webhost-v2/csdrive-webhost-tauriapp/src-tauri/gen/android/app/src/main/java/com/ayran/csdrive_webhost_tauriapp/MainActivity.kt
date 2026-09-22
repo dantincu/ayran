@@ -63,7 +63,7 @@ class MainActivity : TauriActivity() {
 
     val spinner = SplashSpinnerView(
       this,
-      accent = if (night) 0xFF3B82F6.toInt() else 0xFF2563EB.toInt(),
+      accent = if (night) 0xFFFB923C.toInt() else 0xFFD04A0B.toInt(),
       track = if (night) 0xFF30343C.toInt() else 0xFFE2E8F0.toInt(),
       sizePx = (36 * density).toInt(),
       strokePx = 3 * density,

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>A web page says</title>
+  </head>
+  <body>
+    <main>
+      <h1 id="who"></h1>
+      <p id="message"></p>
+      <input id="text" type="text" autocomplete="off" hidden />
+      <div class="buttons">
+        <button id="ok" class="primary" type="button">OK</button>
+        <button id="cancel" type="button">Cancel</button>
+      </div>
+      <button id="prevent" class="link" type="button">Prevent this app from showing prompts</button>
+    </main>
+    <script type="module" src="/src/system/prompt/main.ts"></script>
+  </body>
+</html>

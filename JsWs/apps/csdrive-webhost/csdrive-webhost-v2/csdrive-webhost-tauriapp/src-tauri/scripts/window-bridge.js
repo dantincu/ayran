@@ -6,15 +6,17 @@
 // interface WindowActivity attaches to *this* WebView for *this* window. The page can call its methods; it can't
 // change which window they act for (that is fixed by the activity, in Kotlin).
 //
-//   invoke(cmd, args)        → CsdriveBridge.invoke → Rust runs the command as this window; the answer comes back
+//   invoke(cmd, args)        → CsdriveInvoke.postMessage (the main frame's only) → Rust runs the command as this window; the answer comes back
 //                              through runCallback (or, for raw bytes, a fetch of http://ipc.localhost/raw/<key>).
 //   events (plugin:event|*)  → kept here: listeners are registered in this page; Rust delivers an event to this
 //                              window with __csdriveEmit(event, payload).
-//   dialogs (plugin:dialog|*)→ a native dialog on this window's activity (CsdriveBridge.dialog).
+//   dialogs (plugin:dialog|*)→ refused: a window asks its questions with the confirm_dialog command, under the prompt guard's rules.
 ;(function () {
   'use strict'
   var bridge = window.CsdriveBridge
-  if (!bridge || window.__TAURI_INTERNALS__) return
+  // The port the window's main frame calls the backend through (WindowActivity.kt): only the main frame's messages are heard.
+  var port = window.CsdriveInvoke
+  if (!bridge || !port || window.__TAURI_INTERNALS__) return
 
   var internals = {}
   var callbacks = new Map()
@@ -78,34 +80,6 @@
     }
   })
 
-  // ── dialogs ──────────────────────────────────────────────────────────────────────────────────────
-  // plugin-dialog's message() sends the buttons as 'Ok', 'OkCancel', 'YesNo', 'YesNoCancel' or one of the
-  // *Custom forms; the answer is the label of the button pressed ('Ok', 'Cancel', 'Yes', 'No' or the custom text).
-  function buttonLabels(buttons) {
-    if (buttons === undefined || buttons === null || buttons === 'Ok') return ['Ok']
-    if (buttons === 'OkCancel') return ['Ok', 'Cancel']
-    if (buttons === 'YesNo') return ['Yes', 'No']
-    if (buttons === 'YesNoCancel') return ['Yes', 'No', 'Cancel']
-    if (typeof buttons === 'object') {
-      if (buttons.OkCancelCustom) return buttons.OkCancelCustom
-      if (buttons.YesNoCancelCustom) return buttons.YesNoCancelCustom
-      if (buttons.OkCustom) return [buttons.OkCustom]
-    }
-    return ['Ok']
-  }
-  function dialog(command, payload, callback, error) {
-    if (command !== 'plugin:dialog|message') {
-      runCallback(error, 'This dialog is not available here.')
-      return
-    }
-    var labels = buttonLabels(payload.buttons)
-    var answer = registerCallback(function (index) {
-      // (A dismissed dialog — Back, a press outside — answers as the last button does: Cancel, No, or the only one.)
-      runCallback(callback, labels[index] !== undefined ? labels[index] : labels[labels.length - 1])
-    }, true)
-    bridge.dialog(String(payload.title || ''), String(payload.message || ''), JSON.stringify(labels), answer)
-  }
-
   // ── invoke ───────────────────────────────────────────────────────────────────────────────────────
   Object.defineProperty(internals, 'invoke', {
     value: function (cmd, payload) {
@@ -123,11 +97,11 @@
           if (cmd === 'plugin:event|listen') return runCallback(callback, listen(args))
           if (cmd === 'plugin:event|unlisten') return runCallback(callback, unlisten(args))
           if (cmd.indexOf('plugin:event|') === 0) return runCallback(error, 'A page cannot emit events.')
-          if (cmd.indexOf('plugin:dialog|') === 0) return dialog(cmd, args, callback, error)
+          if (cmd.indexOf('plugin:dialog|') === 0) return runCallback(error, 'Questions are asked with the confirm_dialog command.')
           if (args instanceof ArrayBuffer || ArrayBuffer.isView(args)) {
             return runCallback(error, 'Bytes cannot be sent as the request body here: send them as base64 in a JSON object.')
           }
-          bridge.invoke(cmd, JSON.stringify(args), callback, error)
+          port.postMessage(JSON.stringify({ cmd: cmd, args: JSON.stringify(args), callback: callback, error: error }))
         } catch (e) {
           runCallback(error, String(e && e.message ? e.message : e))
         }

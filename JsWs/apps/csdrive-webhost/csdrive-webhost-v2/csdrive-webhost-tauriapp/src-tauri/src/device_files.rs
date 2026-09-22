@@ -9,7 +9,10 @@
 //! - **Android:** there is no dialog step: a Kotlin helper (`DeviceFiles.kt`) stores the file in the
 //!   public Downloads folder through MediaStore, which needs no storage permission.
 //!
-//! Admin-app only: leaving the app's sandbox is not something a web app gets to do.
+//! **Every window may export** — the admin-app, the system apps and user web apps alike — because **the person is asked every time**
+//! where a file goes: the desktop's native "save as" dialog (nothing is written without the token it gives), and on Android a native
+//! confirmation on the window that asks ([`confirm_export`]) before anything is written to Downloads. The admin-app's own buttons are
+//! not asked on Android: they are the person's own interface, not a page.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,6 +34,31 @@ impl ExportState {
     }
 }
 
+/// Android has no "save as" dialog, so a window that exports is asked first, **every time**, in a native box on that window —
+/// a page can't write into Downloads unseen. Cancelling answers with [`EXPORT_CANCELLED`], which the frontend takes for "nothing
+/// was saved". Desktop: nothing to do here (the save dialog is the question, and no token means no write); the admin-app is
+/// never asked (its own buttons are the interface).
+pub async fn confirm_export<R: tauri::Runtime>(app: &tauri::AppHandle, window: &crate::window_host::CallerWindow<R>, name: &str) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    if let Some(guid) = crate::window_host::caller_guid(window) {
+        crate::prompt_guard::refuse_if_blocked()?;
+        let name = safe_file_name(name)?;
+        // Says *who* asks, by what the app itself knows (never by anything the page wrote): the window's page.
+        let who = crate::android_windows::page_of(&guid).map_or_else(|| "A window".to_string(), |page| crate::prompt_guard::asker_label(&page));
+        let message = format!("{who} wants to save a file named \"{name}\" in the Downloads folder of this device.");
+        let answer = crate::window_host::choose(app, &guid, "Save to Downloads?", &message, &["Save", "Cancel"]).await;
+        if answer != Some(0) {
+            return Err(EXPORT_CANCELLED.to_string());
+        }
+    }
+    let _ = (app, window, name);
+    Ok(())
+}
+
+/// What an export that the person declined answers with (Android).
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub const EXPORT_CANCELLED: &str = "Cancelled.";
+
 /// Desktop: asks where to save `name`. Resolves to a one-time token for `save_to_device`, or `None`
 /// if the person cancelled.
 #[tauri::command]
@@ -40,9 +68,11 @@ pub async fn choose_save_location(
     state: tauri::State<'_, ExportState>,
     name: String,
 ) -> Result<Option<String>, String> {
-    crate::window_host::require_trusted(&window)?;
+    // Every window may ask; the dialog is the person's answer — under the rules of `prompt_guard` like every prompt.
     let name = safe_file_name(&name)?;
-    let Some(path) = platform::choose(&app, &name).await? else { return Ok(None) };
+    let guid = crate::window_host::caller_guid(&window);
+    let Some(chosen) = crate::prompt_guard::os_dialog(&app, guid.as_deref(), platform::choose(&app, &name)).await? else { return Ok(None) };
+    let Some(path) = chosen? else { return Ok(None) };
 
     let token = uuid::Uuid::new_v4().to_string();
     state.chosen.lock().unwrap().insert(token.clone(), path);
@@ -64,6 +94,7 @@ pub async fn export_file(state: &ExportState, name: String, token: Option<String
 #[tauri::command]
 pub async fn export_local_file(
     window: crate::window_host::CallerWindow,
+    app: tauri::AppHandle,
     scope: tauri::State<'_, crate::fs_scope::FsScope>,
     state: tauri::State<'_, ExportState>,
     root: String,
@@ -71,7 +102,7 @@ pub async fn export_local_file(
     name: String,
     token: Option<String>,
 ) -> Result<String, String> {
-    crate::window_host::require_trusted(&window)?;
+    confirm_export(&app, &window, &name).await?;
     let source = scope.check_in(&root, &path, true)?;
     if !source.is_file() {
         return Err("That isn't a file.".to_string());
@@ -85,12 +116,12 @@ pub async fn export_local_file(
 #[tauri::command]
 pub async fn save_to_device(
     window: crate::window_host::CallerWindow,
+    app: tauri::AppHandle,
     state: tauri::State<'_, ExportState>,
     request: Request<'_>,
 ) -> Result<String, String> {
-    crate::window_host::require_trusted(&window)?;
-
     let name = safe_file_name(&crate::ipc::field(&request, "name")?)?;
+    confirm_export(&app, &window, &name).await?;
     let data = crate::ipc::body_bytes(&request)?;
     let target = if cfg!(desktop) {
         let token = crate::ipc::field(&request, "token")?;

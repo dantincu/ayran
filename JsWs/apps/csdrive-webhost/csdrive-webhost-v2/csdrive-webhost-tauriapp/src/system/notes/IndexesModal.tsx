@@ -217,6 +217,7 @@ export default function IndexesModal({
                 <IconButton icon={ArrowUp} label="Move up" onClick={() => move(at, at - 1)} disabled={at === 0} />
                 <IconButton icon={ArrowDown} label="Move down" onClick={() => move(at, at + 1)} disabled={at === rows.length - 1} />
                 <input
+                  data-ua-field="notes.indexes.reorder"
                   className={`indexes-input ${bad ? 'invalid' : ''}`}
                   value={row.text}
                   inputMode="numeric"

@@ -162,6 +162,8 @@ pub struct Origin {
     /// `DeviceFolder`: the picked folder's root id.
     pub root: Option<String>,
     pub filen: Option<FilenOrigin>,
+    /// What the window is for, when it is for something the app itself launches: `UserAction` (see `user_action.rs`).
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -174,6 +176,8 @@ pub struct TabInitResponse {
     pub relative_path: String,
     /// `AdminApp` or `NotesApp`: who opened the page (the value is an enum member's name).
     pub opened_by: String,
+    /// What the window is for, when the app launched it for something (`UserAction`); empty for an ordinary page.
+    pub role: String,
     /// `UserFolder`, `DeviceFolder`, `FilenCloud` or `Bundled`.
     pub storage: String,
     /// When `storage` is `FilenCloud`: the account, and the branch if there is one.
@@ -903,6 +907,7 @@ async fn delete_window_rows(pool: &SqlitePool, guid: &str) -> Vec<String> {
 
     let _ = sqlx::query("DELETE FROM secondary_windows WHERE guid = ?1").bind(guid).execute(pool).await;
     let _ = sqlx::query("DELETE FROM window_tags WHERE guid = ?1").bind(guid).execute(pool).await;
+    let _ = sqlx::query("DELETE FROM window_state WHERE window_guid = ?1").bind(guid).execute(pool).await;
     external
 }
 
@@ -954,6 +959,8 @@ async fn suspend_everything(app: &AppHandle) {
 }
 
 pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
+    // A User Action window's Notes window learns that it is gone (before its entry — which says whose it is — goes).
+    crate::user_action::window_gone(app, guid).await;
     // Release any SQLite databases the window still had open.
     app.state::<crate::sqlite_db::SqliteState>().close(guid, None).await;
 
@@ -1701,6 +1708,7 @@ async fn fill_origin(pool: &SqlitePool, app: Option<&AppHandle>, response: &mut 
         }
     }
     response.opened_by = origin.opened_by.unwrap_or_else(|| "AdminApp".to_string());
+    response.role = origin.role.unwrap_or_default();
     response.storage = origin.storage.unwrap_or_else(|| if kind == "system" { "Bundled" } else { "UserFolder" }.to_string());
     response.filen = origin.filen;
     Ok(())
@@ -1851,6 +1859,8 @@ pub async fn init_window_tab(
     let _ = app.emit(EVENT_CHANGED, ());
     result.code_snippets = crate::code_snippets::code_snippets();
     fill_origin(&state.pool, Some(&app), &mut result).await?;
+    // A User Action window that was opened for a launch is told of it now that it has registered.
+    crate::user_action::page_ready(&app, &window_guid).await;
     Ok(result)
 }
 

@@ -8,6 +8,7 @@ import {
 import { applyCodeSnippets } from '../../lib/codeSnippets'
 import { validOffset } from '../../lib/pagedPosition'
 import { invoke } from '@tauri-apps/api/core'
+import { resourceIs } from './userActionScope'
 
 /** How the Notes app takes part in the window manager (see the User Apps / System Apps tabs of the
  * admin-app): each tab it registers is one place in the file manager, its resource id naming the
@@ -168,10 +169,12 @@ export async function registerTab(): Promise<Tab | null> {
     await onResourceIconsRequested(() => ICONS)
     await onTabNavigate((response) => {
       applyCodeSnippets(response.codeSnippets ?? [])
+      resourceIs(response.resourceId || 'system:notes')
       deliverNavigation({ tabGuid: response.tabGuid, resourceId: response.resourceId })
     })
     const response = await initWindowTab(APP_VERSION, location.href)
     applyCodeSnippets(response.codeSnippets ?? [])
+    resourceIs(response.resourceId || 'system:notes')
     return { tabGuid: response.tabGuid, resourceId: response.resourceId }
   } catch {
     // Unmanaged (or an old backend): the app works the same, it just isn't listed as a tab.
@@ -203,6 +206,7 @@ export async function reportNotePlace(
   const firstRow: TabText['firstRow'] = [{ text: title, bold: true }]
   const secondRow: TabText['secondRow'] = [{ text: what }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]
   const type = place.view === 'notes' ? RESOURCE_TYPES.notes : place.view === 'noteEdit' ? RESOURCE_TYPES.noteEdit : RESOURCE_TYPES.noteFiles
+  resourceIs(`system:notes?${encodeNotePlace(place)}`)
   try {
     await updateTabResource(tab.tabGuid, { firstRow, secondRow }, type, `system:notes?${encodeNotePlace(place)}`)
   } catch {
@@ -214,6 +218,7 @@ export async function reportNotePlace(
 export async function reportView(tab: Tab, view: 'home' | 'notebooks' | 'settings'): Promise<void> {
   const firstRow: TabText['firstRow'] = [{ text: view === 'home' ? 'Notes' : view === 'settings' ? 'Notes' : 'Notebooks', bold: true }]
   const secondRow: TabText['secondRow'] = [{ text: view === 'home' ? 'Home' : view === 'settings' ? 'Settings' : 'Manage notebooks' }]
+  resourceIs(`system:notes?v=${view}`)
   try {
     await updateTabResource(tab.tabGuid, { firstRow, secondRow }, RESOURCE_TYPES[view], `system:notes?v=${view}`)
   } catch {
@@ -239,6 +244,7 @@ export async function reportLocation(
   const secondRow: TabText['secondRow'] = location.edit
     ? [{ text: `Editing /${location.edit}`, bold: true }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]
     : [{ text: location.path ? `/${location.path}` : '/' }]
+  resourceIs(`system:notes?${query}`)
   try {
     await updateTabResource(tab.tabGuid, { firstRow, secondRow }, resourceTypeOf(location), `system:notes?${query}`)
   } catch {

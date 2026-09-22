@@ -10,6 +10,6 @@
     <!-- The app's background (the bg variable in App.css): what the window shows before, and behind, the loading spinner. -->
     <color name="csdrive_bg">#FFFFFFFF</color>
     <!-- The app's accent (the accent variables in App.css): buttons and dialogs. -->
-    <color name="csdrive_accent">#FF2563EB</color>
+    <color name="csdrive_accent">#FFD04A0B</color>
     <color name="csdrive_on_accent">#FFFFFFFF</color>
 </resources>

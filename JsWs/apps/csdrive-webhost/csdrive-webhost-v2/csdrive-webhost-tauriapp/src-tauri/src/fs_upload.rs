@@ -21,12 +21,14 @@ use tauri::State;
 
 use crate::fs_scope::FsScope;
 
-struct Upload {
+pub struct Upload {
     /// Who began it: only that window may push to it.
     owner: String,
-    root: String,
-    path: String,
-    tmp: PathBuf,
+    pub root: String,
+    pub path: String,
+    /// An upload into a *branch* of the root (`local_branch_commands`): it never reaches the folder itself.
+    pub branch: Option<i64>,
+    pub tmp: PathBuf,
     file: Option<std::fs::File>,
     started: Instant,
 }
@@ -67,11 +69,35 @@ impl LocalUploads {
         let id = uuid::Uuid::new_v4().to_string();
         let tmp = self.dir.join(format!("{}.part", id.replace('-', "")));
         let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        let upload = Upload { owner: owner.into(), root: root.into(), path: path.into(), tmp, file: Some(file), started: Instant::now() };
+        let upload = Upload { owner: owner.into(), root: root.into(), path: path.into(), branch: None, tmp, file: Some(file), started: Instant::now() };
         let mut open = self.open.lock().unwrap();
         open.retain(|_, u| u.started.elapsed() < Duration::from_secs(3600));
         open.insert(id.clone(), upload);
         Ok(id)
+    }
+
+    /// Starts uploading a file that goes into a branch of `root` (its destination is checked by the branch, not here).
+    pub fn begin_branch(&self, owner: &str, root: &str, branch: i64, path: &str) -> Result<String, String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        let id = uuid::Uuid::new_v4().to_string();
+        let tmp = self.dir.join(format!("{}.part", id.replace('-', "")));
+        let file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        let upload = Upload { owner: owner.into(), root: root.into(), path: format!("/{}", path.trim_start_matches('/')), branch: Some(branch), tmp, file: Some(file), started: Instant::now() };
+        let mut open = self.open.lock().unwrap();
+        open.retain(|_, u| u.started.elapsed() < Duration::from_secs(3600));
+        open.insert(id.clone(), upload);
+        Ok(id)
+    }
+
+    /// Ends an upload for a branch and hands it over: its temporary file is deleted when the returned value is dropped.
+    pub fn finish_branch(&self, owner: &str, id: &str) -> Result<Upload, String> {
+        let mut open = self.open.lock().unwrap();
+        if !open.get(id).is_some_and(|u| u.owner == owner && u.branch.is_some()) {
+            return Err("That upload isn't open.".to_string());
+        }
+        let mut upload = open.remove(id).expect("checked above");
+        drop(upload.file.take());
+        Ok(upload)
     }
 
     /// Appends the next piece. A piece that can't be written ends the upload.
@@ -89,7 +115,7 @@ impl LocalUploads {
     pub fn finish(&self, scope: &FsScope, owner: &str, id: &str) -> Result<(), String> {
         let mut upload = {
             let mut open = self.open.lock().unwrap();
-            if !open.get(id).is_some_and(|u| u.owner == owner) {
+            if !open.get(id).is_some_and(|u| u.owner == owner && u.branch.is_none()) {
                 return Err("That upload isn't open.".to_string());
             }
             open.remove(id).expect("checked above")

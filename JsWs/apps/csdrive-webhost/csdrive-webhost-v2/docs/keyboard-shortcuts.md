@@ -1,6 +1,6 @@
 # Keyboard shortcuts
 
-Every keyboard shortcut in CsDrive WebHost. **Ctrl** below is **⌘** on a Mac. On a phone or tablet everything can be done by touch; the shortcuts
+Every keyboard shortcut in Ayran CsDrive WebHost. **Ctrl** below is **⌘** on a Mac. On a phone or tablet everything can be done by touch; the shortcuts
 are for a keyboard (or an emulator's).
 
 ## Anywhere in the admin-app
@@ -82,6 +82,8 @@ The popover is as tall as the screen allows; the list scrolls (vertically, insid
 | **Esc** | Closes the topmost dialog (a dialog opened from another closes alone, not both). In the conflict dialog Esc means **Cancel**. |
 | **Enter** | In a rename box (Files, Notes): applies the new name. In a name box of a dialog (rename a tab group, deploy an app, add a tag…) and in *new database*: confirms. In the tab switcher and the page list: goes to the number typed. |
 | **Esc** | In a rename box (Files, Notes) or when editing a value in Local / Session storage: cancels. |
+| **Ctrl+Z** | In a **file or note editor**: undoes the last step (a burst of typing is one step; a paste too). The editors also have **Undo** and **Redo** buttons above the text — the only way on a phone. |
+| **Ctrl+Y** or **Ctrl+Shift+Z** | In a file or note editor: redoes what was undone (until something new is typed). |
 
 ## Text boxes and editors — select, copy, paste
 
@@ -94,6 +96,8 @@ Not keys, but the same job: while a text editor or a single-line text box has th
 | **Copy to the clipboard** / **Paste from the clipboard** | The system's clipboard. Where the webview won't let the app read it, use **Ctrl+V** (or press and hold in the box). |
 
 **Esc** closes the menu.
+
+In the **Notes** app, two more small buttons sit beside the **…** — **⚡** launches the **User Action** window from this box (the page it runs is told which box, what was selected and what page it was) and **⚡✕** closes that window. The same two buttons are in the header of every Notes page.
 
 ## The media viewer (Notes' File Manager and Note Files Explorer)
 

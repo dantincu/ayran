@@ -81,6 +81,7 @@ export default function FolderPairModal({
           </span>
           <input
             autoFocus
+            data-ua-field="notes.folderPair.title"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && create()}
@@ -95,7 +96,7 @@ export default function FolderPairModal({
         )}
         <label className="notes-field">
           <span>Short folder's name (its index — any name a folder can have)</span>
-          <input value={shortText} onChange={(e) => setShortText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && create()} />
+          <input data-ua-field="notes.folderPair.shortName" value={shortText} onChange={(e) => setShortText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && create()} />
         </label>
         <label className="pair-check">
           <input type="checkbox" checked={withMarkdown} onChange={(e) => setWithMarkdown(e.target.checked)} /> Create a markdown file inside the short folder (as a note has)

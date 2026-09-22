@@ -10,6 +10,7 @@ import NotesApp from './NotesApp'
 import NotesHome from './NotesHome'
 import type { NotebookEntry } from './notebooks'
 import { decodePlace, reportView, subscribeNavigate, type Place, type Tab } from './tabs'
+import { UserActionDialogs, UserActionFieldButtons } from './UserActionButton'
 
 /** What a Notes tab shows: the home page (where a tab that names no place starts), the page for managing notebooks, or the
  * file manager. The tab's place says which — see `Place` — and the window manager is told whenever it changes; the file
@@ -55,7 +56,9 @@ export default function NotesRoot({ tab: initialTab, initial }: { tab: Tab | nul
   return (
     <>
       {view}
-      <TextFieldMenu />
+      {/* Every text box of Notes has the clipboard menu (with the app's own clipboard) and, beside it, the User Action's launch and close. */}
+      <TextFieldMenu extra={(field) => <UserActionFieldButtons field={field} />} />
+      <UserActionDialogs />
       <ChordHost />
     </>
   )

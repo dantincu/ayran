@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { confirm } from '@tauri-apps/plugin-dialog'
+import { confirm } from '../../lib/dialogs'
 import { BookOpen, FolderOpen, House, Info, Pencil, Plus, Trash2 } from 'lucide-react'
 import DetailsModal from '../../components/DetailsModal'
 import IconButton from '../../components/IconButton'
@@ -22,6 +22,8 @@ import {
   type NotebookEntry,
 } from './notebooks'
 import { useNotesSources } from './useSources'
+import UserActionButton from './UserActionButton'
+import CacheMenu from './CacheMenu'
 
 /** Where the person is in adding a notebook. */
 type Adding =
@@ -194,6 +196,7 @@ export default function NotebooksPage({
             <button type="button" onClick={() => setAdding({ step: 'choose' })} disabled={!ready || busy}>
               <Plus size={14} strokeWidth={2} aria-hidden="true" /> Add a notebook…
             </button>
+            <UserActionButton />
           </div>
 
           {error && <div className="error-banner">{error}</div>}
@@ -229,6 +232,7 @@ export default function NotebooksPage({
                         {check?.state === 'problem' && <div className="notebook-problem">{check.reason}</div>}
                       </td>
                       <td className="row-actions">
+                        <CacheMenu source={sourceOf(entry.sourceId)} path={entry.folder} isDirectory onDone={async () => { await refresh(); setChecks((all) => { const { [entry.guid]: _gone, ...rest } = all; return rest }) }} onError={setError} onNotice={setNotice} />
                         <IconButton icon={Info} label="Details" onClick={() => setDetails(entry)} />
                         <IconButton icon={BookOpen} label="Open the notebook — its notes" onClick={() => onOpenNotebook(entry)} />
                         <IconButton icon={FolderOpen} label="Show its folder in the file manager" onClick={() => onShowFolder(entry)} />
@@ -389,7 +393,7 @@ function TitleDialog({
       >
         <label className="notes-field notes-title-field">
           <span>{question}</span>
-          <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
+          <input autoFocus data-ua-field="notes.notebook.title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
         </label>
         <div className="dialog-actions">
           <button type="button" onClick={onCancel}>

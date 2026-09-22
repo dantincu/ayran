@@ -3,6 +3,7 @@ mod android_jni;
 #[cfg(target_os = "android")]
 mod android_windows;
 mod app_state;
+mod appearance;
 mod code_snippets;
 mod config;
 mod data_location;
@@ -20,14 +21,18 @@ mod fs_upload;
 mod internal_clipboard;
 mod ipc;
 mod link_navigation;
+mod local_branch_commands;
 mod layout;
 mod markdown;
 mod notes_pages;
+mod page_dialogs;
 mod picked_roots;
+mod prompt_guard;
 mod secure_store;
 mod secondary_windows;
 mod sqlite_db;
 mod system_apps;
+mod user_action;
 mod window_host;
 mod window_scripts;
 
@@ -170,7 +175,11 @@ pub(crate) fn lock_down_navigation<R: tauri::Runtime>(
             }
             NewWindowResponse::Deny
         });
-    let builder = if frozen { builder.initialization_script(code_snippets::FROZEN_ADDRESS_INIT_SCRIPT) } else { builder };
+    let builder = if frozen {
+        builder.initialization_script(code_snippets::FROZEN_ADDRESS_INIT_SCRIPT).initialization_script(code_snippets::DIALOGS_INIT_SCRIPT)
+    } else {
+        builder
+    };
     // Publishes the Android system-bar insets to the page as CSS variables (see `code_snippets`).
     #[cfg(mobile)]
     let builder = builder.initialization_script(code_snippets::SAFE_AREA_INIT_SCRIPT);
@@ -332,6 +341,50 @@ pub fn run() {
             internal_clipboard::internal_clipboard_clear,
             external_sites::open_external_site,
             external_sites::open_web_address,
+            prompt_guard::confirm_dialog,
+            prompt_guard::alert_dialog,
+            #[cfg(windows)]
+            page_dialogs::windows_impl::prompt_dialog_info,
+            #[cfg(windows)]
+            page_dialogs::windows_impl::prompt_dialog_answer,
+            prompt_guard::prompt_guard_status,
+            appearance::get_appearance,
+            user_action::user_action_launch,
+            user_action::user_action_close,
+            user_action::user_action_status,
+            user_action::user_action_scope_left,
+            user_action::user_action_context,
+            filen_cache::filen_cache_hard_refresh,
+            filen_cache::filen_cache_clear_item,
+            app_state::get_window_state,
+            app_state::set_window_state,
+            picked_roots::root_guid,
+            local_branch_commands::local_branches,
+            local_branch_commands::local_branch_create,
+            local_branch_commands::local_branch_discard,
+            local_branch_commands::local_branch_changes,
+            local_branch_commands::local_branch_commit,
+            local_branch_commands::local_branch_list,
+            local_branch_commands::local_branch_read,
+            local_branch_commands::local_branch_write,
+            local_branch_commands::local_branch_mkdir,
+            local_branch_commands::local_branch_rm,
+            local_branch_commands::local_branch_rename,
+            local_branch_commands::local_branch_version,
+            local_branch_commands::local_branch_check_version,
+            local_branch_commands::local_branch_rebase,
+            local_branch_commands::local_branch_checkout,
+            local_branch_commands::local_branch_release,
+            local_branch_commands::local_branch_put_from_path,
+            local_branch_commands::local_branch_copy_to,
+            local_branch_commands::local_branch_export,
+            local_branch_commands::local_thumb_get,
+            local_branch_commands::local_thumb_put,
+            local_branch_commands::local_branch_upload_begin,
+            local_branch_commands::local_branch_upload_finish,
+            appearance::set_appearance,
+            appearance::set_appearance_rotation,
+            appearance::list_themes,
             external_sites::reopen_external_site,
             external_sites::focus_external_site,
             external_sites::suspend_external_site,
@@ -452,6 +505,7 @@ pub fn run() {
             app.manage(sqlite_db::SqliteState::default());
             app.manage(filen::FilenState::default());
             app.manage(external_sites::ExternalSites::default());
+            app.manage(user_action::UserActions::default());
             app.manage(internal_clipboard::InternalClipboard::default());
             app.manage(device_files::ExportState::default());
             app.manage(filen_cache::UploadSessions::default());
@@ -462,6 +516,7 @@ pub fn run() {
             android_jni::init(app.handle().clone());
 
             window_host::init(app.handle());
+            appearance::init(app.handle());
 
             // What the file commands and SQLite may touch (see `fs_scope.rs`): the user folder, always;
             // never the app's own database and secrets; and the folders picked in earlier sessions.
@@ -481,7 +536,7 @@ pub fn run() {
             );
             #[cfg(desktop)]
             let main_window = main_window
-            .title("CsDrive WebHost")
+            .title("Ayran CsDrive WebHost")
             .inner_size(1024.0, 768.0)
             // wry registers its own IDropTarget on the WebView2 child window (for OS
             // file drops) unless this is off, which prevents WebView2/Chromium's own
@@ -579,7 +634,7 @@ mod tests {
         for (key, extra_allowed) in [("csp", None), ("devCsp", Some("ws://localhost:1420"))] {
             let policy = security[key].as_str().unwrap_or_else(|| panic!("app.security.{key} must be set"));
             for directive in policy.split(';').map(str::trim) {
-                // The app's own web-app origin may be loaded as a picture or as media (Notes' viewer and thumbnails), and only so.
+                // The app's own web-app origin may be loaded as a picture or as media (Notes' viewer and thumbnails) — and only so.
                 let shows_files = directive.starts_with("img-src ") || directive.starts_with("media-src ");
                 for source in directive.split_whitespace().skip(1) {
                     let allowed = matches!(

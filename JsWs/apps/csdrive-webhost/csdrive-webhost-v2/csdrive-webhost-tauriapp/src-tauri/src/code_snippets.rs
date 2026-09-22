@@ -47,7 +47,12 @@ const SAFE_AREA_CSS: &str = "html {
 
 /// Everything web apps should apply, in order.
 pub fn code_snippets() -> Vec<CodeSnippet> {
-    vec![CodeSnippet { code: SAFE_AREA_CSS.to_string(), kind: SnippetType::Css }]
+    let mut snippets = vec![CodeSnippet { code: SAFE_AREA_CSS.to_string(), kind: SnippetType::Css }];
+    // A manual light or dark mode (`appearance.rs`): the page's form controls and scrollbars follow it.
+    if let Some(css) = crate::appearance::color_scheme_css() {
+        snippets.push(CodeSnippet { code: css, kind: SnippetType::Css });
+    }
+    snippets
 }
 
 /// Runs in every web app's and system app's window before the page's own scripts: **the page can't change its own address
@@ -58,6 +63,27 @@ pub fn code_snippets() -> Vec<CodeSnippet> {
 /// "single page" that wanders off its address without a navigation the backend could see (`on_navigation` only sees real
 /// ones). A changed *fragment* (`#section`, an in-page link) stays allowed — it goes nowhere. It is a guard against pages, not a
 /// boundary against hostile code (which the CSP and the capabilities are).
+/// **A window's `alert` and `confirm`** (desktop). Tauri's dialog plugin replaces them, in the main frame of every window, with
+/// asynchronous ones that call *its own* commands (`plugin:dialog|message` and `|confirm`) — boxes outside the app's prompt rules, and
+/// commands no window is granted any more. This runs after it and puts the app's own commands in their place: `alert_dialog` and
+/// `confirm_dialog`, native boxes that say who asks, wait their turn, count toward "many prompts in a row" and can prevent prompts
+/// (`prompt_guard.rs`). They keep Tauri's shape: `alert` doesn't wait, `confirm` returns a Promise of the answer (`false` when refused).
+/// `prompt` is the webview's own and is answered by `page_dialogs`; so is everything a *frame* asks (the plugin's script isn't in frames).
+pub const DIALOGS_INIT_SCRIPT: &str = r#"(function () {
+  function ask(command, message) {
+    return window.__TAURI_INTERNALS__.invoke(command, { message: String(message) })
+  }
+  window.alert = function (message) {
+    ask('alert_dialog', message).catch(function () {})
+  }
+  window.confirm = function (message) {
+    return ask('confirm_dialog', message).then(
+      function (yes) { return yes === true },
+      function () { return false }
+    )
+  }
+})()"#;
+
 pub const FROZEN_ADDRESS_INIT_SCRIPT: &str = r#"(function () {
   function refuse() { throw new DOMException('A page cannot change its own address.', 'SecurityError') }
   function ask(state, title, url) {

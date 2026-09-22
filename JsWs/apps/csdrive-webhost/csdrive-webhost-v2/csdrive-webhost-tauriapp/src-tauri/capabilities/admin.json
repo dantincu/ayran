@@ -16,6 +16,9 @@
     "allow-fs-root-path",
     "allow-open-web-address",
     "allow-filen-login",
-    "allow-filen-logout"
+    "allow-filen-logout",
+    "dialog:allow-confirm",
+    "allow-prompt-guard-status",
+    "allow-set-appearance-rotation"
   ]
 }

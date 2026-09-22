@@ -4,6 +4,7 @@ import IconButton from '../../components/IconButton'
 import { formatBytes } from '../../lib/format'
 import { searchFiles, searchNotes, MAX_CONTENT_BYTES, type FileHit, type NoteHit, type SearchCriteria, type SortSpec } from './search'
 import type { FileSource } from './sources'
+import CacheMenu from './CacheMenu'
 import { useResultPager, type PagedResults } from './useResultPager'
 
 const formatWhen = (ms: number | null | undefined) => (ms === null || ms === undefined ? '' : new Date(ms).toLocaleString())
@@ -50,7 +51,12 @@ export function FileSearchResults({
   pageSize,
   onOpen,
   onShow,
+  onError,
+  onNotice,
 }: {
+  /** What the cache options of a result say when they fail or are done. */
+  onError?: (message: string) => void
+  onNotice?: (message: string) => void
   source: FileSource
   /** Where the search started. */
   folder: string
@@ -93,6 +99,7 @@ export function FileSearchResults({
                 <td className="muted">{!hit.entry.isDirectory && hit.entry.size !== null ? formatBytes(hit.entry.size) : ''}</td>
                 <td className="muted">{formatWhen(hit.entry.mtimeMs)}</td>
                 <td className="row-actions">
+                  <CacheMenu source={source} path={hit.path} isDirectory={hit.entry.isDirectory} onDone={() => {}} onError={(m) => onError?.(m)} onNotice={(m) => onNotice?.(m)} />
                   <IconButton icon={FolderOpen} label="Show it in its folder" onClick={() => onShow(hit)} />
                 </td>
               </tr>
@@ -116,7 +123,11 @@ export function NoteSearchResults({
   onEdit,
   onChildren,
   onShow,
+  onError,
+  onNotice,
 }: {
+  onError?: (message: string) => void
+  onNotice?: (message: string) => void
   source: FileSource
   folder: string
   criteria: SearchCriteria
@@ -160,6 +171,7 @@ export function NoteSearchResults({
                   <IconButton icon={AppWindow} label="Open it as a web app (in a tab of this window)" onClick={() => onOpen(hit)} />
                   <IconButton icon={FilePenLine} label="Edit its markdown" onClick={() => onEdit(hit)} />
                   <IconButton icon={FolderTree} label="Its child notes" onClick={() => onChildren(hit)} />
+                  <CacheMenu source={source} path={hit.note.folder} isDirectory onDone={() => {}} onError={(m) => onError?.(m)} onNotice={(m) => onNotice?.(m)} />
                   <IconButton icon={FolderOpen} label="Show it among the notes next to it" onClick={() => onShow(hit)} />
                 </td>
               </tr>

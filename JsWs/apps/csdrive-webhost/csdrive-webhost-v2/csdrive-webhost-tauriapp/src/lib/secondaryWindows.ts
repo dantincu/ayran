@@ -132,6 +132,8 @@ export interface TabInitResponse {
   relativePath: string
   /** Who opened the page (the value is an enum member's name): the admin-app itself, or Notes' file manager. */
   openedBy: 'AdminApp' | 'NotesApp'
+  /** What the window is for when the app launched it for something: `UserAction` (Notes' User Action window); empty for an ordinary page. */
+  role?: string
   /** Where the file is: the user folder, a folder the person picked on the device, Filen's cloud storage, or
    * — for a system app — this app itself. */
   storage: 'UserFolder' | 'DeviceFolder' | 'FilenCloud' | 'Bundled'

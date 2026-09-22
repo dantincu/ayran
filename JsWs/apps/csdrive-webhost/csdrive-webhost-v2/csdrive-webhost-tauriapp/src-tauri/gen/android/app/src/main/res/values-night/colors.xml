@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="csdrive_bg">#FF16181D</color>
-    <color name="csdrive_accent">#FF3B82F6</color>
+    <color name="csdrive_accent">#FFFB923C</color>
     <color name="csdrive_on_accent">#FF0B0D10</color>
 </resources>

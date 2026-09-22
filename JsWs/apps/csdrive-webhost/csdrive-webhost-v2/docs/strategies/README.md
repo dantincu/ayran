@@ -9,3 +9,4 @@ Add a file here for each new strategy, and point to it from the code that implem
   `[note-book].json`, how names are made from titles, how indexes are normalised.
 - [Android Windows Strategy](android-windows-strategy.md) — one real window (an activity of its own) per web app / system app on Android,
   with a bridge of our own to the backend.
+- [Note custom actions](note-custom-actions.md) — the "User Action" button of Notes: a page of the person's own in a popup, per notebook (`03/[user-action].json`) or global; what the page can do (implemented — see CLAUDE.md, "User Action").

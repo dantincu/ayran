@@ -61,6 +61,7 @@ import {
   writeRootTextFile,
 } from '../lib/fileRoots'
 import { rootTagGuid } from '../lib/rootTags'
+import { contextTrigger } from './ContextMenu'
 import { listTags, notifyFileSaved, openNewSecondaryWindow, openWebAddress, type TagRecord } from '../lib/secondaryWindows'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../lib/textLinks'
 
@@ -643,6 +644,18 @@ export default function FilesTab() {
     }
   }
 
+  /** The guid of the root whose details are open (asked of the backend, which keeps it). */
+  const [rootGuidShown, setRootGuidShown] = useState<{ root: string; guid: string } | null>(null)
+  useEffect(() => {
+    if (details?.kind !== 'root') return
+    const id = details.root.id
+    let cancelled = false
+    invoke<string>('root_guid', { root: id }).then((guid) => !cancelled && setRootGuidShown({ root: id, guid }), () => {})
+    return () => {
+      cancelled = true
+    }
+  }, [details])
+
   function detailFields(): { title: string; fields: DetailField[] } | null {
     if (!details) return null
     if (details.kind === 'root') {
@@ -653,6 +666,7 @@ export default function FilesTab() {
         fields: [
           { label: 'Name', value: root.id === USER_ROOT_ID ? 'user' : root.label },
           { label: 'Root identifier', value: root.id, mono: true },
+          ...(rootGuidShown?.root === root.id ? [{ label: 'Guid', value: rootGuidShown.guid, mono: true }] : []),
           ...(where ? [{ label: 'Location on this device', value: where, mono: true }] : []),
         ],
       }
@@ -739,7 +753,7 @@ export default function FilesTab() {
       <div className="root-switcher">
         {roots.map((root) => (
           <div key={root.id} className="root-item">
-            <span className={`root-pill ${root.id === activeRootId ? 'active' : ''}`}>
+            <span className={`root-pill ${root.id === activeRootId ? 'active' : ''}`} {...contextTrigger(() => showDetails({ kind: 'root', root }))}>
               <button className="link-button" onClick={() => switchRoot(root.id)} title={rootPaths[root.id] ?? root.label}>
                 <Folder size={14} strokeWidth={2} aria-hidden="true" /> {root.id === USER_ROOT_ID ? 'user' : root.label}
               </button>

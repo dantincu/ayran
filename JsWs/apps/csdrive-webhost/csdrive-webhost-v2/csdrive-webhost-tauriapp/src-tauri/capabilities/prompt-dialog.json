@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "prompt-dialog",
+  "description": "The window that shows a page's own JavaScript dialog (alert, confirm, prompt) on desktop (page_dialogs_windows.rs): it may read the one question it shows and answer it — nothing else. No other window is granted these.",
+  "windows": [
+    "prompt-*"
+  ],
+  "permissions": [
+    "allow-prompt-dialog-info",
+    "allow-prompt-dialog-answer"
+  ]
+}
