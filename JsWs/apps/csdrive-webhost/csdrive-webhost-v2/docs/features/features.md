@@ -9,6 +9,7 @@ This file will contain various features that comes to my mind and are too signif
    For faster navigation let's add the following shortcuts for all lists in our app, including the list of icon in a row of icons once its focused (including a page's top row of buttons and a list item's row of action buttons):
    - Alt+N will move 2 items forward, while Alt+P will move 2 items backward
    - Alt+. will move 5 items forward, while Alt+, will move 5 items backward
+   - PgDown will move 10 items forward, while PgUp will move 10 items backward
    - Alt+] will move 20 items forward, while Alt+[ will move 20 items backward
    - Alt+' will move 50 items forward, while Alt+; will move 50 items backward
 
