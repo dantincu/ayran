@@ -17,7 +17,7 @@
 
 import { CHILDREN_JSON, config, KEEP_CONTENT, KEEP_FILE, MARKDOWN_PREFIX, NOTE_JSON, NOTE_MARKDOWN_SUFFIX, TEMPORARY_PREFIX } from '../../lib/appConfig'
 import { dotNetTimestamp, namePartFromTitle } from './notebookFile'
-import { indexText, INDEX_DIGITS, MAX_INDEX, NOTE_ITEMS, nextIndexIn, normalize, type Assignment } from './noteIndexes'
+import { indexText, INDEX_DIGITS, MAX_INDEX, NOTE_ITEMS, nextIndexIn, normalize, type Assignment, type NoteInterval } from './noteIndexes'
 import type { Entry, FileSource } from './sources'
 
 // The names come from the config file (`config/folder-pairs-and-notes.json`), never from here.
@@ -73,10 +73,11 @@ export function usedIndexes(names: Iterable<string>): number[] {
   return used
 }
 
-/** The index for the next note in a folder that holds `names`: the note items' interval (`999`→`401` in the config), **one step past
- * the furthest in use** ("after the largest"; gaps stay). `null` when the interval has no room beyond the furthest. */
-export function nextNoteIndex(names: Iterable<string>): string | null {
-  const next = nextIndexIn(NOTE_ITEMS, usedIndexes(names))
+/** The index for the next note in a folder that holds `names`, in `interval` (the note items' interval, `999`→`401` in the config, by
+ * default — a section's interval when the person chose one for a new note): **one step past the furthest in use** ("after the
+ * largest"; gaps stay). `null` when the interval has no room beyond the furthest. */
+export function nextNoteIndex(names: Iterable<string>, interval: NoteInterval = NOTE_ITEMS): string | null {
+  const next = nextIndexIn(interval, usedIndexes(names))
   return next === null ? null : indexText(next)
 }
 
@@ -296,12 +297,12 @@ export async function setChild(source: FileSource, parent: string, ref: NoteRef 
 
 /** A new note titled `title` in `parent` (a notebook's root or a note's short folder). Everything the note needs is made — its
  * pair of folders, markdown, `[note].json` and `[note-children].json` — before it is listed in its parent's. */
-export async function createNote(source: FileSource, parent: string, title: string, now: Date = new Date()): Promise<NoteRef> {
+export async function createNote(source: FileSource, parent: string, title: string, now: Date = new Date(), interval: NoteInterval = NOTE_ITEMS): Promise<NoteRef> {
   const clean = title.trim()
   if (!clean) throw new Error('A note needs a title.')
   const names = (await source.list(parent, true)).entries.map((e) => e.name)
-  const index = nextNoteIndex(names)
-  if (index === null) throw new Error(`This folder has no room for another note (${NOTE_ITEMS.label} go from ${NOTE_ITEMS.from} to ${NOTE_ITEMS.to}): normalize the indexes of its notes to make room.`)
+  const index = nextNoteIndex(names, interval)
+  if (index === null) throw new Error(`This folder has no room for another note in ${interval.label} (they go from ${interval.from} to ${interval.to}): normalize the indexes of its notes to make room.`)
   const folder = join(parent, index)
   const marker = join(parent, markerName(index, clean))
   const stamp = dotNetTimestamp(now)

@@ -18,6 +18,20 @@ static APP: OnceLock<AppHandle> = OnceLock::new();
 /// How long a helper may take (saving a large file is the slow case).
 const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// A defensive wait for the main window to be registered, for a caller early in startup. `lib.rs`'s `.setup()`
+/// builds the main window *before* calling anything that can reach here (`secure_store`'s Android path, used to
+/// decrypt the data-location pointer file) for exactly this reason — a call from earlier than that, before the
+/// window existed, used to fail outright with "The main window isn't available", every time: `read_custom_dir`
+/// treats every failure as "no custom folder set", so a configured custom folder was silently ignored at real
+/// startup and `admin`/`user`/`files` were created under the *default* location regardless, live-reproduced and
+/// confirmed by a debug build (waiting here, even for many seconds, never helped on its own — the window build
+/// call itself hadn't run yet at the old call site). This wait stays as a safety net for any future caller this
+/// early, not the fix itself; it costs nothing once the window is already there, which it now always is by the
+/// time `.setup()` can reach this. `.setup()` runs off Android's UI thread (the window it waits for is attached
+/// ON that thread, by `exec` below), so sleeping here doesn't hold that thread back.
+const WINDOW_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const WINDOW_WAIT_STEP: Duration = Duration::from_millis(50);
+
 pub fn init(app: AppHandle) {
     let _ = APP.set(app);
 }
@@ -36,7 +50,19 @@ where
     F: FnOnce(&mut JNIEnv, &JObject) -> jni::errors::Result<T> + Send + 'static,
 {
     let app = APP.get().ok_or("The Android bridge wasn't initialised.")?;
-    let window = app.get_webview_window(crate::window_host::MAIN_WINDOW_LABEL).ok_or("The main window isn't available.")?;
+    let window = {
+        let mut waited = Duration::ZERO;
+        loop {
+            if let Some(w) = app.get_webview_window(crate::window_host::MAIN_WINDOW_LABEL) {
+                break w;
+            }
+            if waited >= WINDOW_WAIT_TIMEOUT {
+                return Err("The main window isn't available.".to_string());
+            }
+            std::thread::sleep(WINDOW_WAIT_STEP);
+            waited += WINDOW_WAIT_STEP;
+        }
+    };
 
     let (sender, receiver) = mpsc::channel();
     window

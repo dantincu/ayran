@@ -261,6 +261,21 @@ pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_na
     java_string(&mut env, &answer.unwrap_or_default())
 }
 
+/// The window's activity asks to go back — its own Back button pressed, trusted native code, not a page's own doing: the
+/// address to navigate the WebView to (see `secondary_windows::go_back` — a note or an html/markdown file opened as a web
+/// app, undone one step), or an empty string when there is nothing to go back to (the activity then falls through to its
+/// own "nothing else to do" behavior: suspending the window, see `WindowActivity.kt`'s `back()`).
+#[no_mangle]
+pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeGoBack(mut env: JNIEnv, _class: JClass, guid: JString) -> jstring {
+    let guid = string_of(&mut env, &guid);
+    let answer = (|| {
+        let app = crate::android_jni::app()?;
+        let url = tauri::async_runtime::block_on(crate::secondary_windows::go_back(app, &guid))?;
+        Some(window_host::navigation_url(&url).to_string())
+    })();
+    java_string(&mut env, &answer.unwrap_or_default())
+}
+
 /// A window's page called `cmd`: run it as that window and answer through `WindowBridge.respond`.
 #[no_mangle]
 pub extern "system" fn Java_com_ayran_csdrive_1webhost_1tauriapp_WindowBridge_nativeInvoke(

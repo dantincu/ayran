@@ -259,9 +259,18 @@ class WindowActivity : Activity() {
         web?.evaluateJavascript(js, null)
     }
 
-    /** Back leaves the page's full screen first; only then does it suspend the window. */
+    /** Back leaves the page's full screen first; then, if there's a previous page to undo one step of "a note or an
+     * html/markdown file opened as a web app" navigation to (a new tab, or a link followed in the same tab — see
+     * `secondary_windows::go_back`, asked synchronously and natively, not through the page's own IPC), goes there;
+     * only when there's neither does it suspend the window, as it always did. Leaving suspend/close to the admin-app's
+     * own System Apps tab (item 5 of the follow-up), not a button on the page. */
     private fun back() {
-        if (customView != null) web?.webChromeClient?.onHideCustomView() else finishAndRemoveTask()
+        if (customView != null) {
+            web?.webChromeClient?.onHideCustomView()
+            return
+        }
+        val target = WindowBridge.nativeGoBack(guid)
+        if (target.isNotEmpty()) web?.loadUrl(target) else finishAndRemoveTask()
     }
 
     /** Shows or hides the status and navigation bars (the page's full screen hides them; they come back with a swipe). */

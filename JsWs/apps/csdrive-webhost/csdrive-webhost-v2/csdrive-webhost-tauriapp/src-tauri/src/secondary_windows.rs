@@ -34,10 +34,31 @@ pub struct SecondaryWindowsState {
     /// gone when the entry is. It is also what tells `close_tab` that closing a tab must suspend the
     /// window that is showing it (when it is open).
     current_tabs: Mutex<HashMap<String, String>>,
+    /// One level of "what a window showed before its current tab last changed" — window guid →
+    /// `PreviousShown` — enough to undo it once: `window_go_back` (Android's system Back button calls it
+    /// directly, native-to-native, before falling through to suspending the window — see
+    /// `android_windows.rs`'s `nativeGoBack`) pops this. Recorded by `activate_tab` (any tab switch — a
+    /// note opened as a web app included, since `open_note_tab` is `add_page_tab` then `activate_tab`)
+    /// and by `open_link_in_window` (a link followed *in place*, which changes a tab's own resource
+    /// rather than switching to another tab). Not persisted: like `current_tabs`, it only matters while
+    /// the window is actually open to be gone back out of.
+    previous_shown: Mutex<HashMap<String, PreviousShown>>,
     /// The app is closing (its main window was asked to close): from now on a secondary window that goes
     /// away — closed by us, by the person or by the OS — is **suspended**, never removed from the list. Not
     /// persisted: it only matters until the app is gone, and the next start begins without it.
     shutting_down: AtomicBool,
+}
+
+/// See `SecondaryWindowsState::previous_shown`. Only Android's Back button (`go_back`) reads this back out today.
+#[derive(Clone)]
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct PreviousShown {
+    /// The tab to make current again.
+    tab_guid: String,
+    /// `Some((resource_id, link_page))` when going back must also restore *that same tab's own* columns
+    /// to what they were (a link was followed in place, not in a new tab) — `None` when a *different*
+    /// tab was made current and its own data was never touched, so nothing needs restoring on it.
+    restore_columns: Option<(Option<String>, Option<String>)>,
 }
 
 impl SecondaryWindowsState {
@@ -51,12 +72,33 @@ impl SecondaryWindowsState {
         self.current_tabs.lock().unwrap().get(window_guid).cloned()
     }
 
+    /// Records what `window_guid` showed before its current tab is about to change, so `window_go_back`
+    /// can undo it once. `None` when there is nothing to remember (its very first tab).
+    fn remember_previous(&self, window_guid: &str, previous: Option<PreviousShown>) {
+        let mut map = self.previous_shown.lock().unwrap();
+        match previous {
+            Some(previous) => {
+                map.insert(window_guid.to_string(), previous);
+            }
+            None => {
+                map.remove(window_guid);
+            }
+        }
+    }
+
+    /// Takes (removes) what `window_guid` should go back to, if anything.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    fn take_previous(&self, window_guid: &str) -> Option<PreviousShown> {
+        self.previous_shown.lock().unwrap().remove(window_guid)
+    }
+
     pub fn new(pool: SqlitePool) -> Self {
         Self {
             pool,
             pending_suspend: Mutex::new(HashSet::new()),
             pending_tab_activation: Mutex::new(HashMap::new()),
             current_tabs: Mutex::new(HashMap::new()),
+            previous_shown: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
         }
     }
@@ -569,7 +611,16 @@ pub(crate) async fn open_link_in_window(app: &AppHandle, window_guid: &str, url:
     let (_, resource_id) = split_url_into_path_and_resource_id(url.as_str())?;
     let link_page = resource_id.clone();
 
-    let tab_guid = if new_tab {
+    // The current tab's own columns before they might be overwritten in place — `window_go_back` restores these exactly
+    // (see the "same tab" branch below), rather than assuming a blank slate.
+    let previous_columns: (Option<String>, Option<String>) = sqlx::query("SELECT resource_id, link_page FROM tabs WHERE guid = ?1")
+        .bind(&current)
+        .fetch_one(&state.pool)
+        .await
+        .map(|row| (row.get("resource_id"), row.get("link_page")))
+        .map_err(|e| e.to_string())?;
+
+    let (tab_guid, previous) = if new_tab {
         let row = sqlx::query("SELECT group_guid, app_version FROM tabs WHERE guid = ?1 AND window_guid = ?2")
             .bind(&current)
             .bind(window_guid)
@@ -594,7 +645,7 @@ pub(crate) async fn open_link_in_window(app: &AppHandle, window_guid: &str, url:
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
-        tab_guid
+        (tab_guid, PreviousShown { tab_guid: current.clone(), restore_columns: None })
     } else {
         sqlx::query(
             "UPDATE tabs SET resource_id = ?1, resource_type = NULL, tab_text = NULL, app_title = NULL, link_page = ?2 WHERE guid = ?3",
@@ -605,15 +656,42 @@ pub(crate) async fn open_link_in_window(app: &AppHandle, window_guid: &str, url:
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
-        current
+        (current.clone(), PreviousShown { tab_guid: current, restore_columns: Some(previous_columns) })
     };
 
     state.pending_tab_activation.lock().unwrap().remove(window_guid);
     state.current_tabs.lock().unwrap().insert(window_guid.to_string(), tab_guid);
+    state.remember_previous(window_guid, Some(previous));
     crate::window_host::navigate(app, window_guid, &Page::new(Kind::User, link_page))?;
     refresh_window_title(app, window_guid).await;
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
+}
+
+/// The window goes back to what it showed before its current tab (or that tab's own page) last changed — undoing one step of
+/// "a note or an html/markdown file opened as a web app" navigation (a new tab, or a link followed in the same tab). `None`
+/// when there is nothing to go back to (the caller — Android's system Back button, see `android_windows.rs`'s
+/// `nativeGoBack` — falls through to its own "nothing else to do" behavior: suspending the window); `Some(url)` when there
+/// was, the window's own address to navigate to now that the previous tab is current again.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) async fn go_back(app: &AppHandle, window_guid: &str) -> Option<Url> {
+    let state = app.state::<SecondaryWindowsState>();
+    let previous = state.take_previous(window_guid)?;
+    if let Some((resource_id, link_page)) = previous.restore_columns {
+        sqlx::query("UPDATE tabs SET resource_id = ?1, link_page = ?2 WHERE guid = ?3")
+            .bind(&resource_id)
+            .bind(&link_page)
+            .bind(&previous.tab_guid)
+            .execute(&state.pool)
+            .await
+            .ok()?;
+    }
+    activate_tab(app.clone(), app.state::<SecondaryWindowsState>(), previous.tab_guid).await.ok()?;
+    // `activate_tab` just recorded a fresh "previous" pointing forward again (to the tab we came from,
+    // i.e. right back here) — drop it: this is a one-shot undo, not a full back/forward history, so a
+    // second Back press falls through to suspending rather than bouncing forward.
+    state.remember_previous(window_guid, None);
+    crate::window_host::current_page_url(app, window_guid)
 }
 
 /// The page a caller means: a web app is named by its html file, a system app by `system:<id>` — or
@@ -1575,6 +1653,25 @@ pub fn reload_secondary_window(app: AppHandle, guid: String) -> Result<(), Strin
     Ok(())
 }
 
+/// Tells a page to show its own top bar, if it has one and it's hidden (`show-top-bar`, listened for by Notes'
+/// pages and, optionally, a web app that has drawn a header of its own the same way — see CLAUDE.md's "The top
+/// bar"). `guid`: one **open** window, or every open window at once when it's `None` (the admin-app's own "Show
+/// the top bar for every open window" button in Settings). Admin-only — the person triggers this from the admin-app
+/// itself (a tab's own row, or the global button), never a page on its own behalf.
+#[tauri::command]
+pub fn show_top_bar(window: crate::window_host::CallerWindow, app: AppHandle, guid: Option<String>) -> Result<(), String> {
+    crate::window_host::require_admin(&window)?;
+    match guid {
+        Some(guid) => {
+            if !crate::window_host::emit_if_open(&app, &guid, "show-top-bar", ()) {
+                return Err("That window isn't open.".into());
+            }
+        }
+        None => crate::window_host::emit_to_all(&app, "show-top-bar", &()),
+    }
+    Ok(())
+}
+
 /// Reloads a tab — when it is **the one an open window is showing** (a tab that isn't shown has no page to reload).
 #[tauri::command]
 pub async fn reload_tab(app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, tab_guid: String) -> Result<(), String> {
@@ -2282,12 +2379,18 @@ pub async fn activate_tab(
     let page = page_to_show(&state.pool, &tab_guid, &page_of(&state.pool, &window_guid).await?).await?;
     let payload = navigation_payload(&state.pool, &tab_guid).await?;
 
+    // What the window showed just before this switch, for `window_go_back` to undo — only worth
+    // recording when it's actually a switch (a different tab) and the window is open to be gone back
+    // out of at all (the third branch below, where it isn't, leaves this alone).
+    let previous_tab = state.current_tab_of(&window_guid).filter(|current| *current != tab_guid);
+
     // A tab of a web app's window that shows another *page* than the window is at (a link was opened in it) is shown by
     // taking the window there; every other tab switch is the event, and the page shows the tab in place.
     let elsewhere = crate::window_host::current_page_url(&app, &window_guid).zip(page.url().ok()).is_some_and(|(now, wanted)| !crate::same_page(&wanted, &now));
     if elsewhere {
         state.pending_tab_activation.lock().unwrap().remove(&window_guid);
         state.current_tabs.lock().unwrap().insert(window_guid.clone(), tab_guid);
+        state.remember_previous(&window_guid, previous_tab.map(|tab_guid| PreviousShown { tab_guid, restore_columns: None }));
         crate::window_host::navigate(&app, &window_guid, &page)?;
         refresh_window_title(&app, &window_guid).await;
     } else if crate::window_host::emit_if_open(&app, &window_guid, EVENT_TAB_NAVIGATE, payload) {
@@ -2295,6 +2398,7 @@ pub async fn activate_tab(
         // person presses reload), its init request binds to the window's current tab.
         state.pending_tab_activation.lock().unwrap().remove(&window_guid);
         state.current_tabs.lock().unwrap().insert(window_guid.clone(), tab_guid);
+        state.remember_previous(&window_guid, previous_tab.map(|tab_guid| PreviousShown { tab_guid, restore_columns: None }));
         refresh_window_title(&app, &window_guid).await;
     } else {
         state.pending_tab_activation.lock().unwrap().insert(window_guid.clone(), (tab_guid, true));

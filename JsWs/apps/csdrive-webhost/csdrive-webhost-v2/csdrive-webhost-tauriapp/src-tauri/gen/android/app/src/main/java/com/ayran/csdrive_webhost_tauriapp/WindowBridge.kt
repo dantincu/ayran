@@ -39,6 +39,12 @@ object WindowBridge {
 
     @JvmStatic external fun nativeNavigation(guid: String, url: String): Boolean
 
+    /** The window's own Back button was pressed: the address to navigate to (a note or an html/markdown file opened as a web
+     * app, undone one step — `secondary_windows::go_back`), or "" when there's nothing to go back to (the activity then
+     * falls through to its own Back behavior: suspending the window). Trusted native code, not a page's own doing — the same
+     * synchronous, blocking-on-the-Rust-side pattern as [nativeServe] and [nativeAttach], not the async [nativeInvoke]. */
+    @JvmStatic external fun nativeGoBack(guid: String): String
+
     @JvmStatic external fun nativeDetached(guid: String)
 
     @JvmStatic external fun nativeAnswer(id: Int, index: Int)

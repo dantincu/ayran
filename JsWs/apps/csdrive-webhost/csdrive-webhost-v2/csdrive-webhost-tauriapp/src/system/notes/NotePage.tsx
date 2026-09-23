@@ -39,9 +39,10 @@ import { isNoteQuery } from '../../lib/textLinks'
 import DeleteNotesModal from './DeleteNotesModal'
 import IndexesModal from './IndexesModal'
 import { setNoteClipboard, useNoteClipboard } from './noteClipboard'
-import { indexText, parseIndex } from './noteIndexes'
+import { indexText, parseIndex, type NoteInterval } from './noteIndexes'
 import { loadNotebooks, type NotebookEntry } from './notebooks'
 import { ancestorsOf, changeNoteIndex, createNote, deleteNote, findMarkdown, normalizeChildren, parentOf, readChildren, readNote, renameNote, type NoteRef } from './noteModel'
+import NewNoteModal from './NewNoteModal'
 import PasteNotesModal from './PasteNotesModal'
 import SearchPanel from './SearchPanel'
 import { NoteSearchResults } from './SearchResults'
@@ -127,6 +128,7 @@ export default function NotePage({
   const [indexing, setIndexing] = useState(false)
   const [deleting, setDeleting] = useState<NoteRef[] | null>(null)
   const [pasting, setPasting] = useState(false)
+  const [creating, setCreating] = useState(false)
   /** The search and sort panel, how the list is sorted, and what is searched for while results show. */
   const [searchOpen, setSearchOpen] = useState(false)
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
@@ -217,13 +219,11 @@ export default function NotePage({
   const showFiles = (n: { folder: string }) => onPlace({ view: 'noteFiles', sourceId, folder: n.folder, path: '' })
   const showInFileManager = (path: string) => onPlace({ view: 'files', location: { sourceId, branch: null, path } })
 
-  async function addNote() {
-    const title = window.prompt("The new note's title:")?.trim()
-    if (!title || !source) return
-    await attempt(async () => {
-      const created = await createNote(source, folder, title)
-      edit(created)
-    })
+  async function addNote(title: string, interval: NoteInterval) {
+    if (!source) return
+    const created = await createNote(source, folder, title, new Date(), interval)
+    setCreating(false)
+    edit(created)
   }
 
   // ── Editing a title or an index in the list, as in Total Commander ──
@@ -464,7 +464,7 @@ export default function NotePage({
 
           <div className="notes-page-header">
             <h2>{title}</h2>
-            <IconButton icon={Plus} label={note ? 'New child note…' : 'New note…'} onClick={addNote} />
+            <IconButton icon={Plus} label={note ? 'New child note…' : 'New note…'} onClick={() => setCreating(true)} />
             <IconButton
               icon={ListOrdered}
               label={indexOps ? 'The indexes of these notes — edit, reorder, normalize, convert…' : 'The indexes can be changed only while the notes are in the order of their indexes — clear the search and the sorting'}
@@ -481,6 +481,7 @@ export default function NotePage({
             )}
             <IconButton icon={Navigation} label="Go to a path or a note's address…" onClick={() => setGoingTo(true)} />
             <IconButton icon={RefreshCw} label="Refresh" onClick={load} />
+            <CacheMenu source={source} path={folder} isDirectory onDone={() => load()} onError={setError} onNotice={setNotice} />
             <UserActionButton sourceId={sourceId} folder={folder} />
           </div>
 
@@ -640,6 +641,8 @@ export default function NotePage({
       )}
 
       {deleting && <DeleteNotesModal notes={deleting} canNormalize={indexOps} onConfirm={(normalize) => removeNotes(deleting, normalize)} onClose={() => setDeleting(null)} />}
+
+      {creating && <NewNoteModal names={children.map((c) => c.index)} onCreate={addNote} onClose={() => setCreating(false)} />}
 
       {pasting && clipboard && (
         <PasteNotesModal

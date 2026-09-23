@@ -211,6 +211,18 @@ export async function reloadTab(tabGuid: string): Promise<void> {
   await invoke('reload_tab', { tabGuid })
 }
 
+/** Admin-app only. Tells one **open** window (or every open window, with no `guid`) to show its own top bar —
+ * `showTopBar()` with nothing is the global "Show the top bar for every open window" button. */
+export async function showTopBar(guid?: string): Promise<void> {
+  await invoke('show_top_bar', { guid: guid ?? null })
+}
+
+/** Listens for this window being asked to show its own top bar (`showTopBar`, above) — Notes' pages, and any web
+ * app that draws a header of its own the same way. On this window only, like `onTabNavigate`. */
+export function onShowTopBar(callback: () => void): Promise<UnlistenFn> {
+  return getCurrentWebviewWindow().listen('show-top-bar', () => callback())
+}
+
 export function onSecondaryWindowsChanged(callback: () => void): Promise<UnlistenFn> {
   return listen(EVENT_CHANGED, () => callback())
 }

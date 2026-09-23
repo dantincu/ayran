@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import './App.css'
-import { AppWindow, Blocks, Cloud, Database, Folder, HardDrive, Settings, type LucideIcon } from 'lucide-react'
+import { AppWindow, Blocks, CircleHelp, Cloud, Database, Folder, HardDrive, Settings, type LucideIcon } from 'lucide-react'
 import AppsTab from './components/AppsTab'
 import FilesTab from './components/FilesTab'
 import FilenTab from './components/FilenTab'
 import SqliteTab from './components/SqliteTab'
 import StorageTab from './components/StorageTab'
 import SettingsTab from './components/SettingsTab'
+import HelpTab from './components/HelpTab'
 import Splash from './components/Splash'
 import { hideNativeSplash } from './lib/nativeSplash'
 import TabSwitcher from './components/TabSwitcher'
@@ -15,7 +16,7 @@ import TextFieldMenu from './components/TextFieldMenu'
 import { getAppState, setAppState } from './lib/appState'
 import { chordLabel, useChord } from './lib/chords'
 
-type Tab = 'system' | 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings'
+type Tab = 'system' | 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings' | 'help'
 
 const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'system', label: 'System Apps', icon: Blocks },
@@ -25,6 +26,7 @@ const TABS: { id: Tab; label: string; icon: LucideIcon }[] = [
   { id: 'sqlite', label: 'SQLite', icon: Database },
   { id: 'storage', label: 'Storage', icon: HardDrive },
   { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'help', label: 'Help', icon: CircleHelp },
 ]
 
 const DEFAULT_TAB: Tab = 'system'
@@ -89,6 +91,7 @@ export default function App() {
         {tab === 'sqlite' && <SqliteTab />}
         {tab === 'storage' && <StorageTab />}
         {tab === 'settings' && <SettingsTab />}
+        {tab === 'help' && <HelpTab />}
       </main>
       {switching && (
         <TabSwitcher

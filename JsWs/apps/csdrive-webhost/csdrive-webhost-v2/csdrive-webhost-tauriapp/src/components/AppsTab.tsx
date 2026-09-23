@@ -14,6 +14,7 @@ import {
   Info,
   FolderPlus,
   Link,
+  PanelTop,
   Pause,
   PauseCircle,
   Pencil,
@@ -54,6 +55,7 @@ import {
   focusSecondaryWindow,
   reloadSecondaryWindow,
   reloadTab,
+  showTopBar,
   listSecondaryWindows,
   listSystemApps,
   listTags,
@@ -350,6 +352,7 @@ function TabRow({
   onClone,
   onActivate,
   onReload,
+  onShowTopBar,
   onClose,
   onOpenExternal,
   onShowResourceId,
@@ -368,6 +371,9 @@ function TabRow({
   onActivate: () => void
   /** Reloads the tab's page (only offered while an open window is showing the tab). */
   onReload: () => void
+  /** Tells the window showing this tab to show its own top bar (only offered while an open window is showing it —
+   * a page with none of its own, or a user web app that hasn't drawn one, simply ignores the event). */
+  onShowTopBar: () => void
   onClose: () => void
   /** Shows the external web sites opened from this tab. */
   onOpenExternal: () => void
@@ -410,7 +416,12 @@ function TabRow({
           )}
           <RowActions
             actions={[
-              ...(tab.showing ? [{ icon: RefreshCw, label: "Reload this tab's page", onClick: onReload }] : []),
+              ...(tab.showing
+                ? [
+                    { icon: RefreshCw, label: "Reload this tab's page", onClick: onReload },
+                    { icon: PanelTop, label: 'Show its top bar', onClick: onShowTopBar },
+                  ]
+                : []),
               { icon: Info, label: 'Details', onClick: onShowDetails },
               { icon: Hash, label: 'Resource identifier — view and copy', onClick: onShowResourceId },
               { icon: ArrowRightLeft, label: 'Move to…', onClick: onMove },
@@ -1603,6 +1614,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                   onClone={() => handleCloneTab(t.guid)}
                   onActivate={() => handleActivateTab(t.guid)}
                   onReload={() => handleExternal(() => reloadTab(t.guid))}
+                  onShowTopBar={() => handleExternal(() => showTopBar(t.windowGuid))}
                   onClose={() => handleCloseTab(t.guid)}
                   onOpenExternal={() => {
                     setCurrentTabGuid(t.guid)

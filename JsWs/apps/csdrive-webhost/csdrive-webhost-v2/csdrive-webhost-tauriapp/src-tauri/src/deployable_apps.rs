@@ -22,8 +22,10 @@ pub struct DeployableAppInfo {
     pub default_folder_name: String,
 }
 
+const EXAMPLE_TOOLBAR_HTML: &str = include_str!("../../../csdrive-webhost-userapps/example-toolbar/index.html");
+
 // (id, display name, default folder name, embedded index.html)
-const REGISTRY: &[(&str, &str, &str, &str)] = &[];
+const REGISTRY: &[(&str, &str, &str, &str)] = &[("example-toolbar", "Example: a page's own toolbar", "example-toolbar", EXAMPLE_TOOLBAR_HTML)];
 
 #[tauri::command]
 pub fn list_deployable_apps(window: crate::window_host::CallerWindow) -> Result<Vec<DeployableAppInfo>, String> {

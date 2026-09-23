@@ -312,6 +312,7 @@ pub fn run() {
             secondary_windows::focus_secondary_window,
             secondary_windows::reload_secondary_window,
             secondary_windows::reload_tab,
+            secondary_windows::show_top_bar,
             secondary_windows::list_tags,
             secondary_windows::add_window_tag,
             secondary_windows::update_window_tag,
@@ -488,6 +489,47 @@ pub fn run() {
             let _ = (window, event);
         })
         .setup(|app| {
+            #[cfg(target_os = "android")]
+            android_jni::init(app.handle().clone());
+
+            // The admin-app's own window, built *first* — before anything below that can read the encrypted
+            // data-location pointer file (`effective_data_dir`, next). On Android, decrypting it needs the
+            // Keystore-backed key, which goes through the *main window's* own JNI bridge (`secure_store`'s
+            // Android `resolve_key` -> `android_jni::on_activity`, which needs `app.get_webview_window(...)` to
+            // find something) — and this window used to be built at the very end of `.setup()`, so every read
+            // attempted before that point failed outright with "The main window isn't available" (confirmed live:
+            // even waiting many seconds for it inside `on_activity` never helped, because the window build call
+            // itself hadn't run yet — no amount of waiting *before* a later line in the same synchronous closure
+            // makes that line execute sooner). `read_custom_dir` treats every failure as "no custom folder set",
+            // so a configured custom folder was silently ignored at real startup — `admin`/`user`/`files` were
+            // created under the *default* location regardless — while a command invoked once the app was fully up
+            // (by definition, after `.setup()` had long since returned and the window really existed) read the
+            // same pointer file successfully and reported the custom path, contradicting where things actually
+            // live. Building the window here is safe: `lock_down_navigation`'s callbacks only touch app-managed
+            // state when a navigation actually happens, never synchronously during `.build()`, and the page itself
+            // only starts calling commands well after `.setup()` has returned control to Tauri's event loop.
+            let main_window = lock_down_navigation(
+                WebviewWindowBuilder::new(app, window_host::MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into())),
+                window_host::Allowed { user: false, system: false, admin: true },
+                None,
+            );
+            #[cfg(desktop)]
+            let main_window = main_window
+            .title("Ayran CsDrive WebHost")
+            .inner_size(1024.0, 768.0)
+            // wry registers its own IDropTarget on the WebView2 child window (for OS
+            // file drops) unless this is off, which prevents WebView2/Chromium's own
+            // internal HTML5 drag-and-drop from ever receiving drag events on
+            // Windows — permanently showing a "not allowed" cursor and the drop
+            // never landing. `drag_and_drop(false)` (window-level, OS file drops
+            // onto the window) alone is NOT enough; `disable_drag_drop_handler()`
+            // (webview-level) is the one that actually stops wry's own handler —
+            // both are documented as "required to use HTML5 drag and drop on
+            // Windows," but only the webview one is.
+            .drag_and_drop(false)
+            .disable_drag_drop_handler();
+            main_window.build()?;
+
             let app_data_dir = data_location::effective_data_dir(app.handle())?;
             let admin_dir = layout::admin_dir(&app_data_dir);
             let user_dir = layout::user_dir(&app_data_dir);
@@ -512,8 +554,6 @@ pub fn run() {
             app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));
             // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
             app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
-            #[cfg(target_os = "android")]
-            android_jni::init(app.handle().clone());
 
             window_host::init(app.handle());
             appearance::init(app.handle());
@@ -527,29 +567,6 @@ pub fn run() {
             }
             picked_roots::allow_saved(&app.state::<app_state::AppDbState>().pool, &fs_scope);
             app.manage(fs_scope);
-
-            // The admin-app is the Tauri app's own frontend (`frontendDist`), compiled into the binary.
-            let main_window = lock_down_navigation(
-                WebviewWindowBuilder::new(app, window_host::MAIN_WINDOW_LABEL, WebviewUrl::App("index.html".into())),
-                window_host::Allowed { user: false, system: false, admin: true },
-                None,
-            );
-            #[cfg(desktop)]
-            let main_window = main_window
-            .title("Ayran CsDrive WebHost")
-            .inner_size(1024.0, 768.0)
-            // wry registers its own IDropTarget on the WebView2 child window (for OS
-            // file drops) unless this is off, which prevents WebView2/Chromium's own
-            // internal HTML5 drag-and-drop from ever receiving drag events on
-            // Windows — permanently showing a "not allowed" cursor and the drop
-            // never landing. `drag_and_drop(false)` (window-level, OS file drops
-            // onto the window) alone is NOT enough; `disable_drag_drop_handler()`
-            // (webview-level) is the one that actually stops wry's own handler —
-            // both are documented as "required to use HTML5 drag and drop on
-            // Windows," but only the webview one is.
-            .drag_and_drop(false)
-            .disable_drag_drop_handler();
-            main_window.build()?;
 
             Ok(())
         })

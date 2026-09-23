@@ -64,8 +64,14 @@ export default function ContextMenu({ items, x, y, onClose }: Props) {
        * this (not on whatever the menu happens to be sitting over), closing the menu without also acting on
        * that background element — the actual fix for "clicking outside also clicks through to what's under
        * the menu" (found live: closing the row-actions overflow menu this way could press the button under
-       * it). `onPointerDown`, not `onClick`, so it can't be reached by a synthesized click from something else. */}
-      <div className="context-menu-backdrop" onPointerDown={onClose} />
+       * it). `onPointerDown`, not `onClick`, so it can't be reached by a synthesized click from something else
+       * — and `preventDefault()` on it, which is what actually matters on a touchscreen: without it, the
+       * pointerdown removes the backdrop (closing the menu) but the browser still delivers the *compatibility
+       * click* that follows a real tap to whatever is now exposed underneath, once the backdrop is already gone
+       * — reaching through exactly like the bug this backdrop exists to fix, just one event later (found live
+       * on Android; a synthetic pointerdown from a desktop test doesn't reproduce it, since nothing then fires
+       * the follow-up click a real touchscreen tap does). */}
+      <div className="context-menu-backdrop" onPointerDown={(e) => { e.preventDefault(); onClose() }} />
       <div ref={ref} className="context-menu" role="menu" style={{ left: at.left, top: at.top }} data-no-text-menu>
         {items.map((item) => {
           const Icon = item.icon

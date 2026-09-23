@@ -266,3 +266,24 @@
 .dialog-danger {
   color: var(--error-fg);
 }
+
+/* The closable bar at the top of every Notes page (NotesTopBar.tsx), hidden until asked for. */
+.notes-top-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-bg);
+}
+
+.notes-top-bar-error {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+
+.notes-top-bar-close {
+  margin-left: auto;
+}

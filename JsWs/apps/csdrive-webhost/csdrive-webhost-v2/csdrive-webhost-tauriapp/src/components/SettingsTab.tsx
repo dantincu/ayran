@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { Eye, EyeOff, Eraser, FolderOpen, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { Eye, EyeOff, Eraser, FolderOpen, PanelTop, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import IconButton from './IconButton'
 import AppearanceSettings from './AppearanceSettings'
 import { internalClipboard } from '../lib/clipboard'
@@ -14,6 +14,7 @@ import {
   type DataFolderInfo,
 } from '../lib/dataFolder'
 import { setRowActionsCompact, subscribeRowActionsCompact } from '../lib/rowActionsCompact'
+import { showTopBar } from '../lib/secondaryWindows'
 
 export default function SettingsTab() {
   const [info, setInfo] = useState<DataFolderInfo | null>(null)
@@ -117,6 +118,15 @@ export default function SettingsTab() {
     }
   }
 
+  async function showAllTopBars() {
+    setError(null)
+    try {
+      await showTopBar()
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function wipeAppData() {
     if (!info) return
     if (
@@ -160,7 +170,19 @@ export default function SettingsTab() {
         Compact row actions
       </label>
 
-      <div className="toolbar">
+      <div className="toolbar" style={{ marginTop: 24 }}>
+        <strong>Top bar</strong>
+      </div>
+      <p className="muted">
+        Notes' pages, and any web app that has drawn a header of its own the same way, can hide their own top bar —
+        this shows it again everywhere it was hidden, in one click, without having to find each tab in the System/User
+        Apps tabs.
+      </p>
+      <div className="toolbar-actions">
+        <IconButton icon={PanelTop} label="Show the top bar for every open window" onClick={showAllTopBars} />
+      </div>
+
+      <div className="toolbar" style={{ marginTop: 24 }}>
         <strong>Data folder</strong>
         <div className="toolbar-actions">
           <IconButton icon={RefreshCw} label="Refresh" onClick={refresh} />

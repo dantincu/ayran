@@ -23,6 +23,7 @@ fn main() {
             "focus_secondary_window",
             "reload_secondary_window",
             "reload_tab",
+            "show_top_bar",
             "list_tags",
             "add_window_tag",
             "update_window_tag",

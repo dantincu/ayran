@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Example: a toolbar for your own page</title>
+<style>
+  html, body { height: 100%; margin: 0; font: 14px system-ui, sans-serif; }
+  #toolbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 12px; border-bottom: 1px solid #ccc; background: #f4f4f4;
+  }
+  #toolbar button { font: inherit; padding: 4px 10px; cursor: pointer; }
+  #status { margin-left: auto; color: #666; }
+  #content { padding: 16px; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+     LIBRARY CODE — copy this whole <script> into any page of your own.
+     It is the minimum needed to:
+       - bind this page to the tab the app already made for its window
+       - keep working when the person switches back to this tab
+       - let your own UI ask to suspend the window or close this tab
+
+     Nothing here is specific to this demo — no toolbar, no styling.
+     ================================================================ -->
+<script>
+  window.Backend = (function () {
+    function invoke(cmd, args) {
+      return window.__TAURI__.core.invoke(cmd, args)
+    }
+
+    // This window's own guid IS its Tauri window label — every secondary window's label is its guid
+    // (see CLAUDE.md: "secondary windows (label = the window guid)"). No backend round trip needed.
+    function windowGuid() {
+      return window.__TAURI__.webviewWindow.getCurrentWebviewWindow().label
+    }
+
+    // Binds this page to the tab the app made for its window (never creates one — see
+    // `init_window_tab` in CLAUDE.md's "Who creates tabs"). Call this once as the page loads.
+    // Returns { tabGuid, resourceId, codeSnippets, relativePath, openedBy, storage, filen }.
+    let tabGuid = null
+    async function bindTab(resourceType) {
+      const response = await invoke('init_window_tab', {
+        appVersion: 1,
+        url: location.href,
+        resourceType: resourceType || null,
+      })
+      tabGuid = response.tabGuid
+      return response
+    }
+
+    // The window manager tells this page when the person switches to another tab of the same
+    // window — listen on THIS window only (never the global `listen`, which also hears events
+    // meant for other windows), and attach the listener before calling bindTab so nothing is
+    // missed. Without a handler, the default is to start the page over.
+    let navigateHandler = null
+    window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', (event) => {
+      if (navigateHandler) navigateHandler(event.payload)
+      else location.reload()
+    })
+    function onNavigate(handler) {
+      navigateHandler = handler
+    }
+
+    // Closes only this window — its entry (and this tab) stay, and "Reopen" in the app brings
+    // the window back later.
+    function suspendThisWindow() {
+      return invoke('suspend_secondary_window', { guid: windowGuid() })
+    }
+
+    // Removes this tab. If it's the tab an *open* window is showing, that window is suspended too
+    // (its other tabs are kept) — see CLAUDE.md's "Suspending vs closing".
+    function closeThisTab() {
+      if (!tabGuid) throw new Error('bindTab() must resolve before closeThisTab() can be called.')
+      return invoke('close_tab', { tabGuid })
+    }
+
+    // The admin-app asked this window to show its own top bar — one tab's own row in the System/User
+    // Apps tabs, or the "Show the top bar for every open window" button in Settings, both send this
+    // event (`show_top_bar`, admin-only — a page never calls it on itself). A page with a header that
+    // hides itself (like this demo's) should reveal it here; a page with none simply doesn't listen.
+    function onShowTopBar(handler) {
+      window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('show-top-bar', handler)
+    }
+
+    return { invoke, windowGuid, bindTab, onNavigate, suspendThisWindow, closeThisTab, onShowTopBar }
+  })()
+</script>
+
+<!-- ================================================================
+     EXAMPLE — everything from here down is specific to THIS demo page:
+     a toolbar and wiring its two buttons to the library above. Replace
+     this part with your own page's markup and logic.
+     ================================================================ -->
+<div id="toolbar" hidden>
+  <button id="btn-suspend">Suspend this window</button>
+  <button id="btn-close">Close this tab</button>
+  <span id="status"></span>
+  <button id="btn-hide" title="Hide this toolbar">✕</button>
+</div>
+<div id="content">
+  <h1>Your page's own content goes here</h1>
+  <p>This demo shows the smallest working toolbar a page can give itself: three buttons that call
+  straight back into the backend, no different from any other button on the page — plus its own ×
+  to hide itself, and it listens for the admin-app's "Show the top bar" to reappear. Hidden by
+  default, exactly like Notes' own top bar.</p>
+</div>
+
+<script>
+  const toolbar = document.getElementById('toolbar')
+  const status = document.getElementById('status')
+
+  Backend.bindTab('example-toolbar').then((info) => {
+    status.textContent = 'tab ' + info.tabGuid.slice(0, 8) + '…'
+  })
+
+  Backend.onShowTopBar(() => {
+    toolbar.hidden = false
+  })
+
+  document.getElementById('btn-suspend').addEventListener('click', () => {
+    Backend.suspendThisWindow().catch((e) => alert(String(e)))
+  })
+  document.getElementById('btn-close').addEventListener('click', () => {
+    Backend.closeThisTab().catch((e) => alert(String(e)))
+  })
+  document.getElementById('btn-hide').addEventListener('click', () => {
+    toolbar.hidden = true
+  })
+</script>
+
+</body>
+</html>

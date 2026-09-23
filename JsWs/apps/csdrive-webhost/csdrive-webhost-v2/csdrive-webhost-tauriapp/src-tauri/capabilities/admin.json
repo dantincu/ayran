@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "admin-app",
-  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, deploy bundled apps, and open a web address of a file it shows in the OS browser.",
+  "description": "What only the admin-app (the main window) may additionally do: connect and disconnect Filen.io accounts (the only place a Filen password is ever typed), manage the data folder, deploy bundled apps, open a web address of a file it shows in the OS browser, and tell a page (or every open window at once) to show its own top bar.",
   "windows": [
     "main"
   ],
@@ -19,6 +19,7 @@
     "allow-filen-logout",
     "dialog:allow-confirm",
     "allow-prompt-guard-status",
-    "allow-set-appearance-rotation"
+    "allow-set-appearance-rotation",
+    "allow-show-top-bar"
   ]
 }

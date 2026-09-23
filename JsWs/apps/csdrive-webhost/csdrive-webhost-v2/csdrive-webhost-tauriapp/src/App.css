@@ -353,6 +353,34 @@ select {
   flex-wrap: wrap;
 }
 
+/* A `<td className="row-actions">` (every file table) has its `display` overridden from the browser's own
+   `table-cell` to `flex` by the rule above (needed under 600px — see the narrow-window rules — where the
+   whole table becomes a flex layout and `row-actions` has to be a flex item and a flex container at once).
+   At normal width this is a genuine bug, not just a style choice: a `flex` (or `inline-flex`) box does not
+   get the "stretch to fill the row" treatment a real table cell gets for free, and `height: 100%` doesn't
+   reliably resolve against a table row's height either (its height is content-derived, not "explicitly
+   specified" in the sense percentage resolution needs) — so the cell stayed at its own natural size and sat
+   at the top of the row, leaving a gap below the icons whenever the row was taller than the icons alone
+   needed (a longer second line on the sibling cell, most commonly). Found live and confirmed by measuring
+   both cells' `getBoundingClientRect()` directly (43px in a 52px row) — a screenshot alone couldn't settle
+   it, and two other fixes (`height: 100%`, `display: inline-flex` with `vertical-align: middle`) measured as
+   not working before this one did. The fix, at normal width only: go back to being a real table cell —
+   `vertical-align: middle` then centers it exactly as it would any other cell — and lay the buttons out with
+   plain inline flow (`text-align: right`, a margin between them in place of `gap`, which only a flex/grid
+   container provides) rather than `flex`; wrapping still happens, the same as text wrapping, when they don't
+   fit on one line. */
+@media (min-width: 601px) {
+  .file-table td.row-actions {
+    display: table-cell;
+    vertical-align: middle;
+    text-align: right;
+  }
+
+  .file-table td.row-actions > * + * {
+    margin-left: 6px;
+  }
+}
+
 .pagination {
   display: flex;
   align-items: center;
@@ -1167,6 +1195,15 @@ select {
 
 /* Placed by Pagination (top/left, against the screen): as tall as the screen allows, less a margin and the
    system bars' insets on a phone. */
+/* Transparent, catches a press anywhere outside the popover so it closes without that press also reaching
+   whatever element is behind it (the same fix as .context-menu-backdrop). Sits just under the popover. */
+.page-popover-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 19;
+  background: transparent;
+}
+
 .page-popover {
   position: fixed;
   z-index: 20;
@@ -1617,6 +1654,98 @@ select {
 
 .code-editor .code-editor-input::selection {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* ── Help tab: read-only code blocks and the API reference ─────────────────── */
+
+.code-block {
+  position: relative;
+  margin: 8px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: auto;
+  max-height: 480px;
+}
+
+.code-block pre {
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.code-block code {
+  font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  white-space: pre;
+  color: var(--fg);
+}
+
+.code-block-copy {
+  position: sticky;
+  float: right;
+  top: 6px;
+  right: 6px;
+  margin: 6px 6px 0 0;
+  background: var(--panel-bg);
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 16px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+  max-width: 420px;
+}
+
+.search-box input {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+
+.api-category {
+  margin-top: 20px;
+}
+
+.api-category h3 {
+  margin: 0 0 4px;
+}
+
+.api-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.api-table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.api-call {
+  font: 12px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.api-summary {
+  width: 100%;
+}
+
+.api-note {
+  margin-top: 2px;
+}
+
+.api-returns {
+  margin-top: 2px;
+  font-size: 12px;
 }
 
 .tok-heading,

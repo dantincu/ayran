@@ -1459,6 +1459,7 @@ export default function NotesApp({
               <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
               {clipboard && <IconButton icon={ClipboardPaste} label={`Paste "${clipboard.name}"`} onClick={paste} />}
               <IconButton icon={RefreshCw} label={account ? 'Refresh from Filen' : 'Refresh'} onClick={() => load(true)} />
+              <CacheMenu source={source} path={path} isDirectory onDone={() => load(false)} onError={setError} onNotice={setNotice} />
             </div>
           </div>
 

@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 /// The last path component doubles as the name of this app's OS-keychain entries
 /// (Filen sessions, the pointer file's encryption key) â€” so pointing this somewhere
 /// else also gives a run its own, separate keychain entries.
-pub const DEFAULT_DATA_FOLDER: &str = "com.ayran.csdrive-webhost-tauriapp";
+pub const DEFAULT_DATA_FOLDER: &str = r"C:\Temp\csdrive-isolated-test";
 
 /// The app's own files inside the data folder (`data.db`, the Filen sessions). Nothing
 /// in here is ever served to a window: the admin-app itself is not a file in the data

@@ -116,15 +116,8 @@ export default function Pagination({ page, pageSize, totalItems, onPageChange, o
         live.current.goTo(live.current.cursor)
       }
     }
-    function onPress(e: MouseEvent) {
-      if (!rootRef.current?.contains(e.target as Node)) setOpened(null)
-    }
     window.addEventListener('keydown', onKeyDown, true)
-    window.addEventListener('mousedown', onPress)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown, true)
-      window.removeEventListener('mousedown', onPress)
-    }
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [opened])
 
   // The popover is placed against the *screen* (position: fixed), not the button, so that it can be as tall as
@@ -228,7 +221,13 @@ export default function Pagination({ page, pageSize, totalItems, onPageChange, o
         />
 
         {opened !== null && (
-          <div className="page-popover" role="dialog" aria-label="Go to page" ref={popoverRef} data-no-text-menu>
+          <>
+            {/* Transparent, catches a press anywhere outside the popover so it closes without that press also
+             * reaching whatever element is behind it — the same fix as ContextMenu's backdrop, `preventDefault()`
+             * included (without it, a real touchscreen tap's follow-up compatibility click still reaches whatever
+             * is exposed once this backdrop is removed — see ContextMenu.tsx's backdrop for the full explanation). */}
+            <div className="page-popover-backdrop" onPointerDown={(e) => { e.preventDefault(); setOpened(null) }} />
+            <div className="page-popover" role="dialog" aria-label="Go to page" ref={popoverRef} data-no-text-menu>
             {opened === 'keyboard' && (
               <input
                 autoFocus
@@ -266,7 +265,8 @@ export default function Pagination({ page, pageSize, totalItems, onPageChange, o
                 </button>
               ))}
             </div>
-          </div>
+            </div>
+          </>
         )}
       </div>
     </div>

@@ -8,6 +8,7 @@ import NotebooksPage from './NotebooksPage'
 import NotesSettingsPage from './NotesSettingsPage'
 import NotesApp from './NotesApp'
 import NotesHome from './NotesHome'
+import NotesTopBar from './NotesTopBar'
 import type { NotebookEntry } from './notebooks'
 import { decodePlace, reportView, subscribeNavigate, type Place, type Tab } from './tabs'
 import { UserActionDialogs, UserActionFieldButtons } from './UserActionButton'
@@ -55,6 +56,7 @@ export default function NotesRoot({ tab: initialTab, initial }: { tab: Tab | nul
     )
   return (
     <>
+      <NotesTopBar tab={tab} />
       {view}
       {/* Every text box of Notes has the clipboard menu (with the app's own clipboard) and, beside it, the User Action's launch and close. */}
       <TextFieldMenu extra={(field) => <UserActionFieldButtons field={field} />} />
