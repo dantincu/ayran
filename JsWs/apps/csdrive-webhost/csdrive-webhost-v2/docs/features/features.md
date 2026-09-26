@@ -4,7 +4,7 @@ This file will contain various features that comes to my mind and are too signif
 
 ## New Features
 
-1. Let's complete our system of keyboard shortcuts: everywhere on our pages (the admin app and the Notes app) we should be able to reach the page's top row of icon buttons using the Alt+Shift+J key combination (that will focus the first button in the row of buttons). Likewise, when a row/item in a list is focused (having got there through arrow keys or pgup or pgdown etc) we should be able to focus its row of action buton (first button focused) using the Alt+J key combination. Then moving inside a row of action buttons is done using the left and right keyboard arrows and home and end. Pressing ENTER while focused on a button will trigger that button's action.
+1. Let's complete our system of keyboard shortcuts: everywhere on our pages (the admin app and the Notes app) and popup modals we should be able to reach the page's top row of icon buttons using the Alt+Shift+J key combination (that will focus the first button in the row of buttons). Likewise, when a row/item in a list is focused (having got there through arrow keys or pgup or pgdown etc) we should be able to focus its row of action buton (first button focused) using the Alt+J key combination. Then moving inside a row of action buttons is done using the left and right keyboard arrows and home and end. Pressing ENTER while focused on a button will trigger that button's action.
 
    For faster navigation let's add the following shortcuts for all lists in our app, including the list of icon in a row of icons once its focused (including a page's top row of buttons and a list item's row of action buttons):
    - Alt+N will move 2 items forward, while Alt+P will move 2 items backward
