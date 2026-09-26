@@ -23,6 +23,6 @@ This file will contain various features that comes to my mind and are too signif
    
    Important: never put sensitive information in the logs. So no file contents, but I think file names and relative file paths (or even cloud storage item ids) could be added to the logs. Likewise, if we ever log search queries made by the the user, don't include text parts of the searches.
 
-3. Let's add an option to convert a pdf to a html file and then to convert the html to plain markdown (markdown without html tags, only <u></u> being allowed). For both conversions, add an option to exact each page in a separate html file (and then mass convert from html to markdown).
+3. Let's add an option to convert a pdf to a html file and then to convert the html to plain markdown (markdown without html tags, only <u></u> being allowed). For both conversions, add an option to exact each page in a separate html file (and then mass convert from html to markdown). Also, let's add an option to view a pdf file in our app.
 
 ## Implemented Features
