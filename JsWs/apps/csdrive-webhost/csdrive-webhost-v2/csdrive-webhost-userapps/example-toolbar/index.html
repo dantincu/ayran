@@ -30,7 +30,7 @@
      It is the minimum needed to:
        - bind this page to the tab the app already made for its window
        - keep working when the person switches back to this tab
-       - let your own UI ask to suspend the window, close this tab, or go back one step
+       - let your own UI ask to suspend the window, close this tab, close the window outright, or go back one step
        - show the tab's label/tags/root markup the backend renders for you, and stay in
          step with the person opening/closing your top bar from the admin-app
 
@@ -99,6 +99,12 @@
       return invoke('close_tab', { tabGuid })
     }
 
+    // Closes the window *and* removes its entry — with its tab groups, tabs and tags — from the
+    // System/User Apps tabs. Unlike `suspendThisWindow`, there is no "Reopen" afterward.
+    function closeThisWindow() {
+      return invoke('close_secondary_window', { guid: windowGuid() })
+    }
+
     // Undoes one step of tab-switch/link navigation for this window (the same thing Android's
     // hardware Back button does). Resolves to whether there was something to undo.
     function goBack() {
@@ -121,7 +127,7 @@
       return invoke('set_top_bar_hidden', { tabGuid, hidden })
     }
 
-    return { invoke, windowGuid, bindTab, onNavigate, updateTab, suspendThisWindow, closeThisTab, goBack, onShowTopBar, setTopBarHidden }
+    return { invoke, windowGuid, bindTab, onNavigate, updateTab, suspendThisWindow, closeThisTab, closeThisWindow, goBack, onShowTopBar, setTopBarHidden }
   })()
 </script>
 
@@ -134,6 +140,7 @@
   <button id="btn-back" class="icon" title="Go back one step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></button>
   <button id="btn-suspend" class="icon" title="Suspend this window"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg></button>
   <button id="btn-close" class="icon" title="Close this tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg></button>
+  <button id="btn-close-window" class="icon" title="Close this window"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="m9 9 6 6"/><path d="m15 9-6 6"/></svg></button>
   <span id="toolbar-info"></span>
   <span id="status"></span>
   <button id="btn-hide" class="icon" title="Hide this toolbar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
@@ -142,10 +149,11 @@
   <h1>Your page's own content goes here</h1>
   <p>This demo shows a small working toolbar a page can give itself: icon buttons that call straight
   back into the backend, no different from any other button on the page — a back step, suspend, close
-  this tab, and its own × to hide itself — plus the tab's label/tags/root markup the backend renders
-  for you (<code>topBarHtml</code>), inserted as is into <code>#toolbar-info</code>. It starts shown or
-  hidden following <code>topBarHidden</code>, and listens for the admin-app's "Show the top bar" to
-  reappear; closing it again is remembered until that happens.</p>
+  this tab, close the window outright, and its own × to hide itself — plus the tab's label/tags/root
+  markup the backend renders for you (<code>topBarHtml</code>), inserted as is into
+  <code>#toolbar-info</code>. It starts shown or hidden following <code>topBarHidden</code>, and
+  listens for the admin-app's "Show the top bar" to reappear; closing it again is remembered until
+  that happens.</p>
 </div>
 
 <script>
@@ -174,6 +182,9 @@
   })
   document.getElementById('btn-close').addEventListener('click', () => {
     Backend.closeThisTab().catch((e) => alert(String(e)))
+  })
+  document.getElementById('btn-close-window').addEventListener('click', () => {
+    Backend.closeThisWindow().catch((e) => alert(String(e)))
   })
   document.getElementById('btn-hide').addEventListener('click', () => {
     toolbar.hidden = true

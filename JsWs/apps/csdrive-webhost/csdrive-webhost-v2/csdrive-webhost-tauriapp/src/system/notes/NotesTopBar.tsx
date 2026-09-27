@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { ArrowLeft, Pause, X, XCircle } from 'lucide-react'
+import { ArrowLeft, Pause, X, XCircle, XSquare } from 'lucide-react'
 import IconButton from '../../components/IconButton'
-import { closeTab, onShowTopBar, setTabTopBarHidden, suspendSecondaryWindow, windowGoBack } from '../../lib/secondaryWindows'
+import { closeSecondaryWindow, closeTab, onShowTopBar, setTabTopBarHidden, suspendSecondaryWindow, windowGoBack } from '../../lib/secondaryWindows'
 import { subscribeTopBarInfo } from './topBarInfo'
 import type { Tab } from './tabs'
 
@@ -52,6 +52,11 @@ export default function NotesTopBar({ tab }: { tab: Tab | null }) {
         label="Close this tab"
         onClick={() => tab && closeTab(tab.tabGuid).catch((e) => setError(String(e)))}
         disabled={!tab}
+      />
+      <IconButton
+        icon={XSquare}
+        label="Close this window — closes the window and removes its entry from the System Apps tab"
+        onClick={() => closeSecondaryWindow(getCurrentWebviewWindow().label).catch((e) => setError(String(e)))}
       />
       {info?.html && <span className="notes-top-bar-info" dangerouslySetInnerHTML={{ __html: info.html }} />}
       {error && (
