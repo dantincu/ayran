@@ -9,9 +9,9 @@
  * The scanners are small and forgiving, not parsers: they colour what a person would expect to see coloured and leave
  * everything else alone. A file too big to colour on every key is left plain (`HIGHLIGHT_LIMIT`). */
 
-import { highlightCss, highlightJavaScript } from './highlightCode'
+import { highlightCss, highlightJavaScript, highlightJson } from './highlightCode'
 
-export type Language = 'markdown' | 'html' | 'css' | 'javascript' | 'text'
+export type Language = 'markdown' | 'html' | 'css' | 'javascript' | 'json' | 'text'
 
 /** Text longer than this (characters) isn't coloured: the editor re-draws it on every key. */
 export const HIGHLIGHT_LIMIT = 400_000
@@ -23,6 +23,7 @@ export function languageOf(fileName: string): Language {
   if (/\.(html?|xhtml)$/.test(lower)) return 'html'
   if (/\.css$/.test(lower)) return 'css'
   if (/\.(m?js|cjs|jsx)$/.test(lower)) return 'javascript'
+  if (/\.json[c5]?$/.test(lower)) return 'json'
   return 'text'
 }
 
@@ -41,6 +42,7 @@ export function highlight(text: string, language: Language): string {
   if (language === 'markdown') return highlightMarkdown(text)
   if (language === 'css') return highlightCss(text)
   if (language === 'javascript') return highlightJavaScript(text)
+  if (language === 'json') return highlightJson(text)
   return highlightHtml(text)
 }
 
@@ -200,6 +202,7 @@ function highlightFenced(line: string, language: string): string {
   if (language === 'html' || language === 'xml' || language === 'svg') return highlightHtml(line)
   if (language === 'css') return highlightCss(line)
   if (language === 'js' || language === 'javascript' || language === 'jsx' || language === 'mjs') return highlightJavaScript(line)
+  if (language === 'json' || language === 'jsonc' || language === 'json5') return highlightJson(line)
   return span('code', line)
 }
 

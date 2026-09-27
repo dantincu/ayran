@@ -210,6 +210,8 @@ function cssValue(segment: string): string {
   return out
 }
 
+// ── CSS ───────────────────────────────────────────────────────────────────────
+
 export function highlightCss(text: string): string {
   let out = ''
   let i = 0
@@ -247,5 +249,52 @@ export function highlightCss(text: string): string {
     i = end.at + (text[end.at] === ';' ? 1 : 0)
     if (text[end.at] === '}' || end.at >= text.length) i = end.at
   }
+  return out
+}
+
+// ── JSON ──────────────────────────────────────────────────────────────────────
+
+const JSON_STRING = /"(?:\\[\s\S]|[^"\\\n])*"?/y
+const JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
+const JSON_LITERAL = /true|false|null/y
+
+/** JSON: strings (a key — one followed by `:` — coloured differently from a value), numbers, `true`/`false`/`null`, and the
+ * structural punctuation (`{ } [ ] : ,`). Forgiving like the others: a file that isn't quite valid JSON (a trailing comma, a
+ * comment) still gets whatever of it matches coloured, the rest left plain, rather than refusing the whole thing. */
+export function highlightJson(text: string): string {
+  let out = ''
+  let i = 0
+  let plain = ''
+  const flush = () => {
+    if (plain !== '') out += esc(plain)
+    plain = ''
+  }
+  while (i < text.length) {
+    const ch = text[i]
+    let token: string | null
+    if (ch === '"' && (token = matchAt(JSON_STRING, text, i))) {
+      flush()
+      // A key: the string, skipping whitespace, is followed by a colon.
+      const after = text.slice(i + token.length).match(/^\s*:/)
+      out += span(after ? 'attr' : 'string', token)
+      i += token.length
+    } else if ((/\d/.test(ch) || (ch === '-' && /\d/.test(text[i + 1] ?? ''))) && (token = matchAt(JSON_NUMBER, text, i))) {
+      flush()
+      out += span('number', token)
+      i += token.length
+    } else if (/[A-Za-z]/.test(ch) && (token = matchAt(JSON_LITERAL, text, i))) {
+      flush()
+      out += span('literal', token)
+      i += token.length
+    } else if (ch === '{' || ch === '}' || ch === '[' || ch === ']' || ch === ':' || ch === ',') {
+      flush()
+      out += span('punct', ch)
+      i++
+    } else {
+      plain += ch
+      i++
+    }
+  }
+  flush()
   return out
 }

@@ -39,10 +39,37 @@ img { max-width: 100%; }
 
 /// Registers the page as a tab (see the module docs). Plain script, no dependencies: it runs where only
 /// `window.__TAURI__` exists.
+///
+/// **Keeps the scroll pinned to the bottom across a reload, if it was there before one** — the note
+/// editor's own auto-sync (`notify_file_saved`) reloads this exact page every time the note is saved, and
+/// a plain `location.reload()` only restores the *same pixel offset*, not "the bottom": if the edit made
+/// the document taller (the usual case — text was appended), that offset is no longer the bottom, so the
+/// page looks like it "lost" the scroll on every sync. `sessionStorage` survives a `location.reload()` of
+/// the same document (cleared only when the window itself closes) and is exactly this page's own lifetime
+/// otherwise (its address never changes — a page can't navigate itself), so it is a page's own place to
+/// remember this. Applies to *every* reload of this page (a sync, a tab switch back to it, a manual
+/// reload) — there is no meaningful difference in why the content changed, only whether the person was
+/// reading the end of it.
 const BOOTSTRAP: &str = "
 (function () {
   var t = window.__TAURI__
   if (!t) return
+  var SCROLL_KEY = 'csdrive-md-at-bottom'
+  function atBottom() {
+    return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 4
+  }
+  function restoreScrollIfWasAtBottom() {
+    try {
+      if (sessionStorage.getItem(SCROLL_KEY) === '1') window.scrollTo(0, document.documentElement.scrollHeight)
+    } catch (e) {}
+  }
+  window.addEventListener('beforeunload', function () {
+    try { sessionStorage.setItem(SCROLL_KEY, atBottom() ? '1' : '0') } catch (e) {}
+  })
+  // Right away (the content is already laid out — this script runs at the end of the body), and again once
+  // every resource (an image, say) has finished loading and may have changed the page's height.
+  restoreScrollIfWasAtBottom()
+  window.addEventListener('load', restoreScrollIfWasAtBottom)
   function apply(snippets) {
     ;(snippets || []).forEach(function (s) {
       var el = document.createElement(s.type === 'css' ? 'style' : s.type === 'javascript' ? 'script' : 'div')
@@ -120,5 +147,17 @@ mod tests {
         assert!(page.contains("<style>p { color: red }</style>") && page.contains("<script>window.hello = 1</script>"), "{page}");
         assert!(page.contains("init_window_tab"), "the page registers itself as a tab");
         assert!(page.starts_with("<!doctype html>"));
+    }
+
+    #[test]
+    fn the_bootstrap_script_pins_the_scroll_to_the_bottom_across_a_reload() {
+        let page = render_page("text", "t.md");
+        // Saved before the page unloads (a reload, whatever triggers it — a sync, a tab switch, a
+        // manual reload — is the only way this page's content ever changes), restored as soon as
+        // there's something to restore it against, and again once every resource has loaded.
+        assert!(page.contains("addEventListener('beforeunload'"), "{page}");
+        assert!(page.contains("sessionStorage.setItem(SCROLL_KEY"), "{page}");
+        assert!(page.contains("restoreScrollIfWasAtBottom()"), "called once outright, not just registered");
+        assert!(page.contains("addEventListener('load', restoreScrollIfWasAtBottom)"), "{page}");
     }
 }
