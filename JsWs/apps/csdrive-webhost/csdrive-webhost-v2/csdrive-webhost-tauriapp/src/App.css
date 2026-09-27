@@ -1612,7 +1612,39 @@ select {
   border-color: var(--accent);
 }
 
-/* The coloured copy and the box share everything that decides where a character goes. */
+/* One flex row: the line-number gutter (when shown) beside the content column — the highlighted copy and the box,
+   which still share everything that decides where a character goes. `align-items: stretch` (the default) is what
+   makes the gutter's own height follow the textarea's — `fit()` in `CodeEditor.tsx` is what actually sets that
+   height, not any CSS percentage chain. */
+.code-editor-rows {
+  display: flex;
+  align-items: stretch;
+}
+
+.code-editor-content {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0; /* lets the flex item shrink below its longest unbroken line so pre-wrap can actually wrap it */
+}
+
+.code-editor-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: none;
+  margin: 0;
+  padding: 8px 8px 8px 0;
+  border: 0;
+  border-right: 1px solid var(--border);
+  font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  white-space: pre;
+  text-align: right;
+  color: var(--tok-quiet);
+  background: var(--bg);
+  user-select: none;
+  pointer-events: none;
+}
+
 .code-editor-highlight,
 .code-editor .code-editor-input {
   box-sizing: border-box;
@@ -1654,6 +1686,53 @@ select {
 
 .code-editor .code-editor-input::selection {
   background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* "Wrap lines" off (`editorSettings.ts`): the content column switches to `white-space: pre` and grows to its widest
+   line instead of shrinking to the flex row's width, so `.code-editor`'s own `overflow: auto` scrolls sideways
+   instead of wrapping — the gutter's `position: sticky; left: 0` above keeps it in view through that scroll. */
+.code-editor-nowrap .code-editor-content {
+  flex: none;
+  width: max-content;
+  min-width: 100%;
+}
+
+.code-editor-nowrap .code-editor-highlight,
+.code-editor-nowrap .code-editor-input {
+  white-space: pre;
+}
+
+/* "Show whitespace" (`editorSettings.ts`): `markWhitespace` in `lib/highlight.ts` wraps every space, tab and
+   non-breaking space unconditionally, so turning this on and off is a pure CSS change — no recomputation. Hidden
+   (no background, no glyph) unless `.code-editor-show-whitespace` is on the highlighted layer. The tab's arrow and
+   the non-breaking space's dot are an absolutely-positioned `::before`, not an inserted character, so they can't
+   widen the span and desync it from the invisible textarea underneath. */
+.code-editor-show-whitespace .tok-ws-space,
+.code-editor-show-whitespace .tok-ws-tab,
+.code-editor-show-whitespace .tok-ws-nbsp {
+  position: relative;
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+}
+
+.code-editor-show-whitespace .tok-ws-space::before,
+.code-editor-show-whitespace .tok-ws-nbsp::before {
+  content: '·';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  transform: translateX(-50%);
+  color: var(--tok-quiet);
+  pointer-events: none;
+}
+
+.code-editor-show-whitespace .tok-ws-tab::before {
+  content: '→';
+  position: absolute;
+  left: 0;
+  top: 0;
+  color: var(--tok-quiet);
+  pointer-events: none;
+  font-size: 0.85em;
 }
 
 /* ── Help tab: read-only code blocks and the API reference ─────────────────── */

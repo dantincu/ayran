@@ -37,7 +37,33 @@ export function plainTextOf(highlighted: string): string {
   return highlighted.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 }
 
+/** Wraps every space, tab and non-breaking space in its own `<span class="tok-ws tok-ws-space|tab|nbsp">` —
+ * always, whatever `editorSettings.ts`'s "show whitespace" setting says, since the setting only decides whether
+ * `App.css` actually styles those spans (`.code-editor-show-whitespace .tok-ws-… { … }`, invisible otherwise):
+ * recomputing the markup only when the setting is on would mean flipping it forces a fresh highlight pass, and the
+ * setting can change while an editor with a big file is already open. Runs over the *text* pieces of
+ * already-highlighted HTML only — split on tags (`<[^>]+>`), which alternate with plain text in the string
+ * `highlight()` builds, so a tag's own attributes are never touched — keeping the same rule every scanner here
+ * follows: the text content doesn't change, only what it's wrapped in. The tab's arrow and the non-breaking
+ * space's dot are drawn by an absolutely-positioned `::before` in CSS, never by adding a character here, so they
+ * can't shift anything after them out of line with the invisible textarea underneath (the same reason nothing
+ * here uses synthesized italics — see the module doc of `components/CodeEditor.tsx`). */
+function markWhitespace(html: string): string {
+  const kindOf = (c: string) => (c === '\t' ? 'tab' : c === ' ' ? 'nbsp' : 'space')
+  return html
+    .split(/(<[^>]+>)/)
+    .map((piece, i) => {
+      if (i % 2 === 1) return piece // a tag, untouched
+      return piece.replace(/[ \t ]/g, (c) => `<span class="tok-ws tok-ws-${kindOf(c)}">${c}</span>`)
+    })
+    .join('')
+}
+
 export function highlight(text: string, language: Language): string {
+  return markWhitespace(highlightWithoutWhitespace(text, language))
+}
+
+function highlightWithoutWhitespace(text: string, language: Language): string {
   if (language === 'text' || text.length > HIGHLIGHT_LIMIT) return escapeHtml(text)
   if (language === 'markdown') return highlightMarkdown(text)
   if (language === 'css') return highlightCss(text)

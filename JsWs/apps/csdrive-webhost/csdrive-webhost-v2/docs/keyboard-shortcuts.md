@@ -20,6 +20,8 @@ There are only so many letters to hold with Ctrl, so the app's shortcuts are **c
 | **Ctrl+K, C** | a text box or editor has the focus, with text selected | Copies the selection to the **app's own clipboard** (the one shared by every window; not the system's). |
 | **Ctrl+K, V** | a text box or editor has the focus | Pastes the app's clipboard over the selection. |
 | **Ctrl+K, X** | anywhere | **Clears** the app's clipboard. (Settings shows what it holds, and has a button for it.) |
+| **Ctrl+K, 2** | a file or note editor has the focus | Inserts **two tab-units'** worth of indentation at the caret (or indents every selected line). A quick multi-level indent, the same insertion Tab makes (Settings decides whether that is a real tab or a number of spaces). |
+| **Ctrl+K, 4** | a file or note editor has the focus | The same, with **four** tab-units. |
 
 The tabs are numbered in the order of the tab bar: 1 System Apps, 2 User Apps, 3 Files, 4 Filen.io, 5 SQLite, 6 Storage, 7 Settings. Hover a
 tab to see its number.
@@ -84,6 +86,8 @@ The popover is as tall as the screen allows; the list scrolls (vertically, insid
 | **Esc** | In a rename box (Files, Notes) or when editing a value in Local / Session storage: cancels. |
 | **Ctrl+Z** | In a **file or note editor**: undoes the last step (a burst of typing is one step; a paste too). The editors also have **Undo** and **Redo** buttons above the text — the only way on a phone. |
 | **Ctrl+Y** or **Ctrl+Shift+Z** | In a file or note editor: redoes what was undone (until something new is typed). |
+| **Tab** | In a file or note editor: inserts one tab-unit of indentation at the caret (a real tab or a number of spaces — Settings' "Text editors" section decides), or, with more than one line selected, indents every line the selection touches. |
+| **Shift+Tab** | In a file or note editor: **outdents** — removes one tab-unit's worth of leading whitespace from the line the caret is on, or from every line the selection touches. |
 
 ## Text boxes and editors — select, copy, paste
 

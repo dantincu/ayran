@@ -205,7 +205,7 @@ export const API_REFERENCE: ApiCategory[] = [
       { call: "invoke('set_app_state', { key, value })", returns: 'void', summary: '`value` is a JSON string you build yourself (e.g. `JSON.stringify(...)`).' },
       { call: "invoke('get_window_state', { key })", returns: 'a JSON string, or null', summary: 'Like `get_app_state`, but scoped to *this window* only — gone when its entry is.' },
       { call: "invoke('set_window_state', { key, value })", returns: 'void', summary: '' },
-      { call: "invoke('get_global_setting', { key })", returns: 'a string, or null', summary: 'The few preferences shared by every app (the list page size, `listPageSize`; whether row actions are compact, `rowActionsCompact`; the top bar’s `topBar.autohide`/`topBar.hideLabels`/`topBar.hideRoot`, each `\'1\'`/`\'0\'`). Not for app-specific settings.' },
+      { call: "invoke('get_global_setting', { key })", returns: 'a string, or null', summary: 'The few preferences shared by every app (the list page size, `listPageSize`; whether row actions are compact, `rowActionsCompact`; the top bar’s `topBar.autohide`/`topBar.hideLabels`/`topBar.hideRoot`; the text editors’ `editor.wrapLines`/`editor.showWhitespace`/`editor.lineNumbers`/`editor.tabInsertsSpaces`/`editor.tabSpaceCount`, each `\'1\'`/`\'0\'` except the last, a number — see `lib/editorSettings.ts`). Not for app-specific settings.' },
       { call: "invoke('set_global_setting', { key, value })", returns: 'void', summary: 'Refuses every `appearance.` key (the admin-app alone sets the theme rotation).' },
     ],
   },

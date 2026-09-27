@@ -14,6 +14,7 @@ import {
   type DataFolderInfo,
 } from '../lib/dataFolder'
 import { setRowActionsCompact, subscribeRowActionsCompact } from '../lib/rowActionsCompact'
+import { setEditorSetting, subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { showTopBar } from '../lib/secondaryWindows'
 
 export default function SettingsTab() {
@@ -27,6 +28,24 @@ export default function SettingsTab() {
   // Whether every list's row of icon buttons collapses into a single "more actions" menu (`rowActionsCompact.ts`).
   const [rowActionsCompact, setRowActionsCompactState] = useState(false)
   useEffect(() => subscribeRowActionsCompact(setRowActionsCompactState), [])
+  // The text editors' shared settings (`editorSettings.ts`): wrapping, whitespace, line numbers, the Tab key.
+  const [editorSettings, setEditorSettingsState] = useState<EditorSettings | null>(null)
+  useEffect(() => subscribeEditorSettings(setEditorSettingsState), [])
+  const [tabSpaceCountText, setTabSpaceCountText] = useState('')
+  useEffect(() => {
+    if (editorSettings) setTabSpaceCountText(String(editorSettings.tabSpaceCount))
+  }, [editorSettings?.tabSpaceCount])
+  function setEditorFlag<K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces'>(key: K, value: boolean) {
+    setEditorSetting(key, value).catch((e) => setError(String(e)))
+  }
+  function commitTabSpaceCount() {
+    const n = Number(tabSpaceCountText)
+    if (!Number.isInteger(n) || n < 1 || n > 16) {
+      setTabSpaceCountText(String(editorSettings?.tabSpaceCount ?? 4))
+      return
+    }
+    setEditorSetting('tabSpaceCount', n).catch((e) => setError(String(e)))
+  }
   // The global top-bar settings (`topBar.*` in `global_settings`; the backend reads the same keys when it
   // renders a tab's `topBarHtml` and decides whether it starts hidden — `top_bar.rs`). `autohide` defaults to
   // on, the other two to off, matching the backend's own defaults when a key was never set.
@@ -183,6 +202,58 @@ export default function SettingsTab() {
           onChange={(e) => setRowActionsCompact(e.target.checked).catch((err) => setError(String(err)))}
         />
         Compact row actions
+      </label>
+
+      <div className="toolbar" style={{ marginTop: 24 }}>
+        <strong>Text editors</strong>
+      </div>
+      <p className="muted">
+        Every text editor in the app — the Files tab's and Notes' alike — shares these settings.
+      </p>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={editorSettings?.wrapLines ?? true}
+          onChange={(e) => setEditorFlag('wrapLines', e.target.checked)}
+        />
+        Wrap long lines
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={editorSettings?.lineNumbers ?? true}
+          onChange={(e) => setEditorFlag('lineNumbers', e.target.checked)}
+        />
+        Show line numbers
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={editorSettings?.showWhitespace ?? false}
+          onChange={(e) => setEditorFlag('showWhitespace', e.target.checked)}
+        />
+        Show whitespace (spaces, tabs and non-breaking spaces)
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={editorSettings?.tabInsertsSpaces ?? false}
+          onChange={(e) => setEditorFlag('tabInsertsSpaces', e.target.checked)}
+        />
+        The Tab key inserts{' '}
+        <input
+          type="number"
+          min={1}
+          max={16}
+          step={1}
+          style={{ width: '3.5em' }}
+          disabled={!editorSettings?.tabInsertsSpaces}
+          value={tabSpaceCountText}
+          onChange={(e) => setTabSpaceCountText(e.target.value)}
+          onBlur={commitTabSpaceCount}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />{' '}
+        spaces instead of a tab character
       </label>
 
       <div className="toolbar" style={{ marginTop: 24 }}>
