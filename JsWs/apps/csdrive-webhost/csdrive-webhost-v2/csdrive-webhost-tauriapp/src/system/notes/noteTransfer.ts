@@ -2,19 +2,44 @@
  * branch too). Kept apart from `noteModel.ts` because it copies whole trees (`copyTree`), which reaches the backend. */
 
 import { KEEP_CONTENT, KEEP_FILE } from '../../lib/appConfig'
-import { gapIndexesIn, indexText, MAX_INDEX, nextIndexesIn, NOTE_ITEMS } from './noteIndexes'
+import { gapIndexesIn, indexText, intervalOf, MAX_INDEX, nextIndexesIn, NOTE_ITEMS, parseIndex, type NoteInterval } from './noteIndexes'
 import { deleteNote, join, markerOf, NOTE_MARKER, normalizeChildren, parentOf, partOf, setChild, usedIndexes, type NoteRef } from './noteModel'
 import { copyTree, type FileSource } from './sources'
 
-/** How a paste picks the indexes in the new parent: the **next** ones (after the largest of the note items' interval, as a new note
- * gets), the first free ones (**gaps**), or the person's **custom** ones. */
+/** How a paste picks the indexes in the new parent: the **next** ones (after the largest of the interval, as a new note gets), the
+ * first free ones (**gaps**), or the person's **custom** ones. */
 export type PasteIndexes = 'next' | 'gaps' | 'custom'
 
-/** The indexes `count` notes pasted into `parent` of `source` get by default (`next`) or when filling the gaps (`gaps`); `null` when
- * the interval has no room for them all. */
-export async function indexesForPaste(source: FileSource, parent: string, count: number, how: Exclude<PasteIndexes, 'custom'>): Promise<number[] | null> {
+/** The indexes `count` notes pasted into `parent` of `source` get, all forced into one `interval`, by default (`next`) or when
+ * filling the gaps (`gaps`); `null` when the interval has no room for them all. This is the **"convert all to one interval"**
+ * choice — see `indexesForPasteKeepingIntervals` for the default, which keeps each note's own. */
+export async function indexesForPaste(source: FileSource, parent: string, count: number, how: Exclude<PasteIndexes, 'custom'>, interval: NoteInterval = NOTE_ITEMS): Promise<number[] | null> {
   const used = usedIndexes((await source.list(parent, true)).entries.map((e) => e.name))
-  return how === 'next' ? nextIndexesIn(NOTE_ITEMS, used, count) : gapIndexesIn(NOTE_ITEMS, used, count)
+  return how === 'next' ? nextIndexesIn(interval, used, count) : gapIndexesIn(interval, used, count)
+}
+
+/** The indexes `notes` pasted into `parent` of `source` get by default: each **keeps its own interval** — the section it was
+ * already in, or the note items' interval for one with none — rather than every note landing in the note items' interval
+ * regardless of where it came from (reported live: moving a note that was a section made it a plain note item at the
+ * destination, silently losing which section it belonged to). Notes are grouped by interval and each group gets its own
+ * `next`/`gaps` indexes in that interval, in the notes' own order; `null` when any one interval involved has no room for what
+ * it's being asked for. */
+export async function indexesForPasteKeepingIntervals(source: FileSource, parent: string, notes: NoteRef[], how: Exclude<PasteIndexes, 'custom'>): Promise<number[] | null> {
+  const used = usedIndexes((await source.list(parent, true)).entries.map((e) => e.name))
+  const groups = new Map<string, { interval: NoteInterval; positions: number[] }>()
+  notes.forEach((note, position) => {
+    const interval = intervalOf(parseIndex(note.index) ?? 0) ?? NOTE_ITEMS
+    const group = groups.get(interval.key) ?? { interval, positions: [] }
+    group.positions.push(position)
+    groups.set(interval.key, group)
+  })
+  const out = new Array<number>(notes.length)
+  for (const { interval, positions } of groups.values()) {
+    const indexes = how === 'next' ? nextIndexesIn(interval, used, positions.length) : gapIndexesIn(interval, used, positions.length)
+    if (indexes === null) return null
+    positions.forEach((position, n) => (out[position] = indexes[n]))
+  }
+  return out
 }
 
 /** Puts `notes` (children of one parent of `from`) under `parent` of `to` with the given `indexes` (one each, in order): a **copy**

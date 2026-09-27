@@ -560,8 +560,11 @@ mod platform {
 
         let app_for_event = app.clone();
         let guid_for_event = guid.to_string();
-        window.on_window_event(move |event| {
-            if let WindowEvent::Destroyed = event {
+        window.on_window_event(move |event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                crate::secondary_windows::secondary_window_close_requested(&app_for_event, &guid_for_event, api);
+            }
+            WindowEvent::Destroyed => {
                 owns().remove(&guid_for_event);
                 let app_handle = app_for_event.clone();
                 let guid = guid_for_event.clone();
@@ -569,6 +572,7 @@ mod platform {
                     crate::secondary_windows::handle_window_destroyed(&app_handle, &guid).await;
                 });
             }
+            _ => {}
         });
         Ok(())
     }

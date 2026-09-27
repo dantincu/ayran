@@ -2,14 +2,17 @@ import { useEffect, useState } from 'react'
 import { Check, X } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
-import { indexText, intervalLabel, MAX_INDEX, parseIndex, problems } from './noteIndexes'
+import { indexText, intervalLabel, MAX_INDEX, NOTE_INTERVALS, parseIndex, problems } from './noteIndexes'
 import type { NoteClipboard } from './noteClipboard'
-import { indexesForPaste, placeNotes, type PasteIndexes } from './noteTransfer'
+import { indexesForPaste, indexesForPasteKeepingIntervals, placeNotes, type PasteIndexes } from './noteTransfer'
 import type { FileSource } from './sources'
 
-/** **Pastes the cut or copied notes** under a parent (a notebook's root, or a note): by default each gets the **next available index**
- * there (after the largest of the note items' interval, as a new note does); or the **first free ones — filling the gaps** of the
- * parent; or indexes of the person's own, one box each. A cut can also **normalize the indexes of what stays behind** in the old parent. */
+/** **Pastes the cut or copied notes** under a parent (a notebook's root, or a note): by default each note **keeps its own
+ * interval** (the section it was already in, or the note items' interval for one with none) and gets the **next available
+ * index** there (after the largest, as a new note does), or the **first free one — filling the gaps** of the parent, or an
+ * index of the person's own, one box each. **Convert all to one interval** turns every note — whatever interval it came
+ * from — into the same chosen one instead, the same choice `NewNoteModal` offers for a brand new note. A cut can also
+ * **normalize the indexes of what stays behind** in the old parent. */
 export default function PasteNotesModal({
   clipboard,
   source,
@@ -27,13 +30,19 @@ export default function PasteNotesModal({
   const [how, setHow] = useState<PasteIndexes>('next')
   const [texts, setTexts] = useState<string[]>(notes.map(() => ''))
   const [room, setRoom] = useState<Record<'next' | 'gaps', number[] | null> | null>(null)
+  // `null`: each note keeps its own interval (the default). Otherwise, every note is converted to this one.
+  const [convertTo, setConvertTo] = useState<string | null>(null)
   const [normalizeOld, setNormalizeOld] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  const convertInterval = convertTo === null ? null : (NOTE_INTERVALS.find((i) => i.key === convertTo) ?? null)
+
   useEffect(() => {
     let cancelled = false
-    Promise.all([indexesForPaste(source, parent, notes.length, 'next'), indexesForPaste(source, parent, notes.length, 'gaps')])
+    const compute = (how: 'next' | 'gaps') =>
+      convertInterval ? indexesForPaste(source, parent, notes.length, how, convertInterval) : indexesForPasteKeepingIntervals(source, parent, notes, how)
+    Promise.all([compute('next'), compute('gaps')])
       .then(([next, gaps]) => {
         if (cancelled) return
         setRoom({ next, gaps })
@@ -43,7 +52,7 @@ export default function PasteNotesModal({
     return () => {
       cancelled = true
     }
-  }, [source, parent, notes])
+  }, [source, parent, notes, convertInterval])
 
   const chosen: Array<number | null> = how === 'custom' ? texts.map(parseIndex) : (room?.[how] ?? [])
   const shown = how === 'custom' ? texts : chosen.map((n) => (n === null ? '' : indexText(n)))
@@ -78,6 +87,27 @@ export default function PasteNotesModal({
             <input type="radio" name="paste-how" checked={how === 'custom'} onChange={() => setHow('custom')} /> Indexes of my own
           </label>
         </div>
+        {how !== 'custom' && (
+          <>
+            <label className="pair-check">
+              <input type="checkbox" checked={convertTo !== null} onChange={(e) => setConvertTo(e.target.checked ? NOTE_INTERVALS[0].key : null)} /> Convert all to one interval{' '}
+              <span className="muted">(otherwise each note keeps the interval it already had)</span>
+            </label>
+            {convertTo !== null && (
+              <fieldset className="notes-field">
+                <legend>Index interval</legend>
+                {NOTE_INTERVALS.map((i) => (
+                  <label key={i.key}>
+                    <input type="radio" name="paste-convert-interval" checked={convertTo === i.key} onChange={() => setConvertTo(i.key)} /> {i.label}{' '}
+                    <span className="muted">
+                      ({i.from}–{i.to})
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            )}
+          </>
+        )}
         <ul className="indexes-list">
           {notes.map((n, i) => (
             <li key={n.index} className="indexes-row">
@@ -110,7 +140,7 @@ export default function PasteNotesModal({
           <div className="error-banner">
             {error ??
               (noRoom
-                ? 'There is no room for all of them in that interval — choose the gaps, your own indexes, or normalize the notes there first.'
+                ? `There is no room for all of them in ${convertInterval ? 'that interval' : 'one of their intervals'} — choose the gaps, your own indexes, or normalize the notes there first.`
                 : invalid.size > 0
                   ? `An index is a number from 1 to ${MAX_INDEX}.`
                   : 'An index is used twice.')}

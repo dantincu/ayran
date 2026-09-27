@@ -85,9 +85,11 @@ interface Editing {
  * each (open it as a web app, edit its markdown, see its children, see its files, show it in the File Manager, rename, delete),
  * a new note, and — under a note — the same for the note itself. It is one page for both: a notebook is the note tree's root.
  *
- * **Clicking a note opens it as a web app in a tab of this window** — the tab that follows the note's editor: a second click brings
- * it back. Each row's *more* button (and a right click, or a long press) opens a menu: the note's index, selecting it, cutting and
- * copying it, a tab that does not follow the editor, and showing, suspending or closing the one that does.
+ * **Clicking a note opens it as a web app in the window reused for that** — the same one the note editor's own "Open it as a web
+ * app" button reuses (one such window per Notes window, whatever note it was last asked to show — clicking a note again, from
+ * either place, brings it back rather than opening another). Each row's *more* button (and a right click, or a long press) opens a
+ * menu: the note's index, selecting it, cutting and copying it, a tab of this window that does not follow the editor, and showing,
+ * suspending or closing the one that does.
  *
  * **Renaming as in Total Commander**: F2 (or the pencil) turns the title into a box, and the Up and Down arrows submit it *and* go
  * on to the note before / after; Shift+F2 (or a press on the index) does the same for the index. **The indexes of all the notes**
@@ -200,11 +202,13 @@ export default function NotePage({
     return { markdown, file: source.fileRef(markdown) }
   }
 
-  /** The default action for a note: its markdown as a web app in a tab of this window — the tab that follows the editor. */
+  /** The default action for a note: its markdown as a web app in the window reused for that — the same one the note
+   * editor's own "Open it as a web app" button reuses, so clicking a note (from here or from its own editor) always
+   * lands in the same place instead of the list opening a same-window tab while the editor opens a separate window. */
   const openNote = (n: { folder: string }) =>
     attempt(async () => {
       const { file } = await markdownOf(n)
-      await openNoteTab(file, true)
+      await openNoteTab(file, true, true)
     })
 
   /** A tab of its own (it does not follow the editor). */
@@ -488,7 +492,7 @@ export default function NotePage({
           {note && (
             <div className="notes-panel-row note-self">
               <span className="muted">This note:</span>
-              <IconButton icon={AppWindow} label="Open it as a web app (in a tab of this window)" onClick={() => openNote(note)} />
+              <IconButton icon={AppWindow} label="Open it as a web app (in the window reused for that)" onClick={() => openNote(note)} />
               <IconButton icon={FilePenLine} label="Edit its markdown" onClick={() => edit(note)} />
               <IconButton icon={Paperclip} label="Its files" onClick={() => showFiles(note)} />
               <IconButton icon={FolderOpen} label="Show its folder in the File Manager" onClick={() => showInFileManager(note.folder)} />
@@ -588,7 +592,7 @@ export default function NotePage({
                           {editingTitle ? (
                             editBox(n, 'title')
                           ) : (
-                            <button className="link-button entry-name" onClick={() => openNote(n)} title="Open it as a web app, in a tab of this window">
+                            <button className="link-button entry-name" onClick={() => openNote(n)} title="Open it as a web app, in the window reused for that">
                               <FileText size={15} strokeWidth={2} aria-hidden="true" /> {n.title}
                             </button>
                           )}

@@ -17,6 +17,14 @@ pub struct SecondaryWindowsState {
     pool: SqlitePool,
     /// Guids whose *next* Destroyed event should NOT delete the DB row (a suspend in progress).
     pending_suspend: Mutex<HashSet<String>>,
+    /// Guids whose *next* Destroyed event SHOULD delete the DB row — an explicit close (`close_secondary_window`,
+    /// `close_all_secondary_windows`, a cascade whose row is already gone), as opposed to the person closing the
+    /// window some other way (its own `[X]`, on desktop) with no explicit command behind it at all. Checked by
+    /// `secondary_window_close_requested`, which — on Windows, where a plain `[X]` click reaches `CloseRequested`
+    /// with no command ever having run — otherwise treats any close nobody asked for as a **suspend** instead (the
+    /// entry stays): reported live, closing a window this way used to remove its entry, tabs and tags outright,
+    /// indistinguishable from the deliberate Close button.
+    pending_close: Mutex<HashSet<String>>,
     /// window_guid -> (tab_guid, force_stored_resource_id): the tab the *next*
     /// `init_window_tab` call from that window binds to, consumed the moment that call arrives. The
     /// admin-app decides which tab a window will show *before* its page exists, and records it here:
@@ -72,6 +80,12 @@ impl SecondaryWindowsState {
         self.current_tabs.lock().unwrap().get(window_guid).cloned()
     }
 
+    /// Marks `guid` so that its next Destroyed event is treated as a real close (its row is already gone, or is
+    /// about to be) rather than a suspend — see `pending_close` and `secondary_window_close_requested`.
+    pub(crate) fn mark_pending_close(&self, guid: &str) {
+        self.pending_close.lock().unwrap().insert(guid.to_string());
+    }
+
     /// Records what `window_guid` showed before its current tab is about to change, so `window_go_back`
     /// can undo it once. `None` when there is nothing to remember (its very first tab).
     fn remember_previous(&self, window_guid: &str, previous: Option<PreviousShown>) {
@@ -95,6 +109,7 @@ impl SecondaryWindowsState {
         Self {
             pool,
             pending_suspend: Mutex::new(HashSet::new()),
+            pending_close: Mutex::new(HashSet::new()),
             pending_tab_activation: Mutex::new(HashMap::new()),
             current_tabs: Mutex::new(HashMap::new()),
             previous_shown: Mutex::new(HashMap::new()),
@@ -592,13 +607,64 @@ pub(crate) async fn add_page_tab(app: &AppHandle, window_guid: &str, link_page: 
     Ok(tab_guid)
 }
 
-/// Opens a window of the Notes app whose only tab shows the web page `link_page` (see `add_page_tab`; `syncs` likewise) — a note
-/// followed by its editor from a window of its own. Resolves to the new window's guid.
-pub(crate) async fn open_notes_window_with_page(app: &AppHandle, link_page: &str, syncs: Option<&str>) -> Result<String, String> {
+/// The role recorded on a window opened by `open_notes_window_with_page` — a note (or html/markdown file) shown
+/// "in a window of its own", as opposed to a tab of the caller's own window. One such window is kept **per Notes
+/// window** and reused for whichever page was most recently asked to open this way, the same idea as User Action.
+const NOTE_WEB_APP_ROLE: &str = "NoteWebApp";
+
+/// The `NoteWebApp` window already open (or suspended) for `owner`'s Notes window, if there is one — `(guid, its
+/// own first tab's guid)`. Mirrors `user_action.rs`'s own `existing()`.
+async fn existing_note_web_app_window(pool: &SqlitePool, owner: &str) -> Option<(String, String)> {
+    let rows = sqlx::query(
+        "SELECT w.guid AS guid, w.origin AS origin, tt.guid AS tab_guid
+         FROM secondary_windows w
+         JOIN tabs t ON t.guid = w.parent_tab
+         JOIN tabs tt ON tt.window_guid = w.guid
+         WHERE t.window_guid = ?1
+         ORDER BY tt.created_at ASC",
+    )
+    .bind(owner)
+    .fetch_all(pool)
+    .await
+    .ok()?;
+    rows.into_iter().find_map(|row| {
+        let origin: Origin = row.get::<Option<String>, _>("origin").and_then(|json| serde_json::from_str(&json).ok())?;
+        (origin.role.as_deref() == Some(NOTE_WEB_APP_ROLE)).then(|| (row.get("guid"), row.get("tab_guid")))
+    })
+}
+
+/// Opens (or reuses) the window that shows a note — or an html/markdown file — "as a web app in a window of its
+/// own": the note editor's own *Open it as a web app* button, and a note's own click in the list, alike. **One
+/// such window is kept per Notes window** and reused for whichever page was most recently asked to open this
+/// way, rather than a fresh window on every press (reported live: the editor's button opened a brand new window
+/// every single time). Its own tab is simply pointed at the new page and activated in place — the window itself
+/// is never destroyed and remade, so switching from one note to a completely different one has no flicker.
+/// `owner_window_guid`: the calling window, whose *current tab* the reused (or newly made) window is listed
+/// under — re-parented on every call, so it always shows under whichever tab most recently asked for it.
+pub(crate) async fn open_notes_window_with_page(app: &AppHandle, owner_window_guid: &str, link_page: &str, syncs: Option<&str>) -> Result<String, String> {
     let state = app.state::<SecondaryWindowsState>();
+    let parent_tab = state.current_tab_of(owner_window_guid).ok_or("This window hasn't registered a tab yet.")?;
+
+    if let Some((guid, tab_guid)) = existing_note_web_app_window(&state.pool, owner_window_guid).await {
+        sqlx::query("UPDATE tabs SET resource_id = ?1, link_page = ?1, syncs = ?2 WHERE guid = ?3")
+            .bind(link_page)
+            .bind(syncs)
+            .bind(&tab_guid)
+            .execute(&state.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE secondary_windows SET parent_tab = ?1 WHERE guid = ?2").bind(&parent_tab).bind(&guid).execute(&state.pool).await.map_err(|e| e.to_string())?;
+        activate_tab(app.clone(), app.state::<SecondaryWindowsState>(), tab_guid).await?;
+        crate::window_host::focus(app, &guid)?;
+        let _ = app.emit(EVENT_CHANGED, ());
+        return Ok(guid);
+    }
+
     let page = Page::new(Kind::System, crate::system_apps::relative_path_of("notes"));
     validate_page(app, &page)?;
-    let (guid, _) = insert_entry(&state.pool, &page).await?;
+    let origin = Origin { role: Some(NOTE_WEB_APP_ROLE.to_string()), ..Default::default() };
+    let origin_json = serde_json::to_string(&origin).map_err(|e| e.to_string())?;
+    let (guid, _) = insert_entry_full(&state.pool, &page, Some(&origin_json), Some(&parent_tab)).await?;
     let (tab_guid, _) = tab_for_opening(&state.pool, &guid, &page.relative_path, None).await?;
     sqlx::query("UPDATE tabs SET resource_id = ?1, link_page = ?1, syncs = ?2 WHERE guid = ?3")
         .bind(link_page)
@@ -1036,6 +1102,30 @@ pub(crate) fn main_window_close_requested(app: &AppHandle, api: &tauri::CloseReq
     });
 }
 
+/// A secondary window is being closed (desktop) — most often the person's own `[X]`, since every one of *our*
+/// own close paths (`close_secondary_window`, "close all", a cascade whose row is already gone) marks
+/// `pending_close` on the guid *before* ever asking the window to close, and this lets those straight through
+/// (the first branch below). Anything else reaching here did so with **no command behind it at all** — nobody
+/// asked to close this window, only the OS did — and that is treated exactly like the admin-app's own Suspend:
+/// the close is held back, the entry is marked to survive it, and only then is the window actually closed (the
+/// second request this itself causes takes the first branch and goes through), the same recursion-safe shape
+/// `main_window_close_requested` uses. Reported live: without this, the person's own `[X]` on a secondary window
+/// removed its entry, tabs and tags outright — indistinguishable from pressing the deliberate Close button.
+#[cfg(desktop)]
+pub(crate) fn secondary_window_close_requested(app: &AppHandle, guid: &str, api: &tauri::CloseRequestApi) {
+    let state = app.state::<SecondaryWindowsState>();
+    let already_decided = state.pending_close.lock().unwrap().contains(guid) || state.pending_suspend.lock().unwrap().contains(guid);
+    if already_decided || state.shutting_down.load(Ordering::SeqCst) {
+        return;
+    }
+    api.prevent_close();
+    state.pending_suspend.lock().unwrap().insert(guid.to_string());
+    let (app, guid) = (app.clone(), guid.to_string());
+    tauri::async_runtime::spawn(async move {
+        crate::window_host::request_close(&app, &guid);
+    });
+}
+
 /// Suspends every secondary window (of both kinds, including the ones opened from tabs) and closes every
 /// external web site's window, waiting for them to be gone.
 #[cfg(desktop)]
@@ -1063,6 +1153,9 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
     app.state::<crate::sqlite_db::SqliteState>().close(guid, None).await;
 
     let state = app.state::<SecondaryWindowsState>();
+    // An explicit close (`close_secondary_window`, "close all", a cascade whose row is already gone) always wins,
+    // even in the unlikely case both were somehow marked — it's what actually asked for the row to be removed.
+    let was_real_close = state.pending_close.lock().unwrap().remove(guid);
     let was_suspended = {
         let mut pending = state.pending_suspend.lock().unwrap();
         // (Always taken out, so a suspend that was asked for isn't left behind.)
@@ -1070,7 +1163,7 @@ pub(crate) async fn handle_window_destroyed(app: &AppHandle, guid: &str) {
         asked || state.shutting_down.load(Ordering::SeqCst)
     };
 
-    if !was_suspended {
+    if was_real_close || !was_suspended {
         state.current_tabs.lock().unwrap().remove(guid);
         delete_window_and_tags(&state.pool, guid).await.close(app);
     } else {
@@ -1580,7 +1673,12 @@ pub async fn close_secondary_window(
     state: tauri::State<'_, SecondaryWindowsState>,
     guid: String,
 ) -> Result<(), String> {
+    // Marked *before* asking the window to close, so `secondary_window_close_requested` (Windows) knows this
+    // particular close is the deliberate one — not the person's own `[X]` — and lets it go through as a real
+    // close rather than intercepting it as a suspend.
+    state.pending_close.lock().unwrap().insert(guid.clone());
     if !crate::window_host::request_close(&app, &guid) {
+        state.pending_close.lock().unwrap().remove(&guid); // wasn't open — nothing will ever consume it
         state.pending_tab_activation.lock().unwrap().remove(&guid);
         state.current_tabs.lock().unwrap().remove(&guid);
         delete_window_and_tags(&state.pool, &guid).await.close(&app);
@@ -1621,10 +1719,12 @@ pub async fn close_all_secondary_windows(
 
     let mut closing = Vec::new();
     for (guid, _, _) in &rows {
+        state.pending_close.lock().unwrap().insert(guid.clone());
         if crate::window_host::request_close(&app, guid) {
             // The window-destroyed handler deletes the row (and its tags) once the window actually closes.
             closing.push(guid.clone());
         } else {
+            state.pending_close.lock().unwrap().remove(guid);
             delete_window_and_tags(&state.pool, guid).await.close(&app);
         }
     }

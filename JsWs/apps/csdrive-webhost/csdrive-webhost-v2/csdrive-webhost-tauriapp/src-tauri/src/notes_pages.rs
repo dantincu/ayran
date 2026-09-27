@@ -358,7 +358,7 @@ pub async fn open_note_tab(
     let syncs = sync.then_some(key.as_str());
 
     if new_window {
-        return crate::secondary_windows::open_notes_window_with_page(&app, &link, syncs).await;
+        return crate::secondary_windows::open_notes_window_with_page(&app, &window_guid, &link, syncs).await;
     }
     let tab = match (sync, crate::secondary_windows::syncing_tab(windows.pool(), &window_guid, &key).await?) {
         (true, Some(existing)) => existing,
@@ -510,7 +510,12 @@ impl Closing {
 
     /// Asks the windows to close (their entries are already gone).
     pub fn close(&self, app: &AppHandle) {
+        use tauri::Manager;
+        let state = app.state::<crate::secondary_windows::SecondaryWindowsState>();
         for guid in &self.windows {
+            // A real close, not a suspend — the row is already deleted, so there is nothing left to keep an
+            // entry for (see `secondary_window_close_requested`, which otherwise treats an unmarked close as one).
+            state.mark_pending_close(guid);
             crate::window_host::request_close(app, guid);
         }
         crate::external_sites::close_windows(app, &self.external);
