@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "user-apps",
-  "description": "What every window may do — user-provided web apps and the system apps (Notes...) alike, they have the same rights: use files under the user folder and folders the user picks with a native folder picker (the fs_* commands, which obey the app's own scope: the user folder plus picked folders, minus the app's own data), SQLite databases in those same places, the Filen.io accounts the user has connected (file operations only — never credentials), manage app windows, tab groups, tabs and their tags, open a file or a note as a web app and tell the windows that show a file that it was saved (the Notes commands), and export a file to the device (a native 'save as' dialog on desktop, a confirmation before writing to Downloads on Android — every time). Deliberately absent (the admin-app's, see admin.json): connecting/disconnecting Filen accounts, data-folder management, real paths, system/OS information, and window/app introspection. Yes/no questions are asked with confirm_dialog (a native box under the prompt rules of docs/app-security.md), not with the dialog plugin, whose commands are the admin-app's.",
+  "description": "What every window may do — user-provided web apps and the system apps (Notes...) alike, they have the same rights: use files under the user folder and folders the user picks with a native folder picker (the fs_* commands, which obey the app's own scope: the user folder plus picked folders, minus the app's own data), SQLite databases in those same places, the Filen.io accounts the user has connected (file operations only — never credentials), manage app windows, tab groups, tabs and their tags, undo one step of tab/link navigation for its own window (window_go_back — a page's own top bar Back button) and persist that its own top bar was closed (set_top_bar_hidden), open a file or a note as a web app and tell the windows that show a file that it was saved (the Notes commands), and export a file to the device (a native 'save as' dialog on desktop, a confirmation before writing to Downloads on Android — every time). Deliberately absent (the admin-app's, see admin.json): connecting/disconnecting Filen accounts, data-folder management, real paths, system/OS information, and window/app introspection. Yes/no questions are asked with confirm_dialog (a native box under the prompt rules of docs/app-security.md), not with the dialog plugin, whose commands are the admin-app's.",
   "windows": [
     "*"
   ],
@@ -37,6 +37,8 @@
     "allow-focus-secondary-window",
     "allow-reload-secondary-window",
     "allow-reload-tab",
+    "allow-set-top-bar-hidden",
+    "allow-window-go-back",
     "allow-list-tags",
     "allow-add-window-tag",
     "allow-update-window-tag",

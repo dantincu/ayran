@@ -32,6 +32,7 @@ mod secure_store;
 mod secondary_windows;
 mod sqlite_db;
 mod system_apps;
+mod top_bar;
 mod user_action;
 mod window_host;
 mod window_scripts;
@@ -313,6 +314,8 @@ pub fn run() {
             secondary_windows::reload_secondary_window,
             secondary_windows::reload_tab,
             secondary_windows::show_top_bar,
+            secondary_windows::set_top_bar_hidden,
+            secondary_windows::window_go_back,
             secondary_windows::list_tags,
             secondary_windows::add_window_tag,
             secondary_windows::update_window_tag,

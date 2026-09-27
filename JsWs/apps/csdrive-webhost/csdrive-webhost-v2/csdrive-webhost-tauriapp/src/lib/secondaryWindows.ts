@@ -141,6 +141,12 @@ export interface TabInitResponse {
   filen?: FilenOrigin | null
   /** What every page should apply (see `codeSnippets.ts`). */
   codeSnippets?: CodeSnippet[]
+  /** Markup a page's own top bar should insert for the tab's label, tags and root — an HTML string, safe to
+   * assign to an element's `innerHTML` as is (see CLAUDE.md's "The top bar"). Empty until the tab has a label. */
+  topBarHtml: string
+  /** Whether a page's own top bar should start hidden: the person's own close, or — absent that — the global
+   * autohide setting; `false` once the admin-app's "Show the top bar" has overridden either. */
+  topBarHidden: boolean
 }
 
 const EVENT_CHANGED = 'secondary-windows-changed'
@@ -223,6 +229,21 @@ export function onShowTopBar(callback: () => void): Promise<UnlistenFn> {
   return getCurrentWebviewWindow().listen('show-top-bar', () => callback())
 }
 
+/** Called by a page's own top bar when the person closes it — persists that so it stays closed across a
+ * reload or the next time the tab is activated, until the admin-app's "Show the top bar" overrides it
+ * (`showTopBar`, above). Only the window that owns the tab may call this for it. */
+export async function setTabTopBarHidden(tabGuid: string, hidden: boolean): Promise<void> {
+  await invoke('set_top_bar_hidden', { tabGuid, hidden })
+}
+
+/** Undoes one step of tab-switch/link navigation for this window — what a page's own top bar's Back button
+ * calls, and what Android's hardware Back button does natively for the window it belongs to. Resolves to
+ * whether there was something to undo; `false` when there wasn't (the caller's own business what to do then —
+ * Notes and `example-toolbar` simply do nothing). */
+export async function windowGoBack(): Promise<boolean> {
+  return invoke('window_go_back')
+}
+
 export function onSecondaryWindowsChanged(callback: () => void): Promise<UnlistenFn> {
   return listen(EVENT_CHANGED, () => callback())
 }
@@ -303,15 +324,17 @@ export function onTabNavigate(callback: (tab: TabInitResponse) => void): Promise
  * and optionally its resource type (see `initWindowTab`) and/or its resource id —
  * e.g. the app navigated to a different view within the same tab, without opening
  * a new one. Omitting either leaves that field as it was. Only the window that
- * owns the tab may update it. */
+ * owns the tab may update it. Answers with the markup the tab's own top bar should now show
+ * (`topBarHtml`, recomputed from the label just set — see CLAUDE.md's "The top bar"), so a page
+ * that draws one updates it from this response instead of asking separately. */
 export async function updateTabResource(
   tabGuid: string,
   tabText: TabText,
   resourceType?: string,
   resourceId?: string,
   appTitle?: string,
-): Promise<void> {
-  await invoke('update_tab_resource', {
+): Promise<{ topBarHtml: string }> {
+  return invoke('update_tab_resource', {
     tabGuid,
     tabText,
     appTitle: appTitle ?? null,

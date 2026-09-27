@@ -142,6 +142,19 @@ pub fn navigate(guid: &str, page: &Page) -> Result<(), String> {
     call_strings("eval", &[guid, &format!("location.replace({target})")])
 }
 
+/// The same as `navigate`, from a URL already in hand rather than a `Page` — for `secondary_windows::go_back`
+/// (via the `window_go_back` command), whose address is reconstructed from what the window showed before, not
+/// built fresh from a `Page`. Doesn't update the window's own stored `Page`, the same as `nativeGoBack` (the
+/// hardware Back button's path): it tells the WebView the new address directly and doesn't go through here.
+pub fn navigate_to_url(guid: &str, url: &Url) -> Result<(), String> {
+    if !is_open(guid) {
+        return Err("That window isn't open.".to_string());
+    }
+    let url = window_host::navigation_url(url);
+    let target = serde_json::to_string(url.as_str()).map_err(|e| e.to_string())?;
+    call_strings("eval", &[guid, &format!("location.replace({target})")])
+}
+
 /// The card of the window in the Recents screen shows `title`.
 pub fn set_title(guid: &str, title: &str) {
     if is_open(guid) {

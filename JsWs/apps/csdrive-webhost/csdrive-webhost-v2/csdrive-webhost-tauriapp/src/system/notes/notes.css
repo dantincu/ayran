@@ -277,6 +277,12 @@
   background: var(--panel-bg);
 }
 
+.notes-top-bar-info {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .notes-top-bar-error {
   overflow: hidden;
   text-overflow: ellipsis;

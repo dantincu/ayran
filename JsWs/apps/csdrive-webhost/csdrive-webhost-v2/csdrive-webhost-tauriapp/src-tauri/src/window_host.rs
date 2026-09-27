@@ -400,6 +400,12 @@ pub fn navigate(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> 
     platform::navigate(app, guid, page)
 }
 
+/// The same as `navigate`, from a URL already in hand — used by `window_go_back` (`secondary_windows.rs`),
+/// whose address is reconstructed from what the window showed before rather than built fresh from a `Page`.
+pub fn navigate_to_url(app: &AppHandle, guid: &str, url: &Url) -> Result<(), String> {
+    platform::navigate_to_url(app, guid, url)
+}
+
 /// Asks the person something in a native box that belongs to the window (`labels`: two or three buttons); the answer is the
 /// index of the button pressed — `None` when the box was dismissed, or the window isn't open (any more).
 ///
@@ -470,13 +476,18 @@ mod platform {
     }
 
     pub fn navigate(app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
-        let url = page.url()?;
+        navigate_to_url(app, guid, &page.url()?)
+    }
+
+    /// The same as `navigate`, from a URL already in hand rather than a `Page` — for `go_back`, whose
+    /// address is reconstructed from what the window showed before, not built fresh from a `Page`.
+    pub fn navigate_to_url(app: &AppHandle, guid: &str, url: &Url) -> Result<(), String> {
         let window = app.get_webview_window(guid).ok_or("That window isn't open.")?;
         // The rule is told first: the navigation below is one it must let through.
         if let Some(own) = owns().get(guid) {
             *own.lock().unwrap() = url.clone();
         }
-        window.navigate(navigation_url(&url)).map_err(|e| e.to_string())
+        window.navigate(navigation_url(url)).map_err(|e| e.to_string())
     }
 
     pub async fn choose(app: &AppHandle, guid: &str, title: &str, message: &str, labels: &[&str]) -> Option<usize> {
@@ -629,6 +640,10 @@ mod platform {
 
     pub fn navigate(_app: &AppHandle, guid: &str, page: &Page) -> Result<(), String> {
         host::navigate(guid, page)
+    }
+
+    pub fn navigate_to_url(_app: &AppHandle, guid: &str, url: &Url) -> Result<(), String> {
+        host::navigate_to_url(guid, url)
     }
 
     pub fn reload(_app: &AppHandle, guid: &str) {

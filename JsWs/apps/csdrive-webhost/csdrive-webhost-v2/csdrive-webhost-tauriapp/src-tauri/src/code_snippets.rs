@@ -47,7 +47,12 @@ const SAFE_AREA_CSS: &str = "html {
 
 /// Everything web apps should apply, in order.
 pub fn code_snippets() -> Vec<CodeSnippet> {
-    let mut snippets = vec![CodeSnippet { code: SAFE_AREA_CSS.to_string(), kind: SnippetType::Css }];
+    let mut snippets = vec![
+        CodeSnippet { code: SAFE_AREA_CSS.to_string(), kind: SnippetType::Css },
+        // Styles the markup a page's own top bar receives in `topBarHtml` (see `top_bar.rs` and
+        // CLAUDE.md's "The top bar") — so a page needs no CSS of its own for it to look consistent.
+        CodeSnippet { code: crate::top_bar::TOP_BAR_INFO_CSS.to_string(), kind: SnippetType::Css },
+    ];
     // A manual light or dark mode (`appearance.rs`): the page's form controls and scrollbars follow it.
     if let Some(css) = crate::appearance::color_scheme_css() {
         snippets.push(CodeSnippet { code: css, kind: SnippetType::Css });

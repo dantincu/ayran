@@ -27,6 +27,21 @@ export default function SettingsTab() {
   // Whether every list's row of icon buttons collapses into a single "more actions" menu (`rowActionsCompact.ts`).
   const [rowActionsCompact, setRowActionsCompactState] = useState(false)
   useEffect(() => subscribeRowActionsCompact(setRowActionsCompactState), [])
+  // The global top-bar settings (`topBar.*` in `global_settings`; the backend reads the same keys when it
+  // renders a tab's `topBarHtml` and decides whether it starts hidden — `top_bar.rs`). `autohide` defaults to
+  // on, the other two to off, matching the backend's own defaults when a key was never set.
+  const [topBarAutohide, setTopBarAutohideState] = useState(true)
+  const [topBarHideLabels, setTopBarHideLabelsState] = useState(false)
+  const [topBarHideRoot, setTopBarHideRootState] = useState(false)
+  useEffect(() => {
+    invoke<string | null>('get_global_setting', { key: 'topBar.autohide' }).then((v) => setTopBarAutohideState(v !== '0'))
+    invoke<string | null>('get_global_setting', { key: 'topBar.hideLabels' }).then((v) => setTopBarHideLabelsState(v === '1'))
+    invoke<string | null>('get_global_setting', { key: 'topBar.hideRoot' }).then((v) => setTopBarHideRootState(v === '1'))
+  }, [])
+  function setTopBarSetting(key: string, value: boolean, apply: (v: boolean) => void) {
+    apply(value)
+    invoke('set_global_setting', { key, value: value ? '1' : '0' }).catch((e) => setError(String(e)))
+  }
   // Whether prompts are prevented, and how many windows are open of how many are allowed (`prompt_guard.rs`).
   const [guard, setGuard] = useState<{ promptsPrevented: boolean; openWindows: number; maxWindows: number } | null>(null)
   const readGuard = useCallback(() => {
@@ -176,11 +191,36 @@ export default function SettingsTab() {
       <p className="muted">
         Notes' pages, and any web app that has drawn a header of its own the same way, can hide their own top bar —
         this shows it again everywhere it was hidden, in one click, without having to find each tab in the System/User
-        Apps tabs.
+        Apps tabs, and overrides a bar the person closed or that started hidden by the autohide setting below (until
+        it's closed again).
       </p>
       <div className="toolbar-actions">
         <IconButton icon={PanelTop} label="Show the top bar for every open window" onClick={showAllTopBars} />
       </div>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={topBarAutohide}
+          onChange={(e) => setTopBarSetting('topBar.autohide', e.target.checked, setTopBarAutohideState)}
+        />
+        Hide the top bar by default (on by default) — the person can still show it, and closing it after that is remembered
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={topBarHideLabels}
+          onChange={(e) => setTopBarSetting('topBar.hideLabels', e.target.checked, setTopBarHideLabelsState)}
+        />
+        Hide the tab's labels (tags) in the top bar
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={topBarHideRoot}
+          onChange={(e) => setTopBarSetting('topBar.hideRoot', e.target.checked, setTopBarHideRootState)}
+        />
+        Hide the tab's root in the top bar
+      </label>
 
       <div className="toolbar" style={{ marginTop: 24 }}>
         <strong>Data folder</strong>

@@ -49,9 +49,9 @@ pub struct SecondaryWindowsState {
     shutting_down: AtomicBool,
 }
 
-/// See `SecondaryWindowsState::previous_shown`. Only Android's Back button (`go_back`) reads this back out today.
+/// See `SecondaryWindowsState::previous_shown`. Read back out by `go_back` — Android's hardware Back
+/// button, and the `window_go_back` command any platform's page can call from its own top bar.
 #[derive(Clone)]
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 struct PreviousShown {
     /// The tab to make current again.
     tab_guid: String,
@@ -87,7 +87,6 @@ impl SecondaryWindowsState {
     }
 
     /// Takes (removes) what `window_guid` should go back to, if anything.
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     fn take_previous(&self, window_guid: &str) -> Option<PreviousShown> {
         self.previous_shown.lock().unwrap().remove(window_guid)
     }
@@ -227,6 +226,13 @@ pub struct TabInitResponse {
     /// Snippets of css/html/javascript every web app should apply (see `code_snippets`).
     /// Filled in by the `init_window_tab` command, not by the database logic.
     pub code_snippets: Vec<crate::code_snippets::CodeSnippet>,
+    /// The markup a page's own top bar should insert for the tab's label, tags and root (see
+    /// `top_bar.rs`) — empty until the tab has a label (`update_tab_resource`'s first call).
+    pub top_bar_html: String,
+    /// Whether the page's own top bar should start hidden (the person closed it, or — absent that —
+    /// the global `topBar.autohide` setting; `false` when the admin-app's "Show the top bar" overrode
+    /// either). See `top_bar::hidden`.
+    pub top_bar_hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -410,6 +416,19 @@ pub async fn init_db(admin_dir: &std::path::Path) -> Result<SqlitePool, sqlx::Er
     .unwrap_or(0);
     if has_resource_type_column == 0 {
         sqlx::query("ALTER TABLE tabs ADD COLUMN resource_type TEXT").execute(&pool).await?;
+    }
+
+    // `top_bar_hidden`: whether the page's own top bar should start hidden — NULL (the ordinary case)
+    // follows the global `topBar.autohide` setting, `1` is the person's own close, `0` is the
+    // admin-app's "Show the top bar" overriding that (see `top_bar.rs`).
+    let has_top_bar_hidden_column: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('tabs') WHERE name = 'top_bar_hidden'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap_or(0);
+    if has_top_bar_hidden_column == 0 {
+        sqlx::query("ALTER TABLE tabs ADD COLUMN top_bar_hidden INTEGER").execute(&pool).await?;
     }
 
     // Tracks the highest app_version seen for each html file, so init_window_tab can
@@ -670,10 +689,11 @@ pub(crate) async fn open_link_in_window(app: &AppHandle, window_guid: &str, url:
 
 /// The window goes back to what it showed before its current tab (or that tab's own page) last changed — undoing one step of
 /// "a note or an html/markdown file opened as a web app" navigation (a new tab, or a link followed in the same tab). `None`
-/// when there is nothing to go back to (the caller — Android's system Back button, see `android_windows.rs`'s
-/// `nativeGoBack` — falls through to its own "nothing else to do" behavior: suspending the window); `Some(url)` when there
-/// was, the window's own address to navigate to now that the previous tab is current again.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+/// when there is nothing to go back to (Android's system Back button, see `android_windows.rs`'s `nativeGoBack`, falls
+/// through to its own "nothing else to do" behavior — suspending the window — and the `window_go_back` command answers
+/// `Ok(false)`, leaving it to the page); `Some(url)` when there was, the window's own address to navigate to now that the
+/// previous tab is current again — Android navigates its WebView directly with it, `window_go_back` calls
+/// `window_host::navigate_to_url`.
 pub(crate) async fn go_back(app: &AppHandle, window_guid: &str) -> Option<Url> {
     let state = app.state::<SecondaryWindowsState>();
     let previous = state.take_previous(window_guid)?;
@@ -1655,21 +1675,61 @@ pub fn reload_secondary_window(app: AppHandle, guid: String) -> Result<(), Strin
 
 /// Tells a page to show its own top bar, if it has one and it's hidden (`show-top-bar`, listened for by Notes'
 /// pages and, optionally, a web app that has drawn a header of its own the same way — see CLAUDE.md's "The top
-/// bar"). `guid`: one **open** window, or every open window at once when it's `None` (the admin-app's own "Show
-/// the top bar for every open window" button in Settings). Admin-only — the person triggers this from the admin-app
-/// itself (a tab's own row, or the global button), never a page on its own behalf.
+/// bar"). Besides the live event, this **overrides the tab's persisted "closed" state** (`top_bar.rs`) — so a
+/// bar the person closed, or one hidden by the global autohide setting, comes back not just now but the next
+/// time the tab loads too, until it is closed again. `guid`: one **open** window (only its *current* tab's
+/// state is cleared) — or, with no `guid`, every open window at once, clearing every tab's (the admin-app's own
+/// "Show the top bar for every open window" button in Settings). Admin-only — the person triggers this from the
+/// admin-app itself (a tab's own row, or the global button), never a page on its own behalf.
 #[tauri::command]
-pub fn show_top_bar(window: crate::window_host::CallerWindow, app: AppHandle, guid: Option<String>) -> Result<(), String> {
+pub async fn show_top_bar(window: crate::window_host::CallerWindow, app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, guid: Option<String>) -> Result<(), String> {
     crate::window_host::require_admin(&window)?;
     match guid {
         Some(guid) => {
+            if let Some(tab_guid) = state.current_tab_of(&guid) {
+                crate::top_bar::set_hidden(&state.pool, &tab_guid, false).await?;
+            }
             if !crate::window_host::emit_if_open(&app, &guid, "show-top-bar", ()) {
                 return Err("That window isn't open.".into());
             }
         }
-        None => crate::window_host::emit_to_all(&app, "show-top-bar", &()),
+        None => {
+            crate::top_bar::show_every_tab(&state.pool).await?;
+            crate::window_host::emit_to_all(&app, "show-top-bar", &());
+        }
     }
     Ok(())
+}
+
+/// Called by a page's own top bar when the person closes it — persists that so it stays closed across
+/// a reload or the next time the tab is activated, until the admin-app's "Show the top bar" (above)
+/// overrides it. Rejects a tab that doesn't belong to the calling window, like `update_tab_resource`.
+#[tauri::command]
+pub async fn set_top_bar_hidden(window: crate::window_host::CallerWindow, state: tauri::State<'_, SecondaryWindowsState>, tab_guid: String, hidden: bool) -> Result<(), String> {
+    let owner_window_guid: Option<String> =
+        sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1").bind(&tab_guid).fetch_optional(&state.pool).await.map_err(|e| e.to_string())?;
+    let owner_window_guid = owner_window_guid.ok_or_else(|| "Tab not found.".to_string())?;
+    if Some(owner_window_guid.as_str()) != crate::window_host::caller_guid(&window).as_deref() {
+        return Err("Tab does not belong to this window.".to_string());
+    }
+    crate::top_bar::set_hidden(&state.pool, &tab_guid, hidden).await
+}
+
+/// Called by a page's own top bar's Back button: undoes one step of tab-switch/link navigation for the
+/// calling window (see `go_back`) — the same thing Android's hardware Back button does for the window
+/// it belongs to, just reachable from JavaScript on every platform, and only for the window that asks
+/// for its own step back. `Ok(false)`: there was nothing to undo (the caller's own business what to do
+/// then — Notes and `example-toolbar` simply do nothing).
+#[tauri::command]
+pub async fn window_go_back(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<bool, String> {
+    let guid = crate::window_host::caller_guid(&window).ok_or("Only a window can go back.")?;
+    match go_back(&app, &guid).await {
+        Some(url) => {
+            crate::window_host::navigate_to_url(&app, &guid, &url)?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
 }
 
 /// Reloads a tab — when it is **the one an open window is showing** (a tab that isn't shown has no page to reload).
@@ -1763,7 +1823,7 @@ async fn next_group_name(pool: &SqlitePool, window_guid: &str) -> Result<String,
 /// window it runs in is found from its tab.
 async fn fill_origin(pool: &SqlitePool, app: Option<&AppHandle>, response: &mut TabInitResponse) -> Result<(), String> {
     let row = sqlx::query(
-        "SELECT w.kind AS kind, w.relative_path AS relative_path, w.origin AS origin, t.link_page AS link_page
+        "SELECT w.kind AS kind, w.relative_path AS relative_path, w.origin AS origin, t.link_page AS link_page, t.tab_text AS tab_text
          FROM tabs t JOIN secondary_windows w ON w.guid = t.window_guid WHERE t.guid = ?1",
     )
     .bind(&response.tab_guid)
@@ -1772,8 +1832,9 @@ async fn fill_origin(pool: &SqlitePool, app: Option<&AppHandle>, response: &mut 
     .map_err(|e| e.to_string())?;
     let Some(row) = row else { return Ok(()) };
     let kind: String = row.get("kind");
+    let window_relative_path: String = row.get("relative_path");
     let origin: Origin = row.get::<Option<String>, _>("origin").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default();
-    response.relative_path = origin.path.unwrap_or_else(|| row.get("relative_path"));
+    response.relative_path = origin.path.unwrap_or_else(|| window_relative_path.clone());
     // A tab the person opened a link in shows another file of the same storage than the one the window was opened for.
     if let Some(link) = row.get::<Option<String>, _>("link_page") {
         let path = percent_encoding::percent_decode_str(link.split('?').next().unwrap_or("")).decode_utf8_lossy().to_string();
@@ -1808,6 +1869,12 @@ async fn fill_origin(pool: &SqlitePool, app: Option<&AppHandle>, response: &mut 
     response.role = origin.role.unwrap_or_default();
     response.storage = origin.storage.unwrap_or_else(|| if kind == "system" { "Bundled" } else { "UserFolder" }.to_string());
     response.filen = origin.filen;
+    // The window's own relative path (not `response.relative_path`, which may have just become the
+    // *page's* path — a link, or a file opened from Filen): `top_bar::root_of` only recognises Notes'
+    // own windows (`system:notes`), whatever page one of its tabs is currently showing.
+    let tab_text: Option<TabText> = row.get::<Option<String>, _>("tab_text").and_then(|json| serde_json::from_str(&json).ok());
+    response.top_bar_html = crate::top_bar::render_html(pool, &window_relative_path, &response.resource_id, &response.tab_guid, tab_text.as_ref()).await;
+    response.top_bar_hidden = crate::top_bar::hidden(pool, &response.tab_guid).await;
     Ok(())
 }
 
@@ -2110,6 +2177,15 @@ pub(crate) async fn refresh_window_title(app: &AppHandle, window_guid: &str) {
     crate::window_host::set_title(app, window_guid, &title);
 }
 
+/// What `update_tab_resource` answers with, besides changing the tab: the markup its own top bar
+/// should now show (see `top_bar.rs`), recomputed from the label just set — so a page that draws one
+/// updates it from this response instead of asking separately.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TopBarUpdate {
+    pub top_bar_html: String,
+}
+
 /// Called by an app to set (or replace) the two-line, richly-styled label its tab
 /// shows in the window manager, and optionally its resource type (the key into that
 /// app's icon set — see `submit_resource_icons`) and/or its resource id (e.g. the
@@ -2126,7 +2202,7 @@ pub async fn update_tab_resource(
     app_title: Option<String>,
     resource_type: Option<String>,
     resource_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<TopBarUpdate, String> {
     let owner_window_guid: Option<String> = sqlx::query_scalar("SELECT window_guid FROM tabs WHERE guid = ?1")
         .bind(&tab_guid)
         .fetch_optional(&state.pool)
@@ -2141,7 +2217,8 @@ pub async fn update_tab_resource(
 
     refresh_window_title(&app, &owner_window_guid).await;
     let _ = app.emit(EVENT_CHANGED, ());
-    Ok(())
+    let (top_bar_html, _hidden) = crate::top_bar::compute(&state.pool, &tab_guid).await;
+    Ok(TopBarUpdate { top_bar_html })
 }
 
 /// Called by an app in response to a `request-resource-icons` event to report its
@@ -3343,5 +3420,54 @@ mod tests {
         assert_eq!(path, "system/notes/index.html");
         let (path, _) = split_url_into_path_and_resource_id("http://csuser.localhost/system/notes/index.html").unwrap();
         assert_eq!(path, "system/notes/index.html");
+    }
+
+    #[test]
+    fn a_tabs_top_bar_starts_empty_and_follows_autohide_until_closed_or_shown() {
+        tauri::async_runtime::block_on(async {
+            let pool = test_pool("top-bar").await;
+            insert_window(&pool, "win1", "asdf/index.html").await;
+            let mut tab = init_tab(&pool, "win1", "asdf/index.html", "res-a", 1).await;
+            fill_origin(&pool, None, &mut tab).await.unwrap();
+
+            // Nothing to show yet (no label), and hidden by default (autohide defaults to on).
+            assert_eq!(tab.top_bar_html, "");
+            assert!(tab.top_bar_hidden);
+
+            // Giving the tab a label produces markup — from `update_tab_resource`'s own response, not a
+            // separate call — with the bullet-separated, styled spans of both rows.
+            let text = TabText {
+                first_row: vec![TabTextSpan { text: "My app".into(), bold: true, italic: false, mono: false }],
+                second_row: vec![TabTextSpan { text: "/a/b".into(), bold: false, italic: false, mono: true }],
+            };
+            update_tab_resource_impl(&pool, &tab.tab_guid, &text, None, None, None).await.unwrap();
+            let (html, hidden_after_label) = crate::top_bar::compute(&pool, &tab.tab_guid).await;
+            assert!(html.contains("My app"), "{html}");
+            assert!(html.contains("csdrive-tb-mono"), "{html}");
+            assert!(hidden_after_label, "still follows autohide — a label alone doesn't show it");
+
+            // Closing it (the page's own × button) persists hidden=true explicitly.
+            crate::top_bar::set_hidden(&pool, &tab.tab_guid, true).await.unwrap();
+            assert!(crate::top_bar::hidden(&pool, &tab.tab_guid).await);
+
+            // The admin-app's "show top bar" (global) overrides that, for every tab.
+            crate::top_bar::show_every_tab(&pool).await.unwrap();
+            assert!(!crate::top_bar::hidden(&pool, &tab.tab_guid).await);
+
+            // Closing it again, then turning autohide off, still leaves it *shown* — an explicit
+            // "show" persists as `0`, distinct from "never touched" (`NULL`, which follows autohide).
+            crate::top_bar::set_hidden(&pool, &tab.tab_guid, true).await.unwrap();
+            crate::top_bar::set_hidden(&pool, &tab.tab_guid, false).await.unwrap();
+            // `global_settings` is `app_state`'s table, not `secondary_windows`' own — in the real app
+            // both modules' `init_db` run against the same pool at startup; here it's made by hand.
+            sqlx::query("CREATE TABLE global_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)").execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO global_settings (key, value) VALUES ('topBar.autohide', '0')").execute(&pool).await.unwrap();
+            assert!(!crate::top_bar::hidden(&pool, &tab.tab_guid).await);
+
+            // A brand new tab, having never been touched, follows the (now off) global setting.
+            let mut other = init_tab(&pool, "win1", "asdf/index.html", "res-b", 1).await;
+            fill_origin(&pool, None, &mut other).await.unwrap();
+            assert!(!other.top_bar_hidden, "autohide is off, and this tab was never explicitly closed or shown");
+        });
     }
 }

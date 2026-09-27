@@ -223,10 +223,13 @@ export default function Pagination({ page, pageSize, totalItems, onPageChange, o
         {opened !== null && (
           <>
             {/* Transparent, catches a press anywhere outside the popover so it closes without that press also
-             * reaching whatever element is behind it — the same fix as ContextMenu's backdrop, `preventDefault()`
-             * included (without it, a real touchscreen tap's follow-up compatibility click still reaches whatever
-             * is exposed once this backdrop is removed — see ContextMenu.tsx's backdrop for the full explanation). */}
-            <div className="page-popover-backdrop" onPointerDown={(e) => { e.preventDefault(); setOpened(null) }} />
+             * reaching whatever element is behind it — closes on `onClick`, not `onPointerDown`, for the same
+             * reason as ContextMenu's backdrop: closing (unmounting this element) on `pointerdown` leaves the
+             * real tap's separate, later `click` event to be re-targeted by the browser against whatever is now
+             * exposed underneath, reaching through exactly like the bug this backdrop exists to prevent — see
+             * ContextMenu.tsx's backdrop for the full explanation, including why a synthetic-event test doesn't
+             * catch this. */}
+            <div className="page-popover-backdrop" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setOpened(null) }} />
             <div className="page-popover" role="dialog" aria-label="Go to page" ref={popoverRef} data-no-text-menu>
             {opened === 'keyboard' && (
               <input

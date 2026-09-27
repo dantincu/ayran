@@ -64,14 +64,20 @@ export default function ContextMenu({ items, x, y, onClose }: Props) {
        * this (not on whatever the menu happens to be sitting over), closing the menu without also acting on
        * that background element — the actual fix for "clicking outside also clicks through to what's under
        * the menu" (found live: closing the row-actions overflow menu this way could press the button under
-       * it). `onPointerDown`, not `onClick`, so it can't be reached by a synthesized click from something else
-       * — and `preventDefault()` on it, which is what actually matters on a touchscreen: without it, the
-       * pointerdown removes the backdrop (closing the menu) but the browser still delivers the *compatibility
-       * click* that follows a real tap to whatever is now exposed underneath, once the backdrop is already gone
-       * — reaching through exactly like the bug this backdrop exists to fix, just one event later (found live
-       * on Android; a synthetic pointerdown from a desktop test doesn't reproduce it, since nothing then fires
-       * the follow-up click a real touchscreen tap does). */}
-      <div className="context-menu-backdrop" onPointerDown={(e) => { e.preventDefault(); onClose() }} />
+       * it). It closes on `onClick`, not `onPointerDown`: a real tap's `click` is a *separate* event that
+       * follows `pointerdown` a moment later, with its target re-resolved by the browser at that moment against
+       * whatever is in the DOM then — so closing (unmounting the backdrop) on `pointerdown` leaves nothing there
+       * to catch the follow-up `click`, which lands on whatever is now exposed underneath and reopens exactly
+       * the bug this backdrop exists to prevent, one event later (`preventDefault()` on `pointerdown` does NOT
+       * stop this: found live on Android — the backdrop's `pointerdown` fired and closed the menu, but the
+       * `click` that followed still reached the row underneath and reopened a menu there, making it look like
+       * nothing had closed at all). Waiting for `onClick` instead means the backdrop is still mounted — still
+       * the real element under the pointer — when the browser dispatches that click, so it is the backdrop
+       * itself that receives and stops it; only then does closing remove it, with no event left to leak through.
+       * (A synthetic `pointerdown` dispatched by a test script never reproduces this, since nothing then fires
+       * the follow-up `click` a real tap or mouse click does — which is why an earlier, `pointerdown`-based
+       * version of this fix passed a synthetic-event test but failed on real touch input.) */}
+      <div className="context-menu-backdrop" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose() }} />
       <div ref={ref} className="context-menu" role="menu" style={{ left: at.left, top: at.top }} data-no-text-menu>
         {items.map((item) => {
           const Icon = item.icon

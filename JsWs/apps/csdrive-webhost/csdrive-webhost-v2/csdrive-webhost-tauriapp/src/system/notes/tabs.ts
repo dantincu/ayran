@@ -9,6 +9,7 @@ import { applyCodeSnippets } from '../../lib/codeSnippets'
 import { validOffset } from '../../lib/pagedPosition'
 import { invoke } from '@tauri-apps/api/core'
 import { resourceIs } from './userActionScope'
+import { setTopBarHtml, setTopBarInfo } from './topBarInfo'
 
 /** How the Notes app takes part in the window manager (see the User Apps / System Apps tabs of the
  * admin-app): each tab it registers is one place in the file manager, its resource id naming the
@@ -170,11 +171,13 @@ export async function registerTab(): Promise<Tab | null> {
     await onTabNavigate((response) => {
       applyCodeSnippets(response.codeSnippets ?? [])
       resourceIs(response.resourceId || 'system:notes')
+      setTopBarInfo({ html: response.topBarHtml, hidden: response.topBarHidden })
       deliverNavigation({ tabGuid: response.tabGuid, resourceId: response.resourceId })
     })
     const response = await initWindowTab(APP_VERSION, location.href)
     applyCodeSnippets(response.codeSnippets ?? [])
     resourceIs(response.resourceId || 'system:notes')
+    setTopBarInfo({ html: response.topBarHtml, hidden: response.topBarHidden })
     return { tabGuid: response.tabGuid, resourceId: response.resourceId }
   } catch {
     // Unmanaged (or an old backend): the app works the same, it just isn't listed as a tab.
@@ -208,7 +211,8 @@ export async function reportNotePlace(
   const type = place.view === 'notes' ? RESOURCE_TYPES.notes : place.view === 'noteEdit' ? RESOURCE_TYPES.noteEdit : RESOURCE_TYPES.noteFiles
   resourceIs(`system:notes?${encodeNotePlace(place)}`)
   try {
-    await updateTabResource(tab.tabGuid, { firstRow, secondRow }, type, `system:notes?${encodeNotePlace(place)}`)
+    const { topBarHtml } = await updateTabResource(tab.tabGuid, { firstRow, secondRow }, type, `system:notes?${encodeNotePlace(place)}`)
+    setTopBarHtml(topBarHtml)
   } catch {
     // The tab may have been closed from the window manager meanwhile — nothing to report to.
   }
@@ -220,7 +224,8 @@ export async function reportView(tab: Tab, view: 'home' | 'notebooks' | 'setting
   const secondRow: TabText['secondRow'] = [{ text: view === 'home' ? 'Home' : view === 'settings' ? 'Settings' : 'Manage notebooks' }]
   resourceIs(`system:notes?v=${view}`)
   try {
-    await updateTabResource(tab.tabGuid, { firstRow, secondRow }, RESOURCE_TYPES[view], `system:notes?v=${view}`)
+    const { topBarHtml } = await updateTabResource(tab.tabGuid, { firstRow, secondRow }, RESOURCE_TYPES[view], `system:notes?v=${view}`)
+    setTopBarHtml(topBarHtml)
   } catch {
     // The tab may have been closed from the window manager meanwhile — nothing to report to.
   }
@@ -246,7 +251,8 @@ export async function reportLocation(
     : [{ text: location.path ? `/${location.path}` : '/' }]
   resourceIs(`system:notes?${query}`)
   try {
-    await updateTabResource(tab.tabGuid, { firstRow, secondRow }, resourceTypeOf(location), `system:notes?${query}`)
+    const { topBarHtml } = await updateTabResource(tab.tabGuid, { firstRow, secondRow }, resourceTypeOf(location), `system:notes?${query}`)
+    setTopBarHtml(topBarHtml)
   } catch {
     // The tab may have been closed from the window manager meanwhile — nothing to report to.
   }

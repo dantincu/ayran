@@ -6,11 +6,20 @@
 <style>
   html, body { height: 100%; margin: 0; font: 14px system-ui, sans-serif; }
   #toolbar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 12px; border-bottom: 1px solid #ccc; background: #f4f4f4;
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-bottom: 1px solid #ccc; background: #f4f4f4;
   }
-  #toolbar button { font: inherit; padding: 4px 10px; cursor: pointer; }
-  #status { margin-left: auto; color: #666; }
+  /* A small square icon button, the same idea as the admin-app's own — a plain HTML page has no
+     lucide-react, so these are tiny inline SVGs instead. */
+  #toolbar button.icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px; padding: 0; border: none; border-radius: 4px;
+    background: transparent; color: #333; cursor: pointer;
+  }
+  #toolbar button.icon:hover { background: rgba(0,0,0,0.08); }
+  #toolbar button.icon svg { width: 16px; height: 16px; }
+  #toolbar-info { flex: 1; min-width: 0; overflow: hidden; }
+  #status { color: #666; }
   #content { padding: 16px; }
 </style>
 </head>
@@ -21,7 +30,9 @@
      It is the minimum needed to:
        - bind this page to the tab the app already made for its window
        - keep working when the person switches back to this tab
-       - let your own UI ask to suspend the window or close this tab
+       - let your own UI ask to suspend the window, close this tab, or go back one step
+       - show the tab's label/tags/root markup the backend renders for you, and stay in
+         step with the person opening/closing your top bar from the admin-app
 
      Nothing here is specific to this demo — no toolbar, no styling.
      ================================================================ -->
@@ -39,7 +50,9 @@
 
     // Binds this page to the tab the app made for its window (never creates one — see
     // `init_window_tab` in CLAUDE.md's "Who creates tabs"). Call this once as the page loads.
-    // Returns { tabGuid, resourceId, codeSnippets, relativePath, openedBy, storage, filen }.
+    // Returns { tabGuid, resourceId, codeSnippets, relativePath, openedBy, storage, filen,
+    // topBarHtml, topBarHidden } — the last two are what a page's own top bar shows besides its
+    // buttons, and whether it should start hidden (see "Show its markup and starting state" below).
     let tabGuid = null
     async function bindTab(resourceType) {
       const response = await invoke('init_window_tab', {
@@ -54,7 +67,8 @@
     // The window manager tells this page when the person switches to another tab of the same
     // window — listen on THIS window only (never the global `listen`, which also hears events
     // meant for other windows), and attach the listener before calling bindTab so nothing is
-    // missed. Without a handler, the default is to start the page over.
+    // missed. Without a handler, the default is to start the page over. The payload carries the
+    // same `topBarHtml`/`topBarHidden` as `bindTab`'s response.
     let navigateHandler = null
     window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', (event) => {
       if (navigateHandler) navigateHandler(event.payload)
@@ -62,6 +76,14 @@
     })
     function onNavigate(handler) {
       navigateHandler = handler
+    }
+
+    // Sets (or replaces) this tab's two-line label — see CLAUDE.md's "Tab labels and window titles".
+    // Answers with { topBarHtml }, the markup recomputed from the label just set: a page that draws a
+    // top bar updates it from here rather than asking separately.
+    function updateTab(tabText, resourceType, resourceId, appTitle) {
+      if (!tabGuid) throw new Error('bindTab() must resolve before updateTab() can be called.')
+      return invoke('update_tab_resource', { tabGuid, tabText, resourceType: resourceType || null, resourceId: resourceId || null, appTitle: appTitle || null })
     }
 
     // Closes only this window — its entry (and this tab) stay, and "Reopen" in the app brings
@@ -77,49 +99,76 @@
       return invoke('close_tab', { tabGuid })
     }
 
+    // Undoes one step of tab-switch/link navigation for this window (the same thing Android's
+    // hardware Back button does). Resolves to whether there was something to undo.
+    function goBack() {
+      return invoke('window_go_back')
+    }
+
     // The admin-app asked this window to show its own top bar — one tab's own row in the System/User
     // Apps tabs, or the "Show the top bar for every open window" button in Settings, both send this
-    // event (`show_top_bar`, admin-only — a page never calls it on itself). A page with a header that
-    // hides itself (like this demo's) should reveal it here; a page with none simply doesn't listen.
+    // event (`show_top_bar`, admin-only — a page never calls it on itself). It also overrides whatever
+    // this tab's own close (below) had persisted, so a page with a header that hides itself (like this
+    // demo's) should reveal it here; a page with none simply doesn't listen.
     function onShowTopBar(handler) {
       window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('show-top-bar', handler)
     }
 
-    return { invoke, windowGuid, bindTab, onNavigate, suspendThisWindow, closeThisTab, onShowTopBar }
+    // Called when the person closes your own top bar (its × button) — persists that choice so it
+    // stays closed the next time this tab loads or is activated, until `onShowTopBar` (above) fires.
+    function setTopBarHidden(hidden) {
+      if (!tabGuid) throw new Error('bindTab() must resolve before setTopBarHidden() can be called.')
+      return invoke('set_top_bar_hidden', { tabGuid, hidden })
+    }
+
+    return { invoke, windowGuid, bindTab, onNavigate, updateTab, suspendThisWindow, closeThisTab, goBack, onShowTopBar, setTopBarHidden }
   })()
 </script>
 
 <!-- ================================================================
      EXAMPLE — everything from here down is specific to THIS demo page:
-     a toolbar and wiring its two buttons to the library above. Replace
+     a toolbar and wiring its buttons to the library above. Replace
      this part with your own page's markup and logic.
      ================================================================ -->
 <div id="toolbar" hidden>
-  <button id="btn-suspend">Suspend this window</button>
-  <button id="btn-close">Close this tab</button>
+  <button id="btn-back" class="icon" title="Go back one step"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg></button>
+  <button id="btn-suspend" class="icon" title="Suspend this window"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg></button>
+  <button id="btn-close" class="icon" title="Close this tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg></button>
+  <span id="toolbar-info"></span>
   <span id="status"></span>
-  <button id="btn-hide" title="Hide this toolbar">✕</button>
+  <button id="btn-hide" class="icon" title="Hide this toolbar"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
 </div>
 <div id="content">
   <h1>Your page's own content goes here</h1>
-  <p>This demo shows the smallest working toolbar a page can give itself: three buttons that call
-  straight back into the backend, no different from any other button on the page — plus its own ×
-  to hide itself, and it listens for the admin-app's "Show the top bar" to reappear. Hidden by
-  default, exactly like Notes' own top bar.</p>
+  <p>This demo shows a small working toolbar a page can give itself: icon buttons that call straight
+  back into the backend, no different from any other button on the page — a back step, suspend, close
+  this tab, and its own × to hide itself — plus the tab's label/tags/root markup the backend renders
+  for you (<code>topBarHtml</code>), inserted as is into <code>#toolbar-info</code>. It starts shown or
+  hidden following <code>topBarHidden</code>, and listens for the admin-app's "Show the top bar" to
+  reappear; closing it again is remembered until that happens.</p>
 </div>
 
 <script>
   const toolbar = document.getElementById('toolbar')
+  const toolbarInfo = document.getElementById('toolbar-info')
   const status = document.getElementById('status')
 
-  Backend.bindTab('example-toolbar').then((info) => {
-    status.textContent = 'tab ' + info.tabGuid.slice(0, 8) + '…'
-  })
+  function applyInfo(response) {
+    status.textContent = 'tab ' + response.tabGuid.slice(0, 8) + '…'
+    toolbarInfo.innerHTML = response.topBarHtml || ''
+    toolbar.hidden = response.topBarHidden
+  }
+
+  Backend.onNavigate((response) => applyInfo(response))
+  Backend.bindTab('example-toolbar').then(applyInfo)
 
   Backend.onShowTopBar(() => {
     toolbar.hidden = false
   })
 
+  document.getElementById('btn-back').addEventListener('click', () => {
+    Backend.goBack().catch((e) => alert(String(e)))
+  })
   document.getElementById('btn-suspend').addEventListener('click', () => {
     Backend.suspendThisWindow().catch((e) => alert(String(e)))
   })
@@ -128,6 +177,7 @@
   })
   document.getElementById('btn-hide').addEventListener('click', () => {
     toolbar.hidden = true
+    Backend.setTopBarHidden(true).catch((e) => alert(String(e)))
   })
 </script>
 
