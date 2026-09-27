@@ -518,6 +518,7 @@ mod host {
             .map_err(|e| e.to_string())?;
         // An external web site's `alert`/`confirm`/`prompt` follow the prompt rules too (`page_dialogs.rs`).
         crate::page_dialogs::install(&window);
+        crate::window_accelerators::install(&window);
 
         window.on_window_event(move |event| {
             if let WindowEvent::Destroyed = event {

@@ -8,7 +8,7 @@
  * - `[note].json` — `{ Title, CreatedAt, UpdatedAt }`;
  * - `[note-children].json` — `{ ChildNotes: { "001": { Title, CreatedAt, UpdatedAt } } }`, the list read to show the children
  *   without opening each of them;
- * - the child notes (more pairs of three digits), and pairs of **two** digits for internals: `01` (with `01-Note files`) holds
+ * - the child notes (more pairs of three digits), and pairs of **two** digits for internals: `01` (with `01-[note-files]`) holds
  *   the note's files — what the person uploads to it.
  * A **notebook**'s root folder is the same, without the markdown and `[note].json`: it holds `[note-book].json` and its top level
  * notes (listed in its own `[note-children].json`).
@@ -24,7 +24,7 @@ import type { Entry, FileSource } from './sources'
 export { CHILDREN_JSON, NOTE_JSON, NOTE_MARKDOWN_SUFFIX }
 /** The internals pair that holds a note's files. */
 export const NOTE_FILES_INDEX = String(config.notes.internals.noteFiles.from).padStart(config.notes.internals.noteFiles.digits, '0')
-export const NOTE_FILES_NAME = config.notes.internals.noteFiles.name ?? 'Note files'
+export const NOTE_FILES_NAME = config.notes.internals.noteFiles.name ?? '[note-files]'
 const KEEP = KEEP_FILE
 
 /** A note as its parent lists it. */

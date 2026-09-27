@@ -49,6 +49,7 @@ import MediaViewer, { type MediaItem } from '../../components/MediaViewer'
 import { type MenuItem } from '../../components/ContextMenu'
 import Pagination from '../../components/Pagination'
 import { mediaKindOf } from '../../lib/media'
+import { decodeText, isDefaultTextFile, MAX_EDIT_BYTES, notDefaultTextMessage } from '../../lib/textFiles'
 import ThumbnailGrid from './ThumbnailGrid'
 import SearchPanel from './SearchPanel'
 import { FileSearchResults } from './SearchResults'
@@ -129,8 +130,6 @@ const withoutEdit = (location: Location | null | undefined): Location | null => 
   return { sourceId: location.sourceId, branch: location.branch, path: location.path, ...(location.offset ? { offset: location.offset } : {}) }
 }
 const MAX_BRANCH_NAME_CHARS = 100
-/** Bigger than this isn't opened in the text editor (export it instead). */
-const MAX_EDIT_BYTES = 2 * 1024 * 1024
 
 /** How long cached Filen data stays valid — `null` never expires it, which makes it available offline. */
 const INTERVAL_CHOICES: { secs: number | null; label: string }[] = [
@@ -161,16 +160,6 @@ function formatBytes(bytes: number): string {
 }
 
 const formatTime = (ms: number) => new Date(ms).toLocaleString()
-
-/** The file's text, or null if it isn't text (or is too big to edit here). */
-function decodeText(bytes: Uint8Array): string | null {
-  if (bytes.length > MAX_EDIT_BYTES || bytes.subarray(0, 8000).includes(0)) return null
-  try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-  } catch {
-    return null
-  }
-}
 
 /** What the details popup is about: an entry of the folder shown, or the folder itself — with what had to be asked for. */
 interface DetailsOf {
@@ -702,6 +691,12 @@ export default function NotesApp({
       return
     }
     if (!asText && mediaKindOf(entry.name) && source.fileRef) return viewMedia(entry, folder)
+    // The default click opens only a recognized text file — for anything else, "Edit as text" (above) is how
+    // it's opened on purpose; a plain click says why rather than silently trying to decode arbitrary bytes.
+    if (!asText && !isDefaultTextFile(entry.name)) {
+      setError(notDefaultTextMessage(entry.name))
+      return
+    }
     setError(null)
     const size = entry.size ?? meta[entry.name]?.size ?? (await source.stat?.(rel).catch(() => null))?.size ?? null
     if (size !== null && size > MAX_EDIT_BYTES) {
@@ -1196,7 +1191,9 @@ export default function NotesApp({
   function menuFor(entry: Entry): MenuItem[] {
     const media = !entry.isDirectory && mediaKindOf(entry.name) !== null
     const items: MenuItem[] = [{ label: entry.isDirectory ? 'Open the folder' : media ? 'View' : 'Open', icon: entry.isDirectory ? Folder : media ? Eye : FileIcon, onSelect: () => openEntry(entry) }]
-    if (!entry.isDirectory && /\.svg$/i.test(entry.name)) items.push({ label: 'Edit as text', icon: Pencil, onSelect: () => openEntry(entry, path, true) })
+    // Offered whenever the default click *isn't* already "open as text" — a media file (svg included) or one
+    // whose extension isn't a recognized text one (see `lib/textFiles.ts`'s `isDefaultTextFile`).
+    if (!entry.isDirectory && (media || !isDefaultTextFile(entry.name))) items.push({ label: 'Edit as text', icon: Pencil, onSelect: () => openEntry(entry, path, true) })
     if (scope) items.push({ label: 'Open in File Manager', icon: FolderSearch, onSelect: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) })
     items.push({ label: 'Details', icon: Info, onSelect: () => showDetails(entry), separated: true })
     if (!entry.isDirectory) items.push({ label: 'Export', icon: Download, onSelect: () => exportEntry(entry) })
@@ -1605,7 +1602,9 @@ export default function NotesApp({
                             { icon: Info, label: 'Details', onClick: () => showDetails(entry) },
                             ...(scope ? [{ icon: FolderSearch, label: 'Open in File Manager', onClick: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) }] : []),
                             ...(!entry.isDirectory && mediaKindOf(entry.name) ? [{ icon: Eye, label: 'View', onClick: () => openEntry(entry) }] : []),
-                            ...(!entry.isDirectory && /\.svg$/i.test(entry.name) ? [{ icon: Pencil, label: 'Edit as text', onClick: () => openEntry(entry, path, true) }] : []),
+                            ...(!entry.isDirectory && (mediaKindOf(entry.name) !== null || !isDefaultTextFile(entry.name))
+                              ? [{ icon: Pencil, label: 'Edit as text', onClick: () => openEntry(entry, path, true) }]
+                              : []),
                             ...(!entry.isDirectory && source?.openAsWebApp && /\.(html?|md|markdown)$/i.test(entry.name)
                               ? [{ icon: AppWindow, label: 'Open as web app — in a window of its own, listed under this tab', onClick: () => openAsWebApp(entry) }]
                               : []),

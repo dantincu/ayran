@@ -555,6 +555,8 @@ mod platform {
             .map_err(|e| e.to_string())?;
         // The page's own `alert`/`confirm`/`prompt` follow the prompt rules (`page_dialogs.rs`).
         crate::page_dialogs::install(&window);
+        // Keeps a bare Alt press from stealing focus to the window's own system menu (`window_accelerators.rs`).
+        crate::window_accelerators::install(&window);
 
         let app_for_event = app.clone();
         let guid_for_event = guid.to_string();

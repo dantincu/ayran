@@ -8,6 +8,7 @@ import {
   ExternalLink,
   File,
   FilePlus,
+  FileText,
   Folder,
   FolderPlus,
   Info,
@@ -40,6 +41,7 @@ import { joinRelative } from '../lib/localFs'
 import { formatBytesExact } from '../lib/format'
 import { pathForInput } from '../lib/pathInput'
 import type { FileInfo } from '../lib/fs'
+import { decodeText, isDefaultTextFile, MAX_EDIT_BYTES, notDefaultTextMessage } from '../lib/textFiles'
 import {
   copyRootPath,
   forgetRoot,
@@ -50,7 +52,7 @@ import {
   realPathOf,
   mkdirRoot,
   pickNewRoot,
-  readRootTextFile,
+  readRootFile,
   removeRootPath,
   renameRootPath,
   type RootEntry,
@@ -355,15 +357,30 @@ export default function FilesTab() {
     if (activeRootId === root.id) switchRoot(USER_ROOT_ID)
   }
 
-  async function openEntry(entry: EntryRow, at?: string) {
+  async function openEntry(entry: EntryRow, at?: string, asText = false) {
     if (!activeRoot) return
     const rel = at ?? joinRelative(path, entry.name)
     if (entry.isDirectory) {
       setPath(rel)
       return
     }
+    // The default click opens only a recognized text file — for anything else, "Edit as text" is how it's
+    // opened on purpose (see `lib/textFiles.ts` and CLAUDE.md's file-editor notes).
+    if (!asText && !isDefaultTextFile(entry.name)) {
+      setError(notDefaultTextMessage(entry.name))
+      return
+    }
     try {
-      const content = await readRootTextFile(activeRoot, rel)
+      const size = sizes[entry.name] ?? (await statRootPath(activeRoot, rel).catch(() => null))?.size ?? null
+      if (size !== null && size > MAX_EDIT_BYTES) {
+        setError(`"${entry.name}" is too big to edit here (${formatBytesExact(size)}) — export it instead.`)
+        return
+      }
+      const content = decodeText(await readRootFile(activeRoot, rel))
+      if (content === null) {
+        setError(`"${entry.name}" isn't a text file this small — export it instead.`)
+        return
+      }
       setEditing({ path: rel, content, dirty: false })
     } catch (e) {
       setError(String(e))
@@ -859,6 +876,9 @@ export default function FilesTab() {
                       { icon: Info, label: 'Details', onClick: () => showDetails({ kind: 'entry', entry }) },
                       ...(!entry.isDirectory && activeRootId === USER_ROOT_ID && isHtmlFile(entry.name)
                         ? [{ icon: ExternalLink, label: 'Open as web app', onClick: () => openAsWebApp(entry) }]
+                        : []),
+                      ...(!entry.isDirectory && !isDefaultTextFile(entry.name)
+                        ? [{ icon: FileText, label: 'Edit as text', onClick: () => openEntry(entry, undefined, true) }]
                         : []),
                       ...(!entry.isDirectory ? [{ icon: Download, label: 'Export', onClick: () => downloadEntry(entry) }] : []),
                       { icon: Copy, label: 'Copy', onClick: () => copyEntry(entry) },

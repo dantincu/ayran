@@ -25,7 +25,7 @@
       "ternarySections": { "label": "Ternary note sections", "prefix": "", "from": 399, "to": 301, "digits": 3, "indexing": "afterLargest" }
     },
     "internals": {
-      "noteFiles": { "label": "The note's files", "prefix": "", "from": 1, "to": 1, "digits": 2, "indexing": "fillGaps", "name": "Note files" },
+      "noteFiles": { "label": "The note's files", "prefix": "", "from": 1, "to": 1, "digits": 2, "indexing": "fillGaps", "name": "[note-files]" },
       "noteInternals": { "label": "The note's internals", "prefix": "", "from": 2, "to": 2, "digits": 2, "indexing": "fillGaps", "name": "[note-internals]" },
       "notebook": { "label": "The notebook's own", "prefix": "", "from": 3, "to": 3, "digits": 2, "indexing": "fillGaps", "name": "[note-book]" }
     }

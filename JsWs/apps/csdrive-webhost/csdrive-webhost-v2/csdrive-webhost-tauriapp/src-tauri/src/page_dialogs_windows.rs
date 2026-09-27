@@ -208,6 +208,7 @@ async fn show(app: &AppHandle, parent_guid: &str, request: DialogRequest) -> Ans
         PENDING.lock().unwrap().remove(&label);
         return Answer::Cancel;
     };
+    crate::window_accelerators::install(&window);
     let closed = label.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Destroyed = event {

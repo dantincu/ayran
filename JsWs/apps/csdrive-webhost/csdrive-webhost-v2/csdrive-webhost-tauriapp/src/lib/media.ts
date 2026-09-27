@@ -5,7 +5,7 @@ export type MediaKind = 'image' | 'video' | 'audio'
 
 const KINDS: Record<MediaKind, string[]> = {
   image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'ico'],
-  video: ['mp4', 'm4v', 'webm', 'ogv', 'mov'],
+  video: ['mp4', 'm4v', 'webm', 'ogv', 'mov', 'mkv'],
   audio: ['mp3', 'm4a', 'aac', 'wav', 'oga', 'ogg', 'opus', 'flac'],
 }
 

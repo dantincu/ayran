@@ -252,7 +252,13 @@ function highlightMarkdown(text: string): string {
     let m: RegExpExecArray | null
     if ((m = HEADING.exec(body))) out.push(span('heading', m[1]) + `<span class="tok-heading">${highlightInline(m[2])}</span>` + cr)
     else if (RULE.test(body) || (SETEXT.test(body) && n > 0 && lines[n - 1].trim() !== '')) out.push(span('rule', body) + cr)
-    else if ((m = QUOTE.exec(body))) out.push(span('quote', m[1]) + highlightInline(m[2]) + cr)
+    else if ((m = QUOTE.exec(body))) {
+      // A heading inside the quote (`> # Heading`, any depth of nesting — `QUOTE` already collapses every leading `>` into
+      // the prefix) is still a heading: check the quote's own content the same way a top-level line would be.
+      const heading = HEADING.exec(m[2])
+      const content = heading ? span('heading', heading[1]) + `<span class="tok-heading">${highlightInline(heading[2])}</span>` : highlightInline(m[2])
+      out.push(span('quote', m[1]) + content + cr)
+    }
     else if ((m = LIST.exec(body))) out.push(span('list', m[1]) + (m[2] ? span('list', m[2]) : '') + highlightInline(m[3]) + cr)
     else if ((m = REFERENCE.exec(body))) out.push(span('punct', m[1]) + span('url', m[2]) + highlightInline(m[3]) + cr)
     else if (/^(?: {4}|\t)\S/.test(body) && (n === 0 || lines[n - 1].trim() === '')) out.push(span('code', body) + cr)

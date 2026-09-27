@@ -16,8 +16,18 @@ Here's what I think should be the responsibility of the end user, not of our app
 
 ## Coding Assistant Warnings
 
+*(A first pass, drafted from what's already documented in `CLAUDE.md` and this session's own changes — not a from-scratch audit of the whole codebase. Please correct anything mis-categorized; you know this project's history better than I can reconstruct from its docs alone.)*
+
 ### Remaining Critical
+
+- **A malicious web app could still fire off a burst of OS confirmation prompts before the "prevent prompts" offer ever appears.** `prompt_guard`'s counter only offers *Prevent this app from showing prompts* on the 5th prompt within 30 seconds (`docs/app-security.md`'s own "General Security Concerns" asks for exactly this option, and it exists) — but that means the first four in a burst (`open_external_site`, `save_to_device`/`choose_save_location`, the folder picker) already showed, unprevented, before the option to stop them was offered. A person clicking through a rapid sequence of similar-looking native boxes could approve one by reflex that they didn't mean to. Not a bypass of the option itself, just a window before it appears.
 
 ### Postponed Critical
 
+- **RAM-critical suspension is explicitly not implemented.** The "General Security Concerns" above asks for it ("maybe suspend all secondary windows and eliminate as much from the admin's memory as possible when the RAM usage becomes critical") — CLAUDE.md's "Prompts and windows" section lists it plainly under "Not done": "suspending every secondary window and freeing the admin-app's memory when the RAM gets critical." The window-count limit (10) is done; this memory-pressure companion isn't.
+- **`page_dialogs`'s hijacking of a page's own `alert`/`confirm`/`prompt` — the mechanism that makes every prompt go through the queue, the burst-counter and *Prevent this app from showing prompts* — covers Windows and Android only.** CLAUDE.md says so directly: "macOS and Linux webviews are not covered: their own dialogs stay." The app is built and tested for Windows and Android today, so this is dormant rather than live, but if either desktop platform is ever targeted, a page there could show unlimited native dialogs with none of this file's protections applying.
+
 ### Accepted by Me
+
+- **The app's own clipboard is one value shared by every open window, web apps included — "decided on purpose."** CLAUDE.md: "what one window copies another can paste... so what is copied to it is readable by any web app that is open." A web app could read whatever a person copied there from a trusted page. Kept deliberately for the flexibility it enables (Notes' User Action feature depends on it as the only bridge for actual text, since a launch's context deliberately carries no label, selection or content of its own).
+- **`window_go_back` (added this session) lets any window trigger a real navigation, not just Android's hardware Back button.** It can only return a window to an address it was *already* legitimately showing a moment ago — recorded solely by the backend's own prior navigation or tab-switch, never from anything a page supplies — so a page can't reach anywhere new through it. Same trust boundary Android's Back button already relied on; now reachable from JavaScript on every platform via a page's own top-bar Back button.

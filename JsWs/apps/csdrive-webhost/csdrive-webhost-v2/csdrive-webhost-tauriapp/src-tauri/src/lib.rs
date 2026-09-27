@@ -34,6 +34,7 @@ mod sqlite_db;
 mod system_apps;
 mod top_bar;
 mod user_action;
+mod window_accelerators;
 mod window_host;
 mod window_scripts;
 
@@ -531,7 +532,9 @@ pub fn run() {
             // Windows," but only the webview one is.
             .drag_and_drop(false)
             .disable_drag_drop_handler();
-            main_window.build()?;
+            let main_window = main_window.build()?;
+            // Keeps a bare Alt press from stealing focus to the window's own system menu (see the module doc).
+            window_accelerators::install(&main_window);
 
             let app_data_dir = data_location::effective_data_dir(app.handle())?;
             let admin_dir = layout::admin_dir(&app_data_dir);
