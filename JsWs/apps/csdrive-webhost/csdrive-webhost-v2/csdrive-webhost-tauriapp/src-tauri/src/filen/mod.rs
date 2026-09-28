@@ -233,7 +233,7 @@ pub async fn filen_login(
     password: String,
     two_factor_code: Option<String>,
 ) -> Result<FilenAccount, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "filen_login")?;
     let client = reqwest::Client::new();
 
     let info: AuthInfoResponse =
@@ -299,7 +299,7 @@ pub async fn filen_login(
 
 #[tauri::command]
 pub async fn filen_logout(window: crate::window_host::CallerWindow, app: AppHandle, user_id: u64) -> Result<(), String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "filen_logout")?;
     delete_session(&app, user_id)?;
     app.state::<FilenState>().sessions.lock().unwrap().remove(&user_id);
     sqlx::query("DELETE FROM filen_accounts WHERE user_id = ?1")

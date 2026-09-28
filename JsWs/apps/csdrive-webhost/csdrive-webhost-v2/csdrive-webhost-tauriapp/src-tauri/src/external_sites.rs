@@ -353,7 +353,7 @@ pub async fn open_web_address(
     sites: State<'_, ExternalSites>,
     url: String,
 ) -> Result<bool, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "open_web_address")?;
     let url = check_url(&url)?;
     if sites.confirming.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return Err("Another question is waiting for the person's answer — try again after it has been answered.".to_string());

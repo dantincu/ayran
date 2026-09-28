@@ -29,7 +29,7 @@ const REGISTRY: &[(&str, &str, &str, &str)] = &[("example-toolbar", "Example: a 
 
 #[tauri::command]
 pub fn list_deployable_apps(window: crate::window_host::CallerWindow) -> Result<Vec<DeployableAppInfo>, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "list_deployable_apps")?;
     Ok(REGISTRY
         .iter()
         .map(|(id, name, default_folder_name, _)| DeployableAppInfo {
@@ -46,7 +46,7 @@ pub fn list_deployable_apps(window: crate::window_host::CallerWindow) -> Result<
 /// to know).
 #[tauri::command]
 pub fn get_deployable_app_html(window: crate::window_host::CallerWindow, app_id: String) -> Result<String, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "get_deployable_app_html")?;
     REGISTRY
         .iter()
         .find(|(id, ..)| *id == app_id)

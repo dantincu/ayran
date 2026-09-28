@@ -21,6 +21,11 @@
     "dialog:allow-confirm",
     "allow-prompt-guard-status",
     "allow-set-appearance-rotation",
-    "allow-show-top-bar"
+    "allow-show-top-bar",
+    "allow-get-log-level",
+    "allow-set-log-level",
+    "allow-get-log-file-info",
+    "allow-read-log-tail",
+    "allow-export-log-file"
   ]
 }

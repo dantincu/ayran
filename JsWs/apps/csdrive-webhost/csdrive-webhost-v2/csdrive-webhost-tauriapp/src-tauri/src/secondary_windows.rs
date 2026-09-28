@@ -1531,6 +1531,8 @@ pub async fn add_window_tag(
     let tag = add_tag_impl(&state.pool, &guid, &text, &fg_color, &bg_color)
         .await
         .map_err(|e| e.to_string())?;
+    // Never the tag's own text — a person-chosen label, same caution as a search's own terms.
+    log::trace!("tag added: {} on {guid}", tag.id);
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(tag)
 }
@@ -1547,6 +1549,7 @@ pub async fn update_window_tag(
     update_tag_impl(&state.pool, id, &text, &fg_color, &bg_color)
         .await
         .map_err(|e| e.to_string())?;
+    log::trace!("tag changed: {id}");
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
 }
@@ -1559,6 +1562,7 @@ pub async fn reorder_window_tags(
     ids: Vec<i64>,
 ) -> Result<(), String> {
     reorder_tags_impl(&state.pool, &guid, &ids).await.map_err(|e| e.to_string())?;
+    log::trace!("tags reordered on {guid}");
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
 }
@@ -1574,6 +1578,7 @@ pub async fn remove_window_tag(
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
+    log::trace!("tag removed: {id}");
     let _ = app.emit(EVENT_CHANGED, ());
     Ok(())
 }
@@ -1783,7 +1788,7 @@ pub fn reload_secondary_window(app: AppHandle, guid: String) -> Result<(), Strin
 /// admin-app itself (a tab's own row, or the global button), never a page on its own behalf.
 #[tauri::command]
 pub async fn show_top_bar(window: crate::window_host::CallerWindow, app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, guid: Option<String>) -> Result<(), String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "show_top_bar")?;
     match guid {
         Some(guid) => {
             if let Some(tab_guid) = state.current_tab_of(&guid) {

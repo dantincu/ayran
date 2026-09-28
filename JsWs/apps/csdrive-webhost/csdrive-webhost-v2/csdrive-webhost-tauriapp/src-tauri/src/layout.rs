@@ -44,6 +44,13 @@ pub const ADMIN_APP_ID: &str = "::admin";
 /// it travels with `data.db` (which lists the accounts) when the folder is relocated.
 pub const FILEN_SESSIONS_FILE: &str = "admin/filen-sessions.enc";
 
+/// Inside `admin`: the app's own log file (`logging.rs`), plain text, one line per entry — never served to a
+/// window and never reachable through the ordinary file commands (`admin/` as a whole is a protected path), the
+/// same as `data.db` and the Filen sessions file. Lives in the data folder for the same reason those do: it
+/// travels with a relocated folder, and is gone when the folder is wiped.
+pub const LOGS_FOLDER: &str = "logs";
+pub const LOG_FILE: &str = "csdrive.log";
+
 /// User-authored content inside the data folder: web apps, and whatever else the
 /// Files tab manages.
 pub const USER_FOLDER: &str = "user";
@@ -91,6 +98,17 @@ pub fn keychain_service() -> &'static str {
 
 pub fn admin_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(ADMIN_FOLDER)
+}
+
+/// `admin/logs`, created alongside `admin`/`user`/`files` at every start (`lib.rs`'s `.setup()`).
+pub fn logs_dir(data_dir: &Path) -> PathBuf {
+    admin_dir(data_dir).join(LOGS_FOLDER)
+}
+
+/// `admin/logs/csdrive.log` — the current log file (`logging.rs`); a rotated-out previous one sits
+/// beside it as `csdrive.log.old`.
+pub fn log_file_path(data_dir: &Path) -> PathBuf {
+    logs_dir(data_dir).join(LOG_FILE)
 }
 
 pub fn user_dir(data_dir: &Path) -> PathBuf {

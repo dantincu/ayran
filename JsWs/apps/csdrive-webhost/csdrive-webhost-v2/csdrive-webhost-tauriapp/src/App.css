@@ -877,6 +877,17 @@ select {
   cursor: pointer;
 }
 
+/* Settings' own "Advanced" section (Dev Tools) — a plain, native <details>/<summary>, styled just enough
+   that the summary reads as clickable and the content underneath it keeps the page's usual vertical rhythm. */
+.settings-advanced summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.settings-advanced[open] summary {
+  margin-bottom: 8px;
+}
+
 .reorder-panel {
   padding: 10px 12px;
   border-top: 1px solid var(--border);

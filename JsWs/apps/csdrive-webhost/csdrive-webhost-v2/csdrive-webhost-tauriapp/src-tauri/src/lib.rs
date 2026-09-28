@@ -24,6 +24,7 @@ mod ipc;
 mod link_navigation;
 mod local_branch_commands;
 mod layout;
+mod logging;
 mod markdown;
 mod notes_pages;
 mod page_dialogs;
@@ -357,6 +358,11 @@ pub fn run() {
             #[cfg(windows)]
             page_dialogs::windows_impl::prompt_dialog_answer,
             prompt_guard::prompt_guard_status,
+            logging::get_log_level,
+            logging::set_log_level,
+            logging::get_log_file_info,
+            logging::read_log_tail,
+            logging::export_log_file,
             appearance::get_appearance,
             user_action::user_action_launch,
             user_action::user_action_close,
@@ -550,10 +556,16 @@ pub fn run() {
             std::fs::create_dir_all(&admin_dir)?;
             std::fs::create_dir_all(&user_dir)?;
 
+            // Before the database — nothing this early can yet know a persisted level, so it starts at
+            // logging::DEFAULT_LEVEL; apply_persisted_level (right after the pool opens) picks up what
+            // Settings/Dev Tools last chose.
+            logging::init(&app_data_dir)?;
+
             let pool = tauri::async_runtime::block_on(secondary_windows::init_db(&admin_dir))?;
             tauri::async_runtime::block_on(app_state::ensure_schema(&pool))?;
             tauri::async_runtime::block_on(filen::ensure_schema(&pool))?;
             tauri::async_runtime::block_on(picked_roots::ensure_schema(&pool))?;
+            tauri::async_runtime::block_on(logging::apply_persisted_level(&pool));
             app.manage(app_state::AppDbState { pool: pool.clone() });
             app.manage(secondary_windows::SecondaryWindowsState::new(pool));
             app.manage(sqlite_db::SqliteState::default());

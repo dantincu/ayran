@@ -137,6 +137,9 @@ impl FsScope {
     /// With `follow_last` false the last component isn't followed (for removing or renaming an entry
     /// itself), and then `rel` can't be empty — a root itself is never removed or renamed.
     pub fn check_in(&self, root: &str, rel: &str, follow_last: bool) -> Result<PathBuf, String> {
+        // Every `fs_*` command and SQLite's own path resolution passes through here — the one choke point for
+        // "every local file-system request" (`logging.rs`). Never the resolved real path, same as a refusal.
+        log::trace!("fs: {root}/{rel}");
         let mut path = self
             .root_real(root)
             .ok_or_else(|| "That folder isn't available: it was never chosen, or it has been forgotten.".to_string())?;

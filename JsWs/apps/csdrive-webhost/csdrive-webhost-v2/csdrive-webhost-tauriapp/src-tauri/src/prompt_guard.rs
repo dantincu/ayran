@@ -299,7 +299,7 @@ pub struct Status {
 /// The admin-app's Settings: the prompt flag and the window count. Admin-app only.
 #[tauri::command]
 pub fn prompt_guard_status(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<Status, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "prompt_guard_status")?;
     Ok(Status {
         prompts_prevented: blocked(),
         open_windows: crate::window_host::open_windows(&app),

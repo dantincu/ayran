@@ -17,7 +17,7 @@ fn without_leading_heading(source: &str) -> &str {
 /// the admin-app has a Help tab to show it in either.
 #[tauri::command]
 pub fn get_keyboard_shortcuts_html(window: crate::window_host::CallerWindow) -> Result<String, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "get_keyboard_shortcuts_html")?;
     Ok(crate::markdown::render_fragment(without_leading_heading(KEYBOARD_SHORTCUTS_MD)))
 }
 

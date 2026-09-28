@@ -516,6 +516,92 @@ Tags (`window_tags` table) are not specific to windows: `guid` is any opaque id 
 
 **Root tags** are the tags of a guid derived from a root (`src/lib/rootTags.ts`): `root:<rootId>` for a folder on this device (`root:user`, or `root:<id>` for a picked one — an opaque id, never a path), `root:filen:<userId>` for a Filen account. Every place that shows the root shows the same tags — the Files tab's root switcher and the **tab items in the System Apps tab**: a Notes tab (its resource id names its source, `rootOfTab`) shows two captioned lines, **Root** (the root's tags) and **Tab** (its own), so the two sets can't be mistaken for each other. Both are editable from there. A tab that shows no root keeps the single tag line. **Group by root** (System Apps tab only, at the tabs level; saved as `systemAppsTab.groupByRoot`): the tabs of the group are shown under a header per root (its name, and its tags when it has any; a button for its details) — a root's tabs are together, the tabs with no root last under "Tabs that show no root" — and the root is no longer repeated on each tab. Sorting by hand is off while grouped.
 
+## Dev Tools and file logging
+
+`docs/features/features.md`'s first "New Feature": Settings → an **"Advanced"** section at the very bottom (a
+plain `<details>`, since it's the one place in the app that needed a collapsible section) has a checkbox,
+**"Show the Dev Tools tab"** (`lib/devTools.ts`, admin-app-own state — `settings.devToolsEnabled` — not
+`global_settings`: only the admin-app's own tab bar needs to see it, never Notes or a web app). On, a **Dev
+Tools** tab appears **just before Help** (`App.tsx`'s `tabsFor`), with, for now, one page: **Logs**
+(`components/DevToolsTab.tsx`).
+
+**Everything about what gets logged is Rust-only — the frontend is never told what's being logged, only the
+current level, the log file's own size/location, and its recent content** (`logging.rs`, `lib/logging.ts`):
+`get_log_level`/`set_log_level`, `get_log_file_info`, `read_log_tail` (the file's last ≤200 KiB, so the page
+never loads something huge), `export_log_file` (the same "save as"/Downloads flow every other export uses —
+`device_files.rs`; not asked to confirm itself, since this is the admin-app's own button, not a page's). All
+five are admin-only (`admin.json`), and log **one line each time they're called too** — the Logs page reading
+its own state is itself an admin operation, the same as any other.
+
+**The file: `admin/logs/csdrive.log`** (`layout.rs`'s `LOGS_FOLDER`/`LOG_FILE`/`logs_dir`/`log_file_path`) —
+inside `admin/`, so it's a **protected path** no ordinary file command can reach (the Logs page is the only
+way to see it or get it off the device), and it travels with a relocated data folder and is gone when the
+folder is wiped, the same as `data.db` and the Filen sessions file. On Windows that's ordinarily
+`%APPDATA%\com.ayran.csdrive-webhost-tauriapp\admin\logs\csdrive.log`; on Android, the same relative place
+inside the app's private storage. **Created lazily** — on the *first* line actually written, not at startup —
+and **rotated** past 5 MiB: renamed to `csdrive.log.old` (replacing any earlier one) and a fresh one started,
+so a `Trace` session left running can't grow it without bound while a full rotation's worth of detail stays
+available.
+
+**A plain `log::Log` implementation of our own** (`FileLogger`), not `tauri-plugin-log` — that plugin has its
+own JS-visible surface (console/webview logging, configured from the frontend), which would contradict
+"solely in Rust" outright. `log::set_logger` makes it the process's **only** logger, at `log::set_max_level
+(Trace)` always — the *real* filtering is `FileLogger`'s own runtime-adjustable atomic (`enabled()`), so
+raising the level (`set_log_level`) takes effect at once, with no re-registration. **Only our own crate's
+targets are ever written** (`OUR_TARGET_PREFIX`) — being the *only* logger means every crate that logs
+through the `log` facade reaches it, not just this app's own code, and `sqlx`'s own per-query debug logging
+(full SQL text, one line per query) turned up in the file the first time the level was raised past Info,
+noise this feature never asked for and outside everything the level table below promises; filtering by
+target, before a line is even formatted, keeps it out categorically rather than trying to quiet `sqlx`'s own
+logging at the source. Writes are a plain synchronous open-append-close under one `Mutex` (that also guards
+rotation) — not a background writer — cheap enough for what a diagnostic logger actually logs, and the
+simplest thing that can't tear a line across two files or two threads' writes across each other.
+
+**What each level adds** (Off logs nothing; each level below includes everything above it), and where it's
+called from — `require_admin` and `set_app_state`/`set_global_setting` are existing choke points that already
+had exactly one call site to add a line to, rather than needing one in each of the many commands that pass
+through them:
+- **Error / Warn** — Filen request failures (`filen::api`, below).
+- **Info** — every **admin-only operation** (`window_host::require_admin` takes a short `operation` name now,
+  logged on success — the one choke point all ~20 admin-only commands already pass through) and every
+  **notebook added or removed** (`app_state::set_app_state` special-cases the one key Notes keeps its
+  notebook list under, `notes.notebooks` — see "Notebooks" — diffing the old and new list by `guid` and
+  logging each side's own difference by *title*; `logging::log_notebooks_changed`).
+- **Debug** — every **Filen request** (`filen::api::send_json`/`get`/`download_chunk`/`upload_chunk`, the
+  handful of functions every Filen operation ultimately calls): one line each, the endpoint (or chunk
+  coordinates) and the outcome.
+- **Trace** — the same Filen requests again, but **before** sending too, not just after; every **local
+  file-system request** (`fs_scope::FsScope::check_in`, the one choke point every `fs_*` command and SQLite's
+  own path resolution passes through — the root and the relative path, never the resolved real one, same as a
+  refusal); every **tag added, changed, reordered or removed** (`secondary_windows.rs`, by id — never a tag's
+  own text); every **app-state or global-setting change** (the same two choke points above — by *key* only,
+  never the value, which could be a draft's own text or anything else a settings page keeps).
+
+**Never logged: a file's contents, or the text of a search** — nothing here reads either into a log line in
+the first place. What *is* logged where it's useful for finding a problem: names, relative paths, Filen item
+ids, keys and counts.
+
+Rust-tested (`logging::tests`): every level round-trips through its persisted string; a logger only writes
+what its own level allows, and picks up a raised level at once; a third-party crate's own logging (a fake
+`sqlx::query` record) never reaches the file, at any level, and never even creates it; a file past the size
+limit rotates instead of growing, and the fresh file after rotating doesn't carry the old size forward; the
+notebook diff logic detects an add and a remove from two lists that share one entry. Verified live (isolated
+data folder, desktop): Settings' checkbox correctly showed and hid the Dev Tools tab **only after being fixed**
+— a first version read the setting with a plain per-component `useState`, so checking it in Settings never
+updated `App.tsx`'s own separate copy and the tab never appeared; rewriting `devTools.ts` on the same
+module-level-cache-and-listeners shape `rowActionsCompact.ts` already uses (not a new pattern — the existing
+one, applied where it was missing) fixed it, confirmed by the tab appearing immediately and surviving a
+restart; the Logs page's level radios, file path/size and recent content all reflect the real file; raising
+the level to Trace and browsing the Files tab produced real `fs:`/`tag added:`/`app state changed:` lines with
+no real path or value in any of them, confirmed by reading the file directly on disk; lowering it back to
+Info and repeating the same actions produced **no** new lines (confirmed by an unchanged line count) —
+filtering genuinely happens, not just display-side; a hand-simulated notebook list change produced exactly
+"notebook added" then "notebook added" + "notebook removed" for the second write, from a real `set_app_state`
+call; the export button opened a real native "Save As" dialog. **Not exercised live**: Filen request logging
+(no live Filen account in the isolated instance this pass) — covered by the code review of where the lines
+were added and by the existing test coverage of the functions they sit in, not by watching real lines appear
+for a real request.
+
 ## Seeding demo data for the User Apps tab
 
 `csdrive-webhost-tauriapp/src-tauri/examples/seed_demo_data.rs` populates the real `data.db` with demo data for the 9 sample apps in `user/qwer/` (`index1.html`-`index9.html`), for stress-testing the User Apps tab's nested windows/tab-groups/tabs UI at scale. To run it after a reset (or any time):

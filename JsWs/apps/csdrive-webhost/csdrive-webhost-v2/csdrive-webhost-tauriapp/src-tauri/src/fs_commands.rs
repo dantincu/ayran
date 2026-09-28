@@ -252,7 +252,7 @@ pub async fn fs_copy(scope: State<'_, FsScope>, from_root: String, from: String,
 /// (A window learns nothing of the kind: see `fs_scope.rs`.)
 #[tauri::command]
 pub fn fs_root_path(window: crate::window_host::CallerWindow, scope: State<'_, FsScope>, root: String) -> Result<String, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "fs_root_path")?;
     let real = scope.root_real(&root).ok_or_else(|| "That folder isn't available.".to_string())?;
     let shown = real.display().to_string();
     // Windows' canonical form carries a `\\?\` prefix that means nothing to a person.

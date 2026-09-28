@@ -16,8 +16,10 @@ import {
 import { setRowActionsCompact, subscribeRowActionsCompact } from '../lib/rowActionsCompact'
 import { setEditorSetting, subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { showTopBar } from '../lib/secondaryWindows'
+import { useDevToolsEnabled } from '../lib/devTools'
 
 export default function SettingsTab() {
+  const { enabled: devToolsEnabled, setEnabled: setDevToolsEnabled } = useDevToolsEnabled()
   const [info, setInfo] = useState<DataFolderInfo | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -424,6 +426,17 @@ export default function SettingsTab() {
           disabled={busy || !info}
         />
       </div>
+
+      <details className="settings-advanced" style={{ marginTop: 24 }}>
+        <summary>
+          <strong>Advanced</strong>
+        </summary>
+        <label className="checkbox-row">
+          <input type="checkbox" checked={devToolsEnabled} onChange={(e) => setDevToolsEnabled(e.target.checked)} />
+          Show the Dev Tools tab
+        </label>
+        <p className="muted">Adds a tab, just before Help, with a Logs page: the app's own log level, its log file's location and recent content.</p>
+      </details>
     </div>
   )
 }

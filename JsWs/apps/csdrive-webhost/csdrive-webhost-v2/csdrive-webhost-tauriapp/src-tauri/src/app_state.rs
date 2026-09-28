@@ -82,16 +82,23 @@ pub async fn get_global_setting(state: tauri::State<'_, AppDbState>, key: String
 
 #[tauri::command]
 pub async fn set_global_setting(state: tauri::State<'_, AppDbState>, key: String, value: String) -> Result<(), String> {
-    // The theme and the light/dark mode are the admin-app's to choose (`appearance::set_appearance`).
+    // The theme and the light/dark mode are the admin-app's to choose (`appearance::set_appearance`), and the
+    // log level is Dev Tools' own (`logging::set_log_level`) — both keep their own reserved key prefix out of
+    // this generic setter.
     if key.starts_with(crate::appearance::RESERVED_PREFIX) {
         return Err("That setting can only be changed by the admin-app.".to_string());
     }
+    if key.starts_with(crate::logging::RESERVED_PREFIX) {
+        return Err("That setting can only be changed from the Logs page.".to_string());
+    }
     sqlx::query("INSERT INTO global_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-        .bind(key)
+        .bind(&key)
         .bind(value)
         .execute(&state.pool)
         .await
         .map_err(|e| e.to_string())?;
+    // The value itself is never logged — it could be anything a settings page keeps, not always harmless.
+    log::trace!("global setting changed: {key}");
     Ok(())
 }
 
@@ -138,6 +145,11 @@ pub async fn get_app_state(
         .map_err(|e| e.to_string())
 }
 
+/// Notes' own key for the list of notebooks it knows (`notes.notebooks` in its app state — see CLAUDE.md's
+/// "Notebooks"), the one `set_app_state` key `logging::log_notebooks_changed` needs the old *and* new value
+/// of to log which notebook was added or removed.
+const NOTEBOOKS_KEY: &str = "notes.notebooks";
+
 #[tauri::command]
 pub async fn set_app_state(
     window: crate::window_host::CallerWindow,
@@ -147,6 +159,16 @@ pub async fn set_app_state(
     value: String,
 ) -> Result<(), String> {
     let app_id = caller_app_id(&state.pool, crate::window_host::caller_guid(&window).as_deref(), hosted_page_id(&app, &window)).await?;
+    let previous: Option<String> = if key == NOTEBOOKS_KEY {
+        sqlx::query_scalar("SELECT value FROM app_state WHERE app_id = ?1 AND key = ?2")
+            .bind(&app_id)
+            .bind(&key)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
     sqlx::query(
         "INSERT INTO app_state (app_id, key, value) VALUES (?1, ?2, ?3)
          ON CONFLICT(app_id, key) DO UPDATE SET value = excluded.value",
@@ -157,6 +179,12 @@ pub async fn set_app_state(
     .execute(&state.pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    if key == NOTEBOOKS_KEY {
+        crate::logging::log_notebooks_changed(previous.as_deref(), &value);
+    }
+    // The value itself is never logged (an app's own state can hold a draft's text, a search's own terms...).
+    log::trace!("app state changed: {app_id}/{key}");
 
     Ok(())
 }

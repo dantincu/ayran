@@ -33,7 +33,11 @@ async fn send_json<B: Serialize>(
     let checksum = hex::encode(Sha512::digest(body_str.as_bytes()));
     let auth = api_key.map(|k| format!("Bearer {k}")).unwrap_or_else(|| "Bearer anonymous".into());
 
-    client
+    // Debug gets one line per request (below, once the outcome is known); Trace gets this one too, so the two
+    // together read as "before and after" — never the body, which can hold file/folder names encrypted, but
+    // also, for some endpoints, isn't (see `logging.rs`'s "never a file's contents").
+    log::trace!("Filen request starting: POST {endpoint}");
+    let result = client
         .post(format!("{GATEWAY}{endpoint}"))
         .header("Authorization", auth)
         .header("Content-Type", "application/json")
@@ -41,7 +45,13 @@ async fn send_json<B: Serialize>(
         .body(body_str)
         .send()
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    match &result {
+        Ok(resp) => log::debug!("Filen request: POST {endpoint} -> {}", resp.status()),
+        Err(e) => log::warn!("Filen request failed: POST {endpoint} -> {e}"),
+    }
+    log::trace!("Filen request finished: POST {endpoint}");
+    result
 }
 
 /// POST that returns the response's `data`.
@@ -66,12 +76,14 @@ pub async fn post_ok<B: Serialize>(client: &reqwest::Client, endpoint: &str, bod
 }
 
 pub async fn get<R: DeserializeOwned>(client: &reqwest::Client, endpoint: &str, api_key: &str) -> Result<R, String> {
+    log::trace!("Filen request starting: GET {endpoint}");
     let resp = client
         .get(format!("{GATEWAY}{endpoint}"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    log::debug!("Filen request: GET {endpoint} -> {}", resp.status());
     check(resp.json::<ApiResponse<R>>().await.map_err(|e| e.to_string())?)
 }
 
@@ -82,11 +94,13 @@ pub async fn download_chunk(
     uuid: &str,
     index: u32,
 ) -> Result<Vec<u8>, String> {
+    log::trace!("Filen request starting: GET chunk {uuid}/{index}");
     let resp = client
         .get(format!("{EGEST}/{region}/{bucket}/{uuid}/{index}"))
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    log::debug!("Filen request: GET chunk {uuid}/{index} -> {}", resp.status());
     if !resp.status().is_success() {
         return Err(format!("chunk download failed with HTTP {}", resp.status()));
     }
@@ -111,6 +125,7 @@ pub async fn upload_chunk(
     );
     let checksum = hex::encode(Sha512::digest(checksum_input.as_bytes()));
 
+    log::trace!("Filen request starting: POST chunk {file_uuid}/{index}");
     let resp = client
         .post(format!("{INGEST}/v3/upload?uuid={file_uuid}&index={index}&parent={parent}&uploadKey={upload_key}&hash={hash}"))
         .header("Authorization", format!("Bearer {api_key}"))
@@ -119,6 +134,7 @@ pub async fn upload_chunk(
         .send()
         .await
         .map_err(|e| e.to_string())?;
+    log::debug!("Filen request: POST chunk {file_uuid}/{index} -> {}", resp.status());
 
     let parsed: ApiResponse<serde_json::Value> = resp.json().await.map_err(|e| e.to_string())?;
     if !parsed.status {

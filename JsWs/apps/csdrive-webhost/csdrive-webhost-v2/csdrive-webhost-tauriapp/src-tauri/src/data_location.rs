@@ -96,7 +96,7 @@ pub struct DataFolderInfo {
 
 #[tauri::command]
 pub fn get_data_folder_info(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<DataFolderInfo, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "get_data_folder_info")?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
     let effective_dir = custom_dir.clone().unwrap_or_else(|| default_dir.clone());
@@ -121,7 +121,7 @@ pub fn get_data_folder_info(window: crate::window_host::CallerWindow, app: AppHa
 /// (no folder-picking dialog exists there at all).
 #[tauri::command]
 pub async fn pick_and_set_custom_data_folder(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<Option<String>, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "pick_and_set_custom_data_folder")?;
 
     #[cfg(target_os = "ios")]
     {
@@ -152,7 +152,7 @@ pub async fn pick_and_set_custom_data_folder(window: crate::window_host::CallerW
 
 #[tauri::command]
 pub fn reset_data_folder_to_default(window: crate::window_host::CallerWindow, app: AppHandle) -> Result<(), String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "reset_data_folder_to_default")?;
     let default_dir = default_app_data_dir(&app)?;
     write_custom_dir(&default_dir, None)
 }
@@ -260,7 +260,7 @@ pub async fn clear_custom_data_folder_contents(
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
     cache: tauri::State<'_, crate::files_cache::Cache>,
 ) -> Result<(), String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "clear_custom_data_folder_contents")?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir =
         read_custom_dir(&default_dir).ok_or_else(|| "No custom data folder is set.".to_string())?;
@@ -287,7 +287,7 @@ pub async fn delete_app_data(
     db_state: tauri::State<'_, crate::app_state::AppDbState>,
     cache: tauri::State<'_, crate::files_cache::Cache>,
 ) -> Result<(), String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "delete_app_data")?;
     let default_dir = default_app_data_dir(&app)?;
     let custom_dir = read_custom_dir(&default_dir);
 

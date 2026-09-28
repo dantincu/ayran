@@ -291,8 +291,17 @@ pub fn caller_key<R: Runtime>(window: &CallerWindow<R>) -> String {
 
 /// For commands only the admin-app may use. (Capabilities keep web apps out of them on desktop, by window label; this
 /// is what does it on Android, where every call reaches Tauri through the one webview, and on desktop too.)
-pub fn require_admin<R: Runtime>(window: &CallerWindow<R>) -> Result<(), String> {
+///
+/// `operation`: a short, fixed name for what's being asked (the command's own name is the obvious, always-correct
+/// choice) — logged at `Info` on success (`logging.rs`'s "every admin-only operation"), so this one choke point
+/// every admin-only command already passes through is also the one place that category of logging needed to be
+/// added, rather than a line in each of the ~15 commands themselves. Nothing is logged on refusal — a refusal
+/// means the caller *isn't* the admin-app, which can't happen through the real UI at all (capabilities and, on
+/// Android, this same check keep it out), so it would only ever mean a bug or something probing the IPC directly;
+/// either way it's the caller's own `Result<_, String>` that reports it, same as any other refusal.
+pub fn require_admin<R: Runtime>(window: &CallerWindow<R>, operation: &str) -> Result<(), String> {
     if is_admin_page(window) {
+        log::info!("admin operation: {operation}");
         Ok(())
     } else {
         Err("Only the admin-app can do that.".to_string())

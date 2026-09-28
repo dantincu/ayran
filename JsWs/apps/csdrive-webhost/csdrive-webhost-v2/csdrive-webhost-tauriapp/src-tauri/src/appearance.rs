@@ -519,7 +519,7 @@ pub async fn set_appearance_rotation(
     state: tauri::State<'_, AppDbState>,
     rotation: Rotation,
 ) -> Result<Appearance, String> {
-    crate::window_host::require_admin(&window)?;
+    crate::window_host::require_admin(&window, "set_appearance_rotation")?;
     rotation.interval()?;
     let before = read(&state.pool).await;
     write(&state.pool, ROTATION_KEY, &serde_json::to_string(&rotation).map_err(|e| e.to_string())?).await?;
