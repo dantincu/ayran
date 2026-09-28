@@ -1827,6 +1827,130 @@ select {
   font-size: 12px;
 }
 
+/* The Help tab's own autohiding header (`HelpTab.tsx`'s `HelpHeader`) — sticky to the top of `.tab-content`'s own
+   scroll, an opaque background so scrolled-past content doesn't show through it, and a collapsing transition for
+   hiding. `help-header-hidden` is toggled by scroll direction, or cleared by pressing the Help tab's own head
+   again (`lib/helpHeader.ts`) or by reaching the very top. `max-height` + `overflow: hidden` rather than a
+   `transform`, deliberately: a `translateY` still reserves the header's own height in the flow once "hidden" (a
+   `position: sticky` box does that regardless of its paint position), which left a blank gap the size of the
+   header sitting above the content whenever it was hidden — collapsing the height instead actually gives that
+   space back. Every section heading gets `scroll-margin-top` matching the header's own height, so `scrollIntoView`
+   (the table of contents' own scrolling) lines a section up *below* the header rather than under it, whether the
+   header happens to be shown or not at the moment of the click. */
+.help-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  margin: -16px -16px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  max-height: 60px;
+  overflow: hidden;
+  transition: max-height 0.25s ease, padding 0.25s ease, border-color 0.25s ease;
+}
+
+.help-header-hidden {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+}
+
+/* An editor page's own small header (Back, file name, Save, ... — `.notes-page-header`, in the Files tab and in
+   Notes' File Manager/Note Files Explorer editor and `NoteEditPage`) doubling as this page's own autohiding header,
+   the same `useScrollAutohide` as `.help-header` above and Notes' own `.notes-top-bar`. It needs its *own* instance
+   of the hook (not just a listener on `.tab-content`) because a text editor's outer area often never scrolls at
+   all — its content, this header plus a fixed-height box that scrolls internally (`.code-editor`), exactly fills
+   `.tab-content` — so the collapse has to react to the *editor's own* inner scroll, which only the shared hook's
+   document-wide capture-phase listener actually sees (see its own doc comment). `position: sticky` is defensive,
+   not load-bearing today (none of these three pages actually let anything scroll past this header) — the collapse
+   itself is `max-height`/padding, exactly `.help-header-hidden`'s own technique and for the same reason (a
+   `transform` still reserves the header's own height in the flow). */
+.editor-top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  max-height: 60px;
+  overflow: hidden;
+  transition: max-height 0.25s ease, padding 0.25s ease, border-color 0.25s ease;
+}
+
+.editor-top-bar-hidden {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-bottom-color: transparent;
+}
+
+.help-tab .toolbar {
+  scroll-margin-top: 60px;
+}
+
+.help-toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.help-toc-list .link-button {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.help-toc-list .link-button:hover {
+  background: var(--row-hover);
+}
+
+/* The keyboard-shortcuts document, rendered server-side from `docs/keyboard-shortcuts.md` and dropped in as-is
+   (`help_docs::get_keyboard_shortcuts_html`) — styled to match the rest of the page rather than the standalone
+   look a markdown file gets when opened as its own web app (`markdown.rs`'s own `STYLE`, irrelevant here). */
+.markdown-fragment h2 {
+  margin: 20px 0 4px;
+  font-size: 1.05em;
+}
+
+.markdown-fragment h3 {
+  margin: 14px 0 4px;
+  font-size: 1em;
+}
+
+.markdown-fragment table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.markdown-fragment th,
+.markdown-fragment td {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-fragment th {
+  background: var(--panel-bg);
+}
+
+.markdown-fragment code {
+  font: 0.9em/1.4 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+
 .tok-heading,
 .tok-strong {
   font-weight: 700;
@@ -2716,6 +2840,17 @@ select {
 
 .theme-card.active {
   border-color: var(--accent);
+}
+
+.theme-card:disabled {
+  cursor: default;
+}
+
+/* Generated colours are on: picking a catalog theme here would have no visible effect until it's turned off, so
+   the whole grid is dimmed and inert rather than left looking clickable for nothing to happen. */
+.theme-family-disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }
 
 /* A small picture of the theme: its page, with a panel, an accent and a text colour on it. */

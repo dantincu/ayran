@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 
-/** The popups that can be **maximized** — a dialog (`components/Modal.tsx`) or an editor (`components/EditorPanel.tsx`) — in the
- * order they opened, so the chord that maximizes (`Ctrl+K, M`, see `lib/chords.ts`) acts on the top one. A maximized popup takes
- * the whole window less a margin (thin on a phone, up to 40px on a Full HD screen) so it still reads as a popup. */
+/** The popups that can be **maximized** — a dialog (`components/Modal.tsx`) — in the order they opened, so the chord that
+ * maximizes (`Ctrl+K, M`, see `lib/chords.ts`) acts on the top one. A maximized popup takes the whole window less a margin
+ * (thin on a phone, up to 40px on a Full HD screen) so it still reads as a popup. (The file editors used to be a maximizable
+ * popup of their own, `components/EditorPanel.tsx` — they are dedicated pages now, not popups, so there is nothing left to
+ * maximize there; this stack is `Modal`-only today.) */
 
 interface Entry {
   toggle: () => void

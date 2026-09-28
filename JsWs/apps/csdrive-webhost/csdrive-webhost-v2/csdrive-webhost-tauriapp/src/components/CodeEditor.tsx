@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useReducer, useRef, useState } from 'react'
 import { Redo2, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import { UndoHistory } from '../lib/undoHistory'
@@ -18,6 +18,13 @@ interface Props {
   readOnly?: boolean
   /** Which language to use, when it isn't the file name's. */
   language?: Language
+}
+
+/** What a ref to `CodeEditor` gives its parent: inserting text at the caret (or over the selection) from the
+ * outside — "Insert a path…" is the one caller today. Goes through the same `applyEdit` every real keystroke
+ * does, so it's one undo step and the caret ends up right after what was inserted, exactly like typing it. */
+export interface CodeEditorHandle {
+  insertAtCursor: (text: string) => void
 }
 
 /** Above this many characters, the highlighted copy is redrawn a moment after typing stops rather than on every
@@ -67,8 +74,11 @@ function useHighlighted(value: string, language: Language): string {
  * every editor in the app shares). Reported live: Tab used to just move the focus to the next control, because a plain
  * `textarea` doesn't intercept it — the browser's own default action has to be prevented and the indentation inserted
  * by hand, which also means the undo history and the caret position are kept in step exactly as a real keystroke would.
- * **Ctrl+K, 2 / Ctrl+K, 4** insert two or four tab-units at once (a quick multi-level indent), the same way. */
-export default function CodeEditor({ value, onChange, fileName, onOpenLink, readOnly, language }: Props) {
+ * **Ctrl+K, 2 / Ctrl+K, 4** insert two or four tab-units at once (a quick multi-level indent), the same way.
+ *
+ * **A ref gives a caller `insertAtCursor`** (`CodeEditorHandle`, above) — "Insert a path…" (`NoteEditPage.tsx`,
+ * `NotesApp.tsx`'s file editor, `FilesTab.tsx`'s) is the one user of it today. */
+const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor({ value, onChange, fileName, onOpenLink, readOnly, language }, ref) {
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const history = useRef<UndoHistory | null>(null)
@@ -137,6 +147,16 @@ export default function CodeEditor({ value, onChange, fileName, onOpenLink, read
     onChange(edit.value)
     redraw()
   }
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor(text) {
+      const input = inputRef.current
+      const start = input?.selectionStart ?? value.length
+      const end = input?.selectionEnd ?? value.length
+      applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: start + text.length, end: start + text.length })
+      input?.focus()
+    },
+  }))
 
   const focused = () => document.activeElement === inputRef.current
   useChord(
@@ -220,4 +240,6 @@ export default function CodeEditor({ value, onChange, fileName, onOpenLink, read
       </div>
     </div>
   )
-}
+})
+
+export default CodeEditor

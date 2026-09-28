@@ -87,6 +87,16 @@ const BOOTSTRAP: &str = "
 })()
 ";
 
+/// Just the markdown converted to HTML — no page wrapper, no title, no bootstrap script — for embedding a
+/// document's content inside a page of ours (the Help tab's keyboard-shortcuts reference, `help_docs.rs`) rather
+/// than serving it as a web app of its own.
+pub fn render_fragment(source: &str) -> String {
+    let options = Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    let mut body = String::new();
+    html::push_html(&mut body, Parser::new_ext(source, options));
+    body
+}
+
 /// The whole html page for markdown `source` (a file called `file_name`).
 pub fn render_page(source: &str, file_name: &str) -> String {
     let options = Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;

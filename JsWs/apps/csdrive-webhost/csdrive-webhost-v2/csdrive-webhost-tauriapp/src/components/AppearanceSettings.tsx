@@ -3,6 +3,7 @@ import { Palette as PaletteIcon } from 'lucide-react'
 import Modal from './Modal'
 import {
   currentAppearance,
+  getKeyColorNames,
   isDark,
   MIN_ROTATION_SECONDS,
   setAppearance,
@@ -10,6 +11,7 @@ import {
   subscribeAppearance,
   UNIT_SECONDS,
   type ColorMode,
+  type GeneratedColors,
   type Rotation,
   type RotationMode,
   type RotationUnit,
@@ -35,7 +37,8 @@ const UNITS: { unit: RotationUnit; label: string }[] = [
   { unit: 'days', label: 'days' },
 ]
 
-const rotationSummary = (r: Rotation) => (r.enabled ? ` · rotating ${r.mode}, every ${r.every} ${r.every === 1 ? r.unit.slice(0, -1) : r.unit}` : '')
+const rotationSummary = (r: Rotation) =>
+  r.enabled ? ` · rotating ${r.generated.enabled ? 'generated colours' : r.mode}, every ${r.every} ${r.every === 1 ? r.unit.slice(0, -1) : r.unit}` : ''
 
 /** Settings → Appearance: a summary of the theme and the light/dark mode in use and a button that opens the dialog where they are chosen (the
  * themes are many; the dialog keeps the page short). One choice for the whole app: the backend keeps it and tells every window
@@ -46,6 +49,9 @@ export default function AppearanceSettings() {
   useEffect(() => subscribeAppearance(setChosen), [])
   const theme = themeById(chosen.theme)
   const mode = MODES.find((m) => m.mode === chosen.mode)?.label ?? ''
+  const dark = isDark(chosen.mode)
+  const palette = chosen.generated ? (dark ? chosen.generated.dark : chosen.generated.light) : dark ? theme.dark : theme.light
+  const name = chosen.generated ? 'Generated colours' : theme.name
 
   return (
     <section className="appearance-settings">
@@ -53,11 +59,11 @@ export default function AppearanceSettings() {
         <strong>Appearance</strong>
       </div>
       <div className="appearance-summary">
-        <span className="theme-swatch small" style={{ background: (isDark(chosen.mode) ? theme.dark : theme.light).bg, borderColor: (isDark(chosen.mode) ? theme.dark : theme.light).border }} aria-hidden="true">
-          <span style={{ background: (isDark(chosen.mode) ? theme.dark : theme.light).accent }} />
+        <span className="theme-swatch small" style={{ background: palette.bg, borderColor: palette.border }} aria-hidden="true">
+          <span style={{ background: palette.accent }} />
         </span>
         <span>
-          <strong>{theme.name}</strong> <span className="muted">· {mode}{rotationSummary(chosen.rotation)}</span>
+          <strong>{name}</strong> <span className="muted">· {mode}{rotationSummary(chosen.rotation)}</span>
         </span>
         <button type="button" className="primary" onClick={() => setOpen(true)}>
           <PaletteIcon size={14} aria-hidden="true" /> Change…
@@ -75,7 +81,14 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
   // sent then — 5 seconds is not one, and 30 seconds is).
   const [every, setEvery] = useState(String(chosen.rotation.every))
   const [unit, setUnit] = useState<RotationUnit>(chosen.rotation.unit)
+  // The spread is typed the same way: kept as text so an empty box or one being edited doesn't fight the person,
+  // sent only once it is a whole number 0–255.
+  const [spreadText, setSpreadText] = useState(String(chosen.rotation.generated.spread))
+  const [keyColorNames, setKeyColorNames] = useState<string[]>([])
   useEffect(() => subscribeAppearance(setChosen), [])
+  useEffect(() => {
+    getKeyColorNames().then(setKeyColorNames).catch(() => setKeyColorNames([]))
+  }, [])
 
   const attempt = async (work: () => Promise<void>) => {
     try {
@@ -99,6 +112,14 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
     if (nextEvery.trim() !== '' && Number.isInteger(n) && n >= 1 && n * UNIT_SECONDS[nextUnit] >= MIN_ROTATION_SECONDS) void rotate({ every: n, unit: nextUnit })
   }
   const dark = isDark(chosen.mode)
+
+  /** Sends the rotation with its `generated` changed — spread as typed when it is a whole number 0–255. */
+  const rotateGenerated = (next: Partial<GeneratedColors>) => rotate({ generated: { ...chosen.rotation.generated, ...next } })
+  const spreadOk = spreadText.trim() !== '' && Number.isInteger(Number(spreadText)) && Number(spreadText) >= 0 && Number(spreadText) <= 255
+  const typedSpread = (next: string) => {
+    setSpreadText(next)
+    if (next.trim() !== '' && Number.isInteger(Number(next)) && Number(next) >= 0 && Number(next) <= 255) void rotateGenerated({ spread: Number(next) })
+  }
 
   return (
     <Modal title="Appearance" onClose={onClose} wide>
@@ -132,7 +153,12 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
         <div className="rotation-row">
           <label>
             Order{' '}
-            <select value={chosen.rotation.mode} onChange={(e) => rotate({ mode: e.target.value as RotationMode })}>
+            <select
+              value={chosen.rotation.mode}
+              disabled={chosen.rotation.generated.enabled}
+              title={chosen.rotation.generated.enabled ? 'Meaningless for generated colours: they always go forward through the six key hues.' : undefined}
+              onChange={(e) => rotate({ mode: e.target.value as RotationMode })}
+            >
               {ROTATION_MODES.map((m) => (
                 <option key={m.mode} value={m.mode}>
                   {m.label}
@@ -170,10 +196,38 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
           The colours slide over to the next theme in about half a second. Every change recolours the whole window, so leave it a few minutes or more;{' '}
           {MIN_ROTATION_SECONDS} seconds is the shortest allowed. Choosing a theme by hand below doesn't stop the rotation: it goes on from that theme.
         </p>
+
+        <label className="rotation-row">
+          <input type="checkbox" checked={chosen.rotation.generated.enabled} onChange={(e) => rotateGenerated({ enabled: e.target.checked })} /> Generate colours near six key
+          hues instead of choosing a theme
+        </label>
+        {chosen.rotation.generated.enabled && (
+          <>
+            <div className="rotation-row">
+              <label>
+                How close{' '}
+                <input
+                  type="number"
+                  min={0}
+                  max={255}
+                  step={1}
+                  value={spreadText}
+                  className={!spreadOk ? 'invalid' : ''}
+                  onChange={(e) => typedSpread(e.target.value)}
+                />
+              </label>
+              <span className="muted">0–255: 0 is the key colour exactly, higher lets it drift further (per red/green/blue channel).</span>
+            </div>
+            {!spreadOk && <div className="rotation-warning">Type a whole number, 0 to 255.</div>}
+            <p className="muted">
+              At every step, the next of these six hues is drawn near, one channel at a time: {keyColorNames.length ? keyColorNames.join(', ') : 'Red, Yellow, Green, Teal, Blue, Magenta'}. Choosing a theme below has no effect while this is on.
+            </p>
+          </>
+        )}
       </fieldset>
 
       {FAMILIES.map((family) => (
-        <div key={family} className="theme-family">
+        <div key={family} className={`theme-family ${chosen.rotation.generated.enabled ? 'theme-family-disabled' : ''}`} aria-disabled={chosen.rotation.generated.enabled}>
           <div className="muted theme-family-name">{family}</div>
           <div className="theme-grid">
             {THEMES.filter((t) => t.family === family).map((t) => {
@@ -185,6 +239,7 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
                   className={`theme-card ${chosen.theme === t.id ? 'active' : ''}`}
                   aria-pressed={chosen.theme === t.id}
                   title={t.name}
+                  disabled={chosen.rotation.generated.enabled}
                   onClick={() => choose({ theme: t.id, mode: chosen.mode })}
                 >
                   <span className="theme-swatch" style={{ background: palette.bg, borderColor: palette.border }} aria-hidden="true">

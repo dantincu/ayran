@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   Eraser,
+  Link2,
   Eye,
   File as FileIcon,
   Folders,
@@ -20,6 +21,7 @@ import {
   GitBranchPlus,
   GitMerge,
   House,
+  ImageDown,
   Info,
   LayoutGrid,
   List,
@@ -38,8 +40,8 @@ import {
   Upload,
   X,
 } from 'lucide-react'
-import CodeEditor from '../../components/CodeEditor'
-import EditorPanel from '../../components/EditorPanel'
+import CodeEditor, { type CodeEditorHandle } from '../../components/CodeEditor'
+import PathStyleModal from '../../components/PathStyleModal'
 import DetailsModal, { type DetailField } from '../../components/DetailsModal'
 import GoToPathModal from '../../components/GoToPathModal'
 import IconButton from '../../components/IconButton'
@@ -50,6 +52,7 @@ import { type MenuItem } from '../../components/ContextMenu'
 import Pagination from '../../components/Pagination'
 import { mediaKindOf } from '../../lib/media'
 import { decodeText, isDefaultTextFile, MAX_EDIT_BYTES, notDefaultTextMessage } from '../../lib/textFiles'
+import { readOsClipboardImage } from '../../lib/clipboard'
 import ThumbnailGrid from './ThumbnailGrid'
 import SearchPanel from './SearchPanel'
 import { FileSearchResults } from './SearchResults'
@@ -64,7 +67,8 @@ import { formatBytesExact } from '../../lib/format'
 import { pathForInput } from '../../lib/pathInput'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
-import { openExternalSite } from '../../lib/secondaryWindows'
+import { onShowTopBar, openExternalSite } from '../../lib/secondaryWindows'
+import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { findMarkdown, readNote } from './noteModel'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { getAppState, setAppState } from '../../lib/appState'
@@ -97,6 +101,10 @@ import {
 import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
 import UserActionButton from './UserActionButton'
 import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
+import InsertPathModal from './InsertPathModal'
+import { loadNotebooks } from './notebooks'
+import { notebookContaining } from './userAction'
+import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
 import { draftsInTheWay, setWindowBranch, windowBranchOf, type UnsavedEdit } from './windowBranch'
 import { listSecondaryWindows } from '../../lib/secondaryWindows'
 import ContextMenu, { contextTrigger, type MenuItem as ContextMenuItem } from '../../components/ContextMenu'
@@ -122,11 +130,11 @@ interface Draft {
   version: FileVersion | null
 }
 
-/** A place without the file being edited: for a tab that names no place of its own, the last place is only
- * a fallback for where to be — not for what to be doing. */
+/** A place without the file being edited or viewed: for a tab that names no place of its own, the last place is
+ * only a fallback for where to be — not for what to be doing. */
 const withoutEdit = (location: Location | null | undefined): Location | null => {
   if (!location) return null
-  if (!location.edit) return location
+  if (!location.edit && !location.viewing) return location
   return { sourceId: location.sourceId, branch: location.branch, path: location.path, ...(location.offset ? { offset: location.offset } : {}) }
 }
 const MAX_BRANCH_NAME_CHARS = 100
@@ -244,8 +252,23 @@ export default function NotesApp({
   const [editing, setEditing] = useState<Editing | null>(null)
   // The file a place says is being edited (path in the source), waiting for the source to be there to open it.
   const [editToRestore, setEditToRestore] = useState<string | null>(null)
+  // The file a place says is being viewed (path in the source), waiting for its folder to load so the other
+  // media of the same folder can be listed alongside it — the same idea as editToRestore.
+  const [viewingToRestore, setViewingToRestore] = useState<string | null>(null)
   const editingRef = useRef<Editing | null>(null)
   editingRef.current = editing
+  const editorRef = useRef<CodeEditorHandle>(null)
+  const [inserting, setInserting] = useState(false)
+  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string } | null>(null)
+  // The editor's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
+  // autohide and nested scrollable content"), following the same "show it" trigger as Notes' own top bar.
+  const [editorHeaderHidden, showEditorHeader] = useScrollAutohide()
+  useEffect(() => {
+    const stop = onShowTopBar(showEditorHeader)
+    return () => {
+      stop.then((unlisten) => unlisten())
+    }
+  }, [showEditorHeader])
   const tabRef = useRef<Tab | null>(initialTab)
   tabRef.current = tab
   // Filen has another version of the file being saved than the one being edited: what it found, until
@@ -300,9 +323,11 @@ export default function NotesApp({
     restoredOffsetRef.current = null
     setRestoringPage(false)
     // The editor follows the place: a tab that was editing a file opens it again, any other closes it (what
-    // was unsaved has been kept as a draft — see flushDraft).
+    // was unsaved has been kept as a draft — see flushDraft). The media viewer follows the same way.
     setEditToRestore(target && exists(target.sourceId) ? (target.edit ?? null) : null)
     if (!target?.edit) setEditing(null)
+    setViewingToRestore(target && exists(target.sourceId) ? (target.viewing ?? null) : null)
+    if (!target?.viewing) setViewer(null)
     if (target && exists(target.sourceId)) {
       setSourceId(target.sourceId)
       setBranch(scope ? (target.branch ?? null) : windowBranch)
@@ -483,11 +508,15 @@ export default function NotesApp({
       path,
       ...(currentPage > 0 ? { offset: offsetOfPage(currentPage, pageSize) } : {}),
       ...(editing ? { edit: editing.path } : {}),
+      // The viewer's own item at the moment it was opened — not wherever its own arrows have since taken the
+      // person, which it doesn't report back; reopening the tab returns to that file, not necessarily where
+      // viewing had moved on to.
+      ...(viewer ? { viewing: joinRelative(path, viewer.items[viewer.start].name) } : {}),
     }
     lastRef.current = location
     setAppState(LAST_LOCATION_KEY, location).catch(() => {})
     if (tab) reportLocation(tab, location, source.label, currentBranch?.name ?? null, !!editing?.dirty)
-  }, [ready, source, sourceId, branch, path, currentPage, pageSize, restoringPage, tab, currentBranch, editing?.path, editing?.dirty])
+  }, [ready, source, sourceId, branch, path, currentPage, pageSize, restoringPage, tab, currentBranch, editing?.path, editing?.dirty, viewer])
 
   // ── Editing that outlives the editor: the place names the file, a draft keeps the unsaved text ──
 
@@ -547,6 +576,30 @@ export default function NotesApp({
       }
     })()
   }, [ready, source, editToRestore])
+
+  // A place that says a picture, video or sound is being viewed: open it in the viewer, listed alongside the
+  // rest of its folder's media — the same list `viewMedia` itself builds, since a restored place's `path` is
+  // always that file's own folder (`viewMedia` is never called with a different one).
+  useEffect(() => {
+    if (!ready || !source?.fileRef || viewingToRestore === null) return
+    const wanted = viewingToRestore
+    setViewingToRestore(null)
+    const name = wanted.includes('/') ? wanted.slice(wanted.lastIndexOf('/') + 1) : wanted
+    const folder = parentPath(wanted)
+    ;(async () => {
+      try {
+        const listed = folder === path ? entries : (await source.list(folder)).entries
+        const items: MediaItem[] = listed.flatMap((e) => {
+          const kind = e.isDirectory ? null : mediaKindOf(e.name)
+          return kind && source.fileRef ? [{ name: e.name, kind, file: source.fileRef(joinRelative(folder, e.name)) }] : []
+        })
+        const start = items.findIndex((item) => item.name === name)
+        if (start >= 0) setViewer({ items, start })
+      } catch (e) {
+        setError(String(e))
+      }
+    })()
+  }, [ready, source, viewingToRestore])
 
   // A position restored for the place shown (a tab switched to, or the start): go to the page that holds
   // the record it was at, as soon as the listing of that very place is in.
@@ -813,6 +866,15 @@ export default function NotesApp({
     setEditing(null)
   }
 
+  /** "Insert a path…" picked one: the relative form (from the edited file's own folder) and the absolute one —
+   * from the notebook's root when this folder is inside one, the source root otherwise (`lib/relativePath.ts`). */
+  async function pathPicked(target: string) {
+    if (!editing) return
+    setInserting(false)
+    const notebook = notebookContaining(await loadNotebooks(), sourceId, parentPath(editing.path))
+    setPathChoice({ relative: relativePathFrom(parentPath(editing.path), target), absolute: absolutePathFrom(target, notebook?.folder ?? null) })
+  }
+
   function nameOk(name: string): boolean {
     if (!name || name === '.' || name === '..' || /[/\\]/.test(name)) {
       setError('That is not a valid file name.')
@@ -853,6 +915,31 @@ export default function NotesApp({
           else await source.write(target, new Uint8Array(await file.arrayBuffer()))
         })
       }
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  /** Saves the image on the OS clipboard — a screenshot just taken, a picture copied from elsewhere — as a new
+   * file here, the way most image-editing programs' own "paste as file" does. Reported as wanted for exactly
+   * that: pasting a screenshot straight into a notebook or the file manager without saving it to disk by hand
+   * first. Not available on Android — the WebView there refuses to read the OS clipboard at all (`clipboard.ts`) —
+   * so the error there is shown as-is rather than pretended away. */
+  async function pasteClipboardImage() {
+    if (!source) return
+    setError(null)
+    try {
+      const image = await readOsClipboardImage()
+      if (!image) return setError('There is no image on the clipboard.')
+      const name = window.prompt('Save the clipboard image as:', `clipboard-${Date.now()}.${image.ext}`)?.trim()
+      if (!name || !nameOk(name)) return
+      if (entries.some((e) => e.name === name) && !(await confirm(`Replace "${name}"?`))) return
+      const file = new File([image.blob], name, { type: image.blob.type })
+      await act(async () => {
+        const target = joinRelative(path, name)
+        if (source.writeFromFile) await source.writeFromFile(target, file)
+        else await source.write(target, new Uint8Array(await file.arrayBuffer()))
+      })
     } catch (e) {
       setError(String(e))
     }
@@ -1330,6 +1417,48 @@ export default function NotesApp({
   return (
     <div className="app-shell">
       <main className="tab-content">
+        {editing ? (
+          <div className="tab-panel note-edit-page">
+            <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`}>
+              <IconButton icon={ArrowLeft} label="Back" onClick={closeEditor} />
+              <h2>{editing.path}</h2>
+              {editing.dirty && <span className="muted">unsaved changes</span>}
+              {editing.source.branches && (
+                <IconButton
+                  icon={GitBranchPlus}
+                  label={`New branch… — carry on in a branch of the ${editing.source.kind === 'filen' ? 'account' : 'folder'}`}
+                  onClick={newBranchFromEditor}
+                />
+              )}
+              <CacheMenu source={editing.source} path={editing.path} isDirectory={false} editing={editing.dirty ? 'dirty' : 'open'} onDone={refreshEditor} onError={setError} onNotice={setNotice} />
+              <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
+              <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
+            </div>
+            {error && <div className="error-banner">{error}</div>}
+            {notice && <div className="status-banner">{notice}</div>}
+            <CodeEditor
+              ref={editorRef}
+              value={editing.content}
+              fileName={editing.path}
+              onChange={(content) => setEditing({ ...editing, content, dirty: true })}
+              onOpenLink={openLinkFromEditor}
+            />
+            {inserting && (
+              <InsertPathModal source={editing.source} sourceId={sourceId} initialPath={parentPath(editing.path)} onPick={pathPicked} onClose={() => setInserting(false)} />
+            )}
+            {pathChoice && (
+              <PathStyleModal
+                relative={pathChoice.relative}
+                absolute={pathChoice.absolute}
+                onPick={(inserted) => {
+                  editorRef.current?.insertAtCursor(inserted)
+                  setPathChoice(null)
+                }}
+                onClose={() => setPathChoice(null)}
+              />
+            )}
+          </div>
+        ) : (
         <div className="tab-panel files-tab">
           <div className="root-switcher">
             <IconButton
@@ -1454,6 +1583,7 @@ export default function NotesApp({
               <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />
               <IconButton icon={Folders} label="Add folders pair…" onClick={() => setPairing(true)} />
               <IconButton icon={Upload} label="Upload…" onClick={uploadFiles} />
+              <IconButton icon={ImageDown} label="Paste the clipboard's image as a file…" onClick={pasteClipboardImage} />
               {clipboard && <IconButton icon={ClipboardPaste} label={`Paste "${clipboard.name}"`} onClick={paste} />}
               <IconButton icon={RefreshCw} label={account ? 'Refresh from Filen' : 'Refresh'} onClick={() => load(true)} />
               <CacheMenu source={source} path={path} isDirectory onDone={() => load(false)} onError={setError} onNotice={setNotice} />
@@ -1642,6 +1772,7 @@ export default function NotesApp({
 
           {criteria === null && <Pagination page={currentPage} pageSize={pageSize} totalItems={entries.length} onPageChange={setPage} onPageSizeChange={setPageSize} />}
         </div>
+        )}
       </main>
 
       {pairing && source && (
@@ -1666,27 +1797,6 @@ export default function NotesApp({
             <CacheMenu source={source} path={item.file.path.replace(/^\/+/, '')} isDirectory={false} onDone={async () => { reload(); await load(false) }} onError={setError} onNotice={setNotice} />
           )}
         />
-      )}
-
-      {editing && (
-        <EditorPanel
-          title={`${editing.source.label} · ${editing.path}`}
-          actions={
-            <>
-              {editing.source.branches && <IconButton icon={GitBranchPlus} label={`New branch… — carry on in a branch of the ${editing.source.kind === 'filen' ? 'account' : 'folder'}`} onClick={newBranchFromEditor} />}
-              <CacheMenu source={editing.source} path={editing.path} isDirectory={false} editing={editing.dirty ? 'dirty' : 'open'} onDone={refreshEditor} onError={setError} onNotice={setNotice} />
-              <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
-            </>
-          }
-          onClose={closeEditor}
-        >
-          <CodeEditor
-            value={editing.content}
-            fileName={editing.path}
-            onChange={(content) => setEditing({ ...editing, content, dirty: true })}
-            onOpenLink={openLinkFromEditor}
-          />
-        </EditorPanel>
       )}
 
       {rootMenu && <ContextMenu items={rootMenuItems(rootMenu)} x={rootMenu.x} y={rootMenu.y} onClose={() => setRootMenu(null)} />}

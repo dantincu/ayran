@@ -4,8 +4,9 @@ import { invoke } from '@tauri-apps/api/core'
  *
  * - **The OS clipboard**: what the rest of the system sees. Written synchronously through `execCommand` first — reliable in
  *   a desktop webview, where the asynchronous Clipboard API can wait for a permission that never comes when the window
- *   lacks focus — and through the Clipboard API when that isn't possible. Read through the Clipboard API only (the webview
- *   may ask the person to allow it).
+ *   lacks focus — and through the Clipboard API when that isn't possible. Read (text or an image) through the Clipboard
+ *   API only (the webview may ask the person to allow it) — **Android's WebView refuses to read it at all**, text or
+ *   image alike, so every reader here throws there; a caller shows that as "use the system's own paste instead".
  * - **The app's own clipboard** (`internal_clipboard.rs`): one text, kept by the backend and shared by every window of the
  *   admin-app and of the system apps. Nothing copied to it reaches other programs, and the OS clipboard is left alone.
  */
@@ -43,6 +44,40 @@ export async function readOsClipboard(): Promise<string> {
   } catch {
     throw new Error("The system's clipboard can't be read from here — paste with the system's own command (Ctrl+V, or press and hold in the box) instead.")
   }
+}
+
+/** An image read off the OS clipboard (a screenshot, a copied picture): its bytes and a file extension guessed
+ * from its MIME type, for a name to save it under. */
+export interface ClipboardImage {
+  blob: Blob
+  ext: string
+}
+
+const CLIPBOARD_IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+}
+
+/** The image on the OS clipboard (e.g. a screenshot just taken), or `null` when there is text or nothing there
+ * instead. Throws, with something a person can read, when the webview won't say — Android's WebView refuses to
+ * read the OS clipboard at all (this module's own doc comment, above), so this always throws there. */
+export async function readOsClipboardImage(): Promise<ClipboardImage | null> {
+  let items: ClipboardItem[]
+  try {
+    items = await navigator.clipboard.read()
+  } catch {
+    throw new Error("The system's clipboard can't be read from here.")
+  }
+  for (const item of items) {
+    const type = item.types.find((t) => t.startsWith('image/'))
+    if (!type) continue
+    return { blob: await item.getType(type), ext: CLIPBOARD_IMAGE_EXTENSIONS[type] ?? 'bin' }
+  }
+  return null
 }
 
 export const internalClipboard = {

@@ -29,6 +29,11 @@ export interface Location {
   /** The file open in the editor, as a path relative to the source's root; absent: none. Part of the place,
    * so the tab shows that it is being edited, and activating or reloading it opens the editor again. */
   edit?: string
+  /** The picture, video or sound open in the media viewer, as a path relative to the source's root; absent:
+   * none. Part of the place the same way `edit` is, so activating or reloading the tab opens the viewer again
+   * on the same file (not necessarily where the person had since navigated to inside the viewer with its own
+   * arrows — only the file it was opened on). */
+  viewing?: string
 }
 
 /** Bumped when the icon set below changes: the backend then asks the page for it again. */
@@ -109,6 +114,7 @@ export function encodeLocation(location: Location): string {
   if (location.branch !== null) params.set('b', String(location.branch))
   if (location.offset) params.set('o', String(location.offset))
   if (location.edit) params.set('e', location.edit)
+  if (location.viewing) params.set('m', location.viewing)
   return params.toString()
 }
 
@@ -121,12 +127,14 @@ export function decodeLocation(resourceId: string): Location | null {
   const branch = Number(params.get('b'))
   const offset = validOffset(Number(params.get('o')))
   const edit = params.get('e')
+  const viewing = params.get('m')
   return {
     sourceId,
     branch: params.has('b') && Number.isInteger(branch) ? branch : null,
     path: params.get('p') ?? '',
     ...(offset !== null ? { offset } : {}),
     ...(edit ? { edit } : {}),
+    ...(viewing ? { viewing } : {}),
   }
 }
 
@@ -245,10 +253,13 @@ export async function reportLocation(
   const query = encodeLocation(location)
   const firstRow: TabText['firstRow'] = [{ text: label, bold: true }]
   if (branchName) firstRow.push({ text: branchName, italic: true })
-  // A tab that is editing a file says so — and whether there is something not saved yet.
+  // A tab that is editing a file, or viewing a picture/video/sound, says so — and whether there is
+  // something not saved yet (editing only: the viewer never has unsaved changes of its own).
   const secondRow: TabText['secondRow'] = location.edit
     ? [{ text: `Editing /${location.edit}`, bold: true }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]
-    : [{ text: location.path ? `/${location.path}` : '/' }]
+    : location.viewing
+      ? [{ text: `Viewing /${location.viewing}`, bold: true }]
+      : [{ text: location.path ? `/${location.path}` : '/' }]
   resourceIs(`system:notes?${query}`)
   try {
     const { topBarHtml } = await updateTabResource(tab.tabGuid, { firstRow, secondRow }, resourceTypeOf(location), `system:notes?${query}`)

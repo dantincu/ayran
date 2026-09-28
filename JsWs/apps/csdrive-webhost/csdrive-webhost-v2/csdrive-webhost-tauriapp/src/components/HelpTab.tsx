@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
-import { Search } from 'lucide-react'
+import { List, Search } from 'lucide-react'
 import CodeBlock from './CodeBlock'
+import IconButton from './IconButton'
+import Modal from './Modal'
 import { API_REFERENCE } from '../lib/apiReference'
+import { subscribeShowHelpHeader } from '../lib/helpHeader'
+import { useScrollAutohide } from '../lib/scrollAutohide'
 
 const QUICK_START = `// The smallest a page needs to participate in the window manager's tabs:
 window.__TAURI__.webviewWindow.getCurrentWebviewWindow().listen('tab-navigate', (event) => {
@@ -18,16 +22,75 @@ window.__TAURI__.core.invoke('init_window_tab', {
   // info.tabGuid, info.resourceId, info.codeSnippets, ...
 })`
 
+/** The page's own sections, in order — what the table of contents lists and what its links scroll to
+ * (`document.getElementById(id)`, each section's own `id`). A new section gets an entry here too. */
+const SECTIONS = [
+  { id: 'help-overview', label: 'Overview' },
+  { id: 'help-keyboard-shortcuts', label: 'Keyboard shortcuts' },
+  { id: 'help-making-your-own-web-app', label: 'Making your own web app' },
+  { id: 'help-the-essentials', label: 'The essentials' },
+  { id: 'help-example-toolbar', label: "Example: a page's own toolbar" },
+  { id: 'help-api-reference', label: 'API reference' },
+]
+
+/** The Help tab's own autohiding header: the page's title, and a button opening the table of contents. Hides
+ * on scrolling down and comes back on scrolling up, on reaching the top, or when told to (`showHelpHeader`,
+ * called when the Help tab's own button is pressed again while already showing it) — the scroll-direction
+ * mechanics themselves are `useScrollAutohide` (shared with Notes' top bar and its editor pages' own headers). */
+function HelpHeader() {
+  const [hidden, show, hide] = useScrollAutohide()
+  const [tocOpen, setTocOpen] = useState(false)
+
+  useEffect(() => subscribeShowHelpHeader(show), [show])
+
+  function goTo(id: string) {
+    setTocOpen(false)
+    // Collapse the header — if it's currently shown — and let that transition finish *before* scrolling: the
+    // header's own height is real layout space (`position: sticky` still reserves it), so collapsing it while
+    // `scrollIntoView`'s own animation is also under way shifts the very thing the browser is scrolling toward
+    // mid-flight, landing well past the target instead of right below the header (found live: the target ended
+    // up ~140px further down than the header's own height should allow, exactly the concurrent-collapse gap).
+    hide()
+    window.setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 260)
+  }
+
+  return (
+    <div className={`help-header ${hidden ? 'help-header-hidden' : ''}`}>
+      <strong>Ayran CsDrive WebHost — Help</strong>
+      <IconButton icon={List} label="Table of contents…" onClick={() => setTocOpen(true)} />
+      {tocOpen && (
+        <Modal title="Table of contents" onClose={() => setTocOpen(false)}>
+          <ul className="help-toc-list">
+            {SECTIONS.map((s) => (
+              <li key={s.id}>
+                <button type="button" className="link-button" onClick={() => goTo(s.id)}>
+                  {s.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Modal>
+      )}
+    </div>
+  )
+}
+
 /** The admin-app's Help tab: an overview for someone writing their own web app, a couple of copyable code
- * snippets, and a reference of every backend command a web app may call (`lib/apiReference.ts`). */
+ * snippets, a reference of every backend command a web app may call (`lib/apiReference.ts`), and the full
+ * keyboard-shortcuts reference (`docs/keyboard-shortcuts.md`, fetched and rendered by the backend so the two can
+ * never drift apart — `help_docs::get_keyboard_shortcuts_html`). `HelpHeader` above is this page's own autohiding
+ * header with a table-of-contents popup. */
 export default function HelpTab() {
   const [sampleHtml, setSampleHtml] = useState<string | null>(null)
   const [sampleError, setSampleError] = useState<string | null>(null)
+  const [shortcutsHtml, setShortcutsHtml] = useState<string | null>(null)
+  const [shortcutsError, setShortcutsError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
   useEffect(() => {
     invoke<string>('get_deployable_app_html', { appId: 'example-toolbar' }).then(setSampleHtml, (e) => setSampleError(String(e)))
+    invoke<string>('get_keyboard_shortcuts_html').then(setShortcutsHtml, (e) => setShortcutsError(String(e)))
   }, [])
 
   const filtered = useMemo(() => {
@@ -41,7 +104,9 @@ export default function HelpTab() {
 
   return (
     <div className="tab-panel help-tab">
-      <div className="toolbar">
+      <HelpHeader />
+
+      <div className="toolbar" id="help-overview">
         <strong>Ayran CsDrive WebHost</strong>
       </div>
       <p className="muted">
@@ -51,7 +116,18 @@ export default function HelpTab() {
         writing one.
       </p>
 
-      <div className="toolbar" style={{ marginTop: 24 }}>
+      <div className="toolbar" id="help-keyboard-shortcuts" style={{ marginTop: 24 }}>
+        <strong>Keyboard shortcuts</strong>
+      </div>
+      <p className="muted">Every keyboard shortcut in the app — the same document as `docs/keyboard-shortcuts.md`, rendered here so it never has to be looked up separately.</p>
+      {shortcutsError && <div className="error-banner">{shortcutsError}</div>}
+      {shortcutsHtml === null && !shortcutsError ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        shortcutsHtml && <div className="markdown-fragment" dangerouslySetInnerHTML={{ __html: shortcutsHtml }} />
+      )}
+
+      <div className="toolbar" id="help-making-your-own-web-app" style={{ marginTop: 24 }}>
         <strong>Making your own web app</strong>
       </div>
       <p className="muted">
@@ -68,7 +144,7 @@ export default function HelpTab() {
         open and edit.
       </p>
 
-      <div className="toolbar" style={{ marginTop: 24 }}>
+      <div className="toolbar" id="help-the-essentials" style={{ marginTop: 24 }}>
         <strong>The essentials</strong>
       </div>
       <p className="muted">
@@ -77,7 +153,7 @@ export default function HelpTab() {
       </p>
       <CodeBlock code={QUICK_START} language="javascript" onError={setError} />
 
-      <div className="toolbar" style={{ marginTop: 24 }}>
+      <div className="toolbar" id="help-example-toolbar" style={{ marginTop: 24 }}>
         <strong>Example: a page's own toolbar</strong>
       </div>
       <p className="muted">
@@ -91,7 +167,7 @@ export default function HelpTab() {
       {error && <div className="error-banner">{error}</div>}
       {sampleHtml === null && !sampleError ? <p className="muted">Loading…</p> : sampleHtml && <CodeBlock code={sampleHtml} language="html" onError={setError} />}
 
-      <div className="toolbar" style={{ marginTop: 24 }}>
+      <div className="toolbar" id="help-api-reference" style={{ marginTop: 24 }}>
         <strong>API reference</strong>
       </div>
       <p className="muted">

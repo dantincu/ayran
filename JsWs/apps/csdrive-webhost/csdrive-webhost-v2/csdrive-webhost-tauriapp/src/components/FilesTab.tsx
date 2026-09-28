@@ -3,9 +3,11 @@ import { confirm } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 import { exportPathToDevice, isMobile, pickDeviceFiles } from '../lib/platform'
 import {
+  ArrowLeft,
   Copy,
   Download,
   ExternalLink,
+  Link2,
   File,
   FilePlus,
   FileText,
@@ -25,8 +27,11 @@ import {
 } from 'lucide-react'
 import IconButton from './IconButton'
 import RowActions from './RowActions'
-import CodeEditor from './CodeEditor'
-import EditorPanel from './EditorPanel'
+import CodeEditor, { type CodeEditorHandle } from './CodeEditor'
+import FileExplorerModal from './FileExplorerModal'
+import PathStyleModal from './PathStyleModal'
+import { absolutePathFrom, relativePathFrom } from '../lib/relativePath'
+import { useScrollAutohide } from '../lib/scrollAutohide'
 import DetailsModal, { type DetailField } from './DetailsModal'
 import GoToPathModal from './GoToPathModal'
 import Modal from './Modal'
@@ -104,6 +109,8 @@ interface ClipboardItem {
 function isSameOrWithin(ancestor: string, candidate: string): boolean {
   return candidate === ancestor || candidate.startsWith(`${ancestor}/`)
 }
+
+const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 
 const LOCATION_KEY = 'filesTab.location'
 
@@ -193,6 +200,13 @@ export default function FilesTab() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [editing, setEditing] = useState<{ path: string; content: string; dirty: boolean } | null>(null)
+  const editorRef = useRef<CodeEditorHandle>(null)
+  const [inserting, setInserting] = useState(false)
+  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string } | null>(null)
+  // The editor's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
+  // autohide and nested scrollable content"); the Files tab has no counterpart "global" top bar to sync with
+  // (that's a Notes-only concept), so this is scroll-driven only, same as the Help tab's own header.
+  const [editorHeaderHidden] = useScrollAutohide()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
@@ -398,6 +412,14 @@ export default function FilesTab() {
     } catch (e) {
       setError(String(e))
     }
+  }
+
+  /** "Insert a path…" picked one: the relative form (from the edited file's own folder) and the absolute one —
+   * always from this root, since the Files tab has no notebook concept (`lib/relativePath.ts`, `root: null`). */
+  function pathPicked(target: string) {
+    if (!editing) return
+    setInserting(false)
+    setPathChoice({ relative: relativePathFrom(parentOf(editing.path), target), absolute: absolutePathFrom(target, null) })
   }
 
   async function createFolder() {
@@ -768,6 +790,46 @@ export default function FilesTab() {
 
   return (
     <div className="tab-panel files-tab">
+      {editing ? (
+        <>
+          <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`}>
+            <IconButton icon={ArrowLeft} label="Back" onClick={() => setEditing(null)} />
+            <h2>{editing.path}</h2>
+            {editing.dirty && <span className="muted">unsaved changes</span>}
+            <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
+            <IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />
+          </div>
+          {error && <div className="error-banner">{error}</div>}
+          <CodeEditor
+            ref={editorRef}
+            value={editing.content}
+            fileName={editing.path}
+            onChange={(content) => setEditing({ ...editing, content, dirty: true })}
+            onOpenLink={openLinkFromEditor}
+          />
+          {inserting && activeRoot && (
+            <FileExplorerModal
+              title="Insert a path…"
+              list={(p) => listRootDir(activeRoot, p)}
+              initialPath={parentOf(editing.path)}
+              onPick={pathPicked}
+              onClose={() => setInserting(false)}
+            />
+          )}
+          {pathChoice && (
+            <PathStyleModal
+              relative={pathChoice.relative}
+              absolute={pathChoice.absolute}
+              onPick={(inserted) => {
+                editorRef.current?.insertAtCursor(inserted)
+                setPathChoice(null)
+              }}
+              onClose={() => setPathChoice(null)}
+            />
+          )}
+        </>
+      ) : (
+      <>
       <div className="root-switcher">
         {roots.map((root) => (
           <div key={root.id} className="root-item">
@@ -901,20 +963,7 @@ export default function FilesTab() {
         onPageChange={setPage}
         onPageSizeChange={setPageSize}
       />
-
-      {editing && (
-        <EditorPanel
-          title={editing.path}
-          actions={<IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />}
-          onClose={() => setEditing(null)}
-        >
-          <CodeEditor
-            value={editing.content}
-            fileName={editing.path}
-            onChange={(content) => setEditing({ ...editing, content, dirty: true })}
-            onOpenLink={openLinkFromEditor}
-          />
-        </EditorPanel>
+      </>
       )}
 
       {shownDetails && details && (

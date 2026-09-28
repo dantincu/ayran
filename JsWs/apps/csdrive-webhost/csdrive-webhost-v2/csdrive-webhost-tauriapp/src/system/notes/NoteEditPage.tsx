@@ -1,25 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirm } from '../../lib/dialogs'
-import { AppWindow, ArrowLeft, Paperclip, Save } from 'lucide-react'
-import CodeEditor from '../../components/CodeEditor'
+import { AppWindow, ArrowLeft, Link2, Paperclip, Save } from 'lucide-react'
+import CodeEditor, { type CodeEditorHandle } from '../../components/CodeEditor'
 import IconButton from '../../components/IconButton'
+import PathStyleModal from '../../components/PathStyleModal'
 import { getAppState, setAppState } from '../../lib/appState'
-import { openExternalSite, openNoteTab } from '../../lib/secondaryWindows'
+import { onShowTopBar, openExternalSite, openNoteTab } from '../../lib/secondaryWindows'
 import { resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
+import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
+import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { findMarkdown, readNote, renameNote, titleFromMarkdown, touchNote, type NoteRef } from './noteModel'
 import type { FileVersion } from './sources'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
+import { loadNotebooks } from './notebooks'
+import { notebookContaining } from './userAction'
 import UserActionButton from './UserActionButton'
 import CacheMenu from './CacheMenu'
+import InsertPathModal from './InsertPathModal'
 
 /** The unsaved text of note editors that were left (a tab switched away from, a window closed): `<source>|<markdown path>` → text. */
 const DRAFTS_KEY = 'notes.noteDrafts'
 
 const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 
-/** The dedicated page for editing a note's markdown (a file of the File Manager is edited in a popup; a note has a page of its
- * own). What isn't saved is kept as a draft while the page is left and comes back with it; saving asks Filen first when the
+/** The dedicated page for editing a note's markdown (a file of the File Manager has one of its own too, `NotesApp.tsx`'s
+ * `editing` — neither is a popup any more). What isn't saved is kept as a draft while the page is left and comes back with it; saving asks Filen first when the
  * note is in an account, keeps the note's title in step with its first heading (the folder and file names follow, as the
  * strategy says) and tells the windows that show the note as a web app to reload. */
 export default function NoteEditPage({
@@ -46,6 +52,19 @@ export default function NoteEditPage({
   const [saving, setSaving] = useState(false)
   const draftTimer = useRef<number | undefined>(undefined)
   const dirty = loaded && text !== saved
+  const editorRef = useRef<CodeEditorHandle>(null)
+  const [inserting, setInserting] = useState(false)
+  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string } | null>(null)
+  // This page's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
+  // autohide and nested scrollable content"), and follows the same "show it" trigger as Notes' own top bar, so
+  // the admin-app's "show top bar" reveals both together.
+  const [headerHidden, showHeader] = useScrollAutohide()
+  useEffect(() => {
+    const stop = onShowTopBar(showHeader)
+    return () => {
+      stop.then((unlisten) => unlisten())
+    }
+  }, [showHeader])
 
   const draftKey = (markdown: string) => `${sourceId}|${markdown}`
 
@@ -191,12 +210,21 @@ export default function NoteEditPage({
     await leave({ view: 'files', location: { sourceId, branch: null, path: target.path } })
   }
 
+  /** "Insert a path…" picked one: works out both the relative form (from this note's own folder) and the
+   * absolute one (from the notebook's root — this note is always inside one, being a note — see
+   * `lib/relativePath.ts`), then asks which to insert. */
+  async function pathPicked(target: string) {
+    setInserting(false)
+    const notebook = notebookContaining(await loadNotebooks(), sourceId, folder)
+    setPathChoice({ relative: relativePathFrom(folder, target), absolute: absolutePathFrom(target, notebook?.folder ?? null) })
+  }
+
   if (!ready) return null
   return (
     <div className="app-shell">
       <main className="tab-content">
         <div className="tab-panel note-edit-page">
-          <div className="notes-page-header">
+          <div className={`notes-page-header editor-top-bar ${headerHidden ? 'editor-top-bar-hidden' : ''}`}>
             <IconButton icon={ArrowLeft} label="Back to the notes" onClick={() => leave({ view: 'notes', sourceId, folder: parentOf(folder) })} />
             <h2>{note?.title ?? 'Note'}</h2>
             {dirty && <span className="muted">unsaved changes</span>}
@@ -204,17 +232,32 @@ export default function NoteEditPage({
             <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
             <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
             <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
+            <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} disabled={!path} />
             <UserActionButton sourceId={sourceId} folder={folder} />
           </div>
           {error && <div className="error-banner">{error}</div>}
           {notice && <div className="status-banner">{notice}</div>}
           {loaded && path ? (
-            <CodeEditor value={text} fileName={path} onChange={setText} onOpenLink={openLink} />
+            <CodeEditor ref={editorRef} value={text} fileName={path} onChange={setText} onOpenLink={openLink} />
           ) : (
             !error && <div className="muted">Loading…</div>
           )}
         </div>
       </main>
+      {inserting && source && path && (
+        <InsertPathModal source={source} sourceId={sourceId} initialPath={parentOf(path)} onPick={pathPicked} onClose={() => setInserting(false)} />
+      )}
+      {pathChoice && (
+        <PathStyleModal
+          relative={pathChoice.relative}
+          absolute={pathChoice.absolute}
+          onPick={(inserted) => {
+            editorRef.current?.insertAtCursor(inserted)
+            setPathChoice(null)
+          }}
+          onClose={() => setPathChoice(null)}
+        />
+      )}
     </div>
   )
 }

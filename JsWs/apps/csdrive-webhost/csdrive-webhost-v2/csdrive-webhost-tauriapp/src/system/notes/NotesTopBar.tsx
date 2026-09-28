@@ -3,6 +3,7 @@ import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { ArrowLeft, Pause, X, XCircle, XSquare } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import { closeSecondaryWindow, closeTab, onShowTopBar, setTabTopBarHidden, suspendSecondaryWindow, windowGoBack } from '../../lib/secondaryWindows'
+import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { subscribeTopBarInfo } from './topBarInfo'
 import type { Tab } from './tabs'
 
@@ -13,11 +14,20 @@ import type { Tab } from './tabs'
  * global one for every open window — sends this window the `show-top-bar` event, or hidden again with its own
  * × (which persists that choice). Besides the label/tags/root markup the backend renders for it (`topBarHtml`),
  * lets the person go back one navigation step, suspend the window or close the current tab without the page
- * itself having to offer it. */
+ * itself having to offer it.
+ *
+ * **Layered on top of that persisted choice, it also autohides on scroll** (`useScrollAutohide`, the same
+ * mechanism as the Help tab's own header and — see `NoteEditPage.tsx`/`NotesApp.tsx` — an editor page's own
+ * header): scrolling down collapses it, scrolling back up (or reaching the top) brings it back, and the
+ * admin-app's "show top bar" clears the scroll-collapse too, so it comes back fully rather than staying
+ * collapsed until the next upward scroll. The two states are independent: `shown` (persisted: an explicit close,
+ * or the global autohide-by-default setting) decides whether the bar exists *at all* for this tab, and — only
+ * while it does — `scrollHidden` decides whether it's momentarily collapsed. */
 export default function NotesTopBar({ tab }: { tab: Tab | null }) {
   const [shown, setShown] = useState(false)
   const [info, setInfo] = useState<{ html: string; hidden: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [scrollHidden, showFromScroll] = useScrollAutohide()
 
   useEffect(() => subscribeTopBarInfo((i) => setInfo(i)), [])
   // A fresh tab (or a tab switch) decides the starting visibility from its own `hidden`; the admin-app's
@@ -27,16 +37,19 @@ export default function NotesTopBar({ tab }: { tab: Tab | null }) {
   }, [info])
 
   useEffect(() => {
-    const stop = onShowTopBar(() => setShown(true))
+    const stop = onShowTopBar(() => {
+      setShown(true)
+      showFromScroll()
+    })
     return () => {
       stop.then((unlisten) => unlisten())
     }
-  }, [])
+  }, [showFromScroll])
 
   if (!shown) return null
 
   return (
-    <div className="notes-top-bar">
+    <div className={`notes-top-bar ${scrollHidden ? 'notes-top-bar-scroll-hidden' : ''}`}>
       <IconButton
         icon={ArrowLeft}
         label="Go back one step"

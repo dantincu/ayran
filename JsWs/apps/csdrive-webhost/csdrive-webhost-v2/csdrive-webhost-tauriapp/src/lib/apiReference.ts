@@ -113,8 +113,8 @@ export const API_REFERENCE: ApiCategory[] = [
     title: 'External web sites',
     intro: 'A page of the web (http/https) shown in a window of this app, one confirmed OS box at a time — see CLAUDE.md’s "External web sites".',
     entries: [
-      { call: "invoke('open_external_site', { url })", returns: 'a request id', summary: 'Asks (native confirmation box: who’s asking, the address, Open/Cancel) to open an http/https site in a window of this app. The answer arrives as an event, not the resolved promise.', note: 'One such request waits for the person at a time; a second call meanwhile is refused.' },
-      { call: "getCurrentWebviewWindow().listen('external-site-response', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ requestId, url, confirmed, pageGuid, error }` — sent only to the window that asked.' },
+      { call: "invoke('open_external_site', { url })", returns: 'a request id', summary: 'Asks, in two native boxes (who’s asking and the address, then in a window of this app or in the browser instead), to open an http/https site. The answer arrives as an event, not the resolved promise.', note: 'One such request waits for the person at a time; a second call meanwhile is refused.' },
+      { call: "getCurrentWebviewWindow().listen('external-site-response', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ requestId, url, confirmed, pageGuid, error }` — sent only to the window that asked. `confirmed` is only true for "in a window of this app": choosing the browser instead reports `confirmed: false, pageGuid: null`, the same as Cancel.' },
       { call: "getCurrentWebviewWindow().listen('external-site-changed', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ pageGuid, url, initialUrl, title }` — the site’s own address or title changed.' },
       { call: "getCurrentWebviewWindow().listen('external-site-closed', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ pageGuid }` — its window was closed (the entry stays, suspended).' },
       { call: "invoke('reopen_external_site', { guid })", returns: 'void', summary: '' },
@@ -191,10 +191,11 @@ export const API_REFERENCE: ApiCategory[] = [
     title: 'Appearance',
     intro: 'The theme and light/dark mode are one choice for the whole app.',
     entries: [
-      { call: "invoke('get_appearance')", returns: '{ theme, mode, rotation }', summary: '' },
+      { call: "invoke('get_appearance')", returns: '{ theme, mode, rotation, generated }', summary: '`generated` is `null` unless the rotation is currently making up its own colours near a key hue (`rotation.generated.enabled`), in which case it is `{ keyIndex, light, dark }` — a full palette to apply in place of looking `theme` up in the catalog.' },
       { call: "invoke('list_themes')", returns: 'theme ids, in the catalog’s order', summary: '' },
+      { call: "invoke('key_color_names')", returns: "['Red', 'Yellow', 'Green', 'Teal', 'Blue', 'Magenta']", summary: 'The six key hues a generated rotation cycles through, in that order — for showing which one a `generated.keyIndex` is.' },
       { call: "invoke('set_appearance', { theme, mode })", returns: 'void', summary: 'Any window may call this.' },
-      { call: "getCurrentWebviewWindow().listen('appearance-changed', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ theme, mode, dark, rotation }`. A web app keeps its own colours but may follow the mode or the theme.' },
+      { call: "getCurrentWebviewWindow().listen('appearance-changed', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ theme, mode, dark, rotation, generated }`. A web app keeps its own colours but may follow the mode or the theme.' },
     ],
   },
   {

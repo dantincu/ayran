@@ -13,6 +13,7 @@
     "allow-delete-app-data",
     "allow-list-deployable-apps",
     "allow-get-deployable-app-html",
+    "allow-get-keyboard-shortcuts-html",
     "allow-fs-root-path",
     "allow-open-web-address",
     "allow-filen-login",

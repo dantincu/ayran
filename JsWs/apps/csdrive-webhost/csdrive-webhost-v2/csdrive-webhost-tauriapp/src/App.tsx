@@ -15,6 +15,7 @@ import ChordHost from './components/ChordHost'
 import TextFieldMenu from './components/TextFieldMenu'
 import { getAppState, setAppState } from './lib/appState'
 import { chordLabel, useChord } from './lib/chords'
+import { showHelpHeader } from './lib/helpHeader'
 
 type Tab = 'system' | 'apps' | 'files' | 'filen' | 'sqlite' | 'storage' | 'settings' | 'help'
 
@@ -74,7 +75,12 @@ export default function App() {
             <button
               key={t.id}
               className={`tab-button ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => {
+                // Pressing the Help tab's own head again — it's already showing — brings its autohiding header
+                // back, the same way it would if you'd scrolled up to it by hand.
+                if (t.id === 'help' && tab === 'help') showHelpHeader()
+                else setTab(t.id)
+              }}
               title={`${t.label} — tab ${i + 1} (${chordLabel('t')}, then ${i + 1})`}
             >
               <Icon size={18} strokeWidth={2} aria-hidden="true" />

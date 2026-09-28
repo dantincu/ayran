@@ -70,6 +70,7 @@
     "allow-get-appearance",
     "allow-set-appearance",
     "allow-list-themes",
+    "allow-key-color-names",
     "allow-user-action-launch",
     "allow-user-action-close",
     "allow-user-action-status",

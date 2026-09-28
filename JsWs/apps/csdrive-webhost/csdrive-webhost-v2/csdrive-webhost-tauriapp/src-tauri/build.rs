@@ -59,6 +59,7 @@ fn main() {
             "prompt_guard_status",
             "get_appearance",
             "list_themes",
+            "key_color_names",
             "set_appearance_rotation",
             "user_action_launch",
             "user_action_close",
@@ -178,6 +179,7 @@ fn main() {
             "internal_clipboard_clear",
             "list_deployable_apps",
             "get_deployable_app_html",
+            "get_keyboard_shortcuts_html",
         ]),
     );
     // The `window.__TAURI__` script of the Tauri version this is built with — Tauri passes its path to the crates that depend on

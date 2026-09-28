@@ -18,6 +18,7 @@ mod folder_pairs;
 mod fs_commands;
 mod fs_scope;
 mod fs_upload;
+mod help_docs;
 mod internal_clipboard;
 mod ipc;
 mod link_navigation;
@@ -390,6 +391,7 @@ pub fn run() {
             appearance::set_appearance,
             appearance::set_appearance_rotation,
             appearance::list_themes,
+            appearance::key_color_names,
             external_sites::reopen_external_site,
             external_sites::focus_external_site,
             external_sites::suspend_external_site,
@@ -457,6 +459,7 @@ pub fn run() {
             data_location::delete_app_data,
             deployable_apps::list_deployable_apps,
             deployable_apps::get_deployable_app_html,
+            help_docs::get_keyboard_shortcuts_html,
             sqlite_db::sqlite_load,
             sqlite_db::sqlite_close,
             sqlite_db::sqlite_execute,

@@ -315,7 +315,7 @@ export function themeById(id: string): Theme {
 }
 
 /** Every CSS variable of `theme` in a light or dark appearance: `{ 'bg': '#…', 'tok-heading': '#…' … }` (no leading dashes). */
-export function variablesOf(theme: Theme, dark: boolean): Record<string, string> {
+export function variablesOf(theme: Pick<Theme, 'light' | 'dark'>, dark: boolean): Record<string, string> {
   const c = dark ? theme.dark : theme.light
   return {
     bg: c.bg,

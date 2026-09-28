@@ -312,22 +312,28 @@ pub async fn open_external_site(
     let request = request_id.clone();
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
-        let confirmed = confirm(&app_for_task, &window_guid, &app_name, &url).await;
+        let choice = confirm(&app_for_task, &window_guid, &app_name, &url).await;
         app_for_task.state::<ExternalSites>().confirming.store(false, Ordering::SeqCst);
 
         let pool = pool_of(&app_for_task);
         let mut page_guid = None;
         let mut error = None;
-        if confirmed {
-            match open_confirmed(&app_for_task, &pool, &window_guid, &tab_guid, &url).await {
+        match choice {
+            // Opened in the OS browser instead: nothing is listed as a site of this app (no window, no tab
+            // entry), so as far as the *asking page* is concerned nothing was opened — the same `confirmed:
+            // false` a plain "Cancel" gives it. What the person does in their own browser from here on isn't
+            // this app's business or the page's to know about.
+            Some(AskWhere::Browser) => open_in_browser(&url),
+            Some(AskWhere::InApp) => match open_confirmed(&app_for_task, &pool, &window_guid, &tab_guid, &url).await {
                 Ok(guid) => page_guid = Some(guid),
                 Err(e) => error = Some(e),
-            }
+            },
+            None => {}
         }
         let response = Response {
             request_id: &request,
             url: url.as_str(),
-            confirmed: confirmed && error.is_none(),
+            confirmed: page_guid.is_some(),
             page_guid: page_guid.as_deref(),
             error: error.as_deref(),
         };
@@ -373,11 +379,40 @@ pub async fn open_web_address(
     Ok(confirmed)
 }
 
+/// What the person chose, once they agreed to open the site at all (`confirm`, below): in a window of this app
+/// (the default, and what dismissing the second box without choosing also means), or handed off to their own
+/// browser instead.
+enum AskWhere {
+    InApp,
+    Browser,
+}
+
 /// The native box: who asks, and the address to be opened — shown by the window that asks (on Android a dialog of the app's main
 /// activity would not be visible over it), under the rules of `prompt_guard` (one box at a time, and the person can prevent them).
-async fn confirm(app: &AppHandle, asker: &str, app_name: &str, url: &Url) -> bool {
+///
+/// **Two boxes, not one.** The person can open it in a window of this app, in their own browser, or not at all —
+/// three outcomes — but a native box has at most three buttons, and one of those three has to be "Prevent this
+/// app from showing prompts", which `prompt_guard::ask` only ever offers *inline*, as a third button, for a box
+/// of exactly two choices (`[first, last]` — there's no room to also fit a fourth). Cramming all three real
+/// outcomes into one box would have meant losing the inline Prevent option here specifically (it would only
+/// still appear during a burst of prompts, `docs/app-security.md`'s own standing requirement asks for it on
+/// every prompt where a native box can fit it). So this asks in two steps instead, each with its own two
+/// choices and so its own inline Prevent, exactly the shape `link_navigation.rs`'s own two-stage boxes ("Open… /
+/// Copy… / Cancel", then "In this tab / In a new tab / Cancel") already use for the same reason. The second
+/// box's *last* label is "In this app" — the existing, more restrictive behaviour — deliberately: dismissing a
+/// box (Esc, the X) answers as its last button, so a person who closes it without choosing lands on what this
+/// app already did before this option existed, never on the new, less contained one.
+async fn confirm(app: &AppHandle, asker: &str, app_name: &str, url: &Url) -> Option<AskWhere> {
     let message = format!("\"{app_name}\" wants to open this web site in a window of Ayran CsDrive WebHost:\n\n{url}\n\nOpen it?");
-    crate::window_host::choose(app, asker, "Open an external web site?", &message, &["Open", "Cancel"]).await == Some(0)
+    if crate::window_host::choose(app, asker, "Open an external web site?", &message, &["Open", "Cancel"]).await != Some(0) {
+        return None;
+    }
+    let message = format!("Open it in a window of Ayran CsDrive WebHost, or in your own web browser instead?\n\n{url}");
+    match crate::window_host::choose(app, asker, "Where should it open?", &message, &["In your browser", "In this app"]).await {
+        Some(0) => Some(AskWhere::Browser),
+        Some(1) => Some(AskWhere::InApp),
+        _ => None, // prevented, or the box couldn't be shown — stop here, same as declining the first box
+    }
 }
 
 /// The person said yes: the page is listed under its tab, and its window opens.
