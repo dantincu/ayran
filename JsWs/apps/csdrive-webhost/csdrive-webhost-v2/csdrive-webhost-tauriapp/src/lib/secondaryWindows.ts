@@ -379,6 +379,23 @@ export async function notifyFileSaved(file: FileRef): Promise<void> {
   await invoke('notify_file_saved', { file })
 }
 
+/** Mirror-scroll: `line`, the note editor's own topmost visible source line, sent to the tab that follows `file`'s
+ * editor (a no-op if none is open) — its web app scrolls to the nearest block at or before that line. */
+export async function syncScrollToLine(file: FileRef, line: number): Promise<void> {
+  await invoke('sync_scroll_to_line', { file, line })
+}
+
+/** A discrete nudge (Ctrl+Alt+arrows/PageUp/PageDown) of the syncing web app's scroll, independent of mirror-scroll. */
+export async function syncScrollNudge(file: FileRef, direction: 'up' | 'down' | 'pageUp' | 'pageDown'): Promise<void> {
+  await invoke('sync_scroll_nudge', { file, direction })
+}
+
+/** The editor's own "Refresh the web app" button: reloads the tab that follows `file`'s editor, like
+ * `notifyFileSaved`, but tells it not to keep or restore its scroll position. Resolves to how many windows were told. */
+export async function syncRefreshWithoutScroll(file: FileRef): Promise<number> {
+  return invoke<number>('sync_refresh_without_scroll', { file })
+}
+
 /** The address at which a system app's page loads `file` as a picture or media (see `lib/media.ts`). */
 export async function mediaUrl(file: FileRef): Promise<string> {
   return invoke<string>('media_url', { file })

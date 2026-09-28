@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirm } from '../../lib/dialogs'
-import { AppWindow, ArrowLeft, Link2, Paperclip, Save } from 'lucide-react'
+import { AppWindow, ArrowLeft, Link2, Paperclip, RefreshCw, Save } from 'lucide-react'
 import CodeEditor, { type CodeEditorHandle } from '../../components/CodeEditor'
 import IconButton from '../../components/IconButton'
 import PathStyleModal from '../../components/PathStyleModal'
 import { getAppState, setAppState } from '../../lib/appState'
-import { onShowTopBar, openExternalSite, openNoteTab } from '../../lib/secondaryWindows'
+import { onShowTopBar, openExternalSite, openNoteTab, syncRefreshWithoutScroll, syncScrollNudge, syncScrollToLine } from '../../lib/secondaryWindows'
 import { resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
@@ -14,6 +14,7 @@ import type { FileVersion } from './sources'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
 import { loadNotebooks } from './notebooks'
+import { useNotesSettings } from './settings'
 import { notebookContaining } from './userAction'
 import UserActionButton from './UserActionButton'
 import CacheMenu from './CacheMenu'
@@ -41,6 +42,7 @@ export default function NoteEditPage({
 }) {
   const { ready, sourceOf } = useNotesSources()
   const source = useMemo(() => sourceOf(sourceId), [sourceOf, sourceId])
+  const { settings: notesSettings } = useNotesSettings()
   const [note, setNote] = useState<NoteRef | null>(null)
   const [path, setPath] = useState<string | null>(null)
   const [text, setText] = useState('')
@@ -142,7 +144,9 @@ export default function NoteEditPage({
       setVersion((await source.version?.(currentPath).catch(() => null)) ?? null)
       await writeDraft(path, null)
       if (currentPath !== path) await writeDraft(currentPath, null)
-      await source.notifySaved?.(currentPath)
+      // Autosync (on by default): the tab that follows this editor reloads. Off, saving leaves it as it is — the
+      // editor's own "Refresh the web app" button (below) still works regardless of this setting.
+      if (notesSettings.autosync) await source.notifySaved?.(currentPath)
       return true
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -182,6 +186,32 @@ export default function NoteEditPage({
       // What is shown is what is saved: unsaved changes are saved first (asking what the person wants when it can't be done).
       if (dirty && !(await save())) return
       await openNoteTab(source.fileRef(path), true, true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** Mirror-scroll (off by default): the editor's own topmost visible line, forwarded to the syncing web app —
+   * a no-op on the backend when none is open, so this doesn't need to track that itself. */
+  function visibleLineChanged(line: number) {
+    if (!notesSettings.syncScrollMirror || !source?.fileRef || !path) return
+    syncScrollToLine(source.fileRef(path), line).catch(() => {})
+  }
+
+  /** Ctrl+Alt+arrows/PageUp/PageDown in the editor: a discrete nudge of the syncing web app's scroll,
+   * independent of mirror-scroll. */
+  function scrollNudged(direction: 'up' | 'down' | 'pageUp' | 'pageDown') {
+    if (!notesSettings.syncScrollKeyboard || !source?.fileRef || !path) return
+    syncScrollNudge(source.fileRef(path), direction).catch(() => {})
+  }
+
+  /** The editor's own "Refresh the web app" button: unlike the automatic reload on save (autosync, above), this
+   * is a deliberate "start over" that does not try to keep or restore the web app's scroll position. */
+  async function refreshWebApp() {
+    if (!source?.fileRef || !path) return
+    try {
+      const told = await syncRefreshWithoutScroll(source.fileRef(path))
+      setNotice(told === 0 ? 'This note has no open web app to refresh.' : null)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -231,6 +261,7 @@ export default function NoteEditPage({
             <CacheMenu source={source} path={path ?? folder} isDirectory={false} editing={dirty ? 'dirty' : 'open'} onDone={(kind) => (kind === 'soft' ? load() : undefined)} onError={setError} onNotice={setNotice} />
             <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
             <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
+            <IconButton icon={RefreshCw} label="Refresh the web app — starts it over, without keeping its scroll position" onClick={refreshWebApp} disabled={!path} />
             <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
             <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} disabled={!path} />
             <UserActionButton sourceId={sourceId} folder={folder} />
@@ -238,7 +269,15 @@ export default function NoteEditPage({
           {error && <div className="error-banner">{error}</div>}
           {notice && <div className="status-banner">{notice}</div>}
           {loaded && path ? (
-            <CodeEditor ref={editorRef} value={text} fileName={path} onChange={setText} onOpenLink={openLink} />
+            <CodeEditor
+              ref={editorRef}
+              value={text}
+              fileName={path}
+              onChange={setText}
+              onOpenLink={openLink}
+              onVisibleLineChange={visibleLineChanged}
+              onScrollNudge={scrollNudged}
+            />
           ) : (
             !error && <div className="muted">Loading…</div>
           )}

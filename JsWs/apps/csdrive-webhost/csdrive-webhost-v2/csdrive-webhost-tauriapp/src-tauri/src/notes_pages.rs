@@ -427,6 +427,58 @@ pub async fn notify_file_saved(app: AppHandle, file: FileRef) -> Result<usize, S
     Ok(guids.len())
 }
 
+/// A step of the syncing web app's scroll the editor's own keyboard asks for (Ctrl+Alt+arrows/PageUp/PageDown),
+/// independent of mirror-scroll (below) — see CLAUDE.md's "Editor ↔ syncing web app: scroll and refresh options".
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScrollNudge {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+}
+
+/// Mirror-scroll (off by default, `notes.settings`'s `syncScrollMirror`): the note editor's own topmost visible
+/// *source* line, sent to the tab that follows it every time the editor's own scroll position changes, so its
+/// web app scrolls to the nearest block `markdown.rs` tagged with that line or the one before it (`data-line`,
+/// `sync-scroll-to-line` in the bootstrap script). A no-op — same as `notify_file_saved` — when nothing shows the
+/// file as a syncing web app right now.
+#[tauri::command]
+pub async fn sync_scroll_to_line(app: AppHandle, file: FileRef, line: u32) -> Result<(), String> {
+    #[derive(Serialize, Clone)]
+    struct Payload {
+        line: u32,
+    }
+    let guids = crate::secondary_windows::syncing_windows(&app, &sync_key_of(&served_path_of(&file)?)).await?;
+    for guid in &guids {
+        crate::window_host::emit_if_open(&app, guid, "sync-scroll-to-line", Payload { line });
+    }
+    Ok(())
+}
+
+/// A discrete nudge of the syncing web app's scroll from the editor's own keyboard, independent of mirror-scroll.
+#[tauri::command]
+pub async fn sync_scroll_nudge(app: AppHandle, file: FileRef, direction: ScrollNudge) -> Result<(), String> {
+    let guids = crate::secondary_windows::syncing_windows(&app, &sync_key_of(&served_path_of(&file)?)).await?;
+    for guid in &guids {
+        crate::window_host::emit_if_open(&app, guid, "sync-scroll-nudge", direction);
+    }
+    Ok(())
+}
+
+/// The editor's own "Refresh the web app" button: reloads the tab that follows it, the same as
+/// `notify_file_saved`, but tells it **not** to keep or restore its scroll position — a deliberate "start over",
+/// distinct from the automatic reload on save (which keeps it — see `markdown.rs`'s bootstrap script). Resolves
+/// to how many windows were told.
+#[tauri::command]
+pub async fn sync_refresh_without_scroll(app: AppHandle, file: FileRef) -> Result<usize, String> {
+    let guids = crate::secondary_windows::syncing_windows(&app, &sync_key_of(&served_path_of(&file)?)).await?;
+    for guid in &guids {
+        crate::window_host::emit_if_open(&app, guid, "sync-refresh-no-scroll", ());
+    }
+    Ok(guids.len())
+}
+
 // ── What the window manager shows ─────────────────────────────────────────────
 
 /// A page opened from a Notes tab, as listed under that tab.

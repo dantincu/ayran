@@ -18,6 +18,16 @@ interface Props {
   readOnly?: boolean
   /** Which language to use, when it isn't the file name's. */
   language?: Language
+  /** The topmost visible *source* line changed (1-based; throttled to at most once per animation frame) — the
+   * note editor's own half of mirror-scroll (`NoteEditPage.tsx`). Approximate while "wrap long lines" is on, the
+   * same accepted trade-off as the line-number gutter's own (see its doc comment below): a line long enough to
+   * wrap occupies more than one visual row, which a plain `scrollTop / lineHeight` division doesn't know. */
+  onVisibleLineChange?: (line: number) => void
+  /** Ctrl+Alt+arrows/PageUp/PageDown were pressed in the box — the note editor's own keyboard-driven scroll of
+   * its syncing web app (`NoteEditPage.tsx`), independent of `onVisibleLineChange`/mirror-scroll. Generic here
+   * (CodeEditor only reports the key combination; what it does with it is the caller's business), the same as
+   * `onOpenLink`. */
+  onScrollNudge?: (direction: 'up' | 'down' | 'pageUp' | 'pageDown') => void
 }
 
 /** What a ref to `CodeEditor` gives its parent: inserting text at the caret (or over the selection) from the
@@ -78,9 +88,14 @@ function useHighlighted(value: string, language: Language): string {
  *
  * **A ref gives a caller `insertAtCursor`** (`CodeEditorHandle`, above) — "Insert a path…" (`NoteEditPage.tsx`,
  * `NotesApp.tsx`'s file editor, `FilesTab.tsx`'s) is the one user of it today. */
-const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor({ value, onChange, fileName, onOpenLink, readOnly, language }, ref) {
+const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
+  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge },
+  ref,
+) {
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const visibleLineRaf = useRef<number | null>(null)
+  const lastVisibleLine = useRef<number | null>(null)
   const history = useRef<UndoHistory | null>(null)
   if (history.current === null) history.current = new UndoHistory(value)
   const [, redraw] = useReducer((n: number) => n + 1, 0)
@@ -128,6 +143,29 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor({ val
     observer.observe(frame)
     return () => observer.disconnect()
   }, [])
+
+  useEffect(() => () => {
+    if (visibleLineRaf.current !== null) cancelAnimationFrame(visibleLineRaf.current)
+  }, [])
+
+  /** The scroll frame's own `scroll` event, throttled to at most once per animation frame — mirror-scroll's
+   * "the editor scrolled" half. `lineHeight` comes from the box itself (`getComputedStyle` always resolves it to
+   * an absolute px value, however it was authored), matching the gutter's own font/line-height exactly. */
+  function handleScroll() {
+    if (!onVisibleLineChange || visibleLineRaf.current !== null) return
+    visibleLineRaf.current = requestAnimationFrame(() => {
+      visibleLineRaf.current = null
+      const frame = frameRef.current
+      const input = inputRef.current
+      if (!frame || !input) return
+      const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || 20
+      const line = Math.min(lineCount, Math.max(1, Math.floor(frame.scrollTop / lineHeight) + 1))
+      if (line !== lastVisibleLine.current) {
+        lastVisibleLine.current = line
+        onVisibleLineChange(line)
+      }
+    })
+  }
 
   // The clipboard menu offers "Open link" for a box that has a handler.
   useEffect(() => {
@@ -197,7 +235,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor({ val
         </div>
       )}
       {/* The clipboard menu's button sits at the corner of the frame, not of the (tall) box. */}
-      <div className={`code-editor ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`} ref={frameRef} data-text-menu-anchor>
+      <div className={`code-editor ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`} ref={frameRef} onScroll={handleScroll} data-text-menu-anchor>
         <div className="code-editor-rows">
           {settings?.lineNumbers !== false && (
             <pre className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `${gutterDigits}ch` }}>
@@ -226,6 +264,19 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor({ val
                   const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
                   applyEdit(applyTab(value, e.currentTarget.selectionStart, e.currentTarget.selectionEnd, unit, e.shiftKey))
                   return
+                }
+                if (onScrollNudge && e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey) {
+                  const direction = { ArrowUp: 'up', ArrowDown: 'down', PageUp: 'pageUp', PageDown: 'pageDown' }[e.key] as
+                    | 'up'
+                    | 'down'
+                    | 'pageUp'
+                    | 'pageDown'
+                    | undefined
+                  if (direction) {
+                    e.preventDefault()
+                    onScrollNudge(direction)
+                    return
+                  }
                 }
                 if (!(e.ctrlKey || e.metaKey) || e.altKey) return
                 const key = e.key.toLowerCase()

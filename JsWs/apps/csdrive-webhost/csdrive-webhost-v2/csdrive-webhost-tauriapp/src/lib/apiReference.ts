@@ -251,6 +251,22 @@ export const API_REFERENCE: ApiCategory[] = [
       { call: "invoke('media_url', { file })", returns: 'a URL', summary: 'The address to load a picture/video/sound at — the file is never read into the page itself.' },
       { call: "invoke('open_note_tab', { file, sync, newWindow? })", returns: 'the tab’s guid', summary: 'Opens a note’s markdown as a web app; `sync` makes it the note’s one syncing tab, reused on the next click.' },
       { call: "invoke('notify_file_saved', { file })", returns: 'void', summary: 'Admin-app/system apps only — reloads any syncing tab showing that file.' },
+      {
+        call: "invoke('sync_scroll_to_line', { file, line })",
+        returns: 'void',
+        summary: 'Mirror-scroll: scrolls the syncing web app to the nearest rendered block at or before source line `line`.',
+        note: 'A no-op when nothing shows the file as a syncing web app right now.',
+      },
+      {
+        call: "invoke('sync_scroll_nudge', { file, direction })",
+        returns: 'void',
+        summary: "A discrete nudge of the syncing web app's scroll; `direction` is `\"up\" | \"down\" | \"pageUp\" | \"pageDown\"`.",
+      },
+      {
+        call: "invoke('sync_refresh_without_scroll', { file })",
+        returns: 'the number of windows told',
+        summary: "Reloads the syncing web app, like `notify_file_saved`, but tells it not to keep or restore its scroll position.",
+      },
     ],
   },
 ]

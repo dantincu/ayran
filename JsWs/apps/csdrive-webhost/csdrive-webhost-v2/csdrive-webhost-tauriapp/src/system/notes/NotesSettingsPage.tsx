@@ -52,6 +52,23 @@ export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
           </section>
 
           <section className="notes-settings-section">
+            <strong>Editor ↔ syncing web app</strong>
+            <p className="muted">When a note's editor and its web app (opened from it) are open in two windows at once.</p>
+            <label className="notes-settings-row">
+              <input type="checkbox" checked={settings.syncScrollMirror} onChange={(e) => change({ syncScrollMirror: e.target.checked })} />
+              <span>Scroll the web app as the editor scrolls, similar to a split preview</span>
+            </label>
+            <label className="notes-settings-row">
+              <input type="checkbox" checked={settings.syncScrollKeyboard} onChange={(e) => change({ syncScrollKeyboard: e.target.checked })} />
+              <span>Scroll the web app from the editor with Ctrl+Alt+↑/↓/Page Up/Page Down</span>
+            </label>
+            <label className="notes-settings-row">
+              <input type="checkbox" checked={settings.autosync} onChange={(e) => change({ autosync: e.target.checked })} />
+              <span>Automatically refresh the web app when the note is saved</span>
+            </label>
+          </section>
+
+          <section className="notes-settings-section">
             <strong>The app's clipboard</strong>
             <p className="muted">
               One text that every window of the app — the admin-app, Notes and web apps — can copy to and paste from. It is kept in memory only.
