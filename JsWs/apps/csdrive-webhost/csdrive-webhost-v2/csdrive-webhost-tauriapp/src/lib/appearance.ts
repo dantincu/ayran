@@ -58,8 +58,8 @@ export interface Appearance {
   generated: GeneratedPalette | null
 }
 
-/** The shortest time a theme may stay (the backend refuses less): every change recolours the whole window. */
-export const MIN_ROTATION_SECONDS = 30
+/** The shortest time a theme may stay (the backend refuses less) — one second, so the rotation can be watched happening while testing. */
+export const MIN_ROTATION_SECONDS = 1
 export const UNIT_SECONDS: Record<RotationUnit, number> = { seconds: 1, minutes: 60, hours: 3600, days: 86_400 }
 
 /** The event the backend sends every window when the appearance changes. */

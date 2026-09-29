@@ -14,8 +14,9 @@
 //!
 //! **Rotation** is done here, not in a page, so it goes on whatever is on screen: a task looks every second whether the interval has passed and,
 //! when it has, moves to the next theme — the next in the catalog, the previous, or a random one other than the current — and tells every window.
-//! Choosing a theme by hand doesn't stop it (it starts the interval again). **The interval is never shorter than [`MIN_INTERVAL_SECS`]**: every
-//! change recolours the whole window, and anything faster than that is tiring to look at.
+//! Choosing a theme by hand doesn't stop it (it starts the interval again). **The interval is never shorter than [`MIN_INTERVAL_SECS`]** — one
+//! second, so a person testing this can watch it happen quickly; there is no floor tied to "tiring to look at" any more, since that's a matter
+//! of taste the person setting the interval already gets to decide for themself by choosing a longer one.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -40,8 +41,8 @@ pub const RESERVED_PREFIX: &str = "appearance.";
 pub const DEFAULT_THEME: &str = "ayran-orange";
 const MODES: [&str; 3] = ["system", "light", "dark"];
 
-/// The shortest time between two rotations: half a minute.
-pub const MIN_INTERVAL_SECS: u64 = 30;
+/// The shortest time between two rotations: one second, so it can be watched happening while testing.
+pub const MIN_INTERVAL_SECS: u64 = 1;
 /// The longest: a year.
 const MAX_INTERVAL_SECS: u64 = 365 * 24 * 3600;
 
@@ -160,7 +161,8 @@ impl Rotation {
         };
         let secs = (self.every as u64).saturating_mul(unit);
         if secs < MIN_INTERVAL_SECS {
-            return Err(format!("A theme stays at least {MIN_INTERVAL_SECS} seconds: changing the colours of the whole window faster than that is tiring to look at."));
+            let plural = if MIN_INTERVAL_SECS == 1 { "" } else { "s" };
+            return Err(format!("A theme stays at least {MIN_INTERVAL_SECS} second{plural}."));
         }
         if secs > MAX_INTERVAL_SECS {
             return Err("A theme stays at most a year.".to_string());
@@ -608,14 +610,14 @@ mod tests {
     }
 
     #[test]
-    fn the_interval_is_checked_and_never_shorter_than_half_a_minute() {
+    fn the_interval_is_checked_and_never_shorter_than_one_second() {
         let r = |unit: &str, every: u32| Rotation { enabled: true, mode: "random".into(), unit: unit.into(), every, generated: GeneratedColors::default() };
+        assert_eq!(r("seconds", 1).interval().unwrap(), Duration::from_secs(1), "a one-second interval is allowed, to make testing quick");
+        assert!(r("seconds", 0).interval().unwrap_err().contains("at least 1 second"), "singular, not '1 seconds'");
         assert_eq!(r("seconds", 30).interval().unwrap(), Duration::from_secs(30));
-        assert!(r("seconds", 29).interval().unwrap_err().contains("at least 30 seconds"));
         assert_eq!(r("minutes", 1).interval().unwrap(), Duration::from_secs(60));
         assert_eq!(r("hours", 2).interval().unwrap(), Duration::from_secs(7200));
         assert_eq!(r("days", 3).interval().unwrap(), Duration::from_secs(259_200));
-        assert!(r("seconds", 0).interval().is_err());
         assert!(r("weeks", 1).interval().is_err());
         assert!(r("days", 400).interval().is_err());
         assert!(Rotation { mode: "sideways".into(), ..r("days", 1) }.interval().is_err());

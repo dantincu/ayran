@@ -189,12 +189,14 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
         </div>
         {(!everyOk || tooShort) && (
           <div className="rotation-warning">
-            {tooShort ? `A theme stays at least ${MIN_ROTATION_SECONDS} seconds — changing the colours of the whole window faster than that is tiring to look at.` : 'Type a whole number, 1 or more.'}
+            {tooShort ? `A theme stays at least ${MIN_ROTATION_SECONDS} second${MIN_ROTATION_SECONDS === 1 ? '' : 's'}.` : 'Type a whole number, 1 or more.'}
           </div>
         )}
         <p className="muted">
-          The colours slide over to the next theme in about half a second. Every change recolours the whole window, so leave it a few minutes or more;{' '}
-          {MIN_ROTATION_SECONDS} seconds is the shortest allowed. Choosing a theme by hand below doesn't stop the rotation: it goes on from that theme.
+          The colours slide over to the next theme in about half a second — {MIN_ROTATION_SECONDS} second{MIN_ROTATION_SECONDS === 1 ? '' : 's'} is the shortest interval allowed, handy for
+          watching the rotation happen while testing; a very short interval means the fade from one theme to the next never really finishes before the one after starts. Every change
+          recolours the whole window, so a comfortable everyday interval is a few minutes or more — that's a matter of taste, not a rule this app enforces. Choosing a theme by hand below
+          doesn't stop the rotation: it goes on from that theme.
         </p>
 
         <label className="rotation-row">
