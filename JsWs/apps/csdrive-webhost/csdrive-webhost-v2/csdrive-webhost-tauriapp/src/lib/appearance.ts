@@ -194,6 +194,23 @@ export async function initAppearance(): Promise<void> {
   darkQuery()?.addEventListener('change', () => {
     if (current.mode === 'system') applyAppearance(current)
   })
+  // Re-reads the appearance from the backend whenever this page becomes visible again — belt and
+  // suspenders alongside the live `appearance-changed` event above, not a replacement for it (the event
+  // still applies a change at once while the page is in front). A window that was backgrounded for a
+  // while (a rotation ticking on its own, or someone changing the theme from elsewhere) may never have
+  // actually run the JS that applies a pushed update — reported live on Android, where a window left in
+  // the background for a stretch came back showing the exact colour it had when it was last in front,
+  // never having advanced with the rotation running the whole time in the backend. Whatever the precise
+  // reason a pushed event didn't land (a suspended WebView, one that missed it outright, …), asking fresh
+  // the moment the person actually looks at the page again closes the gap regardless of the cause —
+  // `get_appearance` always answers with the backend's real current state. Best-effort, same as the rest
+  // of this function; harmless to fire once more than strictly needed (`applyAppearance` only fades when
+  // the colours actually differ).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      invoke('get_appearance').then((raw) => applyAppearance(fromBackend(raw as { theme: string; mode: unknown; rotation?: unknown; generated?: unknown }), true)).catch(() => {})
+    }
+  })
 }
 
 /** Chooses the theme and the mode for the whole app. A rotation that is on goes on from there. */
