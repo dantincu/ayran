@@ -34,8 +34,21 @@ export function overlayOpen(): boolean {
   return document.querySelector('.modal-overlay, .editor-overlay, .page-popover, .media-viewer') !== null
 }
 
-/** How far PageUp / PageDown move. */
-const PAGE_JUMP = 10
+/** How far PageUp / PageDown move — a list's own, and (`buttonRowKeyboard.ts`) a row of buttons'. */
+export const PAGE_JUMP = 10
+
+/** "Fast navigation" — Alt+letter/punctuation, no other modifier — moves a list's (or a row of buttons',
+ * `buttonRowKeyboard.ts`) focus by more than one step at once: Alt+N/P by 2, Alt+./, by 5, Alt+]/[ by 20,
+ * Alt+'/; by 50. Shared by both, so the two feel like the same system with a different primary axis (Up/Down
+ * for a list, Left/Right for a row of buttons) rather than two unrelated ones. */
+const FAST_NAV: Record<string, number> = { n: 2, p: -2, '.': 5, ',': -5, ']': 20, '[': -20, "'": 50, ';': -50 }
+
+/** The signed step a "fast navigation" key asks for, or `null` if `e` isn't one (including: it's held with
+ * Ctrl/Meta/Shift too — only a bare Alt+key counts). */
+export function fastNavAmount(e: KeyboardEvent): number | null {
+  if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return null
+  return FAST_NAV[e.key.toLowerCase()] ?? null
+}
 
 export interface ListKeyboard {
   /** How many items the list has (all of them, not just the page on screen). */
@@ -61,8 +74,9 @@ export interface ListKeyboard {
 
 /** Arrow-key navigation of a list, for the page it is used on: Up/Down move the focus by one,
  * Home/End go to the first/last item, PageUp/PageDown move it by 10 (of a paginated list: within the page
- * shown — see `pageSize`), Left goes to the parent and Right into the focused item. The keys are heard on the whole window, so no element has to be focused
- * first — except that a text box, a menu or an open dialog keeps its own keys.
+ * shown — see `pageSize`), Left goes to the parent and Right into the focused item, and Alt+N/P/./,/]/['/;
+ * ("fast navigation" — `fastNavAmount`, above) move it by 2/5/20/50. The keys are heard on the whole window,
+ * so no element has to be focused first — except that a text box, a menu or an open dialog keeps its own keys.
  *
  * The list marks the focused row with kbdItem; the row is scrolled into view here. */
 export function useListKeyboard(options: ListKeyboard) {
@@ -72,13 +86,29 @@ export function useListKeyboard(options: ListKeyboard) {
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const { count, focused, setFocused, onOpen, onParent, onActivate, enabled, pageSize, page } = latest.current
-      if (enabled === false || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+      if (enabled === false || e.defaultPrevented) return
       if (isTypingTarget(e.target) || overlayOpen()) return
-      const from = Math.max(focused, 0)
       // The page the focus is on (or, with none, the one shown): where it starts and ends.
       const paged = pageSize !== undefined && pageSize > 0
       const pageStart = paged ? (focused >= 0 ? Math.floor(focused / pageSize) : (page ?? 0)) * pageSize : 0
       const pageEnd = paged ? Math.min(count - 1, pageStart + pageSize - 1) : count - 1
+      /** `amount` forward (positive) or backward (negative) — in a paginated list, stopping at the page's own
+       * edge and, only from there, spilling one further item onto the next/previous page (the same rule
+       * PageUp/PageDown already used, now shared with "fast navigation" below). */
+      function jumpBy(amount: number): number {
+        const at = focused < 0 ? pageStart : focused
+        if (!paged) return at + amount
+        if (amount > 0) return at >= pageEnd ? (pageEnd < count - 1 ? pageEnd + 1 : pageEnd) : Math.min(pageEnd, at + amount)
+        return at <= pageStart ? (pageStart > 0 ? pageStart - 1 : pageStart) : Math.max(pageStart, at + amount)
+      }
+      const fast = fastNavAmount(e)
+      if (fast !== null) {
+        if (count === 0) return
+        e.preventDefault()
+        setFocused(Math.min(count - 1, Math.max(0, jumpBy(fast))))
+        return
+      }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
       let next: number
       switch (e.key) {
         // (With nothing focused yet, either one focuses the first item — of the page shown, in a paginated list.)
@@ -95,18 +125,10 @@ export function useListKeyboard(options: ListKeyboard) {
           next = pageEnd
           break
         case 'PageDown':
-          if (!paged) next = from + PAGE_JUMP
-          else {
-            const at = focused < 0 ? pageStart : focused
-            next = at >= pageEnd ? (pageEnd < count - 1 ? pageEnd + 1 : pageEnd) : Math.min(pageEnd, at + PAGE_JUMP)
-          }
+          next = jumpBy(PAGE_JUMP)
           break
         case 'PageUp':
-          if (!paged) next = from - PAGE_JUMP
-          else {
-            const at = focused < 0 ? pageStart : focused
-            next = at <= pageStart ? (pageStart > 0 ? pageStart - 1 : pageStart) : Math.max(pageStart, at - PAGE_JUMP)
-          }
+          next = jumpBy(-PAGE_JUMP)
           break
         case 'ArrowLeft':
           if (onParent) {

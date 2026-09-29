@@ -71,7 +71,8 @@ If a new command takes or returns a location on the device, it takes `(root, pat
 Shared code is in `src/lib/keyboard.ts` (and `components/Pagination.tsx`, `components/TabSwitcher.tsx`). Shortcuts use Ctrl (⌘ on a Mac) and are shown in tooltips. **The list of every shortcut, for the people who use them, is `docs/keyboard-shortcuts.md` — a new shortcut is added there in the same change.**
 
 - **Two-key shortcuts (chords)** (`lib/chords.ts`, `components/ChordHost.tsx`, mounted once per page beside the clipboard menu): **Ctrl+K, then a letter** (within 3 s; a hint at the bottom — **glowing**, above every dialog, and lighting the entry of the shortcut that was just pressed — lists the letters that apply *here*; Esc or a wrong letter cancels). The owner of an action registers it while it is on screen (`useChord(letter, label, run, enabled?)`): **T** — the admin-app's tab switcher (a popover listing the tabs with a number in front of each, and a box that has the focus and takes digits — Enter goes to that tab, a number that isn't one turns the box red, a press on a row goes there, Escape closes it; it used to be Ctrl+K on its own, which a chord prefix can't also be); **M** — maximize/restore the popup on top (`lib/modalStack.ts`; `Modal` registers: the window less a margin `clamp(6px, 2.1vw, 40px)`, and has a button for it); **C**/**V** — copy to / paste from the app's clipboard in the text box that has the focus (`TextFieldMenu`); **X** — clear the app's clipboard. Ctrl+G (the page list) stays a single-key shortcut. A new shortcut is a chord.
-- **Lists** (`useListKeyboard` + `kbdItem`): **Up/Down** move the focus by one item, **Home/End** go to the first/last, **PageUp/PageDown** move it by 10 (**in a paginated list these three stay inside the page the focus is on** — `useListKeyboard` takes `pageSize` and `page`: Home/End are the page's first/last item, PageUp/PageDown stop at the page's start/end and, pressed there, go on to the next page's first / previous page's last item; the first arrow with nothing focused focuses the shown page's first item), **Left** goes to the parent and **Right** into the focused item (a folder, a file to edit, an app → its windows → its tab groups → its tabs → a tab's external web sites; on an external web site, Right brings its window to the front or opens it again), **Enter** for the focused item's own action (on a tab: show it, opening its window if need be; elsewhere the same as Right; not heard while a button or link has the focus, which Enter presses). The keys are heard on the whole window, so nothing has to be focused first; a text box or menu keeps its own keys and so does an open dialog or the editor (`overlayOpen`); pressing on an item moves the focus there. The focused item is drawn with `[data-kbd-focused]`. In a paginated list the focus is an index into *all* the items and the page shown follows it; going Left puts the focus on the folder just left, Right on the first item of the one opened — but only for a move made with the keys (after a click nothing is focused until a key is pressed). Covered: the four levels of the System/User Apps tabs, the Files and Filen tabs, Notes' file list and its notebooks list (Right shows the notebook's folder, Left goes to the home page), the SQLite tab's databases and tables, the Storage tab's IndexedDB databases → object stores → records. Not covered: the Local/Session storage key-value tables, Settings, tag editing.
+- **Lists** (`useListKeyboard` + `kbdItem`): **Up/Down** move the focus by one item, **Home/End** go to the first/last, **PageUp/PageDown** move it by 10 (**in a paginated list these three stay inside the page the focus is on** — `useListKeyboard` takes `pageSize` and `page`: Home/End are the page's first/last item, PageUp/PageDown stop at the page's start/end and, pressed there, go on to the next page's first / previous page's last item; the first arrow with nothing focused focuses the shown page's first item), **Alt+N/P, Alt+./,, Alt+]/[, Alt+'/;** ("fast navigation", below) move it by 2/5/20/50, **Left** goes to the parent and **Right** into the focused item (a folder, a file to edit, an app → its windows → its tab groups → its tabs → a tab's external web sites; on an external web site, Right brings its window to the front or opens it again), **Enter** for the focused item's own action (on a tab: show it, opening its window if need be; elsewhere the same as Right; not heard while a button or link has the focus, which Enter presses). The keys are heard on the whole window, so nothing has to be focused first; a text box or menu keeps its own keys and so does an open dialog or the editor (`overlayOpen`); pressing on an item moves the focus there. The focused item is drawn with `[data-kbd-focused]`. In a paginated list the focus is an index into *all* the items and the page shown follows it; going Left puts the focus on the folder just left, Right on the first item of the one opened — but only for a move made with the keys (after a click nothing is focused until a key is pressed). Covered: the four levels of the System/User Apps tabs, the Files and Filen tabs, Notes' file list and its notebooks list (Right shows the notebook's folder, Left goes to the home page), the SQLite tab's databases and tables, the Storage tab's IndexedDB databases → object stores → records. Not covered: the Local/Session storage key-value tables, Settings, tag editing.
+- **A row of icon buttons — a page's own top one, or a list item's own** (`lib/buttonRowKeyboard.ts`'s `useButtonRowKeyboard`, called once from `ChordHost.tsx` — that component already being "mounted once per page", admin-app and Notes alike, is exactly the placement this needed too, so it rides along rather than getting its own host). **Alt+Shift+J** focuses the first button of **the page's own top row** — `[data-primary-actions]`, a marker added by hand to one row per page/level (Files/Filen's own main toolbar, each admin tab's, the four levels of the System/User Apps tabs sharing one row since the breadcrumb bar's own actions are the same container at every depth, every Notes page's `.notes-page-header` including the three editor pages') — scoped to an **open popup's** own header when one is open (`.modal-overlay`), falling back to its first enabled button when that popup wasn't marked (most dialogs have only a couple of buttons, so the first one is almost always the sensible one — marking every one individually wasn't worth it). **Alt+J**, with a list item keyboard-focused (`[data-kbd-focused]`, above), focuses the first button of **that item's own row of action buttons** — `.row-actions`, needing no changes at all: `RowActions.tsx` (see "Compact row actions") already renders into exactly that class with no wrapper of its own, so every existing row-actions instance already qualifies. **A row of buttons is a *real*, natively focusable set of `<button>`s, unlike a list's own virtual `[data-kbd-focused]`** — once one has the browser's own focus, Enter/Space pressing it and `:focus-visible` showing it (`.icon-button:focus-visible`, the app's own accent-coloured outline rather than the platform's default) are the browser's own doing, needing nothing from this module; **Left/Right** move to the previous/next button, **Home/End** to the first/last, **PageUp/PageDown** by 10, the same **fast navigation** as a list's own by 2/5/20/50 (`fastNavAmount`, shared by both — a list moves along Up/Down, a row of buttons along Left/Right, the same modifier keys meaning the same relative step in either), and **Esc** blurs the focused button, leaving the row. Verified live (isolated data folder, desktop, real trusted key events over WebView2's CDP debugging port — not synthetic DOM events, since the point of the Enter check specifically is whether the browser's own default action on a focused `<button>` actually fires): on the **Files tab**, Alt+Shift+J focused "Go to a path…" (the marked toolbar's first button) and a real Enter on it opened the dialog exactly as a click would; Alt+J on a focused list row (`[data-kbd-focused]`) focused that row's own "Details" button (the first of its `.row-actions`), and ←/→/Home/End moved correctly among its five buttons (Details/Copy/Cut/Rename/Delete); every fast-nav pair (Alt+N/P, Alt+./,, Alt+]/[, Alt+'/;) moved by the right amount and direction, clamping at either end rather than erroring; Page Down/Page Up likewise clamped to the row's last/first button; Esc blurred back to the page. On a **Notes page** (the File Manager, opened as its own system-app window): Alt+Shift+J correctly focused the first button of that page's own marked header (its User Action launch button, which sits first in that header ahead of the toolbar's own "Go to a path…"/"Search and sort…"/etc. — one marker covering the whole header, as intended). The **unmarked-modal fallback** was also checked live: with `GoToPathModal` (never given its own marker) open over that same Notes page, Alt+Shift+J focused the modal's own first button ("Maximize"), confirming the scoping stays inside the open popup rather than reaching through to the page behind it. **Not exercised live:** Android (the mechanism is plain DOM focus/keydown handling, expected to translate; nothing here is platform-specific the way the Alt-menu-steal fix was) and the admin-app's own tabs beyond Files (each marker was placed by reading the component's JSX, not clicked through one by one).
 - **Paginated lists — all pages.** The page indicator (`3 / 12`) is a button: pressed with a finger or the mouse it opens a **popover listing every page number** (the current one highlighted) and a press on one goes to that page. **Ctrl+G** opens the same popover *with* a numeric box (focused; Enter goes to that page, an invalid number turns it red) — the box is only there when it was opened with the shortcut, not by pressing the button. Escape or a press outside closes it. Every paginated list uses the one `Pagination` component, so every one has it (Files, Filen, Notes). **The popover is as tall as the screen allows and its list of pages scrolls** (the popover is `position: fixed`, placed by `Pagination` against the screen — above the button when it fits there, else slid down — with `max-height` the screen's height less an 8px margin and the system bars' insets; the list inside takes what is left and has `overflow-y: auto`, so it fits a phone however many pages there are) **and has a keyboard cursor** (`.cursor`, an outline apart from the current page's highlight): Left/Right ±1, Home/End first/last, Up/Down the same column of the previous/next *row*, PageUp/PageDown half the list's height in rows, Enter goes to the cursor's page (a typed number wins, and typing moves the cursor). Rows are not assumed: `cursorFor` reads them from where the buttons really are (the ones sharing the first button's `offsetTop`), so it holds for any width or font; with a single row Up/Down/PageUp/PageDown do nothing.
 
 **A web app's window never changes its own address** (desktop; `FROZEN_ADDRESS_INIT_SCRIPT` in `code_snippets.rs` and `navigation_verdict` in `lib.rs`, both from `lock_down_navigation`'s `own` argument — the page the window was built for). The init script makes `history.pushState`/`replaceState` **ask** for an address instead of changing it (one of this app's origin becomes a navigation the backend sees — `location.assign` —; another origin throws a `SecurityError`; not writable, not configurable) and removes `window.navigation`; `on_navigation` lets through only the page's own path and query (so a reload, and a changed *fragment*, an in-page `#link`, are fine), sends links to the web (http/https) to the OS browser, refuses `javascript:`, `data:` and `file:`, refuses every other page of a *system app's* window and the admin-app, and treats another page of a *web app's* kind as a **request** (`Nav::Request`: the window stays, and the person is asked — "Links between pages of web apps", next). So a page can't turn itself into a "single page" that wanders off its address, nor be taken to another page of ours by a link or `location.href` without the person choosing it. This is a guard against pages, not a boundary against hostile code — the CSP and the capabilities are. Consequences: an app **reports** which resource a tab shows (the query string in the address it gives `init_window_tab`/`add_window_tab` — `TabLib.urlFor(params)` builds it without navigating), the resource id is **owned by the backend** (a reload gets the stored one back in the init response), and "start the page over" is `location.reload()`, never `location.href = …`. Notes and the markdown bootstrap follow this. **Android** applies the same rule to every window's WebView (see "Windows on Android"); the main webview shows only the admin-app.
@@ -438,6 +439,280 @@ A `.md` / `.markdown` file can be opened as a web app exactly like an `.html` fi
 - **The page is a tab** like a hand-written app: the last script registers it (`init_window_tab`), applies the code snippets, and labels it with the document's title (its first heading, else the file name) and path, and sets its resource id to the page's path plus query — so what the window manager shows follows the page. A tab switched to while it is showing starts the page over.
 - **The scroll stays pinned to the bottom across a reload, if it was there before one.** The note editor's own auto-sync (`notify_file_saved`) reloads this exact page on every save — a plain `location.reload()` only restores the *same pixel offset*, which stops being the bottom the moment the edit made the document taller (the usual case, text appended at the end), so the page looked like it "lost" the scroll on every sync. The bootstrap script now records, in `sessionStorage` (`beforeunload`, so it captures the position right before any reload — a sync, a tab switch back to the page, or a manual reload; there's no meaningful difference between them, only whether the person was at the end), whether the page was scrolled to its bottom, and — `sessionStorage` survives a `location.reload()` of the same document, and is cleared only when the window itself closes, so it's exactly this page's own lifetime — scrolls back to the (new) bottom right away and again once every resource (an image) has finished loading and may have changed the page's height.
 - Tested: title, table, an inline `<style>` and `<script>`, a relative stylesheet, a relative link, the tab label and the init response, on desktop; the scroll-pinning script's presence and shape (Rust unit test), and — see "Editor ↔ syncing web app: scroll and refresh options" below — live, as a regression check: appending text and saving landed the page at the *new* bottom, not the old pixel offset.
+
+## The ayran tag: inserting html elements into rendered markdown
+
+`ayran_tags.rs` (a module the doc comment there covers in full — read it first for the exact rule; this
+section is the shorter, CLAUDE.md-level summary). A configurable way to make a markdown file's own source
+insert a *real* html element into the page it renders to (`markdown.rs`'s `render_page`, so only a `.md`
+file opened as a web app — never `render_fragment`, the internal-docs path `help_docs.rs` uses, which is
+never a person's own content). The person writes a **pair** of one configurable element (`AyranConfig`:
+`tag_name`, default **`a-x`**) with two configurable attributes — an **internal id** (`id_attr`, default
+**`a-y`**, a plain string used only to match a tag to its partner) and a **css-selector-like** one
+(`selector_attr`, default **`a-z`**, e.g. `div#wrap.card` — an optional tag name, then any number of
+`#id`/`.class` segments in either order; empty defaults the tag to `div`):
+```markdown
+<a-x a-y="1" a-z="section#main.card" data-extra="kept"/>
+
+some *markdown* content
+
+<a-x a-y="1"/>
+```
+Two `tag_name` elements are a **matched pair** when they are **siblings** in the *rendered* markup and
+their `id_attr` values are **equal** — everything between them becomes the children of a **new** element
+(its tag/id/class parsed from the *first* tag's `selector_attr`; every other attribute of the first tag,
+`id_attr`/`selector_attr` themselves aside, copied onto it as it is) that replaces the pair. Pairs can
+**nest** (leaf pairs — the ones that don't themselves contain another complete pair — resolve first, so an
+outer pair's already-resolved inner content just comes along as ordinary children). A tag that matches
+nothing, matches **more than one** same-named sibling with the same id, shares an id with a same-named tag
+that **isn't** a sibling, or genuinely **crosses** another pair (`A…C…B…D`, interleaved rather than nested
+or disjoint — not one of the spec's own listed cases, but there's no sensible wrapping for it either) is
+left exactly where it is: same tag, same attributes, same position, still a literal `<a-x>` — deliberately
+the same outcome for every case this can't cleanly resolve, so a markup mistake shows up as visible `<a-x>`
+tags rather than a silently wrong transform. **An empty `tag_name` disables the whole feature** — `apply`
+becomes a no-op (a cheap substring check, nothing parsed or reserialized) — and the Settings page's own
+text box for it says so.
+
+**Why `a-x`, not `_x`.** The module is built on **`html5ever`** (`markup5ever_rcdom` for a mutable,
+reserializable tree) — the same spec-compliant parser Firefox/Servo use, chosen deliberately so the
+*surrounding* markdown/html a person writes is handled exactly as a real browser would, not by a
+hand-rolled parser's own guesses. A real HTML5 tag name must *start with an ASCII letter* — verified live
+against html5ever: `<_x ...>` is not tokenized as a tag at all, just left as inert literal text — so an
+underscore-led name would silently never fire the feature for anyone using the default. `a-x`/`a-y`/`a-z`
+(a letter, then a hyphen — exactly the shape a real "custom element" name must have) parse as an ordinary,
+if unknown, element.
+
+**Why self-closing needs its own pass first** (`rewrite_self_closing`, a plain text scan for occurrences of
+*just* the configured tag name — quote-aware, so a `>`/`/` inside a quoted attribute value doesn't end the
+tag early — leaving everything else in the markup completely unexamined). `<a-x a-y="1"/>` is *not* an
+empty element under real HTML parsing — verified live: the trailing `/` is honoured only for the small set
+of actual *void* elements (`br`, `img`, `hr`, …); for anything else it's silently ignored and the tag
+swallows every following sibling as its own children until an explicit `</a-x>` or an ancestor implicitly
+closes it — which would nest the second tag of a pair *inside* the first instead of beside it, breaking the
+whole sibling-matching model. This pass turns `<a-x a-y="1"/>` into the equivalent explicit empty element
+`<a-x a-y="1"></a-x>` before html5ever ever sees it, so self-closing tags — "most probably" how they'll be
+written — still come out as two real siblings. One consequence: an untouched (unmatched/ambiguous/crossing)
+tag is still always shown in its *paired* form afterward, even if it was written self-closing — same tag,
+same attributes, same position, just always normalized syntax.
+
+**Composing with `markdown.rs`'s own `data-line` mirror-scroll wrapping** was the one real integration
+bug found building this: `body_with_line_anchors` wraps *every* top-level block — an HTML block included —
+in its own `<div data-line="N">`, and a bare ayran tag written as its own paragraph (blank lines around it,
+exactly the form the module doc describes) is exactly such a top-level block. Verified live: two markers
+each wrapped in their *own separate* `data-line` div are not siblings of each other at all (each is the
+sole child of a *different* div), so nothing could ever be recognised as matching — the whole feature would
+silently do nothing for the natural way anyone would write it. Fixed by teaching `body_with_line_anchors`
+(now taking the ayran config too) to recognise, via `ayran_tags::is_bare_tag`, a top-level HTML block that
+is *purely* one ayran tag (open, self-closing or not, or close) and skip its `data-line` wrapper entirely
+(an ayran marker has nothing of its own worth scrolling to anyway) — `render_page` then runs
+`ayran_tags::apply` over the whole wrapped body afterward, so the two markers land as genuine top-level
+siblings alongside the (still individually `data-line`-anchored) content between them.
+
+**A second real bug, found by its own test suite, not live**: the very first version of the
+"which candidate pairs cross" check compared each candidate only against *already-accepted* ones, in the
+order `HashMap::into_values()` happened to hand them out — Rust's hash-map iteration order is randomized
+per process, so which one of two genuinely crossing pairs got accepted (and wrongly collapsed) versus
+rejected depended on that unspecified order, not on anything about the markup itself. Fixed by checking
+every candidate against *every other* candidate up front (`ranges_cross`, symmetric, order-independent) and
+keeping only the ones that cross nothing — confirmed by re-running the crossing-pair test many times over
+separate process invocations (each with html5ever's own randomized hasher too) with no failures.
+
+**Configuration**: `global_settings` (`ayranTag.tagName`/`ayranTag.idAttr`/`ayranTag.selectorAttr`), kept
+in a small in-memory cache (`ayran_tags::current()`, mirroring `appearance.rs`'s own `CURRENT` — read once
+at startup, updated the moment the admin-only `set_ayran_tag_config` command writes a change) so
+`markdown.rs`'s rendering path — hit on every markdown page a window opens — never touches the database.
+**Admin-only** (`get_/set_ayran_tag_config`, `admin.json`, not `user-apps.json`): this decides how *every*
+markdown file in the app renders, the same kind of whole-app choice `set_appearance_rotation` already keeps
+to the admin-app alone; the generic `set_global_setting` refuses the `ayranTag.` prefix the same way it
+already refuses `appearance.`/`logging.`. Settings → "Markdown: the ayran tag" has the three text boxes
+(committed on blur, not per keystroke), with the rule and the "blank disables it" note in its own prose.
+
+Rust-tested (`ayran_tags.rs`, `markdown.rs`): a simple self-closing pair, explicit paired tags, no selector
+(defaults to a plain `div`), an unmatched tag, three-or-more siblings sharing an id, the same id on tags
+that aren't siblings, nested pairs resolved leaf-first, independent pairs at the same level, a genuinely
+crossing pair, the selector microsyntax in every order, case-insensitive and fully custom names, a quoted
+attribute value containing `/`/`>`-like text, `is_bare_tag`'s own recognition rules, and — in `markdown.rs`
+— the full `render_page` pipeline actually pairing two tags written as their own top-level blocks (not
+`ayran_tags::apply` called directly on a hand-built string), an unmatched tag still getting no
+`data-line` wrapper, and the feature disabled leaving a literal tag wrapped like any other html block.
+
+Verified live (isolated data folder, desktop): a real `.md` file with a self-closing pair (`section#main.card`,
+a forwarded `data-extra` attribute), a nested pair inside it (`div#outer` → `span.inner`) and one unmatched
+marker, opened as a web app through the actual `csuser://` pipeline — the rendered DOM had the real
+`<section id="main" class="card" data-extra="kept">` holding the paragraph and list that were between the
+tags (each still correctly wearing its own `data-line` for mirror-scroll), the nested pair correctly resolved
+(`div#outer > span.inner`), and the unmatched `a-y="99"` tag left as a literal (self-closing-normalized)
+`<a-x a-y="99"></a-x>`. `get_/set_ayran_tag_config` confirmed admin-only two ways: refused from the web app's
+own window with the same "not allowed on window…" message every other admin-only command gives, and
+succeeding from the actual main window; the generic `set_global_setting` refused the `ayranTag.` prefix with
+"That setting can only be changed by the admin-app." Settings → "Markdown: the ayran tag" rendered the three
+text boxes with the real stored values; editing the tag name through a real React-driven input change and
+blur (not a direct backend call) persisted it, and reloading the markdown page picked up the new name at
+once; setting the tag name blank turned the whole feature off — the same source re-rendered with every
+`<a-x>` shown literally, each back to getting its own ordinary `data-line` wrapper — and restoring it turned
+it back on. **Not exercised live**: Android (the mechanism is server-side Rust rendering with no
+platform-specific code path, so nothing here is expected to differ) and the crossing-pair rejection and the
+`selector_attr` microsyntax's own edge cases beyond what the Rust tests already cover exhaustively.
+
+## PDF conversion and viewing
+
+`docs/features/features.md`'s third "New Feature": convert a PDF to html, convert that html to plain
+markdown, and view a PDF in the app. Three independent pieces, sharing nothing but the file — a PDF is
+never actually *decoded* by the viewer's own backend path (see "The viewer" below):
+
+**PDF → HTML** (`pdf_convert.rs`) is a **heuristic** conversion, not a layout-faithful one — a real,
+bounded limitation the module's own doc comment states plainly rather than overclaiming: a two-column
+page, a table, or rotated text may read out of order or run together. Built on **`pdfium-render`**
+(bindings to Google's **PDFium** — what Chrome's and Android's own PDF viewers are built on), chosen
+over a pure-Rust text extractor specifically for fidelity (real per-baseline text segments and font
+metadata, not just a stream of characters), and over **MuPDF** (the other native option) specifically
+for its licensing — PDFium is BSD/Apache-style permissive, MuPDF is AGPL/commercial-dual-licensed, which
+would have obligated this app's own source or a paid license. PDFium is not embedded in the binary: it's
+loaded **dynamically at runtime** (`Pdfium::bind_to_library`) from a prebuilt shared library this app
+ships as a Tauri **resource** (`resources/pdfium-win-x64/pdfium.dll`, `tauri.conf.json`'s
+`bundle.resources` — **Windows x64 only, built and live-verified on**; every other desktop platform needs
+the matching prebuilt binary from `bblanchon/pdfium-binaries` — MIT/BSD-style licensed — at the same
+`resources/pdfium-<platform>/` shape, and **Android isn't done**: it needs the `.so` bundled under
+`gen/android/app/src/main/jniLibs/<abi>/` instead of a Tauri resource, the same platform split CLAUDE.md's
+"Android" section already describes for other native code — not started this pass).
+
+The module's own algorithm, one page at a time: every text **segment** PDFium hands back (already merged
+per same-baseline-same-font run — "Pdfium automatically merges smaller text boxes into larger text
+segments," its own doc comment) is grouped into **lines** (close enough vertically), then lines into
+**paragraphs** (a gap much bigger than the line's own height starts a new one), then a paragraph's own
+tallest font size, relative to the *page's own most common size*, guesses whether it's `<h1>`/`<h2>`/
+`<h3>` or a plain `<p>`. **Bold/italic has two signals, not one**: a character's own `font_weight()`/
+`font_is_italic()` come from an *embedded* font's `/FontDescriptor` — a bare standard-14 font named by
+`/BaseFont` alone (`Helvetica-Bold`, no descriptor) has none, and PDFium then reports a generic weight for
+every character regardless — verified live with a hand-built PDF using exactly that construction (not a
+hypothetical: this is common in PDFs a lightweight tool produced), so the font's own **name** is checked
+for "bold"/"italic"/"oblique" too, either signal sufficing — the same practical fallback real PDF-to-HTML
+tools use. **Images are embedded as `data:` URIs** (their own reading-order position — top edge — merged
+in among the text paragraphs around them), so a converted page is one self-contained file; `embed_images`
+off skips decoding them entirely for a faster, smaller text-only conversion.
+
+**Per-page extraction and mass-convert** are the feature's own explicit second half: `pdf_convert_to_html`
+takes `per_page` — off, one combined `<stem>.html` beside the PDF; on, a new `<stem>/` folder of
+`page-NNN.html` files, one per page — and `html_convert_to_markdown` (below) takes either **one** html
+file or a **folder**, converting every `.html`/`.htm` file directly inside it (not recursively) — the
+"mass convert" the spec asks for, built to work naturally on exactly the folder per-page mode just made.
+Both refuse to silently overwrite an existing file (an `overwrite` flag the frontend retries with, after
+asking — `PdfConvertModal.tsx`, `FilesTab.tsx`'s `convertToMarkdown`). Both commands are ordinary
+`user-apps.json` file operations (any window may call them, not just the admin-app — like `fs_write_file`),
+resolving `(root, path)` through the same `FsScope` every other file command does.
+
+**HTML → Markdown** (`html_to_markdown.rs`) reuses the exact `html5ever`/`markup5ever_rcdom`
+parse-a-tree-and-walk-it foundation `ayran_tags.rs` already established — a real, spec-compliant parser
+handles whatever html a person's own file contains, not just what `pdf_convert.rs` itself produces.
+**"Plain markdown" means no raw html tags survive except `<u></u>`** (the one thing CommonMark has no
+native syntax for at all) — every other recognized element becomes real markdown syntax (headings, bold,
+italic, links, images, lists, blockquotes, code), and an element this module doesn't specifically know
+(a `<div>`, a `<section>` — including ones `ayran_tags.rs`'s own transform produces) is **unwrapped**:
+its own tag never appears, but its children still convert normally. Plain text that happens to contain a
+markdown-meaningful character (`*`, `_`, `` ` ``, `[`, `]`, a leading `#`/`-`, a backslash) is
+backslash-escaped, since text pulled out of a PDF knows nothing of markdown syntax and shouldn't be
+silently reinterpreted as formatting.
+
+**A real bug, found live**: the first version parsed its input as a **body fragment** (`parse_fragment`
+with a `body` context, exactly `ayran_tags.rs`'s own approach) — which doesn't expect a `<head>` at all.
+Converting `pdf_convert.rs`'s own generated page (a *whole document*, `<!doctype html><html><head>
+<style>...` — what `wrap_page` produces, and what a real `.html` file on disk almost always is) put the
+`<title>` text and the raw CSS from `<style>` into the markdown as ordinary paragraphs, since the fragment
+parser has no head-vs-body distinction to keep them out of the body it builds. Fixed by parsing as a real
+**document** instead (`parse_document`, which still handles a bare fragment input just as readily — the
+same forgiving HTML5 tree-construction algorithm synthesizes `<html>`/`<head>`/`<body>` around either
+shape) and walking only the `<body>` element's own children, found by name rather than assumed depth.
+Rust-tested with a regression test built from this exact shape.
+
+**A second real bug, found live, in the frontend**: `PdfConvertModal.tsx`'s and `FilesTab.tsx`'s own
+overwrite-conflict retry both called `window.confirm(...)` directly inside an `if` condition — but
+**`window.confirm` in this app is not the native, synchronous browser function**: Tauri's dialog plugin
+replaces it with an *async* one (`async function(i){return await n("plugin:dialog|confirm",{message:...})}`
+— confirmed live by reading the actual function installed in the running admin window) that returns a
+**Promise**, not a boolean, directly. An un-awaited call is therefore always truthy (a Promise object is
+truthy regardless of what the person eventually answers), so the overwrite branch would have fired on
+*every* conflict no matter which button was actually pressed — a real, silent-data-loss-shaped bug, fixed
+by awaiting it (`await window.confirm(...)`) in both places. The fix itself was **not** re-verified with a
+real native button click — the specific dialog this app's plugin shows (a `#32770`-class window whose
+child button control returns no readable text via `GetWindowText`/`WM_GETTEXT`, and which hung a
+cross-process blocking `SendMessage`/`BM_CLICK` attempt for over two minutes before the whole app process
+had to be killed to recover) resisted the same Win32 button-click automation this codebase has used
+successfully elsewhere for *other* native dialogs; the fix is a small, unambiguous await-a-promise
+correction whose correctness doesn't turn on anything specific to this dialog implementation, so it's
+recorded here as reasoned-and-applied rather than click-verified, honestly, rather than claiming a live
+test that didn't actually finish.
+
+**The viewer** (`system/pdf-viewer/`, a **system app** — `system_apps::APPS`, `vite.config.ts`'s
+`rollupOptions.input` — like Notes, with exactly the same rights as any web app, no more) is the person's
+own choice between the two real designs: render pages to images on the Rust side (reusing `MediaViewer`'s
+existing picture-viewing UI almost for free) or **embed a bundled PDF.js** and let the browser do the
+decoding — chosen. **Vendored, not a CDN**: `public/system/pdf-viewer/pdfjs/{pdf.mjs,pdf.worker.mjs}` are
+Mozilla's official prebuilt PDF.js (Apache 2.0, `SOURCE.txt` names the exact release) — under `system/` on
+purpose, not the project root, because Android's own asset resolver (`android_windows.rs`'s
+`serve_app_asset`) only answers a system app's own request for a path starting `system/` or `assets/`, and
+a plain top-level `public/pdfjs/` would have worked on desktop (Tauri's own embedded-frontend serving has
+no such restriction) while silently failing on Android. Only the **core library and its worker** are
+vendored — not Mozilla's own prebuilt viewer app (`web/viewer.html`/`viewer.mjs`/`viewer.css`) — in favour
+of a small, purpose-built page (`PdfViewerApp.tsx`) using PDF.js's own rendering API directly: `getDocument`,
+render the current page to a `<canvas>`, prev/next, zoom. **Deliberately modest next to `MediaViewer.tsx`**
+— page navigation and zoom, not that component's full set (pinch, drag-to-pan, full screen) — a real,
+working viewer, not a reimplementation of everything `MediaViewer` already does for pictures.
+
+**Opening the viewer on a specific file needed its own window-opener**, `open_pdf_viewer_window` in
+`secondary_windows.rs` (modeled on the existing `open_page_window`): a plain web app's own address already
+names its file, but a *system app*'s is always the same fixed page, so "which PDF" has nowhere to live in
+`location.href` for a freshly opened window. The command sets the tab's `resource_id` **directly**, on
+the just-created placeholder tab, *before* the window ever opens — `init_window_tab`'s own rule ("echo the
+tab's stored resource id, except for a placeholder that was just created, which is filled in from the
+page's URL") only takes the "fill from the URL" branch for a placeholder with *nothing* stored, so setting
+it first is what makes the viewer's own `init_window_tab` call get the right file back, the query string
+(`?root=...&path=...`) decoded into a `FileRef` and passed to `mediaUrl` — the same address `<img>`/
+`<video>` already use for a picture or a video, now `fetch()`ed directly by PDF.js instead. **Always a new
+window** (unlike Notes'/User Action's "one reused window" pattern) — viewing a second PDF while the first
+is still open is the ordinary case here, not something to replace.
+
+**A real `getDocument` bug, found live**: pdf.js's own API expects `getDocument({ url })` — an *object* —
+not a bare string; the first version passed the url directly and got "expected either `data`, `range`, or
+`url` parameter" back at runtime (a real API-shape mistake, not a typo TypeScript's own loose local types
+for the vendored module happened to catch). Fixed by wrapping it.
+
+**A real CSP gap, found live**: `img-src`/`media-src` already allow this app's own web-app origin
+(`csuser:`/`http://csuser.localhost`, for Notes' viewer and thumbnails — see "Media") — but PDF.js doesn't
+load a PDF as an `<img>`/`<video>` element, it `fetch()`es the bytes itself (in pieces, via `Range`
+requests, which `file_serving.rs` already answers for any file), and `fetch()` is governed by
+**`connect-src`**, which didn't list that origin — a same-origin-only page (`connect-src 'self' ...`)
+couldn't reach a *different* origin's files even though `img-src`/`media-src` already permit exactly that
+kind of cross-origin read for other elements. The viewer's very first attempt failed outright with a
+CSP-blocked "Failed to fetch". Fixed by adding `csuser: http://csuser.localhost` to `connect-src` too, in
+both `tauri.conf.json`'s `csp` and `devCsp`, and updating `the_csp_never_names_an_external_host_or_scheme`'s
+own check (which already special-cased `img-src`/`media-src` for this exact origin) to allow it for
+`connect-src` as well — the identical "a system app may load user-content" principle, just extended to
+`fetch()`-based access alongside element-based access, not a new exception to the policy's own spirit.
+
+Rust-tested (`pdf_convert.rs`, from a minimal hand-built PDF constructed *inside* the test itself — no
+external fixture file — with a heading, an ordinary paragraph, a bold line with no `/FontDescriptor`, and
+a second paragraph after a gap): heading/paragraph/bold-by-name detection and top-to-bottom reading order
+all confirmed from a real PDFium parse (not a hand-rolled parser of my own); `wrap_page`'s shape;
+`is_bold`/`is_italic`'s name-fallback rules directly. `html_to_markdown.rs`: headings/paragraphs, bold/
+italic/underline, links and images becoming real markdown syntax, lists, an unrecognized wrapper unwrapped,
+blockquote/code, markdown-special characters escaped, a leading `#`/`-` escaped, no raw tag surviving
+except `<u>`, and the whole-document head-leak regression. **Verified live** (isolated data folder,
+desktop): the full pipeline through the real UI — a real `.pdf` file's *Convert to HTML…* action (both
+checkboxes) producing byte-correct output (heading, bold line, paragraph order all matching the source);
+per-page mode producing a real `page-001.html`; *Convert to Markdown…* on that folder ("mass convert")
+producing a correct, head-leak-free `page-001.md`; the overwrite refusal firing on a real second attempt;
+the admin-only-vs-web-app-window distinction for `get_/set_ayran_tag_config`-style command gating verified
+the same way earlier is architecturally the same pattern these commands don't use (they're plain
+`user-apps.json` commands, checked instead against a real web app window succeeding, which it did). The
+**viewer**: opened on a real one-page and a real two-page PDF (both hand-built inside this session, the
+same construction as the Rust test's own fixture) — real rendered content confirmed by sampling the
+canvas's own pixel data (not just "a canvas exists"), zoom confirmed by the canvas's own pixel dimensions
+changing, and **page navigation confirmed by both the page indicator and the canvas's rendered content
+changing together** between two distinct, genuinely different pages. **Not exercised live**: Android for
+any of the three pieces (the PDFium `.so` bundling isn't done, so the conversion commands can't run there
+yet; the viewer's own PDF.js/CSP/system-app path has no Android-specific code and is expected to work once
+PDFium's Android piece unblocks testing the rest of the app there) and every desktop platform besides
+Windows x64 (needs its own `resources/pdfium-<platform>/` binary, not fetched this pass).
 
 ## Editor ↔ syncing web app: scroll and refresh options
 

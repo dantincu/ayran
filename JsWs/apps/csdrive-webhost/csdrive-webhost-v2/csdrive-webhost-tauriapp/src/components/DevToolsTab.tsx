@@ -65,7 +65,7 @@ export default function DevToolsTab() {
     <div className="tab-panel">
       <div className="toolbar">
         <strong>Logs</strong>
-        <div className="toolbar-actions">
+        <div className="toolbar-actions" data-primary-actions>
           <IconButton icon={RefreshCw} label="Read it again" onClick={refresh} />
           <IconButton icon={Download} label="Export the log file" onClick={exportFile} disabled={!info} />
         </div>

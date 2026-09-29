@@ -180,6 +180,14 @@ button:disabled {
   cursor: default;
 }
 
+/* Alt+Shift+J/Alt+J's own keyboard focus (lib/buttonRowKeyboard.ts) lands real DOM focus on the button itself
+   — the browser's own default focus ring would already show, but this matches the app's own outline colour
+   (the same 2px solid var(--accent), 1px offset used for keyboard focus elsewhere) instead of the platform's. */
+.icon-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .icon-button-danger:hover {
   background: var(--error-bg);
   color: var(--error-fg);

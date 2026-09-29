@@ -121,6 +121,9 @@ fn main() {
             "fs_read_file",
             "fs_write_file",
             "fs_mkdir",
+            "pdf_convert_to_html",
+            "html_convert_to_markdown",
+            "open_pdf_viewer_window",
             "fs_remove",
             "fs_rename",
             "fs_root_path",
@@ -188,6 +191,8 @@ fn main() {
             "list_deployable_apps",
             "get_deployable_app_html",
             "get_keyboard_shortcuts_html",
+            "get_ayran_tag_config",
+            "set_ayran_tag_config",
         ]),
     );
     // The `window.__TAURI__` script of the Tauri version this is built with — Tauri passes its path to the crates that depend on

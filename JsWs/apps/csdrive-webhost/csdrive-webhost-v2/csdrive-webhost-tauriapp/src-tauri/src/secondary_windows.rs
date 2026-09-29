@@ -840,6 +840,32 @@ pub(crate) async fn open_page_window(app: &AppHandle, relative_path: String) -> 
     Ok(guid)
 }
 
+/// Opens the **pdf-viewer** system app on a specific file — a *new* window each time (no "one reused
+/// window" like Notes' own note-web-app/User Action windows: viewing a second PDF while the first is
+/// still open is the ordinary case, not something to replace). Unlike a plain web app's window, a
+/// system app's own address carries no room for "which file" — its `index.html` is always the same
+/// fixed page — so this sets the tab's `resource_id` itself, directly, on the freshly created
+/// placeholder tab, *before* the window ever opens: `init_window_tab`'s own rule ("echo the tab's
+/// stored resource id, except for a placeholder that was just created, which is filled in from the
+/// page's URL") only takes the "fill from the URL" branch for a placeholder with *nothing* stored, so
+/// setting it here first is what makes the viewer's own `init_window_tab` call get the right file back.
+#[tauri::command]
+pub async fn open_pdf_viewer_window(app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, root: String, path: String) -> Result<String, String> {
+    let page = Page::new(Kind::System, crate::system_apps::relative_path_of("pdf-viewer"));
+    validate_page(&app, &page)?;
+    let (guid, _) = insert_entry(&state.pool, &page).await?;
+    let (tab_guid, _) = tab_for_opening(&state.pool, &guid, &page.relative_path, None).await?;
+    let resource_id = format!(
+        "system:pdf-viewer?root={}&path={}",
+        percent_encoding::utf8_percent_encode(&root, percent_encoding::NON_ALPHANUMERIC),
+        percent_encoding::utf8_percent_encode(&path, percent_encoding::NON_ALPHANUMERIC)
+    );
+    sqlx::query("UPDATE tabs SET resource_id = ?1 WHERE guid = ?2").bind(&resource_id).bind(&tab_guid).execute(&state.pool).await.map_err(|e| e.to_string())?;
+    crate::window_host::open(&app, &guid, &page)?;
+    let _ = app.emit(EVENT_CHANGED, ());
+    Ok(guid)
+}
+
 pub(crate) async fn open_child_window(app: &AppHandle, relative_path: String, origin: Origin, parent_tab: String) -> Result<String, String> {
     let state = app.state::<SecondaryWindowsState>();
     let page = Page::new(Kind::User, relative_path);

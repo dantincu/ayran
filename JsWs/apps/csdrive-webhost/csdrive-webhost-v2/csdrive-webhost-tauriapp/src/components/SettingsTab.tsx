@@ -63,6 +63,24 @@ export default function SettingsTab() {
     apply(value)
     invoke('set_global_setting', { key, value: value ? '1' : '0' }).catch((e) => setError(String(e)))
   }
+  // The ayran-tag markup transform's configuration (`ayran_tags.rs`): the three configurable names. An
+  // empty tag name disables the whole feature. Committed on blur, the same as the tab space-count field
+  // above — not per keystroke, since every change re-parses and re-serializes nothing until it's saved.
+  const [ayranTagName, setAyranTagNameText] = useState('')
+  const [ayranIdAttr, setAyranIdAttrText] = useState('')
+  const [ayranSelectorAttr, setAyranSelectorAttrText] = useState('')
+  useEffect(() => {
+    invoke<{ tagName: string; idAttr: string; selectorAttr: string }>('get_ayran_tag_config').then((c) => {
+      setAyranTagNameText(c.tagName)
+      setAyranIdAttrText(c.idAttr)
+      setAyranSelectorAttrText(c.selectorAttr)
+    })
+  }, [])
+  function commitAyranConfig() {
+    invoke('set_ayran_tag_config', { config: { tagName: ayranTagName, idAttr: ayranIdAttr, selectorAttr: ayranSelectorAttr } }).catch((e) =>
+      setError(String(e)),
+    )
+  }
   // Whether prompts are prevented, and how many windows are open of how many are allowed (`prompt_guard.rs`).
   const [guard, setGuard] = useState<{ promptsPrevented: boolean; openWindows: number; maxWindows: number } | null>(null)
   const readGuard = useCallback(() => {
@@ -267,7 +285,7 @@ export default function SettingsTab() {
         Apps tabs, and overrides a bar the person closed or that started hidden by the autohide setting below (until
         it's closed again).
       </p>
-      <div className="toolbar-actions">
+      <div className="toolbar-actions" data-primary-actions>
         <IconButton icon={PanelTop} label="Show the top bar for every open window" onClick={showAllTopBars} />
       </div>
       <label className="checkbox-row">
@@ -293,6 +311,50 @@ export default function SettingsTab() {
           onChange={(e) => setTopBarSetting('topBar.hideRoot', e.target.checked, setTopBarHideRootState)}
         />
         Hide the tab's root in the top bar
+      </label>
+
+      <div className="toolbar" style={{ marginTop: 24 }}>
+        <strong>Markdown: the ayran tag</strong>
+      </div>
+      <p className="muted">
+        A configurable html element a markdown file's own source can use to insert a real html element of
+        its own choosing into the rendered page: two matching tags — the same id, siblings in the rendered
+        markup — collapse into one new element (its tag name, id and class parsed from a tiny
+        <code> tag#id.class</code> selector) holding whatever was between them. See the Help tab for the
+        full rule. <strong>Leave the tag name blank to turn the whole feature off.</strong>
+      </p>
+      <label className="checkbox-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+        Tag name (blank disables the feature)
+        <input
+          type="text"
+          value={ayranTagName}
+          onChange={(e) => setAyranTagNameText(e.target.value)}
+          onBlur={commitAyranConfig}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          style={{ width: '10em' }}
+        />
+      </label>
+      <label className="checkbox-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+        Internal id attribute — matches a tag to its partner
+        <input
+          type="text"
+          value={ayranIdAttr}
+          onChange={(e) => setAyranIdAttrText(e.target.value)}
+          onBlur={commitAyranConfig}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          style={{ width: '10em' }}
+        />
+      </label>
+      <label className="checkbox-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+        CSS-selector attribute — the new element's tag, id and class
+        <input
+          type="text"
+          value={ayranSelectorAttr}
+          onChange={(e) => setAyranSelectorAttrText(e.target.value)}
+          onBlur={commitAyranConfig}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          style={{ width: '10em' }}
+        />
       </label>
 
       <div className="toolbar" style={{ marginTop: 24 }}>

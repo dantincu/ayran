@@ -13,8 +13,8 @@
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: csuser: http://csuser.localhost; font-src 'self' data:; media-src 'self' data: blob: csuser: http://csuser.localhost; connect-src 'self' data: blob: ipc: http://ipc.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
-      "devCsp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: csuser: http://csuser.localhost; font-src 'self' data:; media-src 'self' data: blob: csuser: http://csuser.localhost; connect-src 'self' data: blob: ipc: http://ipc.localhost ws://localhost:1420; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
+      "csp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: csuser: http://csuser.localhost; font-src 'self' data:; media-src 'self' data: blob: csuser: http://csuser.localhost; connect-src 'self' data: blob: ipc: http://ipc.localhost csuser: http://csuser.localhost; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'",
+      "devCsp": "default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob: csuser: http://csuser.localhost; font-src 'self' data:; media-src 'self' data: blob: csuser: http://csuser.localhost; connect-src 'self' data: blob: ipc: http://ipc.localhost csuser: http://csuser.localhost ws://localhost:1420; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {
@@ -26,6 +26,9 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "resources": {
+      "resources/pdfium-win-x64/pdfium.dll": "pdfium-win-x64/pdfium.dll"
+    }
   }
 }

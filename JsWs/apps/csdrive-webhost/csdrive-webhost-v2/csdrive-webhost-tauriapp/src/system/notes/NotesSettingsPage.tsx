@@ -36,7 +36,7 @@ export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
     <div className="app-shell">
       <main className="tab-content">
         <div className="tab-panel notes-page">
-          <div className="notes-page-header">
+          <div className="notes-page-header" data-primary-actions>
             <IconButton icon={House} label="Notes home" onClick={onHome} />
             <h2>Notes settings</h2>
             <UserActionButton />

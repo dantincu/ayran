@@ -1419,7 +1419,7 @@ export default function NotesApp({
       <main className="tab-content">
         {editing ? (
           <div className="tab-panel note-edit-page">
-            <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`}>
+            <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
               <IconButton icon={ArrowLeft} label="Back" onClick={closeEditor} />
               <h2>{editing.path}</h2>
               {editing.dirty && <span className="muted">unsaved changes</span>}
@@ -1569,7 +1569,7 @@ export default function NotesApp({
                 )
               })}
             </div>
-            <div className="toolbar-actions">
+            <div className="toolbar-actions" data-primary-actions>
               <UserActionButton sourceId={sourceId} folder={scope ? joinRelative(scope.root, path) : path} />
               <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
               <IconButton icon={Search} label="Search and sort…" onClick={() => setSearchOpen((open) => !open)} />

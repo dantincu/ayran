@@ -1344,7 +1344,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
             </span>
           )}
         </div>
-        <div className="toolbar-actions">
+        <div className="toolbar-actions" data-primary-actions>
           {view === 'apps' && (
             <>
               <IconButton icon={PauseCircle} label={SUSPEND_ALL_HINT} onClick={() => handleSuspendAll()} disabled={records.length === 0} />

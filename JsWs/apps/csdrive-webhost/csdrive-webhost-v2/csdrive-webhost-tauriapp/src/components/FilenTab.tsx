@@ -441,7 +441,7 @@ export default function FilenTab() {
                 )
               })}
             </div>
-            <div className="toolbar-actions">
+            <div className="toolbar-actions" data-primary-actions>
               <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
               <IconButton icon={Info} label="Details of this folder" onClick={() => showDetails({ kind: 'here' })} />
               <IconButton icon={FolderPlus} label="New folder" onClick={createFolder} />

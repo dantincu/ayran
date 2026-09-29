@@ -466,7 +466,7 @@ export default function NotePage({
             ))}
           </nav>
 
-          <div className="notes-page-header">
+          <div className="notes-page-header" data-primary-actions>
             <h2>{title}</h2>
             <IconButton icon={Plus} label={note ? 'New child note…' : 'New note…'} onClick={() => setCreating(true)} />
             <IconButton

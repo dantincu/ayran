@@ -220,7 +220,7 @@ export default function SqliteTab() {
       <div className="tab-panel">
         <div className="toolbar">
           <strong>SQLite databases in your user folder</strong>
-          <div className="toolbar-actions">
+          <div className="toolbar-actions" data-primary-actions>
             <IconButton icon={RefreshCw} label={scanning ? 'Scanning…' : 'Rescan'} onClick={() => scan()} disabled={scanning} />
           </div>
         </div>
@@ -252,7 +252,7 @@ export default function SqliteTab() {
     <div className="tab-panel sqlite-tab">
       <div className="toolbar">
         <strong>{selectedRel}</strong>
-        <div className="toolbar-actions">
+        <div className="toolbar-actions" data-primary-actions>
           <IconButton icon={RefreshCw} label="Refresh schema" onClick={() => refreshTables(db)} />
           <IconButton icon={X} label="Close" onClick={closeDatabase} />
         </div>

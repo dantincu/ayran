@@ -26,6 +26,8 @@
     "allow-set-log-level",
     "allow-get-log-file-info",
     "allow-read-log-tail",
-    "allow-export-log-file"
+    "allow-export-log-file",
+    "allow-get-ayran-tag-config",
+    "allow-set-ayran-tag-config"
   ]
 }

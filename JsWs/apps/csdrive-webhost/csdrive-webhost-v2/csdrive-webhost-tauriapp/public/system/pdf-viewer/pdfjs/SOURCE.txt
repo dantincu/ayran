@@ -1,0 +1,10 @@
+pdf.mjs and pdf.worker.mjs are Mozilla's PDF.js, version 6.3.289, unmodified, from the official
+"generic" (non-legacy) prebuilt distribution:
+https://github.com/mozilla/pdf.js/releases/download/v6.3.289/pdfjs-6.3.289-dist.zip
+
+Licensed under the Apache License, Version 2.0:
+https://github.com/mozilla/pdf.js/blob/master/LICENSE
+
+Only the core library and its worker are vendored here — not Mozilla's own prebuilt viewer UI
+(web/viewer.html, viewer.mjs, viewer.css), which this app doesn't use; see the pdf-viewer system app
+(src/system/pdf-viewer/) for our own viewer built on pdf.js's core rendering API.

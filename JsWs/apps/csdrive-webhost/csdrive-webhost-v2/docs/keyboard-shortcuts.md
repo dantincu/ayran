@@ -35,11 +35,33 @@ These work on every list you can browse — no need to click it first, the keys 
 | **↓** / **↑** | Focus the next / previous item. (With nothing focused yet, either one focuses the first item — in a paginated list, the first item of the page shown.) |
 | **Home** / **End** | Focus the first / last item — in a paginated list, of the **page** the focus is on (not of all the pages). |
 | **Page Down** / **Page Up** | Move the focus 10 items down / up. In a paginated list this stays inside the page: with fewer than 10 items left it stops at the page's last / first item, and pressed *there* it goes on to the **next page's first item** / **previous page's last item**. |
+| **Alt+N** / **Alt+P** | Move the focus **2** items down / up (the same page-boundary rule as Page Down/Up). |
+| **Alt+.** / **Alt+,** | Move the focus **5** items down / up. |
+| **Alt+]** / **Alt+[** | Move the focus **20** items down / up. |
+| **Alt+'** / **Alt+;** | Move the focus **50** items down / up. |
 | **←** | Go to the **parent**: up a folder, or up a level (opened item → tab → tab group → window → app), or close the open database / object store. The item you just came from is focused. |
 | **→** | Go into the **focused item**: open a folder, open a file to edit it, open an app's windows, a window's tab groups, a tab group's tabs, what was **opened from a tab** (its web apps and external web sites), a database's tables or stores. On an external web site, → brings its window to the front (or opens it again). A folder you enter has its first item focused. |
 | **Enter** | The focused item's own action: on a **tab**, show it (its window opens if need be); on anything else, the same as →. (Not heard while a button or link has the focus — Enter presses that.) |
+| **Alt+J** | Move the keyboard focus into the focused item's own **row of action buttons** (below) — the first button. |
 
 The focused item is outlined. Pressing on an item with the mouse or a finger moves the focus there, so the keys carry on from where you clicked.
+
+## A row of icon buttons — a page's own, or an item's
+
+Every list item's own row of action buttons (edit, delete, details, …), and a page's own **top row of icon buttons** (the toolbar above the list), can be reached and moved along from the keyboard too — the button that's focused is a *real* one (its own outline shows, and Enter/Space presses it, the same as clicking).
+
+| Keys | What it does |
+| --- | --- |
+| **Alt+Shift+J** | Focus the **first button of the page's own top row of icon buttons** (or, with a popup open, its own header's row). |
+| **Alt+J** | With a list item focused (above), focus the **first button of that item's own row of action buttons**. |
+| **←** / **→** | Move to the previous / next button in the row. |
+| **Home** / **End** | Move to the first / last button in the row. |
+| **Page Down** / **Page Up** | Move 10 buttons forward / back (rarely does anything, most rows are shorter). |
+| **Alt+N** / **Alt+P** / **Alt+.** / **Alt+,** / **Alt+]** / **Alt+[** / **Alt+'** / **Alt+;** | The same "fast navigation" as a list's own (above), moving by 2 / 5 / 20 / 50 buttons instead of items. |
+| **Enter** or **Space** | Presses the focused button. |
+| **Esc** | Leaves the row (nothing stays focused). |
+
+This works everywhere a row of icon buttons appears — the admin-app, Notes, and popup dialogs.
 
 Where the list keys apply:
 

@@ -4,6 +4,9 @@ mod android_jni;
 mod android_windows;
 mod app_state;
 mod appearance;
+mod ayran_tags;
+mod html_to_markdown;
+mod pdf_convert;
 mod code_snippets;
 mod config;
 mod data_location;
@@ -53,10 +56,15 @@ pub(crate) const USER_PROTOCOL: &str = "csuser";
 /// sends the very same string with every page we serve to the web apps. Under it no
 /// script in any window can talk to the network: the only things `connect-src` allows are
 /// the window's own origin (its own files), the IPC channel to this backend (`ipc:` /
-/// `http://ipc.localhost`, depending on the OS), and in-memory `data:`/`blob:` URLs.
-/// Everything else is locked to the same origin or in-memory sources too, so
-/// images/fonts/scripts/frames can't be used to reach out either (nor can forms). Inline
-/// scripts and styles stay allowed, since web apps commonly are one self-contained file.
+/// `http://ipc.localhost`, depending on the OS), in-memory `data:`/`blob:` URLs, and — the
+/// same exception `img-src`/`media-src` already carry for Notes' viewer and thumbnails —
+/// this app's own web-app origin (`csuser:`/`http://csuser.localhost`), so a *system app*
+/// can `fetch()` a user-origin file's bytes itself (the pdf-viewer system app does, for
+/// PDF.js's own range-based loading of a PDF — see `pdf_convert.rs`) rather than only being
+/// able to show one as an `<img>`/`<video>` element. Everything else is locked to the same
+/// origin or in-memory sources too, so fonts/scripts/frames can't be used to reach out
+/// either (nor can forms). Inline scripts and styles stay allowed, since web apps commonly
+/// are one self-contained file.
 pub(crate) fn content_security_policy<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> String {
     app.config()
         .app
@@ -203,7 +211,7 @@ pub(crate) fn respond(status: StatusCode, content_type: &str, body: Vec<u8>, csp
 pub(crate) fn respond_bytes(name: &Path, data: Vec<u8>, csp: &str) -> Response<Vec<u8>> {
     if markdown::is_markdown(name) {
         let file_name = name.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let page = markdown::render_page(&String::from_utf8_lossy(&data), &file_name);
+        let page = markdown::render_page(&String::from_utf8_lossy(&data), &file_name, &ayran_tags::current());
         return respond(StatusCode::OK, "text/html; charset=utf-8", page.into_bytes(), csp);
     }
     respond(StatusCode::OK, content_type_for(name), data, csp)
@@ -364,6 +372,8 @@ pub fn run() {
             logging::read_log_tail,
             logging::export_log_file,
             appearance::get_appearance,
+            ayran_tags::get_ayran_tag_config,
+            ayran_tags::set_ayran_tag_config,
             user_action::user_action_launch,
             user_action::user_action_close,
             user_action::user_action_status,
@@ -419,6 +429,9 @@ pub fn run() {
             fs_commands::fs_read_file,
             fs_commands::fs_write_file,
             fs_commands::fs_mkdir,
+            pdf_convert::pdf_convert_to_html,
+            html_to_markdown::html_convert_to_markdown,
+            secondary_windows::open_pdf_viewer_window,
             fs_commands::fs_remove,
             fs_commands::fs_rename,
             fs_commands::fs_root_path,
@@ -581,6 +594,7 @@ pub fn run() {
 
             window_host::init(app.handle());
             appearance::init(app.handle());
+            ayran_tags::init(app.handle());
 
             // What the file commands and SQLite may touch (see `fs_scope.rs`): the user folder, always;
             // never the app's own database and secrets; and the folders picked in earlier sessions.
@@ -675,8 +689,9 @@ mod tests {
         for (key, extra_allowed) in [("csp", None), ("devCsp", Some("ws://localhost:1420"))] {
             let policy = security[key].as_str().unwrap_or_else(|| panic!("app.security.{key} must be set"));
             for directive in policy.split(';').map(str::trim) {
-                // The app's own web-app origin may be loaded as a picture or as media (Notes' viewer and thumbnails) — and only so.
-                let shows_files = directive.starts_with("img-src ") || directive.starts_with("media-src ");
+                // The app's own web-app origin may be loaded as a picture, as media (Notes' viewer and thumbnails), or
+                // fetched directly (PDF.js's own loading of a PDF, in the pdf-viewer system app) — and only so.
+                let shows_files = directive.starts_with("img-src ") || directive.starts_with("media-src ") || directive.starts_with("connect-src ");
                 for source in directive.split_whitespace().skip(1) {
                     let allowed = matches!(
                         source,

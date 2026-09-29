@@ -7,6 +7,7 @@ import {
   Copy,
   Download,
   ExternalLink,
+  FileCode,
   Link2,
   File,
   FilePlus,
@@ -34,6 +35,7 @@ import { absolutePathFrom, relativePathFrom } from '../lib/relativePath'
 import { useScrollAutohide } from '../lib/scrollAutohide'
 import DetailsModal, { type DetailField } from './DetailsModal'
 import GoToPathModal from './GoToPathModal'
+import PdfConvertModal from './PdfConvertModal'
 import Modal from './Modal'
 import Pagination from './Pagination'
 import { TagList } from './Tags'
@@ -76,6 +78,16 @@ import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../lib/textLinks'
 /** A file that can be opened as a web app: a page, or a markdown document (rendered to a page by the backend). */
 function isHtmlFile(name: string): boolean {
   return /\.(html?|md|markdown)$/i.test(name)
+}
+
+function isPdfFile(name: string): boolean {
+  return /\.pdf$/i.test(name)
+}
+
+/** An `.html`/`.htm` file — converting one to markdown, one file at a time (`pdf_convert.rs`'s own
+ * per-page mode makes a *folder* of these, converted with the "mass convert" action on the folder). */
+function isConvertibleHtmlFile(name: string): boolean {
+  return /\.html?$/i.test(name)
 }
 
 function formatBytes(bytes: number): string {
@@ -213,6 +225,8 @@ export default function FilesTab() {
   const [deployableApps, setDeployableApps] = useState<DeployableAppInfo[]>([])
   const [pickingAppToDeploy, setPickingAppToDeploy] = useState(false)
   const [deployingApp, setDeployingApp] = useState<DeployableAppInfo | null>(null)
+  const [convertingPdf, setConvertingPdf] = useState<EntryRow | null>(null)
+  const [convertingMarkdown, setConvertingMarkdown] = useState<string | null>(null)
   const [rootTags, setRootTags] = useState<TagRecord[]>([])
   const [details, setDetails] = useState<Details | null>(null)
   const [goingTo, setGoingTo] = useState(false)
@@ -570,6 +584,44 @@ export default function FilesTab() {
     }
   }
 
+  /** Converts an `.html`/`.htm` file, or — "mass convert" — every such file directly inside a folder, to
+   * markdown (`html_to_markdown.rs`). Retries once with `overwrite: true` on an "already exists" refusal,
+   * after asking, the same pattern `PdfConvertModal` uses. */
+  async function convertToMarkdown(entry: EntryRow, overwrite = false) {
+    if (!activeRoot) return
+    setConvertingMarkdown(entry.name)
+    try {
+      const result = await invoke<{ filesWritten: string[] }>('html_convert_to_markdown', {
+        root: activeRoot.id,
+        path: joinRelative(path, entry.name),
+        overwrite,
+      })
+      await refresh()
+      window.alert(result.filesWritten.length === 1 ? `Wrote ${result.filesWritten[0]}` : `Wrote ${result.filesWritten.length} markdown files.`)
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      // `window.confirm` is replaced here by the app's own async dialog plugin — must be awaited, or an
+      // un-awaited call (always a truthy Promise) would overwrite on every conflict regardless of the
+      // person's real answer (the same bug found live in `PdfConvertModal`'s identical pattern).
+      if (!overwrite && message.includes('already exists') && (await window.confirm(`${message}\n\nOverwrite?`))) {
+        await convertToMarkdown(entry, true)
+        return
+      }
+      setError(message)
+    } finally {
+      setConvertingMarkdown(null)
+    }
+  }
+
+  async function viewPdf(entry: EntryRow) {
+    if (!activeRoot) return
+    try {
+      await invoke('open_pdf_viewer_window', { root: activeRoot.id, path: joinRelative(path, entry.name) })
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function openDeployApps() {
     try {
       setDeployableApps(await listDeployableApps())
@@ -792,7 +844,7 @@ export default function FilesTab() {
     <div className="tab-panel files-tab">
       {editing ? (
         <>
-          <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`}>
+          <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
             <IconButton icon={ArrowLeft} label="Back" onClick={() => setEditing(null)} />
             <h2>{editing.path}</h2>
             {editing.dirty && <span className="muted">unsaved changes</span>}
@@ -872,7 +924,7 @@ export default function FilesTab() {
             )
           })}
         </div>
-        <div className="toolbar-actions">
+        <div className="toolbar-actions" data-primary-actions>
           <IconButton icon={Navigation} label="Go to a path…" onClick={() => setGoingTo(true)} />
           <IconButton icon={Info} label="Details of this folder" onClick={() => showDetails({ kind: 'here' })} />
           <IconButton icon={FilePlus} label="New file" onClick={createFile} />
@@ -942,6 +994,14 @@ export default function FilesTab() {
                       ...(!entry.isDirectory && !isDefaultTextFile(entry.name)
                         ? [{ icon: FileText, label: 'Edit as text', onClick: () => openEntry(entry, undefined, true) }]
                         : []),
+                      ...(!entry.isDirectory && isPdfFile(entry.name) ? [{ icon: ExternalLink, label: 'View', onClick: () => viewPdf(entry) }] : []),
+                      ...(!entry.isDirectory && isPdfFile(entry.name) ? [{ icon: FileCode, label: 'Convert to HTML…', onClick: () => setConvertingPdf(entry) }] : []),
+                      ...(!entry.isDirectory && isConvertibleHtmlFile(entry.name)
+                        ? [{ icon: FileText, label: 'Convert to Markdown…', onClick: () => convertToMarkdown(entry), disabled: convertingMarkdown === entry.name }]
+                        : []),
+                      ...(entry.isDirectory
+                        ? [{ icon: FileText, label: 'Convert its .html files to Markdown…', onClick: () => convertToMarkdown(entry), disabled: convertingMarkdown === entry.name }]
+                        : []),
                       ...(!entry.isDirectory ? [{ icon: Download, label: 'Export', onClick: () => downloadEntry(entry) }] : []),
                       { icon: Copy, label: 'Copy', onClick: () => copyEntry(entry) },
                       { icon: Scissors, label: 'Cut', onClick: () => cutEntry(entry) },
@@ -964,6 +1024,20 @@ export default function FilesTab() {
         onPageSizeChange={setPageSize}
       />
       </>
+      )}
+
+      {convertingPdf && activeRoot && (
+        <PdfConvertModal
+          rootId={activeRoot.id}
+          path={joinRelative(path, convertingPdf.name)}
+          name={convertingPdf.name}
+          onDone={async (filesWritten) => {
+            setConvertingPdf(null)
+            await refresh()
+            window.alert(filesWritten.length === 1 ? `Wrote ${filesWritten[0]}` : `Wrote ${filesWritten.length} html files.`)
+          }}
+          onClose={() => setConvertingPdf(null)}
+        />
       )}
 
       {shownDetails && details && (

@@ -20,7 +20,10 @@ pub struct SystemApp {
     pub entry: &'static str,
 }
 
-pub const APPS: &[SystemApp] = &[SystemApp { id: "notes", name: "Notes", entry: "system/notes/index.html" }];
+pub const APPS: &[SystemApp] = &[
+    SystemApp { id: "notes", name: "Notes", entry: "system/notes/index.html" },
+    SystemApp { id: "pdf-viewer", name: "PDF Viewer", entry: "system/pdf-viewer/index.html" },
+];
 
 /// System windows and tabs store `system:<id>` where user ones store an html file's relative path,
 /// so the two can never be mistaken for each other in the keys shared by both (app versions, icons,

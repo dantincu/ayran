@@ -16,6 +16,8 @@ use std::path::Path;
 
 use pulldown_cmark::{html, Event, Options, Parser, Tag, TagEnd};
 
+use crate::ayran_tags;
+
 /// Whether the file is one this module renders.
 pub fn is_markdown(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"))
@@ -153,13 +155,27 @@ pub fn render_fragment(source: &str) -> String {
 /// opinionated block element there is, and every CSS selector in `STYLE` above still matches its target as a
 /// descendant. A block with no `Start`/`End` pair of its own (a thematic break, `Event::Rule`) is wrapped the
 /// same way: opened and closed around that one event, rather than only around `Start`/`End` pairs.
-fn body_with_line_anchors<'a>(events: impl Iterator<Item = (Event<'a>, Range<usize>)>, source: &str) -> String {
+///
+/// **One exception: a top-level raw-html block that is *purely* one ayran tag (`ayran_tags`) is left
+/// unwrapped.** `ayran_tags::apply` (run afterward, over this function's whole output) matches two ayran
+/// tags by being *direct siblings* in the rendered markup — but every top-level block, HTML blocks
+/// included, otherwise gets its own individual `data-line` div (verified live: a lone `<a-x .../>` written
+/// as its own paragraph, between blank lines as `ayran_tags`' own module doc says it "most probably" would
+/// be, is exactly such a top-level block), which would nest each tag of a pair inside a *different* div —
+/// not siblings of each other at all, so nothing could ever match. Skipping the wrapper for just these
+/// blocks (`Start`/`End` pair and all — an ayran tag, matched or not, has nothing of its own worth
+/// scrolling to anyway) is what makes the two features compose correctly.
+fn body_with_line_anchors<'a>(events: impl Iterator<Item = (Event<'a>, Range<usize>)>, source: &str, ayran: &ayran_tags::AyranConfig) -> String {
     let mut annotated: Vec<Event<'a>> = Vec::new();
     let mut depth: i32 = 0;
+    let mut skipping_wrap = false;
     for (event, range) in events {
         let is_start = matches!(event, Event::Start(_));
         let is_end = matches!(event, Event::End(_));
-        if depth == 0 && !is_end {
+        if depth == 0 && is_start && matches!(event, Event::Start(Tag::HtmlBlock)) && ayran.is_enabled() && ayran_tags::is_bare_tag(&source[range.clone()], ayran) {
+            skipping_wrap = true;
+        }
+        if depth == 0 && !is_end && !skipping_wrap {
             let line = source[..range.start.min(source.len())].matches('\n').count() + 1;
             annotated.push(Event::Html(format!("<div data-line=\"{line}\">").into()));
         }
@@ -170,10 +186,16 @@ fn body_with_line_anchors<'a>(events: impl Iterator<Item = (Event<'a>, Range<usi
         if is_end {
             depth -= 1;
             if depth == 0 {
-                annotated.push(Event::Html("</div>\n".into()));
+                if !skipping_wrap {
+                    annotated.push(Event::Html("</div>\n".into()));
+                }
+                skipping_wrap = false;
             }
         } else if depth == 0 {
-            annotated.push(Event::Html("</div>\n".into()));
+            if !skipping_wrap {
+                annotated.push(Event::Html("</div>\n".into()));
+            }
+            skipping_wrap = false;
         }
     }
     let mut body = String::new();
@@ -181,8 +203,11 @@ fn body_with_line_anchors<'a>(events: impl Iterator<Item = (Event<'a>, Range<usi
     body
 }
 
-/// The whole html page for markdown `source` (a file called `file_name`).
-pub fn render_page(source: &str, file_name: &str) -> String {
+/// The whole html page for markdown `source` (a file called `file_name`). `ayran` is the ayran-tag
+/// transform's current configuration (`ayran_tags::current()`, read once by the caller — see that
+/// module's own doc for what it does); disabled (an empty `tag_name`) it costs nothing beyond the one
+/// substring check `ayran_tags::apply` itself makes.
+pub fn render_page(source: &str, file_name: &str, ayran: &ayran_tags::AyranConfig) -> String {
     let options = Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options).into_offset_iter().collect();
 
@@ -199,7 +224,8 @@ pub fn render_page(source: &str, file_name: &str) -> String {
     }
     let title = if title.trim().is_empty() { file_name.to_string() } else { title.trim().to_string() };
 
-    let body = body_with_line_anchors(events.into_iter(), source);
+    let body = body_with_line_anchors(events.into_iter(), source, ayran);
+    let body = ayran_tags::apply(&body, ayran);
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
          <title>{}</title><style>{STYLE}</style></head><body>\n{body}\n<script>{BOOTSTRAP}</script></body></html>",
@@ -210,6 +236,13 @@ pub fn render_page(source: &str, file_name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `render_page` with the ayran-tag transform at its ordinary default config (enabled, but a no-op for
+    /// any of these fixtures — none of them mention `a-x`) — what every pre-existing test here uses, so a
+    /// change to this module doesn't silently stop exercising the composition of the two features.
+    fn render_page(source: &str, file_name: &str) -> String {
+        super::render_page(source, file_name, &ayran_tags::AyranConfig::default())
+    }
 
     #[test]
     fn markdown_files_are_recognised_by_extension() {
@@ -288,5 +321,46 @@ mod tests {
         // The webview's own history has its own idea of restoring the previous scroll position across a reload,
         // outside this script entirely — found live to override `NO_SCROLL_KEY`'s own decision unless disabled.
         assert!(page.contains("history.scrollRestoration = 'manual'"), "{page}");
+    }
+
+    #[test]
+    fn ayran_tags_written_as_their_own_top_level_blocks_are_paired_and_wrapped() {
+        // The scenario `body_with_line_anchors`'s own doc describes: a bare ayran tag on its own, between
+        // blank lines, is a top-level HTML block like any other — which would otherwise get its own
+        // `data-line` div and end up *not* a sibling of its partner (each nested one level down inside a
+        // different div), so neither could ever be recognised as matching the other. This is the actual
+        // rendering pipeline (`render_page`, not `ayran_tags::apply` called directly on a hand-built
+        // string), so it also proves the two features compose, not just that each works in isolation.
+        let source = "<a-x a-y=\"1\" a-z=\"div#wrap\"/>\n\nsome **markdown** content\n\n<a-x a-y=\"1\"/>\n";
+        let page = super::render_page(source, "t.md", &ayran_tags::AyranConfig::default());
+        // A text node holding the newline that used to separate the marker from the paragraph's own
+        // `data-line` div survives the parse/reserialize round trip as insignificant whitespace between
+        // block elements (harmless — browsers collapse it) — so this checks structure and content, not one
+        // exact contiguous string.
+        assert!(page.contains("<div id=\"wrap\">"), "{page}");
+        assert!(page.contains("<p>some <strong>markdown</strong> content</p>"), "{page}");
+        // The wrapper's own content keeps its ordinary `data-line` anchoring — only the two marker blocks
+        // themselves lost theirs.
+        assert!(page.contains("data-line=\"3\""), "the paragraph between the tags still has its own anchor: {page}");
+        assert!(!page.contains("a-x"), "no literal ayran tag survives once a pair is matched: {page}");
+    }
+
+    #[test]
+    fn an_unmatched_ayran_tag_still_gets_no_data_line_wrapper_of_its_own() {
+        // Left untouched by the pairing (nothing to match it), but still correctly recognised by
+        // `is_bare_tag` as a marker rather than ordinary content — so it doesn't get a meaningless
+        // `data-line` div wrapped around a single inert tag either.
+        let page = super::render_page("<a-x a-y=\"1\"/>\n", "t.md", &ayran_tags::AyranConfig::default());
+        // `data-line` on its own also matches the bootstrap script's own `querySelectorAll('[data-line]')`,
+        // present on every markdown page regardless — `data-line="` (an actual attribute) is the real check.
+        assert!(!page.contains("data-line=\""), "{page}");
+        assert!(page.contains("<a-x a-y=\"1\"></a-x>"), "{page}");
+    }
+
+    #[test]
+    fn ayran_tags_disabled_leaves_a_literal_tag_wrapped_like_any_other_html_block() {
+        let disabled = ayran_tags::AyranConfig { tag_name: String::new(), ..ayran_tags::AyranConfig::default() };
+        let page = super::render_page("<a-x a-y=\"1\"/>\n", "t.md", &disabled);
+        assert!(page.contains("data-line=\"1\""), "disabled, it's an ordinary top-level html block again: {page}");
     }
 }

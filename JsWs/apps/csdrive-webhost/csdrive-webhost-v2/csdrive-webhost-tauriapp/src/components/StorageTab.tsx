@@ -566,7 +566,7 @@ export default function StorageTab() {
     <div className="tab-panel">
       <div className="toolbar">
         <strong>Browser storage</strong>
-        <div className="toolbar-actions">
+        <div className="toolbar-actions" data-primary-actions>
           <IconButton icon={Trash2} label="Wipe all browser storage" variant="danger" onClick={handleWipeAll} disabled={wiping} />
         </div>
       </div>

@@ -91,6 +91,9 @@ pub async fn set_global_setting(state: tauri::State<'_, AppDbState>, key: String
     if key.starts_with(crate::logging::RESERVED_PREFIX) {
         return Err("That setting can only be changed from the Logs page.".to_string());
     }
+    if key.starts_with(crate::ayran_tags::RESERVED_PREFIX) {
+        return Err("That setting can only be changed by the admin-app.".to_string());
+    }
     sqlx::query("INSERT INTO global_settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
         .bind(&key)
         .bind(value)

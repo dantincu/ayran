@@ -55,7 +55,7 @@ function HelpHeader() {
   }
 
   return (
-    <div className={`help-header ${hidden ? 'help-header-hidden' : ''}`}>
+    <div className={`help-header ${hidden ? 'help-header-hidden' : ''}`} data-primary-actions>
       <strong>Ayran CsDrive WebHost — Help</strong>
       <IconButton icon={List} label="Table of contents…" onClick={() => setTocOpen(true)} />
       {tocOpen && (

@@ -3,6 +3,7 @@ import { anyMaximizable, toggleTopMaximizable } from '../lib/modalStack'
 import { chordActions, CHORD_PREFIX, chordLabel, onChordsChanged, useChord, type ChordAction } from '../lib/chords'
 import { internalClipboard } from '../lib/clipboard'
 import { isShortcut } from '../lib/keyboard'
+import { useButtonRowKeyboard } from '../lib/buttonRowKeyboard'
 
 /** How long a chord waits for its second key. */
 const CHORD_WAIT_MS = 3000
@@ -12,8 +13,11 @@ const HIT_MS = 600
 
 /** The two-key shortcuts of this page (`lib/chords.ts`): **Ctrl+K**, then a letter. Mounted once per page, next to the clipboard
  * menu. It owns the chords that belong to no one screen — maximize the popup on top, clear the app's clipboard — and shows the
- * hint of what the letters do while a chord waits. */
+ * hint of what the letters do while a chord waits. **Also installs `useButtonRowKeyboard`** (Alt+Shift+J/Alt+J and moving within
+ * a row of buttons, `lib/buttonRowKeyboard.ts`) — this component being "mounted once per page" already, admin-app and Notes
+ * alike, is exactly the placement that needs too, so it rides along rather than getting its own host component. */
 export default function ChordHost() {
+  useButtonRowKeyboard()
   const [waiting, setWaiting] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   /** The shortcut that matched the second key: its entry in the hint glows for a moment, whatever it goes on to do. */

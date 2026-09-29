@@ -254,7 +254,7 @@ export default function NoteEditPage({
     <div className="app-shell">
       <main className="tab-content">
         <div className="tab-panel note-edit-page">
-          <div className={`notes-page-header editor-top-bar ${headerHidden ? 'editor-top-bar-hidden' : ''}`}>
+          <div className={`notes-page-header editor-top-bar ${headerHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
             <IconButton icon={ArrowLeft} label="Back to the notes" onClick={() => leave({ view: 'notes', sourceId, folder: parentOf(folder) })} />
             <h2>{note?.title ?? 'Note'}</h2>
             {dirty && <span className="muted">unsaved changes</span>}

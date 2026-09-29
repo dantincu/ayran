@@ -7,7 +7,7 @@ export default function NotesHome({ onFiles, onNotebooks, onSettings }: { onFile
     <div className="app-shell">
       <main className="tab-content">
         <div className="tab-panel notes-home">
-          <div className="notes-page-header">
+          <div className="notes-page-header" data-primary-actions>
             <h1 className="notes-home-title">Notes</h1>
             <UserActionButton />
           </div>
