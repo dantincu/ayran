@@ -53,15 +53,16 @@ fn escape(text: &str) -> String {
 /// Where the platform's PDFium library is looked for, relative to the resource directory (a bundled
 /// build) or `CARGO_MANIFEST_DIR` (a `cargo run` dev build — the resource directory Tauri reports in dev
 /// mode isn't reliably this crate's own `resources/` folder, so a compile-time path sidesteps that rather
-/// than depending on it).
+/// than depending on it). Desktop only — Android's own equivalent is `init_pdfium`'s Android branch below,
+/// which needs no path at all.
 #[cfg(target_os = "windows")]
 const PDFIUM_RESOURCE_DIR: &str = "pdfium-win-x64";
 #[cfg(target_os = "macos")]
 const PDFIUM_RESOURCE_DIR: &str = "pdfium-mac-x64";
-#[cfg(all(target_os = "linux", not(target_os = "android")))]
+#[cfg(target_os = "linux")]
 const PDFIUM_RESOURCE_DIR: &str = "pdfium-linux-x64";
 
-#[cfg(any(target_os = "windows", target_os = "macos", all(target_os = "linux", not(target_os = "android"))))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn candidate_dirs(app: &AppHandle) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -77,7 +78,7 @@ fn candidate_dirs(app: &AppHandle) -> Vec<PathBuf> {
 /// lock), so one instance behind a `OnceLock` is enough; no `Mutex` needed on top.
 static PDFIUM: OnceLock<Result<Pdfium, String>> = OnceLock::new();
 
-#[cfg(any(target_os = "windows", target_os = "macos", all(target_os = "linux", not(target_os = "android"))))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 fn init_pdfium(app: &AppHandle) -> Result<Pdfium, String> {
     let mut last_err = "no candidate directory for the PDFium library was found".to_string();
     for dir in candidate_dirs(app) {
@@ -91,7 +92,21 @@ fn init_pdfium(app: &AppHandle) -> Result<Pdfium, String> {
     ))
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos", all(target_os = "linux", not(target_os = "android")))))]
+/// Android has no "resource directory" to search at all: the library is bundled as an ordinary native
+/// library instead (`gen/android/app/pdfium-libs/<abi>/libpdfium.so`, added as an extra `jniLibs` source
+/// directory in `build.gradle.kts` — see that file's own comment for why not the default one), which the
+/// OS extracts into the app's own native library directory and — critically — already searches
+/// *automatically* for a bare library name, the same way it finds this app's own compiled Rust library.
+/// `bind_to_system_library` does exactly that bare-name lookup (`libloading::Library::new("libpdfium.so")`,
+/// no path prepended), so no `resources/`-style directory search is needed here at all.
+#[cfg(target_os = "android")]
+fn init_pdfium(_app: &AppHandle) -> Result<Pdfium, String> {
+    Pdfium::bind_to_system_library().map(Pdfium::new).map_err(|e| {
+        format!("Couldn't load the PDFium library ({e}). See CLAUDE.md's \"PDF conversion and viewing\" for where it needs to be.")
+    })
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux", target_os = "android")))]
 fn init_pdfium(_app: &AppHandle) -> Result<Pdfium, String> {
     Err("PDF conversion isn't available on this platform yet.".to_string())
 }

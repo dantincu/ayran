@@ -26,9 +26,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "resources": {
-      "resources/pdfium-win-x64/pdfium.dll": "pdfium-win-x64/pdfium.dll"
-    }
+    ]
   }
 }

@@ -1,6 +1,6 @@
 pdf.mjs and pdf.worker.mjs are Mozilla's PDF.js, version 6.3.289, unmodified, from the official
-"generic" (non-legacy) prebuilt distribution:
-https://github.com/mozilla/pdf.js/releases/download/v6.3.289/pdfjs-6.3.289-dist.zip
+**legacy** prebuilt distribution (not the "generic" one — see below for why):
+https://github.com/mozilla/pdf.js/releases/download/v6.3.289/pdfjs-6.3.289-legacy-dist.zip
 
 Licensed under the Apache License, Version 2.0:
 https://github.com/mozilla/pdf.js/blob/master/LICENSE
@@ -8,3 +8,11 @@ https://github.com/mozilla/pdf.js/blob/master/LICENSE
 Only the core library and its worker are vendored here — not Mozilla's own prebuilt viewer UI
 (web/viewer.html, viewer.mjs, viewer.css), which this app doesn't use; see the pdf-viewer system app
 (src/system/pdf-viewer/) for our own viewer built on pdf.js's core rendering API.
+
+**Why the legacy build, not the generic one**: verified live on the Android emulator (a real API 34
+image, Android System WebView 113.0.5672.136) — the "generic" build throws "Iterator is not defined" at
+load time, since it uses newer JavaScript (the explicit `Iterator` global) that Chromium 113's engine
+doesn't have; the legacy build polyfills it (see CLAUDE.md's "PDF conversion and viewing" for the fuller
+story). WebView versions vary a lot across real Android devices in the field — Play Store updates it
+independently of the OS, but a device can still lag — so the legacy build's broader compatibility is the
+safer default even though it wasn't needed for the desktop (WebView2) target.

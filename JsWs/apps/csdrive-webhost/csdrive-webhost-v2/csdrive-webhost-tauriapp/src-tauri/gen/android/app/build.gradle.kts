@@ -81,6 +81,18 @@ android {
     buildFeatures {
         buildConfig = true
     }
+    // The PDF conversion feature's native PDFium library (CLAUDE.md's "PDF conversion and viewing") —
+    // committed here rather than under `src/main/jniLibs`, which is entirely gitignored (it's where
+    // Tauri's own build puts this app's *compiled Rust* library per ABI, regenerated every build, so
+    // anything placed there directly would never survive a clean checkout). Gradle merges every
+    // registered `jniLibs` source directory into the APK's native libraries, so this one just adds
+    // PDFium's four prebuilt `.so`s (`bblanchon/pdfium-binaries`, MIT/BSD-style licensed) alongside the
+    // generated one without disturbing it.
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("pdfium-libs")
+        }
+    }
 }
 
 rust {

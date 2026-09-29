@@ -2,6 +2,30 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react'
 import { mediaUrl, type FileRef } from '../../lib/secondaryWindows'
 
+// A small, targeted polyfill — found live on the Android emulator (a real API 34 image, Android System
+// WebView 113.0.5672.136): even PDF.js's own "legacy" build (chosen over the "generic" one specifically
+// for older-engine compatibility — see `pdfjs/SOURCE.txt` for that first finding) still assumes
+// `Promise.withResolvers`, standardized too recently for this WebView version to have it either. This is
+// the standard, widely-used few-line polyfill for it (not a library), installed before `loadPdfjs` ever
+// runs pdf.js's own code, which uses it internally (worker message correlation). WebView versions vary a
+// lot across real Android devices in the field (Play Store updates it independently of the OS), so this
+// stays in even though desktop's WebView2 has never needed it.
+// Cast to a loosely-typed alias rather than `@ts-expect-error` (which TypeScript wants on the *check*
+// below too, not just the assignment) — this TypeScript target doesn't know `withResolvers` yet, despite
+// it being real, standard behavior in a WebView new enough to have it.
+const PromiseCtor = Promise as unknown as { withResolvers?: <T>() => { promise: Promise<T>; resolve: (value: T | PromiseLike<T>) => void; reject: (reason?: unknown) => void } }
+if (typeof PromiseCtor.withResolvers !== 'function') {
+  PromiseCtor.withResolvers = function withResolvers<T>() {
+    let resolve!: (value: T | PromiseLike<T>) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+}
+
 // pdf.js's own npm package (and its types) is deliberately not a dependency — only the two prebuilt
 // runtime files are vendored (`public/system/pdf-viewer/pdfjs/SOURCE.txt`), loaded at runtime with a
 // plain dynamic `import()`, so its module is typed here with the small local shape this file actually
@@ -26,7 +50,10 @@ function loadPdfjs(): Promise<PdfjsModule> {
   if (!pdfjsPromise) {
     // @ts-expect-error — a plain vendored file (public/system/pdf-viewer/pdfjs/), not a module TS can resolve at build time.
     pdfjsPromise = (import(/* @vite-ignore */ '/system/pdf-viewer/pdfjs/pdf.mjs') as Promise<PdfjsModule>).then((mod) => {
-      mod.GlobalWorkerOptions.workerSrc = '/system/pdf-viewer/pdfjs/pdf.worker.mjs'
+      // Not the real worker file directly — see `worker-wrapper.mjs`'s own comment: a worker has its own
+      // separate global scope, so the polyfill above (installed in the main thread) doesn't reach code
+      // running inside it, and pdf.js's own worker code needs it too.
+      mod.GlobalWorkerOptions.workerSrc = '/system/pdf-viewer/pdfjs/worker-wrapper.mjs'
       return mod
     })
   }

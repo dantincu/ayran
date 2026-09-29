@@ -569,12 +569,75 @@ metadata, not just a stream of characters), and over **MuPDF** (the other native
 for its licensing — PDFium is BSD/Apache-style permissive, MuPDF is AGPL/commercial-dual-licensed, which
 would have obligated this app's own source or a paid license. PDFium is not embedded in the binary: it's
 loaded **dynamically at runtime** (`Pdfium::bind_to_library`) from a prebuilt shared library this app
-ships as a Tauri **resource** (`resources/pdfium-win-x64/pdfium.dll`, `tauri.conf.json`'s
-`bundle.resources` — **Windows x64 only, built and live-verified on**; every other desktop platform needs
-the matching prebuilt binary from `bblanchon/pdfium-binaries` — MIT/BSD-style licensed — at the same
-`resources/pdfium-<platform>/` shape, and **Android isn't done**: it needs the `.so` bundled under
-`gen/android/app/src/main/jniLibs/<abi>/` instead of a Tauri resource, the same platform split CLAUDE.md's
-"Android" section already describes for other native code — not started this pass).
+ships as a Tauri **resource** — the matching binary from `bblanchon/pdfium-binaries` (MIT/BSD-style
+licensed, same as PDFium itself) for each desktop platform: `resources/pdfium-win-x64/pdfium.dll`,
+`resources/pdfium-mac-x64/libpdfium.dylib` (the *universal* mac build — one file for both Intel and Apple
+Silicon, despite the `-x64` folder name matching the other two platforms' own naming) and
+`resources/pdfium-linux-x64/libpdfium.so`, named as `libloading::library_filename("pdfium")` —
+`pdfium-render`'s own cross-platform convention — expects on each platform.
+
+**Each platform's own resource entry lives in its own config file**, not `tauri.conf.json` itself:
+`tauri.windows.conf.json` / `tauri.macos.conf.json` / `tauri.linux.conf.json`, each with just a
+`bundle.resources` entry for its own binary. Tauri merges the platform file matching the build target
+into the base config (JSON Merge Patch, RFC 7396) — `bundle.resources` is an *object* (`{"source": "dest"}`),
+which the merge combines key-by-key rather than replacing wholesale (only an *array* field would be
+replaced whole), so this leaves the base `tauri.conf.json` with no `resources` key of its own — the reason
+for the split: without it, a Windows build would bundle the mac and linux binaries too (and vice versa),
+since Tauri has no platform-conditional filter *within* a single resources list, only whole separate
+config files to merge selectively per target. **Only the Windows path is verified against a real running
+app** (`cargo run`'s own dev-mode resource resolution, which doesn't go through Tauri's bundler or these
+platform config files at all — see `pdf_convert.rs`'s `candidate_dirs`, a `CARGO_MANIFEST_DIR`-relative
+fallback used specifically because dev mode's own `resource_dir()` isn't reliably this crate's `resources/`
+folder); the mac/linux binaries and their platform config files are fetched and wired the identical way,
+confirmed only by `cargo build`/`cargo test` passing and the JSON's own validity — not by an actual bundled
+build or a run on either platform, which this Windows-only environment can't do.
+
+**Android is done, and live-verified on the emulator** — a real APK build (`cargo tauri android build
+--debug --target x86_64 --apk`), installed and run on `quick_notes_pixel_34` (API 34, isolated data folder
+per this app's own standing rule — the emulator's app-private storage already held real accumulated data
+from earlier testing sessions, exactly the same production-data hazard as desktop; verified isolated before
+touching anything). **Not a Tauri resource** — Android has no equivalent of a resource directory to search
+at runtime — but an ordinary bundled native library, in its own committed folder (`gen/android/app/
+pdfium-libs/<abi>/libpdfium.so`, one per ABI: `arm64-v8a`/`armeabi-v7a`/`x86`/`x86_64`), registered as an
+*extra* `jniLibs` source directory in `build.gradle.kts`'s `android.sourceSets` — **not** the default
+`src/main/jniLibs`, which is entirely gitignored (it's where Tauri's own build puts this app's *compiled
+Rust* library per ABI, regenerated every build, so anything placed there directly would never survive a
+clean checkout; Gradle merges every registered source directory into the APK regardless). `init_pdfium`'s
+Android branch needs no path resolution at all: `Pdfium::bind_to_system_library()` does a bare-name lookup
+(`libloading::Library::new("libpdfium.so")`), and Android's own linker already searches the app's native
+library directory automatically for a bare name — the same mechanism that finds this app's own compiled
+library, so nothing PDFium-specific had to be taught to the linker. **Live-verified**: the built APK's
+`lib/x86_64/libpdfium.so` confirmed present by inspecting the APK directly (not just trusting the build
+log), then `pdf_convert_to_html` and `html_convert_to_markdown` both invoked for real over the running
+app's own devtools connection (`adb forward` + the same CDP-based methodology used throughout this file) —
+the converted html was byte-identical to desktop's own output for the same hand-built test PDF.
+
+**The pdf-viewer system app was also tried on Android, opportunistically, while the emulator was already
+up for the PDFium work above** — not the original ask, but real findings worth recording. **Two real
+bugs, found live, fixed**: (1) the vendored PDF.js "generic" build throws `Iterator is not defined` at
+load on this WebView (113.0.5672.136, from `dumpsys package com.google.android.webview`) — it uses a
+JavaScript global newer than this engine has; switched to PDF.js's own **"legacy"** prebuilt distribution
+instead (`pdfjs/SOURCE.txt` documents exactly why), built for precisely this kind of older-engine
+compatibility. (2) Even the legacy build's own **worker** (loaded in its own separate JS global scope —
+running as its own module `Worker`, `pdf.mjs`'s own `new Worker(workerSrc, {type: "module"})`) still uses
+`Promise.withResolvers`, standardized more recently than this WebView has it either — and a polyfill
+installed in the *main* thread's `Promise` never reaches a worker's own separate global. Fixed with
+`worker-wrapper.mjs`, a tiny module that installs the polyfill synchronously then `import()`s the real
+`pdf.worker.mjs`, with `GlobalWorkerOptions.workerSrc` pointed at the wrapper instead of the worker
+directly. **A third issue was found and left as a known limitation, on the person's own decision**: even
+past both fixes, PDF.js's actual page rendering draws nothing — `page.render(...).promise` resolves
+without error, `doc.numPages` reports correctly, but the target canvas stays entirely blank (confirmed by
+sampling its own pixel data, not just checking for a thrown error) — while a plain, unrelated `fillRect` on
+a fresh canvas in the very same page renders correctly, isolating the fault to PDF.js's own drawing path,
+not this WebView's Canvas 2D support in general. This matches a known class of upstream pdf.js/Chromium
+WebView rendering issues (a `WebSearch` for the exact symptom turned up several open issues of this shape,
+including a Chromium-tracked one specifically about pdf.js on old WebView builds) rather than something a
+small local patch can fix — chasing the exact root cause was judged not worth open-ended effort right now,
+given the actual ask (PDFium bundling for the conversion commands) was already fully confirmed working.
+**The conversion commands need nothing further for Android; the viewer's own rendering does, if ever
+revisited** — a different pdf.js version, a different rendering strategy (back to the earlier-considered
+"render pages to images on the Rust side, shown through `MediaViewer`" design this app didn't choose), or
+simply waiting out WebView version adoption in the field.
 
 The module's own algorithm, one page at a time: every text **segment** PDFium hands back (already merged
 per same-baseline-same-font run — "Pdfium automatically merges smaller text boxes into larger text
@@ -708,11 +771,15 @@ the same way earlier is architecturally the same pattern these commands don't us
 same construction as the Rust test's own fixture) — real rendered content confirmed by sampling the
 canvas's own pixel data (not just "a canvas exists"), zoom confirmed by the canvas's own pixel dimensions
 changing, and **page navigation confirmed by both the page indicator and the canvas's rendered content
-changing together** between two distinct, genuinely different pages. **Not exercised live**: Android for
-any of the three pieces (the PDFium `.so` bundling isn't done, so the conversion commands can't run there
-yet; the viewer's own PDF.js/CSP/system-app path has no Android-specific code and is expected to work once
-PDFium's Android piece unblocks testing the rest of the app there) and every desktop platform besides
-Windows x64 (needs its own `resources/pdfium-<platform>/` binary, not fetched this pass).
+changing together** between two distinct, genuinely different pages. **Android**, in a later pass (see
+above for the full story): the conversion commands (`pdf_convert_to_html`, `html_convert_to_markdown`)
+confirmed live on a real emulator, byte-identical to desktop's own output; the viewer opened correctly and
+got past two real JavaScript-engine compatibility bugs (fixed), but its actual page rendering draws a blank
+canvas on this WebView version — a known class of upstream pdf.js/WebView issue, left as a documented
+limitation rather than chased further, on the person's own explicit decision once the actual ask (PDFium
+bundling) was already confirmed working. **Not exercised live**: macOS/Linux beyond `cargo build`/
+`cargo test` passing there too — their PDFium binaries and platform config files are fetched and wired the
+identical way as Windows's, but this Windows-only environment can't run either platform's actual build.
 
 ## Editor ↔ syncing web app: scroll and refresh options
 
