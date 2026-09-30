@@ -171,9 +171,12 @@ impl Rotation {
     }
 }
 
-/// The eight colours a `Theme` of the catalog (`src/lib/themes.ts`'s `Palette`) has — spelled out here as its own
+/// The colours a `Theme` of the catalog (`src/lib/themes.ts`'s `Palette`) has — spelled out here as its own
 /// struct, rather than reusing anything theme-shaped, because a generated palette isn't one of the catalog's named
-/// themes and has no `id`/`family`/`name` of its own.
+/// themes and has no `id`/`family`/`name` of its own. `accent_text` has no counterpart in `Palette`: a catalog
+/// theme's own `accent` already doubles as its own text colour (a hand-picked value, not automatically checked
+/// for it, but never a raw full-saturation primary either) — only a generated palette's `accent`, deliberately the
+/// *raw* drawn key colour, needs a second, readable-as-text stand-in. See `readable_variant_of`'s own doc comment.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeColors {
@@ -183,6 +186,13 @@ pub struct ThemeColors {
     pub border: String,
     pub accent: String,
     pub accent_fg: String,
+    /// A reduced-vividness stand-in for `accent`, guaranteed to clear the same 4.5:1 text-contrast bar `fg` does
+    /// against `bg` — for the handful of places the app's own CSS uses the accent colour as literal text directly
+    /// on the page's own background (a link, a badge, a tab's bullet: `color: var(--accent-text, var(--accent))`
+    /// in `App.css`/`notes.css`), as opposed to `accent`'s primary role as a *background* an `accent_fg` text sits
+    /// on top of. A catalog theme has none of its own — the CSS falls back to its plain `--accent` there, which
+    /// already does double duty by the author's own choice.
+    pub accent_text: String,
     pub panel: String,
     pub hover: String,
 }
@@ -331,6 +341,39 @@ fn readable_text_on(bg: (u8, u8, u8)) -> (u8, u8, u8) {
     if contrast_ratio(bg, BLACK) >= contrast_ratio(bg, WHITE) { BLACK } else { WHITE }
 }
 
+/// The same bar `fg`/`bg` already clears (checked by `a_generated_palettes_text_always_contrasts_with_its_background`)
+/// — the smallest contrast a colour used as real body text is expected to have against its own background.
+const TEXT_CONTRAST_MIN: f64 = 4.5;
+
+/// `rgb`, or a version of it blended toward whichever pole (black or white) is farther from `bg`'s own luminance —
+/// reported live: a generated palette drawn near Green (and, by the same reasoning, Yellow) has an `accent` whose
+/// luminance is *close to white's own*, so text coloured with the raw, vivid `accent` reads fine on a dark
+/// background (green-on-black is the classic high-contrast pairing) but is nearly unreadable on a light one, where
+/// this module's own `accent` is deliberately used as literal text/icon colour in a few places (`App.css`'s
+/// `.link-button`, `.group-toggle`, `.tab-text-bullet`; `notes.css`'s badges) rather than as a button's own
+/// background (where `accent_fg` is computed against it directly and this problem doesn't arise). If `rgb` already
+/// clears [`TEXT_CONTRAST_MIN`] against `bg`, it's returned exactly as it is — true for most key colours in most
+/// modes, since only a hue whose own luminance sits close to `bg`'s (Green/Yellow in light mode; conversely a very
+/// dark hue like Blue in dark mode, though `bg` there is already close to black so this is less often the tighter
+/// case) needs any adjustment at all. Blending stops the moment the bar is cleared, so the hue is nudged no further
+/// than it has to be — never diluted all the way to a flat black or white — and the loop is bounded (`t` cannot
+/// exceed 1.0, at which point `candidate` **is** the pole itself, whose contrast against any `bg` this module ever
+/// produces — itself always within ~30% of white or black — comfortably clears 4.5:1, so the loop always ends).
+fn readable_variant_of(rgb: (u8, u8, u8), bg: (u8, u8, u8)) -> (u8, u8, u8) {
+    if contrast_ratio(rgb, bg) >= TEXT_CONTRAST_MIN {
+        return rgb;
+    }
+    let pole = if luminance(bg) > 0.5 { (0, 0, 0) } else { (255, 255, 255) };
+    let mut t = 0.05;
+    loop {
+        let candidate = blend(rgb, pole, t);
+        if contrast_ratio(candidate, bg) >= TEXT_CONTRAST_MIN || t >= 1.0 {
+            return candidate;
+        }
+        t += 0.05;
+    }
+}
+
 /// Builds a full light+dark palette around one drawn-near-a-key RGB. The background is that colour alpha-blended
 /// over white (light) or black (dark) — kept to a modest alpha so the background stays close to white/black the
 /// way every hand-made theme's does, which is also what keeps the contrast checks below comfortably passed for
@@ -347,6 +390,7 @@ fn palette_for(rgb: (u8, u8, u8), dark: bool) -> ThemeColors {
     let fg = readable_text_on(bg);
     let accent = rgb;
     let accent_fg = readable_text_on(accent);
+    let accent_text = readable_variant_of(rgb, bg);
     ThemeColors {
         bg: to_hex(bg),
         fg: to_hex(fg),
@@ -354,6 +398,7 @@ fn palette_for(rgb: (u8, u8, u8), dark: bool) -> ThemeColors {
         border: to_hex(blend(bg, fg, 0.30)),
         accent: to_hex(accent),
         accent_fg: to_hex(accent_fg),
+        accent_text: to_hex(accent_text),
         panel: to_hex(blend(bg, fg, 0.06)),
         hover: to_hex(blend(bg, fg, 0.12)),
     }
@@ -666,9 +711,14 @@ mod tests {
     #[test]
     fn a_generated_palettes_text_always_contrasts_with_its_background() {
         // Every key colour, both extremes of spread, both modes: the automatically-chosen text must clear WCAG AA
-        // (4.5:1) against the background and the accent's own text must clear the button-text minimum (3.6:1) —
-        // the whole reason `fg`/`accentFg` are computed from the actual colour rather than fixed like a hand-made
-        // theme's, since a hand-picked value can't be right for every colour a random draw can produce.
+        // (4.5:1) against the background, the accent's own text must clear the button-text minimum (3.6:1), and
+        // accent_text — the stand-in used wherever the app's own CSS puts the accent colour directly on the page's
+        // background as literal text (a link, a badge, a tab's bullet) — must clear the same 4.5:1 bar `fg` does,
+        // the fix for a real report (Green's own light-mode accent, close to white's own luminance, was close to
+        // unreadable as text on a light background even though it's a perfectly fine, vivid *button* background,
+        // where accent_fg is computed against it directly and this doesn't arise). All three are computed from the
+        // actual colour rather than fixed like a hand-made theme's, since a hand-picked value can't be right for
+        // every colour a random draw can produce.
         for key_index in 0..KEY_COLORS.len() {
             for spread in [0u8, 64, 128, 255] {
                 for randoms in [[0u32, 0, 0], [u32::MAX, u32::MAX, u32::MAX], [12345, 999_999, 42]] {
@@ -680,10 +730,36 @@ mod tests {
                         let accent = hex_to_rgb(&colors.accent);
                         let accent_fg = hex_to_rgb(&colors.accent_fg);
                         assert!(contrast_ratio(accent, accent_fg) >= 3.6, "key={key_index} spread={spread} accent={} accentFg={}: {:.2}", colors.accent, colors.accent_fg, contrast_ratio(accent, accent_fg));
+                        let accent_text = hex_to_rgb(&colors.accent_text);
+                        assert!(
+                            contrast_ratio(bg, accent_text) >= TEXT_CONTRAST_MIN,
+                            "key={key_index} spread={spread} bg={} accentText={}: {:.2}",
+                            colors.bg,
+                            colors.accent_text,
+                            contrast_ratio(bg, accent_text)
+                        );
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_colour_that_already_reads_fine_is_returned_unchanged_and_one_that_does_not_is_adjusted_just_enough() {
+        // Blue's own light-mode background is close to white, and Blue itself is dark — already plenty readable as
+        // text on it, so nothing should be touched.
+        let white_ish = (245, 245, 255);
+        let blue = (0, 0, 255);
+        assert!(contrast_ratio(blue, white_ish) >= TEXT_CONTRAST_MIN, "the test's own premise");
+        assert_eq!(readable_variant_of(blue, white_ish), blue);
+        // Pure green on a near-white background is the reported case: close to unreadable unadjusted, and the
+        // fix must actually move it, land on something that clears the bar, and never overshoot past pure black.
+        let green = (0, 255, 0);
+        assert!(contrast_ratio(green, white_ish) < TEXT_CONTRAST_MIN, "the test's own premise");
+        let adjusted = readable_variant_of(green, white_ish);
+        assert_ne!(adjusted, green, "must actually be adjusted");
+        assert!(contrast_ratio(adjusted, white_ish) >= TEXT_CONTRAST_MIN);
+        assert!(adjusted.1 > 0, "still recognisably green, not blended all the way to black");
     }
 
     /// Test-only inverse of `to_hex`, to check contrast against the strings a palette actually stores.

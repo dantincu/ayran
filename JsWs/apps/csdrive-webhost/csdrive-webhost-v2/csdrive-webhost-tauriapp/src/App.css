@@ -219,12 +219,12 @@ select {
 }
 
 .link-button:hover {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   background: none;
 }
 
 .link-button.active {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   font-weight: 600;
 }
 
@@ -605,7 +605,7 @@ select {
 
 .group-toggle:hover {
   background: none;
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 
 .group-toggle svg {
@@ -1087,7 +1087,7 @@ select {
 }
 
 .tab-text-bullet {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
   margin: 0 5px;
 }
 

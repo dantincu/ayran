@@ -28,7 +28,11 @@ export interface Rotation {
   generated: GeneratedColors
 }
 
-/** The eight colours of a palette — a catalog theme's (`themes.ts`) or a generated one's. */
+/** The colours of a generated palette — a superset of a catalog theme's own `Palette` (`themes.ts`), which has no
+ * `accentText` of its own: a catalog theme's `accent` already doubles as its own text colour by the author's own
+ * choice, so the app's CSS falls back to plain `--accent` for one; only a generated palette's `accent` — the raw,
+ * un-blended drawn key colour — needs a second, contrast-guaranteed stand-in for it (see `appearance.rs`'s
+ * `readable_variant_of` for the full story of why). */
 export interface ThemeColors {
   bg: string
   fg: string
@@ -36,6 +40,9 @@ export interface ThemeColors {
   border: string
   accent: string
   accentFg: string
+  /** A reduced-vividness stand-in for `accent`, for the handful of places the app's own CSS uses the accent colour
+   * as literal text directly on the page's background rather than as a button's own background. */
+  accentText: string
   panel: string
   hover: string
 }
@@ -106,6 +113,13 @@ export function applyAppearance(appearance: Appearance, fade = false): void {
   // only ever looks at `.light`/`.dark`, so a plain object with those two is all it needs.
   const theme = appearance.generated ?? themeById(appearance.theme)
   for (const [name, value] of Object.entries(variablesOf(theme, dark))) root.style.setProperty(`--${name}`, value)
+  // `--accent-text` has no counterpart in a catalog theme's own `Palette` (`themes.ts`), so `variablesOf` above
+  // never sets it — the CSS that needs a readable-as-text accent falls back to plain `--accent` there
+  // (`var(--accent-text, var(--accent))`), which is exactly right for a hand-made theme, whose own `accent` was
+  // already chosen to work as text too. Only a generated palette actually has this field, so it's the one place
+  // that sets — and, switching back to a catalog theme, un-sets — the variable at all.
+  if (appearance.generated) root.style.setProperty('--accent-text', (dark ? appearance.generated.dark : appearance.generated.light).accentText)
+  else root.style.removeProperty('--accent-text')
   root.style.colorScheme = dark ? 'dark' : 'light'
   if (document.body) document.body.style.colorScheme = dark ? 'dark' : 'light'
   root.dataset.theme = appearance.generated ? 'generated' : appearance.theme
@@ -147,19 +161,23 @@ function asRotation(value: unknown): Rotation {
   }
 }
 
-/** `#rrggbb`, or a safe fallback (mid-grey) for anything else — never trusts the backend's own colours blindly
- * before they land as a CSS variable, the same caution every other saved-shape check in the app takes. */
-const asHexColor = (value: unknown): string => (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#808080')
+/** `#rrggbb`, or `fallback` (a safe mid-grey by default) for anything else — never trusts the backend's own colours
+ * blindly before they land as a CSS variable, the same caution every other saved-shape check in the app takes. */
+const asHexColor = (value: unknown, fallback = '#808080'): string => (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : fallback)
 
 function asThemeColors(value: unknown): ThemeColors {
   const c = (value ?? {}) as Partial<ThemeColors>
+  const accent = asHexColor(c.accent)
   return {
     bg: asHexColor(c.bg),
     fg: asHexColor(c.fg),
     muted: asHexColor(c.muted),
     border: asHexColor(c.border),
-    accent: asHexColor(c.accent),
+    accent,
     accentFg: asHexColor(c.accentFg),
+    // Falls back to `accent` itself rather than the generic mid-grey, so a shape missing this field (an older
+    // backend, say) still shows something reasonable instead of a flat grey wherever accentText is used.
+    accentText: asHexColor(c.accentText, accent),
     panel: asHexColor(c.panel),
     hover: asHexColor(c.hover),
   }
