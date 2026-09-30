@@ -118,8 +118,24 @@ export function applyAppearance(appearance: Appearance, fade = false): void {
   // (`var(--accent-text, var(--accent))`), which is exactly right for a hand-made theme, whose own `accent` was
   // already chosen to work as text too. Only a generated palette actually has this field, so it's the one place
   // that sets — and, switching back to a catalog theme, un-sets — the variable at all.
-  if (appearance.generated) root.style.setProperty('--accent-text', (dark ? appearance.generated.dark : appearance.generated.light).accentText)
-  else root.style.removeProperty('--accent-text')
+  //
+  // `--tok-heading` (the editor's heading/link-text/function colour — `.tok-heading`/`.tok-linktext`/
+  // `.tok-function` in App.css) is `variablesOf`'s own `'tok-heading': c.accent` above — always exactly the raw
+  // accent, for every theme, catalog or generated; no theme ever gives it an independent value. That's the
+  // second place (beyond the CSS spots already routed through `--accent-text`) a generated palette's vivid,
+  // high-luminance accent (Yellow, Green, Teal) showed up unreadable as text on a light background — reported
+  // live, still broken after the first fix, because this variable is set to a literal colour by `variablesOf`'s
+  // loop, not a `var()` reference a CSS fallback could catch. Overriding it here, straight after that loop, to
+  // the same readable `accentText` used for `--accent-text` itself keeps every heading/link/function token
+  // readable too, for a generated palette; a catalog theme's `--tok-heading` is left exactly as the loop set it
+  // (its own `accent`, unchanged).
+  if (appearance.generated) {
+    const c = dark ? appearance.generated.dark : appearance.generated.light
+    root.style.setProperty('--accent-text', c.accentText)
+    root.style.setProperty('--tok-heading', c.accentText)
+  } else {
+    root.style.removeProperty('--accent-text')
+  }
   root.style.colorScheme = dark ? 'dark' : 'light'
   if (document.body) document.body.style.colorScheme = dark ? 'dark' : 'light'
   root.dataset.theme = appearance.generated ? 'generated' : appearance.theme
