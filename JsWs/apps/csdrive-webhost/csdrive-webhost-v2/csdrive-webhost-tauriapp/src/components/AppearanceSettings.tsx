@@ -1,17 +1,23 @@
 import { useEffect, useState } from 'react'
-import { Palette as PaletteIcon } from 'lucide-react'
+import { Palette as PaletteIcon, Save, Trash2 } from 'lucide-react'
 import Modal from './Modal'
+import IconButton from './IconButton'
 import {
   currentAppearance,
+  deleteCustomTheme,
   getKeyColorNames,
   isDark,
+  listCustomThemes,
   MIN_ROTATION_SECONDS,
+  saveCustomTheme,
   setAppearance,
   setRotation,
   subscribeAppearance,
   UNIT_SECONDS,
   type ColorMode,
+  type CustomTheme,
   type GeneratedColors,
+  type GeneratedPalette,
   type Rotation,
   type RotationMode,
   type RotationUnit,
@@ -85,9 +91,17 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
   // sent only once it is a whole number 0–255.
   const [spreadText, setSpreadText] = useState(String(chosen.rotation.generated.spread))
   const [keyColorNames, setKeyColorNames] = useState<string[]>([])
+  const [customThemes, setCustomThemes] = useState<CustomTheme[]>([])
+  // Which generated palette the inline "name it" box is open for, if either — `null` while it's closed.
+  const [savingSlot, setSavingSlot] = useState<'current' | 'previous' | null>(null)
+  const [themeName, setThemeName] = useState('')
   useEffect(() => subscribeAppearance(setChosen), [])
   useEffect(() => {
     getKeyColorNames().then(setKeyColorNames).catch(() => setKeyColorNames([]))
+  }, [])
+  const refreshCustomThemes = () => listCustomThemes().then(setCustomThemes).catch(() => {})
+  useEffect(() => {
+    void refreshCustomThemes()
   }, [])
 
   const attempt = async (work: () => Promise<void>) => {
@@ -99,6 +113,26 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
     }
   }
   const choose = (next: { theme: string; mode: ColorMode }) => attempt(() => setAppearance(next))
+
+  /** Opens the inline "name it" box for the current or the previous generated draw. */
+  const startSaving = (slot: 'current' | 'previous') => {
+    setSavingSlot(slot)
+    setThemeName('')
+  }
+  const paletteForSlot = (slot: 'current' | 'previous'): GeneratedPalette | null => (slot === 'current' ? chosen.generated : chosen.previousGenerated)
+  const confirmSaving = () =>
+    attempt(async () => {
+      const palette = savingSlot && paletteForSlot(savingSlot)
+      if (!palette) return
+      await saveCustomTheme(themeName, palette.light, palette.dark)
+      setSavingSlot(null)
+      await refreshCustomThemes()
+    })
+  const removeCustomTheme = (t: CustomTheme) =>
+    attempt(async () => {
+      await deleteCustomTheme(t.id)
+      await refreshCustomThemes()
+    })
 
   const seconds = Number(every) * UNIT_SECONDS[unit]
   const everyOk = every.trim() !== '' && Number.isInteger(Number(every)) && Number(every) >= 1
@@ -224,9 +258,83 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
             <p className="muted">
               At every step, the next of these six hues is drawn near, one channel at a time: {keyColorNames.length ? keyColorNames.join(', ') : 'Red, Yellow, Green, Teal, Blue, Magenta'}. Choosing a theme below has no effect while this is on.
             </p>
+
+            {/* Saving a draw is the only way to keep one: a generated colour scheme is otherwise gone the moment the rotation moves
+                on, or the app closes. The previous draw stays offered for one step after the rotation has moved past it, so noticing
+                a nice one doesn't have to mean catching it before the next tick. */}
+            <div className="rotation-row generated-save-row">
+              <span className="theme-swatch small" style={{ background: (dark ? chosen.generated?.dark : chosen.generated?.light)?.bg, borderColor: (dark ? chosen.generated?.dark : chosen.generated?.light)?.border }} aria-hidden="true">
+                <span style={{ background: (dark ? chosen.generated?.dark : chosen.generated?.light)?.accent }} />
+              </span>
+              <button type="button" onClick={() => startSaving('current')} disabled={!chosen.generated}>
+                <Save size={14} aria-hidden="true" /> Save this colour scheme…
+              </button>
+              {chosen.previousGenerated && (
+                <>
+                  <span className="theme-swatch small" style={{ background: (dark ? chosen.previousGenerated.dark : chosen.previousGenerated.light).bg, borderColor: (dark ? chosen.previousGenerated.dark : chosen.previousGenerated.light).border }} aria-hidden="true">
+                    <span style={{ background: (dark ? chosen.previousGenerated.dark : chosen.previousGenerated.light).accent }} />
+                  </span>
+                  <button type="button" onClick={() => startSaving('previous')}>
+                    <Save size={14} aria-hidden="true" /> Save the previous one…
+                  </button>
+                </>
+              )}
+            </div>
+            {savingSlot && (
+              <div className="rotation-row">
+                <input
+                  type="text"
+                  autoFocus
+                  placeholder="Name this theme"
+                  value={themeName}
+                  onChange={(e) => setThemeName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') void confirmSaving()
+                    else if (e.key === 'Escape') setSavingSlot(null)
+                  }}
+                />
+                <button type="button" className="primary" onClick={() => void confirmSaving()} disabled={themeName.trim() === ''}>
+                  Save
+                </button>
+                <button type="button" onClick={() => setSavingSlot(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
           </>
         )}
       </fieldset>
+
+      {customThemes.length > 0 && (
+        <div className={`theme-family ${chosen.rotation.generated.enabled ? 'theme-family-disabled' : ''}`} aria-disabled={chosen.rotation.generated.enabled}>
+          <div className="muted theme-family-name">Your saved themes</div>
+          <div className="theme-grid">
+            {customThemes.map((t) => {
+              const palette = dark ? t.dark : t.light
+              return (
+                <div key={t.id} className="theme-card-wrap">
+                  <button
+                    type="button"
+                    className={`theme-card ${chosen.theme === t.id ? 'active' : ''}`}
+                    aria-pressed={chosen.theme === t.id}
+                    title={t.name}
+                    disabled={chosen.rotation.generated.enabled}
+                    onClick={() => choose({ theme: t.id, mode: chosen.mode })}
+                  >
+                    <span className="theme-swatch" style={{ background: palette.bg, borderColor: palette.border }} aria-hidden="true">
+                      <span style={{ background: palette.panel }} />
+                      <span style={{ background: palette.accent }} />
+                      <span style={{ background: palette.fg }} />
+                    </span>
+                    <span className="theme-name">{t.name}</span>
+                  </button>
+                  <IconButton icon={Trash2} label={`Remove the saved theme "${t.name}"`} variant="danger" className="theme-card-remove" onClick={() => removeCustomTheme(t)} />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {FAMILIES.map((family) => (
         <div key={family} className={`theme-family ${chosen.rotation.generated.enabled ? 'theme-family-disabled' : ''}`} aria-disabled={chosen.rotation.generated.enabled}>

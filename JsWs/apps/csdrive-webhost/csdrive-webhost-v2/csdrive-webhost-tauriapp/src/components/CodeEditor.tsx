@@ -2,7 +2,8 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useReducer
 import { Redo2, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import { UndoHistory } from '../lib/undoHistory'
-import { highlight, languageOf, type Language } from '../lib/highlight'
+import { escapeHtml, highlight, languageOf, markWhitespace, tokenClassAtOffset, type Language } from '../lib/highlight'
+import { HighlightScheduler } from '../lib/highlightScheduler'
 import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
@@ -37,34 +38,86 @@ export interface CodeEditorHandle {
   insertAtCursor: (text: string) => void
 }
 
-/** Above this many characters, the highlighted copy is redrawn a moment after typing stops rather than on every
- * keystroke (see `useHighlighted` below) — a plain, uncoloured file of any size still types at full speed either
- * way, since the *textarea itself* is never what's slow; only the coloured copy's own recomputation is. */
-const HIGHLIGHT_DEBOUNCE_THRESHOLD = 20_000
-const HIGHLIGHT_DEBOUNCE_MS = 150
+/** The highlighted copy of `value` — recomputed off the main thread, in a Worker, with an **instant, approximate**
+ * stand-in shown the moment a keystroke happens rather than making the keystroke wait for the real result.
+ *
+ * Reported live as per-keystroke lag on a large file, worse the longer the editor had been open and gone once it
+ * was reopened (the undo history, `lib/undoHistory.ts`, retaining up to 500 steps/16 MB of a big file is a
+ * separate, likely contributor to that — but its bounds are deliberate, documented and tested, and were left
+ * alone here). An earlier fix only changed *when* the expensive, synchronous, main-thread re-scan ran — a pause
+ * in typing, debounced — not *where*: a person typing continuously still saw nothing update, since the box's own
+ * visible text is the *highlighted copy* drawn underneath it (`CodeEditor`'s own module doc), not the real
+ * (transparent) textarea — confirmed live by reading back the actual `color`/`-webkit-text-fill-color` the box
+ * is drawn with. Reported again, still happening, with a different fix asked for directly: move the real
+ * re-scan off the main thread entirely (`highlightWorker.ts`), and — since a background pass still takes *some*
+ * real time, however short — show *something* correctly-ish coloured the instant the keystroke happens rather
+ * than nothing at all until the pass finishes.
+ *
+ * **The instant stand-in**: the moment `value` changes, before the Worker has even been asked, this hook sets
+ * the highlighted copy to the *current* text as one single flat colour — `tokenClassAtOffset` (`lib/highlight.ts`)
+ * reads which `tok-*` class was open, in the *last exact* highlight, at the caret's own position (so continuing
+ * to type inside a string keeps reading in "string colour," inside a comment in "comment colour," and so on) —
+ * rather than the correct, fully re-tokenised colouring, which the keystroke is never made to wait for. This is
+ * a deliberately cheap, approximate guess (one string scan up to the caret, not a real parse), replaced the
+ * moment the real background pass catches up; `markWhitespace` is still applied so "show whitespace" doesn't
+ * flicker on or off during the brief window it's showing.
+ *
+ * **The real pass**, in `highlightWorker.ts`, is asked for on every change via a `HighlightScheduler`
+ * (`lib/highlightScheduler.ts`): it keeps at most one request running in the Worker at a time, so a person
+ * typing faster than one full re-scan takes is never queued up behind a growing backlog of stale requests —
+ * only the *latest* text is ever waiting, picked up the instant the Worker is free, and the Worker's answer
+ * replaces the instant guess the moment it arrives.
+ *
+ * **The very first render is still computed synchronously**, on the main thread, exactly as before this change —
+ * there's no previous *exact* highlight yet to approximate a caret colour from, and a freshly opened file should
+ * show correctly coloured from its first paint, not a flash of plain text while the Worker starts up. Every
+ * change after that goes through the Worker. */
+function useBackgroundHighlighted(value: string, language: Language, caretOffset: () => number): string {
+  const trailer = (text: string) => (text.endsWith('\n') ? ' ' : '')
+  const schedulerRef = useRef<HighlightScheduler<{ text: string; language: Language }, string> | null>(null)
+  /** The last *exact* (Worker-computed, or the very first synchronous) highlight — what the real `value`/`language`
+   * it was computed for were, and the html itself (both to tell "is this still current" and to read a caret colour
+   * from while a newer one is on its way). */
+  const lastExact = useRef<{ value: string; language: Language; html: string } | null>(null)
+  const [html, setHtml] = useState(() => {
+    const computed = highlight(value, language) + trailer(value)
+    lastExact.current = { value, language, html: computed }
+    return computed
+  })
 
-/** The highlighted copy of `value`, recomputed on every change for a short text, or — once it's long enough that a
- * full re-scan on every keystroke would be felt — a moment after the person pauses instead. Reported live as
- * per-keystroke lag on a large file, worse the longer the editor had been open and gone once it was reopened: this
- * is the actual per-keystroke cost that scales with the file's size (`highlight()` re-scanning the *entire* text
- * every time, synchronously, inside the same render the keystroke caused) — not the `onChange`/`onKeyDown`
- * handlers themselves (plain React props, attached once, not reattached per stroke — the browser's own devtools
- * profiler is what actually showed `highlight()` as the time going missing, not a hunch). The undo history
- * (`lib/undoHistory.ts`) retaining up to 500 steps / 16 MB of a big file is a separate, likely contributor to the
- * "gets worse over time, better after reopening" pattern — the more the browser has to keep alive, the more it
- * eventually pauses to collect it — but its bounds are deliberate (documented, tested) and were left alone; only
- * the highlight recomputation, which had no bound on how often it ran, was changed. */
-function useHighlighted(value: string, language: Language): string {
-  const compute = (text: string) => highlight(text, language) + (text.endsWith('\n') ? ' ' : '')
-  const [html, setHtml] = useState(() => compute(value))
   useEffect(() => {
-    if (value.length < HIGHLIGHT_DEBOUNCE_THRESHOLD) {
-      setHtml(compute(value))
-      return
+    const worker = new Worker(new URL('../lib/highlightWorker.ts', import.meta.url), { type: 'module' })
+    schedulerRef.current = new HighlightScheduler<{ text: string; language: Language }, string>(
+      (req) =>
+        new Promise<string>((resolve) => {
+          const onMessage = (e: MessageEvent<string>) => {
+            worker.removeEventListener('message', onMessage)
+            resolve(e.data)
+          }
+          worker.addEventListener('message', onMessage)
+          worker.postMessage(req)
+        }),
+      (resultHtml, req) => {
+        const computed = resultHtml + trailer(req.text)
+        lastExact.current = { value: req.text, language: req.language, html: computed }
+        setHtml(computed)
+      },
+    )
+    return () => {
+      worker.terminate()
+      schedulerRef.current = null
     }
-    const timer = setTimeout(() => setHtml(compute(value)), HIGHLIGHT_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
+  }, [])
+
+  useLayoutEffect(() => {
+    const last = lastExact.current
+    if (last && last.value === value && last.language === language) return // already exact and current
+    const cls = last ? tokenClassAtOffset(last.html, caretOffset()) : null
+    const approximate = markWhitespace(cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value))
+    setHtml(approximate + trailer(value))
+    schedulerRef.current?.request({ text: value, language })
   }, [value, language])
+
   return html
 }
 
@@ -100,7 +153,14 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   if (history.current === null) history.current = new UndoHistory(value)
   const [, redraw] = useReducer((n: number) => n + 1, 0)
   const restoreCaret = useRef<{ start: number; end: number } | null>(null)
-  const html = useHighlighted(value, language ?? languageOf(fileName))
+  /** Set just before a *programmatic* edit (Tab, undo/redo, "Insert a path…") calls `onChange` — the one signal
+   * the `[value]` effect below needs to know the DOM's native text must be force-set to match, as opposed to an
+   * ordinary keystroke's own deferred `onChange` echo, where the browser has *already* applied the keystroke to
+   * the DOM natively and the DOM may by now hold even *more* (further, not-yet-committed) keystrokes than this
+   * prop does — forcing it to match the prop in that case would silently erase them. See the module doc comment
+   * on why the textarea below is deliberately uncontrolled. */
+  const programmaticEditPending = useRef(false)
+  const html = useBackgroundHighlighted(value, language ?? languageOf(fileName), () => inputRef.current?.selectionEnd ?? value.length)
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
 
@@ -113,17 +173,27 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     input.style.height = `${Math.max(input.scrollHeight, frame.clientHeight)}px`
   }
   useLayoutEffect(fit, [value])
-  // A text that isn't the one the history stands at came from outside: it starts a new history. And after an undo or redo the
-  // caret goes where the text it brought back had it.
+  // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
+  // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the
+  // reason `value` changed — in both cases the DOM's own native text needs to be forced to match, since nothing
+  // else will have put it there (an ordinary keystroke's own native insertion needs no such push: see the
+  // textarea's own `defaultValue`, below). After that, an undo or redo puts the caret back where the text it
+  // brought back had it.
   useLayoutEffect(() => {
     const h = history.current!
-    if (h.current.value !== value) {
+    const externalReset = h.current.value !== value
+    if (externalReset) {
       h.reset(value)
       redraw()
     }
+    const input = inputRef.current
+    if (input && (externalReset || programmaticEditPending.current) && input.value !== value) {
+      input.value = value
+    }
+    programmaticEditPending.current = false
     const caret = restoreCaret.current
-    if (caret && inputRef.current && inputRef.current.value === value) {
-      inputRef.current.setSelectionRange(caret.start, caret.end)
+    if (caret && input && input.value === value) {
+      input.setSelectionRange(caret.start, caret.end)
       restoreCaret.current = null
     }
   }, [value])
@@ -131,6 +201,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     const h = history.current!
     const snapshot = direction === 'undo' ? h.undo() : h.redo()
     if (!snapshot) return
+    programmaticEditPending.current = true
     restoreCaret.current = { start: snapshot.start, end: snapshot.end }
     inputRef.current?.focus()
     onChange(snapshot.value)
@@ -180,6 +251,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   /** Applies a Tab/Shift+Tab edit the same way a real keystroke would: recorded in the undo history, the parent told,
    * and the caret put back where the edit leaves it once the new value has rendered. */
   function applyEdit(edit: { value: string; start: number; end: number }) {
+    programmaticEditPending.current = true
     history.current!.record(edit.value, edit.start, edit.end, Date.now())
     restoreCaret.current = { start: edit.start, end: edit.end }
     onChange(edit.value)
@@ -247,22 +319,55 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
             <textarea
               ref={inputRef}
               className="code-editor-input"
-              value={value}
+              // Deliberately *uncontrolled* (`defaultValue`, not `value`): only applies the text at mount. Every
+              // later change to `value` is applied to the DOM by hand, in the `[value]` effect above, and only
+              // when it's a *programmatic* edit or an external reset (the two cases nothing else would have put
+              // into the DOM already) — never for an ordinary keystroke's own deferred `onChange` echo, where
+              // the browser already applied that keystroke (and possibly further ones since, not yet committed)
+              // to the DOM natively. A plain React-controlled `value` would force-sync the DOM on *every*
+              // render regardless of why `value` changed, which is exactly what was silently dropping fast
+              // keystrokes before this fix: a later keystroke's own native insertion, still waiting on its own
+              // deferred commit, got overwritten back to the earlier (stale) committed value the moment
+              // anything re-rendered this component in between.
+              defaultValue={value}
               readOnly={readOnly}
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
+              // Deferred to a setTimeout, as every keystroke handler here is (see the module's own doc comment
+              // for why): the browser's own native textarea update — what makes a keystroke feel instant — has
+              // nothing to do with any of this running synchronously; deferring it just keeps this handler's own
+              // work from ever sitting in the same tick as that native update. `e.target`'s own values are read
+              // *now*, synchronously, and handed to the deferred callback by value — never re-read from `e`
+              // inside it, since a React `SyntheticEvent` shouldn't be trusted to still describe the same thing a
+              // tick later, and a fast typist may already have caused a *further* keystroke by then regardless.
               onChange={(e) => {
-                history.current!.record(e.target.value, e.target.selectionStart, e.target.selectionEnd, Date.now())
-                onChange(e.target.value)
-                redraw()
+                const newValue = e.target.value
+                const selStart = e.target.selectionStart
+                const selEnd = e.target.selectionEnd
+                setTimeout(() => {
+                  history.current!.record(newValue, selStart, selEnd, Date.now())
+                  onChange(newValue)
+                  redraw()
+                }, 0)
               }}
+              // The one exception to "defer everything": a *shortcut* (Tab, the scroll-nudge combination,
+              // Ctrl+Z/Y) still decides synchronously whether it was actually hit and, if so, calls
+              // `preventDefault()` synchronously too — `preventDefault()` only has any effect while the event is
+              // still being dispatched, so it can't itself wait for a setTimeout. Only the *handling* of a
+              // shortcut that was hit — the actual edit, scroll or undo/redo step — is deferred, the same as
+              // `onChange` above; nothing here does any real work before that deferred callback runs.
               onKeyDown={(e) => {
                 if (readOnly) return
                 if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
                   e.preventDefault()
-                  const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
-                  applyEdit(applyTab(value, e.currentTarget.selectionStart, e.currentTarget.selectionEnd, unit, e.shiftKey))
+                  const shiftKey = e.shiftKey
+                  const selStart = e.currentTarget.selectionStart
+                  const selEnd = e.currentTarget.selectionEnd
+                  setTimeout(() => {
+                    const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+                    applyEdit(applyTab(value, selStart, selEnd, unit, shiftKey))
+                  }, 0)
                   return
                 }
                 if (onScrollNudge && e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey) {
@@ -274,16 +379,19 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
                     | undefined
                   if (direction) {
                     e.preventDefault()
-                    onScrollNudge(direction)
+                    setTimeout(() => onScrollNudge(direction), 0)
                     return
                   }
                 }
                 if (!(e.ctrlKey || e.metaKey) || e.altKey) return
                 const key = e.key.toLowerCase()
-                if (key === 'z' && !e.shiftKey) step('undo')
-                else if (key === 'y' || (key === 'z' && e.shiftKey)) step('redo')
-                else return
+                let action: 'undo' | 'redo' | null = null
+                if (key === 'z' && !e.shiftKey) action = 'undo'
+                else if (key === 'y' || (key === 'z' && e.shiftKey)) action = 'redo'
+                if (action === null) return
                 e.preventDefault()
+                const theAction = action
+                setTimeout(() => step(theAction), 0)
               }}
             />
           </div>

@@ -55,14 +55,33 @@ export interface GeneratedPalette {
   dark: ThemeColors
 }
 
+/** A colour scheme the person saved for picking again later — the one way a *generated* draw (otherwise gone the
+ * moment the rotation moves on, or the app closes) can be kept. Its `id` is never one of the catalog's own
+ * (`custom-<uuid>`, made on save), and a page resolves it from its own `light`/`dark` rather than the compiled-in
+ * `THEMES` catalog, since nothing about it exists anywhere but this one saved record. */
+export interface CustomTheme {
+  id: string
+  name: string
+  light: ThemeColors
+  dark: ThemeColors
+}
+
 export interface Appearance {
-  /** A real catalog id at all times, even while `generated` is what is actually shown — kept so switching the
-   * generated rotation off falls back to the theme chosen before it was turned on. */
+  /** A real catalog id, or a saved custom theme's, at all times — even while `generated` is what is actually
+   * shown — kept so switching the generated rotation off falls back to the theme chosen before it was turned on. */
   theme: string
   mode: ColorMode
   rotation: Rotation
   /** Present exactly while `rotation.generated.enabled`: what a page applies instead of `theme`. */
   generated: GeneratedPalette | null
+  /** Present exactly while `rotation.generated.enabled` *and* at least one rotation tick has happened since it was
+   * turned on — the one the rotation just moved on from, so a saved-theme dialog can still offer to save it even
+   * after `generated` itself has already moved to a fresh draw. */
+  previousGenerated: GeneratedPalette | null
+  /** The full record for `theme`, sent inline whenever it names a saved custom theme rather than a catalog one —
+   * see the backend's own `Appearance.custom` for why (a custom theme's colours exist nowhere else, so a page
+   * applying this needs no separate fetch to resolve them). */
+  custom: CustomTheme | null
 }
 
 /** The shortest time a theme may stay (the backend refuses less) — one second, so the rotation can be watched happening while testing. */
@@ -75,7 +94,7 @@ export const APPEARANCE_EVENT = 'appearance-changed'
 export const DEFAULT_GENERATED: GeneratedColors = { enabled: false, spread: 64 }
 export const DEFAULT_ROTATION: Rotation = { enabled: false, mode: 'ascending', unit: 'minutes', every: 5, generated: DEFAULT_GENERATED }
 
-let current: Appearance = { theme: DEFAULT_THEME, mode: 'system', rotation: DEFAULT_ROTATION, generated: null }
+let current: Appearance = { theme: DEFAULT_THEME, mode: 'system', rotation: DEFAULT_ROTATION, generated: null, previousGenerated: null, custom: null }
 const listeners = new Set<(appearance: Appearance) => void>()
 
 const darkQuery = () => (typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null)
@@ -91,14 +110,23 @@ export function isDark(mode: ColorMode): boolean {
 const FADE_MS = 700
 let fadeTimer: number | undefined
 
-/** What actually decides the colours shown, folded into one comparable string — a generated palette's own
- * background (its `keyIndex` alone isn't enough: the same key is drawn again and again, each time with a fresh
- * RGB) or a catalog theme's id, plus the mode either way. */
-const paletteKey = (a: Appearance) => `${a.generated ? `g:${a.generated.light.bg}:${a.generated.dark.bg}` : `t:${a.theme}`}:${a.mode}`
+/** What actually decides the colours shown, folded into one comparable string — a generated or custom palette's
+ * own background (its id alone isn't enough for a generated one: the same key is drawn again and again, each
+ * time with a fresh RGB) or a catalog theme's id, plus the mode either way. */
+const paletteKey = (a: Appearance) =>
+  `${a.generated ? `g:${a.generated.light.bg}:${a.generated.dark.bg}` : a.custom ? `c:${a.custom.id}` : `t:${a.theme}`}:${a.mode}`
 
-/** Puts the theme — or the generated palette, while there is one — on this page: every colour is a CSS variable
- * of the root element, so this is all the page needs. With `fade` the colours slide over to the new ones (unless
- * the person asked the device for less motion). */
+/** The colours this page actually draws with right now — a generated draw, a saved custom theme, or a catalog
+ * one — whichever `appearance` names. Used by `applyAppearance` and by anything that needs today's own accent
+ * for a readable-as-text stand-in (there is none for a catalog theme, whose own `accent` already doubles as one). */
+const activeColors = (appearance: Appearance, dark: boolean): ThemeColors | null => {
+  const generatedOrCustom = appearance.generated ?? appearance.custom
+  return generatedOrCustom ? (dark ? generatedOrCustom.dark : generatedOrCustom.light) : null
+}
+
+/** Puts the theme — or the generated/custom palette, while there is one — on this page: every colour is a CSS
+ * variable of the root element, so this is all the page needs. With `fade` the colours slide over to the new
+ * ones (unless the person asked the device for less motion). */
 export function applyAppearance(appearance: Appearance, fade = false): void {
   const changedColours = paletteKey(appearance) !== paletteKey(current)
   current = appearance
@@ -109,9 +137,9 @@ export function applyAppearance(appearance: Appearance, fade = false): void {
     window.clearTimeout(fadeTimer)
     fadeTimer = window.setTimeout(() => root.classList.remove('theme-fade'), FADE_MS)
   }
-  // A generated palette isn't one of the catalog's named themes (no id/family/name of its own) — `variablesOf`
-  // only ever looks at `.light`/`.dark`, so a plain object with those two is all it needs.
-  const theme = appearance.generated ?? themeById(appearance.theme)
+  // Neither a generated draw nor a saved custom theme is one of the catalog's named themes (no id/family/name of
+  // its own) — `variablesOf` only ever looks at `.light`/`.dark`, so a plain object with those two is all it needs.
+  const theme = appearance.generated ?? appearance.custom ?? themeById(appearance.theme)
   for (const [name, value] of Object.entries(variablesOf(theme, dark))) root.style.setProperty(`--${name}`, value)
   // `--accent-text` has no counterpart in a catalog theme's own `Palette` (`themes.ts`), so `variablesOf` above
   // never sets it — the CSS that needs a readable-as-text accent falls back to plain `--accent` there
@@ -128,16 +156,19 @@ export function applyAppearance(appearance: Appearance, fade = false): void {
   // loop, not a `var()` reference a CSS fallback could catch. Overriding it here, straight after that loop, to
   // the same readable `accentText` used for `--accent-text` itself keeps every heading/link/function token
   // readable too, for a generated palette; a catalog theme's `--tok-heading` is left exactly as the loop set it
-  // (its own `accent`, unchanged).
-  if (appearance.generated) {
-    const c = dark ? appearance.generated.dark : appearance.generated.light
-    root.style.setProperty('--accent-text', c.accentText)
-    root.style.setProperty('--tok-heading', c.accentText)
+  // (its own `accent`, unchanged). A saved custom theme is just a kept copy of some past generated draw, so it
+  // carries the exact same `accentText` need — `activeColors` folds the two together for this.
+  const active = activeColors(appearance, dark)
+  if (active) {
+    root.style.setProperty('--accent-text', active.accentText)
+    root.style.setProperty('--tok-heading', active.accentText)
   } else {
     root.style.removeProperty('--accent-text')
   }
   root.style.colorScheme = dark ? 'dark' : 'light'
   if (document.body) document.body.style.colorScheme = dark ? 'dark' : 'light'
+  // A custom theme's own id is still `appearance.theme` itself (only a generated draw, with no stable id of its
+  // own, needs the literal 'generated' stand-in).
   root.dataset.theme = appearance.generated ? 'generated' : appearance.theme
   root.dataset.mode = dark ? 'dark' : 'light'
   listeners.forEach((listener) => listener(appearance))
@@ -205,11 +236,21 @@ function asGeneratedPalette(value: unknown): GeneratedPalette | null {
   return { keyIndex: typeof g.keyIndex === 'number' ? g.keyIndex : 0, light: asThemeColors(g.light), dark: asThemeColors(g.dark) }
 }
 
-const fromBackend = (raw: { theme: string; mode: unknown; rotation?: unknown; generated?: unknown }): Appearance => ({
+function asCustomTheme(value: unknown): CustomTheme | null {
+  if (value === null || value === undefined) return null
+  const c = value as Partial<CustomTheme>
+  return { id: typeof c.id === 'string' ? c.id : '', name: typeof c.name === 'string' ? c.name : '', light: asThemeColors(c.light), dark: asThemeColors(c.dark) }
+}
+
+type RawAppearance = { theme: string; mode: unknown; rotation?: unknown; generated?: unknown; previousGenerated?: unknown; custom?: unknown }
+
+const fromBackend = (raw: RawAppearance): Appearance => ({
   theme: raw.theme,
   mode: asMode(raw.mode),
   rotation: asRotation(raw.rotation),
   generated: asGeneratedPalette(raw.generated),
+  previousGenerated: asGeneratedPalette(raw.previousGenerated),
+  custom: asCustomTheme(raw.custom),
 })
 
 /** Reads the appearance the backend keeps and applies it, then follows it: a change made anywhere reaches this page as an event, and (in
@@ -221,7 +262,7 @@ export async function initAppearance(): Promise<void> {
     applyAppearance(current)
   }
   try {
-    await getCurrentWebviewWindow().listen(APPEARANCE_EVENT, (event) => applyAppearance(fromBackend(event.payload as { theme: string; mode: unknown; rotation?: unknown; generated?: unknown }), true))
+    await getCurrentWebviewWindow().listen(APPEARANCE_EVENT, (event) => applyAppearance(fromBackend(event.payload as RawAppearance), true))
   } catch {
     // No events in this window: it shows the appearance it started with.
   }
@@ -242,7 +283,7 @@ export async function initAppearance(): Promise<void> {
   // the colours actually differ).
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      invoke('get_appearance').then((raw) => applyAppearance(fromBackend(raw as { theme: string; mode: unknown; rotation?: unknown; generated?: unknown }), true)).catch(() => {})
+      invoke('get_appearance').then((raw) => applyAppearance(fromBackend(raw as RawAppearance), true)).catch(() => {})
     }
   })
 }
@@ -260,3 +301,25 @@ export async function setRotation(rotation: Rotation): Promise<void> {
 /** The six key hues' names, in the order a generated rotation cycles through them (`appearance.rs`'s own list,
  * not a second copy kept here that could drift from it). */
 export const getKeyColorNames = (): Promise<string[]> => invoke('key_color_names')
+
+/** Every custom theme saved so far — for the dialog's own "Your saved themes" grid. Any window may ask (the
+ * same read-only trust level as `list_themes`), though only the Settings dialog actually does today. */
+export async function listCustomThemes(): Promise<CustomTheme[]> {
+  const raw = (await invoke('list_custom_themes')) as unknown[]
+  return raw.map((r) => asCustomTheme(r)).filter((t): t is CustomTheme => t !== null)
+}
+
+/** Saves `light`/`dark` as a new custom theme named `name`, so it can be picked again later like a catalog one.
+ * Doesn't itself switch to it — saving a generated draw someone likes needn't also leave the rotation that drew it. */
+export async function saveCustomTheme(name: string, light: ThemeColors, dark: ThemeColors): Promise<CustomTheme> {
+  const raw = await invoke('save_custom_theme', { name, light, dark })
+  const saved = asCustomTheme(raw)
+  if (!saved) throw new Error("The backend didn't answer with the saved theme.")
+  return saved
+}
+
+/** Removes a saved custom theme. If anything is currently showing it, every window falls back to the default
+ * theme at once (the backend's own `delete_custom_theme` broadcasts a fresh `appearance-changed`). */
+export async function deleteCustomTheme(id: string): Promise<void> {
+  await invoke('delete_custom_theme', { id })
+}

@@ -35,8 +35,22 @@ const ROTATION_KEY: &str = "appearance.rotation";
 /// The last colour scheme a generated rotation drew — kept so it survives a restart and reaches a window that
 /// opens between two rotation ticks, instead of a fresh draw whenever `read` happens to run.
 const GENERATED_KEY: &str = "appearance.generated";
+/// The colour scheme a generated rotation drew *before* the current one — kept so the person can still save it
+/// (`save_custom_theme`) even after the rotation has already moved on to the next one, since by the time they
+/// notice a nice draw and open the dialog, a short interval may well have ticked forward already. Only one step
+/// of history is kept, not a running log: "the previously generated random theme" (asked for by name), not every
+/// one there ever was. Updated only on a real rotation tick (`rotate_if_due`), never by merely re-saving the
+/// rotation's other settings or toggling generated colours on/off.
+const PREVIOUS_GENERATED_KEY: &str = "appearance.previousGenerated";
+/// Every colour scheme the person has saved for picking again later — a generated one they liked (there's no
+/// other way to keep one: the catalog is compiled in, so a "custom" theme is the only kind that can be added at
+/// all) kept as its own list, never mixed into the compiled-in catalog it sits beside in the picker.
+const CUSTOM_THEMES_KEY: &str = "appearance.customThemes";
 /// The keys of the global settings that only this module writes.
 pub const RESERVED_PREFIX: &str = "appearance.";
+/// A saved custom theme's name is at most this many characters — plenty for a short, readable label, the same
+/// order of magnitude as a branch's own name limit (100, `docs/strategies/folder-pairs-strategy.md`'s neighbour).
+pub const MAX_CUSTOM_THEME_NAME_LEN: usize = 80;
 
 pub const DEFAULT_THEME: &str = "ayran-orange";
 const MODES: [&str; 3] = ["system", "light", "dark"];
@@ -207,10 +221,26 @@ pub struct GeneratedPalette {
     pub dark: ThemeColors,
 }
 
+/// A colour scheme the person saved for picking again later — the one way a "generated" draw (otherwise gone the
+/// moment the rotation moves on, or the app restarts) can be kept. Not one of the catalog's own [`THEME_IDS`]: its
+/// `id` is made up on save (`custom-<uuid>`, never a catalog slug, so the two id spaces can never collide) and a
+/// page resolves it with its *own* `light`/`dark` colours rather than a compiled-in `Palette`, since nothing about
+/// a custom theme exists anywhere but this one saved record.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomTheme {
+    pub id: String,
+    pub name: String,
+    pub light: ThemeColors,
+    pub dark: ThemeColors,
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Appearance {
-    /// A real catalog id at all times — even while `generated` is what is actually shown — so switching the
-    /// generated rotation off falls back to the theme that was chosen before it was turned on.
+    /// A real catalog id, or a saved custom theme's, at all times — even while `generated` is what is actually
+    /// shown — so switching the generated rotation off falls back to the theme that was chosen before it was
+    /// turned on.
     pub theme: String,
     /// `system`, `light` or `dark`.
     pub mode: String,
@@ -219,16 +249,28 @@ pub struct Appearance {
     pub rotation: Rotation,
     /// `Some` exactly while `rotation.generated.enabled`: what a page actually applies then, in place of `theme`.
     pub generated: Option<GeneratedPalette>,
+    /// `Some` exactly while `rotation.generated.enabled` *and* at least one rotation tick has happened since it
+    /// was turned on — the one the rotation just moved on from, so the dialog can still offer to save it even
+    /// after `generated` itself has already moved to a fresh draw. See [`PREVIOUS_GENERATED_KEY`].
+    pub previous_generated: Option<GeneratedPalette>,
+    /// The full record for `theme`, whenever it names a saved custom theme rather than a catalog one — sent
+    /// inline for the same reason `generated` is: a custom theme's colours exist nowhere but this one saved
+    /// record (unlike a catalog theme, compiled into every frontend build and resolved there by plain id), so a
+    /// page that doesn't ask for anything beyond `get_appearance`/the change event still shows it correctly
+    /// without a separate fetch-and-cache dance (and the staleness that would risk: a theme saved and selected
+    /// from one window reaching another's `applyAppearance` before that window's own cache of the saved list
+    /// happened to be refreshed).
+    pub custom: Option<CustomTheme>,
 }
 
 impl Appearance {
-    fn new(theme: String, mode: String, rotation: Rotation, generated: Option<GeneratedPalette>) -> Self {
+    fn new(theme: String, mode: String, rotation: Rotation, generated: Option<GeneratedPalette>, previous_generated: Option<GeneratedPalette>, custom: Option<CustomTheme>) -> Self {
         let dark = match mode.as_str() {
             "dark" => Some(true),
             "light" => Some(false),
             _ => None,
         };
-        Appearance { theme, mode, dark, rotation, generated }
+        Appearance { theme, mode, dark, rotation, generated, previous_generated, custom }
     }
 }
 
@@ -417,15 +459,33 @@ fn random_channel_offsets() -> [u32; 3] {
     [(bits & 0xffff_ffff) as u32, ((bits >> 32) & 0xffff_ffff) as u32, ((bits >> 64) & 0xffff_ffff) as u32]
 }
 
+async fn get_setting(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT value FROM global_settings WHERE key = ?1").bind(key).fetch_optional(pool).await.ok().flatten()
+}
+
+/// Every custom theme saved so far (`[]` when none has been). `read` and the `list_custom_themes` command both
+/// go through this rather than each keeping their own copy of how the list is stored.
+async fn read_custom_themes(pool: &sqlx::SqlitePool) -> Vec<CustomTheme> {
+    get_setting(pool, CUSTOM_THEMES_KEY).await.and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+}
+
 async fn read(pool: &sqlx::SqlitePool) -> Appearance {
-    async fn get(pool: &sqlx::SqlitePool, key: &str) -> Option<String> {
-        sqlx::query_scalar("SELECT value FROM global_settings WHERE key = ?1").bind(key).fetch_optional(pool).await.ok().flatten()
-    }
-    let theme = get(pool, THEME_KEY).await.filter(|t| valid_theme(t)).unwrap_or_else(|| DEFAULT_THEME.to_string());
-    let mode = get(pool, MODE_KEY).await.filter(|m| valid_mode(m)).unwrap_or_else(|| "system".to_string());
-    let rotation = get(pool, ROTATION_KEY).await.and_then(|json| serde_json::from_str::<Rotation>(&json).ok()).filter(|r| r.interval().is_ok()).unwrap_or_default();
-    let generated = if rotation.generated.enabled { get(pool, GENERATED_KEY).await.and_then(|json| serde_json::from_str::<GeneratedPalette>(&json).ok()) } else { None };
-    Appearance::new(theme, mode, rotation, generated)
+    let customs = read_custom_themes(pool).await;
+    let theme = get_setting(pool, THEME_KEY)
+        .await
+        .filter(|t| valid_theme(t) || customs.iter().any(|c| &c.id == t))
+        .unwrap_or_else(|| DEFAULT_THEME.to_string());
+    let custom = customs.into_iter().find(|c| c.id == theme);
+    let mode = get_setting(pool, MODE_KEY).await.filter(|m| valid_mode(m)).unwrap_or_else(|| "system".to_string());
+    let rotation = get_setting(pool, ROTATION_KEY).await.and_then(|json| serde_json::from_str::<Rotation>(&json).ok()).filter(|r| r.interval().is_ok()).unwrap_or_default();
+    let (generated, previous_generated) = if rotation.generated.enabled {
+        let generated = get_setting(pool, GENERATED_KEY).await.and_then(|json| serde_json::from_str::<GeneratedPalette>(&json).ok());
+        let previous = get_setting(pool, PREVIOUS_GENERATED_KEY).await.and_then(|json| serde_json::from_str::<GeneratedPalette>(&json).ok());
+        (generated, previous)
+    } else {
+        (None, None)
+    };
+    Appearance::new(theme, mode, rotation, generated, previous_generated, custom)
 }
 
 /// Draws a fresh palette for the next key colour after `previous` (`None`: the first one, key 0 — red), persists
@@ -507,15 +567,25 @@ async fn rotate_if_due(app: &AppHandle) {
     let state = app.state::<AppDbState>();
     schedule(&current.rotation);
     if current.rotation.generated.enabled {
+        // The one it's about to replace becomes "the previous one" — a real rotation tick, not merely the
+        // setting being toggled or re-saved (see `PREVIOUS_GENERATED_KEY`'s own doc comment).
+        if let Some(previous) = &current.generated {
+            let Ok(json) = serde_json::to_string(previous) else { return };
+            if write(&state.pool, PREVIOUS_GENERATED_KEY, &json).await.is_err() {
+                return;
+            }
+        }
         let Ok(generated) = draw_generated(&state.pool, current.generated.as_ref(), current.rotation.generated.spread).await else { return };
-        changed(app, &Appearance::new(current.theme.clone(), current.mode.clone(), current.rotation.clone(), Some(generated)));
+        // `theme` (and so `custom`) is untouched by a generated tick — only `generated` itself moves on.
+        changed(app, &Appearance::new(current.theme.clone(), current.mode.clone(), current.rotation.clone(), Some(generated), current.generated.clone(), current.custom.clone()));
         return;
     }
+    // `next_theme` only ever picks from the compiled-in catalog (`THEME_IDS`), never a custom id.
     let theme = next_theme(&current.theme, &current.rotation.mode, THEME_IDS, uuid::Uuid::new_v4().as_u128() as u64);
     if write(&state.pool, THEME_KEY, &theme).await.is_err() {
         return;
     }
-    changed(app, &Appearance::new(theme, current.mode.clone(), current.rotation.clone(), None));
+    changed(app, &Appearance::new(theme, current.mode.clone(), current.rotation.clone(), None, None, None));
 }
 
 #[tauri::command]
@@ -540,8 +610,8 @@ pub fn key_color_names() -> Vec<&'static str> {
 /// interval starting again.
 #[tauri::command]
 pub async fn set_appearance(app: AppHandle, state: tauri::State<'_, AppDbState>, theme: String, mode: String) -> Result<Appearance, String> {
-    if !valid_theme(&theme) {
-        return Err("That isn't the name of a theme (list_themes says which there are).".to_string());
+    if !valid_theme(&theme) && !read_custom_themes(&state.pool).await.iter().any(|c| c.id == theme) {
+        return Err("That isn't the name of a theme (list_themes/list_custom_themes say which there are).".to_string());
     }
     if !valid_mode(&mode) {
         return Err("The mode is system, light or dark.".to_string());
@@ -550,7 +620,7 @@ pub async fn set_appearance(app: AppHandle, state: tauri::State<'_, AppDbState>,
     write(&state.pool, MODE_KEY, &mode).await?;
     let now = read(&state.pool).await;
     schedule(&now.rotation);
-    let appearance = Appearance::new(theme, mode, now.rotation, now.generated);
+    let appearance = Appearance::new(theme, mode, now.rotation, now.generated, now.previous_generated, now.custom);
     changed(&app, &appearance);
     Ok(appearance)
 }
@@ -570,18 +640,84 @@ pub async fn set_appearance_rotation(
     rotation.interval()?;
     let before = read(&state.pool).await;
     write(&state.pool, ROTATION_KEY, &serde_json::to_string(&rotation).map_err(|e| e.to_string())?).await?;
-    let generated = if rotation.generated.enabled {
+    let (generated, previous_generated) = if rotation.generated.enabled {
         match before.generated {
-            Some(existing) if before.rotation.generated.enabled => Some(existing),
-            previous => Some(draw_generated(&state.pool, previous.as_ref(), rotation.generated.spread).await?),
+            // Already on, merely re-saved (the interval, say): the colour someone is looking at — and what it
+            // was the step before — are both left exactly as they were.
+            Some(existing) if before.rotation.generated.enabled => (Some(existing), before.previous_generated),
+            // Off until now, or never drawn: a fresh draw, with no "previous" yet — the person hasn't watched a
+            // real rotation tick happen since, so there's nothing to offer alongside this first one.
+            previous => (Some(draw_generated(&state.pool, previous.as_ref(), rotation.generated.spread).await?), None),
         }
     } else {
-        None
+        (None, None)
     };
     schedule(&rotation);
-    let appearance = Appearance::new(before.theme, before.mode, rotation, generated);
+    // `theme` itself is untouched by this command (only the rotation is), so `before.custom` is still accurate.
+    let appearance = Appearance::new(before.theme, before.mode, rotation, generated, previous_generated, before.custom);
     changed(&app, &appearance);
     Ok(appearance)
+}
+
+fn hex_color_valid(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// A custom theme's colours must each be a plain `#rrggbb` string before they're ever trusted into a CSS
+/// variable — the same caution the frontend's own `asHexColor` (`lib/appearance.ts`) already takes with
+/// whatever the backend sends it, now needed in the other direction too since a *page* is the one handing this
+/// module colours (`save_custom_theme`) rather than this module making them up itself (`palette_for`, whose own
+/// output is trusted because every step between a key hue and a final hex string is this module's own code).
+fn validate_theme_colors(c: &ThemeColors) -> Result<(), String> {
+    for (label, value) in
+        [("bg", &c.bg), ("fg", &c.fg), ("muted", &c.muted), ("border", &c.border), ("accent", &c.accent), ("accent_fg", &c.accent_fg), ("accent_text", &c.accent_text), ("panel", &c.panel), ("hover", &c.hover)]
+    {
+        if !hex_color_valid(value) {
+            return Err(format!("'{label}' isn't a colour of the form #rrggbb."));
+        }
+    }
+    Ok(())
+}
+
+/// Every custom theme the person has saved — any window (the same read-only trust level as `list_themes`).
+#[tauri::command]
+pub async fn list_custom_themes(state: tauri::State<'_, AppDbState>) -> Result<Vec<CustomTheme>, String> {
+    Ok(read_custom_themes(&state.pool).await)
+}
+
+/// Saves `light`/`dark` as a new custom theme named `name`, so it can be picked again later like any catalog
+/// one. Any window may — no more sensitive than `set_appearance` itself, which the person already decided a web
+/// app may call; this just remembers a choice for next time rather than applying one now. Asked for directly: a
+/// *generated* colour scheme (see "Generated colours" above) has no other way to survive the rotation moving on,
+/// or the app closing.
+#[tauri::command]
+pub async fn save_custom_theme(state: tauri::State<'_, AppDbState>, name: String, light: ThemeColors, dark: ThemeColors) -> Result<CustomTheme, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Give the theme a name.".to_string());
+    }
+    if trimmed.chars().count() > MAX_CUSTOM_THEME_NAME_LEN {
+        return Err(format!("A theme's name is at most {MAX_CUSTOM_THEME_NAME_LEN} characters."));
+    }
+    validate_theme_colors(&light)?;
+    validate_theme_colors(&dark)?;
+    let mut themes = read_custom_themes(&state.pool).await;
+    let custom = CustomTheme { id: format!("custom-{}", uuid::Uuid::new_v4()), name: trimmed.to_string(), light, dark };
+    themes.push(custom.clone());
+    write(&state.pool, CUSTOM_THEMES_KEY, &serde_json::to_string(&themes).map_err(|e| e.to_string())?).await?;
+    Ok(custom)
+}
+
+/// Removes a saved custom theme. If it's the one currently active anywhere, every window is told at once (the
+/// same graceful fallback `read` already gives a theme id nothing recognizes any more — `theme` field wins the
+/// `valid_theme`/custom-list check and falls back to the default), rather than waiting for the next `get_appearance`.
+#[tauri::command]
+pub async fn delete_custom_theme(app: AppHandle, state: tauri::State<'_, AppDbState>, id: String) -> Result<(), String> {
+    let mut themes = read_custom_themes(&state.pool).await;
+    themes.retain(|t| t.id != id);
+    write(&state.pool, CUSTOM_THEMES_KEY, &serde_json::to_string(&themes).map_err(|e| e.to_string())?).await?;
+    changed(&app, &read(&state.pool).await);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -618,14 +754,14 @@ mod tests {
     #[test]
     fn a_manual_mode_says_whether_it_is_dark() {
         let r = Rotation::default();
-        assert_eq!(Appearance::new("x".into(), "dark".into(), r.clone(), None).dark, Some(true));
-        assert_eq!(Appearance::new("x".into(), "light".into(), r.clone(), None).dark, Some(false));
-        assert_eq!(Appearance::new("x".into(), "system".into(), r, None).dark, None);
+        assert_eq!(Appearance::new("x".into(), "dark".into(), r.clone(), None, None, None).dark, Some(true));
+        assert_eq!(Appearance::new("x".into(), "light".into(), r.clone(), None, None, None).dark, Some(false));
+        assert_eq!(Appearance::new("x".into(), "system".into(), r, None, None, None).dark, None);
     }
 
     #[test]
     fn the_reserved_keys_are_the_ones_this_module_writes() {
-        for key in [THEME_KEY, MODE_KEY, ROTATION_KEY, GENERATED_KEY] {
+        for key in [THEME_KEY, MODE_KEY, ROTATION_KEY, GENERATED_KEY, PREVIOUS_GENERATED_KEY, CUSTOM_THEMES_KEY] {
             assert!(key.starts_with(RESERVED_PREFIX));
         }
     }
@@ -760,6 +896,32 @@ mod tests {
         assert_ne!(adjusted, green, "must actually be adjusted");
         assert!(contrast_ratio(adjusted, white_ish) >= TEXT_CONTRAST_MIN);
         assert!(adjusted.1 > 0, "still recognisably green, not blended all the way to black");
+    }
+
+    #[test]
+    fn hex_colours_are_checked_before_a_custom_theme_is_trusted() {
+        assert!(hex_color_valid("#000000"));
+        assert!(hex_color_valid("#FfAa00"));
+        assert!(!hex_color_valid("000000"), "needs the #");
+        assert!(!hex_color_valid("#00000"), "too short");
+        assert!(!hex_color_valid("#0000000"), "too long");
+        assert!(!hex_color_valid("#gggggg"), "not hex digits");
+        assert!(!hex_color_valid(""));
+        let good = || ThemeColors {
+            bg: "#ffffff".into(),
+            fg: "#000000".into(),
+            muted: "#808080".into(),
+            border: "#cccccc".into(),
+            accent: "#d04a0b".into(),
+            accent_fg: "#ffffff".into(),
+            accent_text: "#d04a0b".into(),
+            panel: "#f8fafc".into(),
+            hover: "#f1f5f9".into(),
+        };
+        assert!(validate_theme_colors(&good()).is_ok());
+        let mut bad = good();
+        bad.accent = "not-a-colour".into();
+        assert!(validate_theme_colors(&bad).unwrap_err().contains("accent"));
     }
 
     /// Test-only inverse of `to_hex`, to check contrast against the strings a palette actually stores.

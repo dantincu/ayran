@@ -191,11 +191,18 @@ export const API_REFERENCE: ApiCategory[] = [
     title: 'Appearance',
     intro: 'The theme and light/dark mode are one choice for the whole app.',
     entries: [
-      { call: "invoke('get_appearance')", returns: '{ theme, mode, rotation, generated }', summary: '`generated` is `null` unless the rotation is currently making up its own colours near a key hue (`rotation.generated.enabled`), in which case it is `{ keyIndex, light, dark }` — a full palette to apply in place of looking `theme` up in the catalog.' },
+      { call: "invoke('get_appearance')", returns: '{ theme, mode, rotation, generated, previousGenerated, custom }', summary: '`generated` is `null` unless the rotation is currently making up its own colours near a key hue (`rotation.generated.enabled`), in which case it is `{ keyIndex, light, dark }` — a full palette to apply in place of looking `theme` up in the catalog. `previousGenerated` is the one the rotation just moved on from (one step of history, for offering to save it even after `generated` itself has moved on). `custom` is the full saved-theme record whenever `theme` names one rather than a catalog id — nothing about a custom theme exists anywhere else, so this is sent inline the same way `generated` is.' },
       { call: "invoke('list_themes')", returns: 'theme ids, in the catalog’s order', summary: '' },
       { call: "invoke('key_color_names')", returns: "['Red', 'Yellow', 'Green', 'Teal', 'Blue', 'Magenta']", summary: 'The six key hues a generated rotation cycles through, in that order — for showing which one a `generated.keyIndex` is.' },
-      { call: "invoke('set_appearance', { theme, mode })", returns: 'void', summary: 'Any window may call this.' },
-      { call: "getCurrentWebviewWindow().listen('appearance-changed', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ theme, mode, dark, rotation, generated }`. A web app keeps its own colours but may follow the mode or the theme.' },
+      { call: "invoke('set_appearance', { theme, mode })", returns: 'void', summary: 'Any window may call this. `theme` may be a catalog id or a saved custom theme’s.' },
+      { call: "invoke('list_custom_themes')", returns: '[{ id, name, light, dark }]', summary: 'Every colour scheme saved so far (`save_custom_theme`) — the id to pass `set_appearance`.' },
+      {
+        call: "invoke('save_custom_theme', { name, light, dark })",
+        returns: '{ id, name, light, dark }',
+        summary: 'Saves a colour scheme (nine `#rrggbb` fields each in `light`/`dark`: bg, fg, muted, border, accent, accentFg, accentText, panel, hover) under a fresh id, so it can be picked again later. Doesn’t itself switch to it. Any window may call this.',
+      },
+      { call: "invoke('delete_custom_theme', { id })", returns: 'void', summary: 'Removes a saved theme. If anything is showing it, every window falls back to the default theme at once.' },
+      { call: "getCurrentWebviewWindow().listen('appearance-changed', (event) => { … })", returns: 'an unlisten function', summary: 'Payload: `{ theme, mode, dark, rotation, generated, previousGenerated, custom }`. A web app keeps its own colours but may follow the mode or the theme.' },
     ],
   },
   {

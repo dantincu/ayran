@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 const HIDE_AFTER_PX = 40
 const DIRECTION_THRESHOLD_PX = 4
+/** How close `scrollTop + clientHeight` must be to `scrollHeight` to count as "pinned at the very bottom" — see
+ * the module's own doc comment, "the shake". A couple of px of slack for rounding (a fractional `scrollHeight`,
+ * sub-pixel layout), not a real tolerance for "nearly at the bottom". */
+const AT_BOTTOM_SLACK_PX = 2
 
 /**
  * Scroll-driven autohide, shared by every collapsing header in the app (the Help tab's own header, Notes' top bar,
@@ -24,13 +28,39 @@ const DIRECTION_THRESHOLD_PX = 4
  * nothing left for the header to be hidden *from*, so it's shown again rather than staying collapsed until the
  * person happens to scroll up. (A shrink that still leaves the element scrollable, or that also moves `scrollTop`
  * itself, is left to the ordinary scroll handling above — this only catches the case scrolling alone wouldn't.)
+ *
+ * **The shake, reported live** ("quickly scroll to the end of the editor... makes the entire page shake
+ * continuously"): reproduced directly (a `MutationObserver` on the header's own `class`, jumping `.code-editor`'s
+ * `scrollTop` straight to its maximum) — five hidden/shown flips inside about 1.5s, every one of them genuinely
+ * caused, not imagined. The header sits *outside* the element whose scroll drives it (`.code-editor` is a `flex: 1`
+ * sibling below it, not a descendant), but its own box still **grows by exactly the header's collapsed height**
+ * the instant the header hides (confirmed live: `clientHeight` measured 568px shown, 628px hidden, a flat 60px —
+ * the header's own `max-height` — every time). Scrolled all the way to the bottom, `scrollTop` was already sitting
+ * at the *old* maximum (`scrollHeight - clientHeight`, with the header shown); the moment `clientHeight` grows by
+ * 60px, that maximum **shrinks** by 60px too, and the browser clamps `scrollTop` down to fit — which fires a
+ * genuine `scroll` event, with a negative delta, that this hook's own direction check used to read as "scrolled
+ * up" and answer by showing the header again, which shrinks `clientHeight` back down and (since the `max-height`
+ * transition animates over 0.25s, not instantly) repeats the whole thing in smaller steps across several frames.
+ *
+ * **A first fix tried a time-based "ignore scroll events for a bit after we just changed `hidden`" window** — the
+ * person's own diagnosis named the right *shape* (something to stop the echo from being read as a real gesture),
+ * but no fixed or even sliding duration held up: measured live, the gap between one echo and the next in a burst
+ * was as long as ~480ms, so a short window reopened right into the next echo, while a window long enough to
+ * survive a whole burst was indistinguishable, by *timing alone*, from someone genuinely continuing to scroll —
+ * confirmed live the hard way: it also silently swallowed a real, deliberate scroll-down made shortly after a
+ * real scroll-up, because both look identical to a clock with no other information.
+ *
+ * **The actual fix needs no clock at all**, because the echo has a shape nothing else does: it is a *negative*
+ * delta (reads as "scrolled up") that still leaves the element **pinned at its own maximum scroll position**
+ * (`top + clientHeight >= scrollHeight`, within [`AT_BOTTOM_SLACK_PX`]) — something a genuine upward scroll, by
+ * definition, moves *away from*. So the direction check's "show" branch is skipped specifically when that holds;
+ * every other branch (hiding on a real downward scroll, showing on reaching the very top, the resize fallback) is
+ * untouched and fires immediately, with no delay and no window to time out of.
  */
 export function useScrollAutohide(): [boolean, () => void, () => void] {
   const [hidden, setHidden] = useState(false)
   const lastTop = useRef(new WeakMap<Element, number>())
   const observer = useRef<ResizeObserver | null>(null)
-  // Stable identities (`setHidden` itself is stable, so wrapping it once is enough) — callers that pass `show`/`hide`
-  // as a `useEffect` dependency (subscribing to an external "show it again" trigger) must not resubscribe every render.
   const show = useCallback(() => setHidden(false), [])
   const hide = useCallback(() => setHidden(true), [])
 
@@ -53,9 +83,10 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
       // 0, silently swallowing the first scroll gesture on any newly-seen element — found live).
       const last = lastTop.current.get(target) ?? 0
       const delta = top - last
+      const pinnedAtBottom = top + target.clientHeight >= target.scrollHeight - AT_BOTTOM_SLACK_PX
       if (top <= HIDE_AFTER_PX) setHidden(false)
       else if (delta > DIRECTION_THRESHOLD_PX) setHidden(true)
-      else if (delta < -DIRECTION_THRESHOLD_PX) setHidden(false)
+      else if (delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom) setHidden(false)
       lastTop.current.set(target, top)
     }
     document.addEventListener('scroll', onScroll, { capture: true, passive: true })

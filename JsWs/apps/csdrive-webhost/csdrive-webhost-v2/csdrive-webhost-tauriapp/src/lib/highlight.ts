@@ -37,6 +37,50 @@ export function plainTextOf(highlighted: string): string {
   return highlighted.replace(/<[^>]*>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
 }
 
+/** The innermost `tok-*` class open at plain-text `offset` in a `highlight()` result (`null` for plain,
+ * uncoloured text) — used to approximate newly-typed text's own colour the instant a keystroke happens, before
+ * the background reparse that will colour it exactly has had a chance to run (`CodeEditor.tsx`'s own
+ * `useBackgroundHighlighted`; see its doc comment for the full story). Walks the string once, tracking a stack of
+ * currently-open `<span class="tok-…">` tags and a running count of *plain* characters consumed (an entity like
+ * `&amp;` counts as the one character it represents, matching `highlight()`'s own text-content invariant) until
+ * that count reaches `offset`. `highlight()`'s own output never nests a `tok-*` span inside another **except**
+ * `markWhitespace`'s own whitespace spans, which can land one level inside a wider token (`tok-string` holding a
+ * `tok-ws tok-ws-space`, say) — so the stack's own *top* isn't always the one with an actual colour (`tok-ws` on
+ * its own carries none; only `tok-ws-space`/`tok-ws-tab`/`tok-ws-nbsp` are styled, in `App.css`), hence the walk
+ * back down the stack for the first entry that actually names a colour. */
+export function tokenClassAtOffset(html: string, offset: number): string | null {
+  const stack: string[] = []
+  let pos = 0
+  let i = 0
+  while (i < html.length && pos < offset) {
+    if (html[i] === '<') {
+      const close = html.indexOf('>', i)
+      if (close < 0) break
+      const tag = html.slice(i, close + 1)
+      const open = /^<span class="([^"]*)">$/.exec(tag)
+      if (open) stack.push(open[1])
+      else if (tag === '</span>') stack.pop()
+      i = close + 1
+      continue
+    }
+    if (html[i] === '&') {
+      const entity = /^(?:&amp;|&lt;|&gt;)/.exec(html.slice(i, i + 5))
+      if (entity) {
+        i += entity[0].length
+        pos++
+        continue
+      }
+    }
+    i++
+    pos++
+  }
+  for (let k = stack.length - 1; k >= 0; k--) {
+    const named = stack[k].split(/\s+/).find((c) => c.startsWith('tok-') && c !== 'tok-ws')
+    if (named) return named
+  }
+  return null
+}
+
 /** Wraps every space, tab and non-breaking space in its own `<span class="tok-ws tok-ws-space|tab|nbsp">` —
  * always, whatever `editorSettings.ts`'s "show whitespace" setting says, since the setting only decides whether
  * `App.css` actually styles those spans (`.code-editor-show-whitespace .tok-ws-… { … }`, invisible otherwise):
@@ -48,7 +92,7 @@ export function plainTextOf(highlighted: string): string {
  * space's dot are drawn by an absolutely-positioned `::before` in CSS, never by adding a character here, so they
  * can't shift anything after them out of line with the invisible textarea underneath (the same reason nothing
  * here uses synthesized italics — see the module doc of `components/CodeEditor.tsx`). */
-function markWhitespace(html: string): string {
+export function markWhitespace(html: string): string {
   const kindOf = (c: string) => (c === '\t' ? 'tab' : c === ' ' ? 'nbsp' : 'space')
   return html
     .split(/(<[^>]+>)/)
