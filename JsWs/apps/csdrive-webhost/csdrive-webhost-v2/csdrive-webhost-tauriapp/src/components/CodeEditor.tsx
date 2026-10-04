@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useReducer, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Redo2, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import { UndoHistory } from '../lib/undoHistory'
@@ -8,6 +8,15 @@ import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
+import { computeRowsPerLine } from '../lib/wrappedLineRows'
+
+/** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
+ * wrapped-row measurement existed) rather than measuring — tens of thousands of `Range` queries would be a real
+ * pause, not the brief background pass this is meant to be. */
+const MAX_LINES_FOR_WRAP_MEASUREMENT = 20_000
+/** The gutter's own fallback row height (one row per line) before a real measurement lands — `.code-editor-gutter`'s
+ * font shorthand in App.css is `13px/1.5`, i.e. 13 * 1.5. */
+const FALLBACK_LINE_HEIGHT_PX = 19.5
 
 interface Props {
   value: string
@@ -20,9 +29,11 @@ interface Props {
   /** Which language to use, when it isn't the file name's. */
   language?: Language
   /** The topmost visible *source* line changed (1-based; throttled to at most once per animation frame) — the
-   * note editor's own half of mirror-scroll (`NoteEditPage.tsx`). Approximate while "wrap long lines" is on, the
-   * same accepted trade-off as the line-number gutter's own (see its doc comment below): a line long enough to
-   * wrap occupies more than one visual row, which a plain `scrollTop / lineHeight` division doesn't know. */
+   * note editor's own half of mirror-scroll (`NoteEditPage.tsx`). Still approximate while "wrap long lines" is on
+   * (a plain `scrollTop / lineHeight` division doesn't know a line long enough to wrap occupies more than one
+   * visual row) — unlike the line-number gutter, which now measures this exactly (`lib/wrappedLineRows.ts`),
+   * mirror-scroll's own use is looser (which source line is roughly at the top of a *different* window, not a
+   * pixel-perfect position) and wasn't asked to be fixed, so it keeps the cheaper approximation. */
   onVisibleLineChange?: (line: number) => void
   /** Ctrl+Alt+arrows/PageUp/PageDown were pressed in the box — the note editor's own keyboard-driven scroll of
    * its syncing web app (`NoteEditPage.tsx`), independent of `onVisibleLineChange`/mirror-scroll. Generic here
@@ -147,6 +158,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
 ) {
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const highlightRef = useRef<HTMLPreElement>(null)
   const visibleLineRaf = useRef<number | null>(null)
   const lastVisibleLine = useRef<number | null>(null)
   const history = useRef<UndoHistory | null>(null)
@@ -163,6 +175,33 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   const html = useBackgroundHighlighted(value, language ?? languageOf(fileName), () => inputRef.current?.selectionEnd ?? value.length)
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
+
+  /** How many visual rows each source line actually occupies once wrapped, and the pixel `line-height` it was
+   * measured against — `null` until the first measurement lands (the gutter falls back to one row per line until
+   * then, the same thing it always showed before this existed). See `lib/wrappedLineRows.ts`'s own doc comment
+   * for why this can't be a character-count calculation and has to measure the real, already-wrapped DOM. */
+  const [wrapMeasure, setWrapMeasure] = useState<{ rows: number[]; lineHeightPx: number } | null>(null)
+  const measureWrappedRows = () => {
+    const highlightEl = highlightRef.current
+    if (!highlightEl || settings?.wrapLines === false) return
+    // A file this long would mean tens of thousands of Range measurements, a real pause rather than the brief
+    // background pass this is meant to be — the same kind of size-based safety net `useBackgroundHighlighted`
+    // already has for a different reason. Falls back to one row per line, same as before this feature existed.
+    if (value.split('\n').length > MAX_LINES_FOR_WRAP_MEASUREMENT) return
+    const lineHeightPx = parseFloat(getComputedStyle(highlightEl).lineHeight) || 0
+    const rows = computeRowsPerLine(highlightEl, value, lineHeightPx)
+    if (rows) setWrapMeasure({ rows, lineHeightPx })
+  }
+  // Deferred (not a `useLayoutEffect`) and off `value`/`settings?.wrapLines` only — not `html`, which also changes
+  // for the *approximate* and then the *exact* highlight pass of the very same edit (`useBackgroundHighlighted`):
+  // wrapping only depends on the text itself, never on which colour a span is drawn in, so measuring twice for
+  // one edit would be pure waste. Measuring is real DOM work (`getBoundingClientRect` forces layout), exactly the
+  // kind of thing this file already keeps off a keystroke's own critical path.
+  useEffect(() => {
+    const id = setTimeout(measureWrappedRows, 0)
+    return () => clearTimeout(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, settings?.wrapLines])
 
   // The box is as tall as its text (or the frame, when the text is shorter, so a press anywhere in the frame is in the box).
   const fit = () => {
@@ -207,12 +246,24 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     onChange(snapshot.value)
     redraw()
   }
+  const lastFrameWidth = useRef<number | null>(null)
   useEffect(() => {
     const frame = frameRef.current
     if (!frame || typeof ResizeObserver === 'undefined') return
-    const observer = new ResizeObserver(fit)
+    const observer = new ResizeObserver((entries) => {
+      fit()
+      // A width change (the window resized, a split pane dragged) can change where every wrapped line now
+      // breaks — a height-only change (typing, which `fit()` above already reacts to) can't, and happens far
+      // more often, so this is narrowed to width specifically rather than re-measuring on every resize tick.
+      const width = entries[0]?.contentRect.width
+      if (width !== undefined && width !== lastFrameWidth.current) {
+        lastFrameWidth.current = width
+        measureWrappedRows()
+      }
+    })
     observer.observe(frame)
     return () => observer.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => () => {
@@ -291,13 +342,27 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   )
 
   const h = history.current!
-  // One line-number per `\n`-separated line, as a single block of text sharing the exact font/line-height/top-padding
-  // of the two text layers, so line N's number sits beside line N's text — *while lines don't wrap*: a gutter can only
-  // show one number per source line, so a line long enough to wrap (when "wrap long lines" is on) pulls every number
-  // after it out of step with the text beside it. A known, accepted trade-off of drawing the gutter in plain CSS
-  // beside a single native `textarea` rather than measuring each wrapped row's own height.
   const lineCount = value.split('\n').length
   const gutterDigits = Math.max(2, String(lineCount).length)
+  /** One line-number per source line, each individually positioned at the pixel row its line actually starts on
+   * (`wrapMeasure`) — so a line long enough to wrap (when "wrap long lines" is on) still gets exactly one number,
+   * beside its *first* visual row, and the next line's number appears where that next line's text actually is,
+   * not immediately after the wrapped one. Reported live: numbering used to assume one row per line always,
+   * which is only true while nothing wraps. Falls back to that same one-row-per-line assumption — the base pixel
+   * offset is just `index * lineHeightPx` — until the first real measurement lands, or above
+   * `MAX_LINES_FOR_WRAP_MEASUREMENT`, or while "wrap long lines" is off (every line is trivially one row then, so
+   * there's nothing to measure). */
+  const gutterRowStarts = useMemo(() => {
+    const lineHeightPx = wrapMeasure?.lineHeightPx ?? FALLBACK_LINE_HEIGHT_PX
+    const starts: number[] = []
+    let row = 0
+    for (let i = 0; i < lineCount; i++) {
+      starts.push(row)
+      row += wrapMeasure?.rows[i] ?? 1
+    }
+    return { starts, lineHeightPx }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wrapMeasure, lineCount])
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -310,12 +375,25 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       <div className={`code-editor ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`} ref={frameRef} onScroll={handleScroll} data-text-menu-anchor>
         <div className="code-editor-rows">
           {settings?.lineNumbers !== false && (
-            <pre className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `${gutterDigits}ch` }}>
-              {Array.from({ length: lineCount }, (_, i) => i + 1).join('\n')}
-            </pre>
+            <div className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `${gutterDigits}ch` }}>
+              {Array.from({ length: lineCount }, (_, i) => (
+                // A position:absolute child is placed relative to its containing block's *padding* edge, ignoring
+                // that padding for its own offset — so the 8px top offset (matching `.code-editor-highlight`'s
+                // own top padding, App.css) has to be added back here explicitly; `.code-editor-gutter` itself no
+                // longer has any padding of its own left to do this for free.
+                <span key={i} className="code-editor-gutter-number" style={{ top: `${8 + gutterRowStarts.starts[i] * gutterRowStarts.lineHeightPx}px` }}>
+                  {i + 1}
+                </span>
+              ))}
+            </div>
           )}
           <div className="code-editor-content">
-            <pre className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`} aria-hidden="true" dangerouslySetInnerHTML={{ __html: html }} />
+            <pre
+              ref={highlightRef}
+              className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
+              aria-hidden="true"
+              dangerouslySetInnerHTML={{ __html: html }}
+            />
             <textarea
               ref={inputRef}
               className="code-editor-input"

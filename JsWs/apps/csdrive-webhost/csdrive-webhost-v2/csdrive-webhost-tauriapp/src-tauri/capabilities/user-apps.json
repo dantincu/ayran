@@ -162,6 +162,7 @@
     "allow-sync-scroll-to-line",
     "allow-sync-scroll-nudge",
     "allow-sync-refresh-without-scroll",
+    "allow-sync-show-top-bar",
     "allow-media-url",
     "allow-open-note-tab",
     "allow-note-tab-state",

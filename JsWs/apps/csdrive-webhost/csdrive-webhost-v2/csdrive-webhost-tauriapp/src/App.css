@@ -1646,22 +1646,37 @@ select {
   min-width: 0; /* lets the flex item shrink below its longest unbroken line so pre-wrap can actually wrap it */
 }
 
+/* Each line's number is its own absolutely-positioned child (`.code-editor-gutter-number`, below) rather than one
+   block of `\n`-joined text — a plain-text gutter can only ever show one number per *source* line, in step with
+   the content only while nothing wraps; with "wrap long lines" on, a line that wraps across several visual rows
+   needs its number to still sit beside its *first* one, with the next line's number appearing only after the
+   wrapped rows, not immediately below it (`CodeEditor.tsx`'s own `gutterRowStarts`, measured by
+   `lib/wrappedLineRows.ts` from the real, already-wrapped highlighted copy). The container itself keeps no
+   padding of its own — a `position: absolute` child is placed relative to its containing block's *padding* edge
+   regardless, ignoring the padding itself, so each number's own `top`/`right` in CodeEditor.tsx already accounts
+   for it directly. */
 .code-editor-gutter {
   position: sticky;
   left: 0;
   z-index: 1;
   flex: none;
   margin: 0;
-  padding: 8px 8px 8px 0;
+  padding: 0;
   border: 0;
   border-right: 1px solid var(--border);
   font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
-  white-space: pre;
-  text-align: right;
   color: var(--tok-quiet);
   background: var(--bg);
   user-select: none;
   pointer-events: none;
+}
+
+.code-editor-gutter-number {
+  position: absolute;
+  right: 8px;
+  left: 0;
+  text-align: right;
+  white-space: nowrap;
 }
 
 .code-editor-highlight,

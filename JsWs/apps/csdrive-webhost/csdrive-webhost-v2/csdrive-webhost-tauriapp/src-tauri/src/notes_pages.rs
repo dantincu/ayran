@@ -479,6 +479,26 @@ pub async fn sync_refresh_without_scroll(app: AppHandle, file: FileRef) -> Resul
     Ok(guids.len())
 }
 
+/// The editor's own "Show its top bar" button — reveals the top bar of the web app that follows this file (a
+/// note's own preview window, `markdown.rs`), the one way to reach it from inside the note editor: that window
+/// is deliberately *not* listed in the admin-app's own System/User Apps tab (see "Web apps opened from Notes"),
+/// so there's no row there offering "Show its top bar" the way there is for an ordinary secondary window, and
+/// `show_top_bar` itself is admin-only (`admin.json`) — a note's own system-app page (`system:notes`) has
+/// exactly the rights any web app does, no more. Same mechanism as the sibling `sync_*` commands above (find the
+/// window(s) actually following this file, tell them directly) rather than reusing `show_top_bar`'s own
+/// admin-only path. The note-as-web-app page's own bootstrap script persists the choice itself (its own
+/// `app_state`, not `tabs.top_bar_hidden` — see CLAUDE.md's "Markdown web apps") the moment it receives the
+/// event, the same as it already does for the admin's own "Show the top bar". Resolves to how many windows were
+/// told (0 when the note has no open web app to show it on, same shape as `sync_refresh_without_scroll`).
+#[tauri::command]
+pub async fn sync_show_top_bar(app: AppHandle, file: FileRef) -> Result<usize, String> {
+    let guids = crate::secondary_windows::syncing_windows(&app, &sync_key_of(&served_path_of(&file)?)).await?;
+    for guid in &guids {
+        crate::window_host::emit_if_open(&app, guid, "show-top-bar", ());
+    }
+    Ok(guids.len())
+}
+
 // ── What the window manager shows ─────────────────────────────────────────────
 
 /// A page opened from a Notes tab, as listed under that tab.

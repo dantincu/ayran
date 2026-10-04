@@ -274,6 +274,11 @@ export const API_REFERENCE: ApiCategory[] = [
         returns: 'the number of windows told',
         summary: "Reloads the syncing web app, like `notify_file_saved`, but tells it not to keep or restore its scroll position.",
       },
+      {
+        call: "invoke('sync_show_top_bar', { file })",
+        returns: 'the number of windows told',
+        summary: "Shows the top bar of the web app that's displaying `file` right now (a markdown page's own — see 'Markdown web apps'). The note editor's own button, since that window isn't listed anywhere else to do this from.",
+      },
     ],
   },
 ]

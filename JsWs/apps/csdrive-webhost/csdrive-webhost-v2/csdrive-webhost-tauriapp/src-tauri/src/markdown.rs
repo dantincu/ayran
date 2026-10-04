@@ -29,6 +29,18 @@ fn escape(text: &str) -> String {
 
 const STYLE: &str = "
 :root { color-scheme: light dark; }
+/* CSS scroll anchoring (on by default) actively adjusts `scrollY` to compensate whenever content *above* the
+   current scroll position changes height — which is exactly what the top bar's own collapse does, anywhere in
+   the document, not only at the very bottom. That compensating adjustment is itself a genuine `scroll` event,
+   which this page's own direction check would otherwise read as \"the person scrolled\" and answer by flipping
+   the bar's own visibility again — collapsing it, which triggers another compensating adjustment, forever.
+   Found live (reported directly: \"I see a flicker\") *after* the bottom-of-page clamp case below was already
+   fixed and verified — a related but distinct mechanism: that fix only ever guarded the one specific case of
+   being pinned at the document's own maximum scroll position, but scroll anchoring reacts to a height change
+   *anywhere* the anchor node sits below, which is true for essentially any scroll position once the bar is
+   off-screen above it. `overflow-anchor: none` is the standard, purpose-built way to opt a scroll container out
+   of this behaviour entirely, removing the feedback loop at its source rather than trying to out-guess it. */
+html, body { overflow-anchor: none; }
 body { font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', sans-serif; max-width: 60rem; margin: 0 auto; padding: 16px; }
 h1, h2, h3, h4 { line-height: 1.25; }
 pre { overflow: auto; padding: 12px; border-radius: 6px; background: color-mix(in srgb, currentColor 8%, transparent); }
@@ -38,6 +50,56 @@ table { border-collapse: collapse; }
 th, td { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 4px 10px; }
 blockquote { margin-left: 0; padding-left: 14px; border-left: 4px solid color-mix(in srgb, currentColor 25%, transparent); opacity: 0.9; }
 img { max-width: 100%; }
+/* The page's own top bar (the bootstrap script below builds it) — Back/Suspend/Close tab/Close window, the
+   tab's own label/tags/root markup (`topBarHtml`, styled by the `csdrive-tb-*` code snippet applied alongside
+   this), and its own hide button. Bleeds to the body's own edges with a negative margin, the same trick
+   `App.css`'s `.help-header` uses, and collapses the identical way `.editor-top-bar-hidden`/`.help-header-hidden`
+   do there: `max-height`/padding *and* `margin-bottom` together, so the space `.tab-panel`'s own flex `gap`
+   would otherwise still reserve for it (CLAUDE.md's own 'Leftover space when hidden') has nothing to reserve
+   here in the first place — a plain block-flow page, not a flex column — but cancelling the margin the same way
+   keeps the two collapses visually identical and costs nothing. Two independent reasons to be hidden — closed by
+   hand (persisted in this page's own `app_state`, see the bootstrap script below) or scrolled past (not
+   persisted) — share the one collapsed look. */
+#csdrive-top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -16px -16px 16px;
+  padding: 6px 16px;
+  background: Canvas;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 20%, transparent);
+  max-height: 60px;
+  overflow: hidden;
+  transition: max-height 0.25s ease, padding 0.25s ease, margin-bottom 0.25s ease, border-color 0.25s ease;
+}
+#csdrive-top-bar.csdrive-tb-persisted-hidden,
+#csdrive-top-bar.csdrive-tb-scroll-hidden {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-bottom: -16px;
+  border-bottom-color: transparent;
+}
+#csdrive-top-bar button.icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+#csdrive-top-bar button.icon:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
+#csdrive-top-bar button.icon svg { width: 16px; height: 16px; }
+#csdrive-tb-info { flex: 1; min-width: 0; overflow: hidden; }
 ";
 
 /// Registers the page as a tab (see the module docs). Plain script, no dependencies: it runs where only
@@ -70,6 +132,53 @@ img { max-width: 100%; }
 ///   `NO_SCROLL_KEY` check notwithstanding) — `history.scrollRestoration = 'manual'` (set once, unconditionally,
 ///   near the top of this script) hands that decision to this script alone on every load, so a fresh load starts
 ///   at the very top unless `restoreScrollIfWasAtBottom` puts it at the bottom instead.
+///
+/// **The page draws its own top bar** (asked for directly: "note as a web-app should also have an auto-hiding
+/// header" — the note editor's own `.editor-top-bar`, Notes' `.notes-top-bar` and the Help tab's `.help-header`
+/// all already do, but a note opened *as a web app* is a genuinely different page, outside Notes' own React
+/// tree entirely, with none of that for free). It's the same four actions `csdrive-webhost-userapps/
+/// example-toolbar/index.html` demonstrates as the reference shape for "a user app adding its own header of
+/// this kind" (CLAUDE.md's "The top bar"): Back (`window_go_back`), Suspend this window, Close this tab, Close
+/// this window, plus its own × and the tab's `topBarHtml` (its label/tags/root markup, already styled for free
+/// by the `csdrive-tb-*` code snippet this page already applies via `apply(tab.codeSnippets)`). It starts shown
+/// **starts shown**, not hidden — asked for directly, after live testing showed it starting hidden like every
+/// other page's top bar does: that default reads as a deliberate "ask for it the first time you'd want it"
+/// choice, sensible for a bar someone can always summon again (a chord, the admin's "Show the top bar") — but
+/// backwards for a page whose whole point is *auto*-hiding, where the person expects to *see* it first and have
+/// it hide as they scroll. Tracked in this page's own `app_state` (`HIDDEN_KEY`, below), not the shared
+/// `tabs.top_bar_hidden` every other page's bar follows (that column already means "follow the global
+/// `topBar.autohide` default" for those pages — the two defaults can't both live there), so this is purely
+/// additive: no existing page's behaviour changes, and nothing here is a persisted choice until the person
+/// actually closes or re-shows it once. `show-top-bar` (the admin's own "Show the top bar") still reveals it,
+/// exactly as for every other page's bar.
+///
+/// **On top of that, scroll-driven collapse** — what "auto-hiding" actually asked for, since a *persisted*
+/// show/hide alone only reacts to an explicit close, never to scrolling. A second, independent flag
+/// (`scrollHidden`, never persisted) layers on top of the persisted one the same way `NotesTopBar.tsx`'s own
+/// `shown`/`scrollHidden` do: the bar exists at all only while the persisted choice says so, and *within* that,
+/// scrolling can collapse and restore it on its own. Ported from `lib/scrollAutohide.ts`'s `useScrollAutohide`
+/// to plain JS, simpler here since this page has exactly one scrollable area (the whole document) rather than
+/// several independently-scrolling regions in a React tree.
+///
+/// **Two distinct feedback-loop mechanisms were found live, not one** (CLAUDE.md's "Top bar autohide and
+/// nested scrollable content" already covers the first for the React-tree pages; a second, more general one
+/// surfaced here specifically because this page's whole body is one scroll container, not several narrower
+/// ones). Both start the same way: the bar's own collapse shortens the page, since it sits in ordinary block
+/// flow above the content, not inside a positioned overlay.
+/// 1. **Pinned at the very bottom**: if `scrollY` was already at the document's own maximum, shortening the
+///    page lowers that maximum below the current position, and the browser clamps `scrollY` down to fit — a
+///    genuine `scroll` event, read as "scrolled up," that would otherwise show the bar again (shortening the
+///    page back, clamping again, repeating). Guarded the same way `useScrollAutohide` is: a negative delta is
+///    ignored specifically while the page is still pinned at its own maximum scroll position.
+/// 2. **CSS scroll anchoring, found live afterward** ("I see a flicker," reported while watching the fix for
+///    (1) above work correctly at the bottom edge): on by default, it actively adjusts `scrollY` to keep the
+///    same content visually in place whenever something *above* the viewport changes height — which the bar's
+///    own collapse does from essentially *any* scroll position once the bar has scrolled out of view, not just
+///    the bottom edge. That compensating adjustment is, again, a genuine `scroll` event this page's own
+///    direction check would otherwise act on, reopening the same loop at any scroll position rather than only
+///    the one (1) already covers. `overflow-anchor: none` (`STYLE`, above) opts the page out of scroll
+///    anchoring entirely — the standard, purpose-built way to do this — removing the loop at its source rather
+///    than trying to out-guess every position it could occur at.
 const BOOTSTRAP: &str = "
 (function () {
   var t = window.__TAURI__
@@ -127,11 +236,102 @@ const BOOTSTRAP: &str = "
     try { sessionStorage.setItem(NO_SCROLL_KEY, '1') } catch (e) {}
     location.reload()
   })
+
+  // --- The page's own top bar: Back / Suspend / Close tab / Close window, the tab's own label/tags/root
+  // markup, and scroll-driven auto-hide layered on the same persisted shown/hidden state every other page's
+  // top bar already follows. See this module's own doc comment above for the full story.
+  var bar = document.createElement('div')
+  bar.id = 'csdrive-top-bar'
+  bar.innerHTML =
+    '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-back\" title=\"Go back one step\">' +
+    '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m12 19-7-7 7-7\"/><path d=\"M19 12H5\"/></svg></button>' +
+    '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-suspend\" title=\"Suspend this window\">' +
+    '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"14\" y=\"4\" width=\"4\" height=\"16\" rx=\"1\"/><rect x=\"6\" y=\"4\" width=\"4\" height=\"16\" rx=\"1\"/></svg></button>' +
+    '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-close-tab\" title=\"Close this tab\">' +
+    '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m15 9-6 6\"/><path d=\"m9 9 6 6\"/></svg></button>' +
+    '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-close-window\" title=\"Close this window\">' +
+    '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\"/><path d=\"m9 9 6 6\"/><path d=\"m15 9-6 6\"/></svg></button>' +
+    '<span id=\"csdrive-tb-info\"></span>' +
+    '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-hide\" title=\"Hide this top bar\">' +
+    '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M18 6 6 18\"/><path d=\"m6 6 12 12\"/></svg></button>'
+  document.body.insertBefore(bar, document.body.firstChild)
+  var barInfo = bar.querySelector('#csdrive-tb-info')
+  var tabGuid = null
+  var HIDDEN_KEY = 'csdrive-top-bar-hidden'
+  // Two independent reasons the bar might be collapsed — a persisted close and a transient scroll collapse
+  // (never persisted, reset the moment the bar is shown again any way) — combined into the two classes the CSS
+  // above already keys its own collapse on. **Starts shown, not hidden**: every other page's top bar defaults
+  // to \"hidden until asked for\" (`tabs.top_bar_hidden`, following the global `topBar.autohide` setting — see
+  // CLAUDE.md's \"The top bar\"), which reads as a deliberate, considered choice there — a bar you have to ask
+  // for the first time you'd want it. Asked for directly: for a page whose whole point is *auto*-hiding, that
+  // reads backwards — the person expects to *see* it, then have it hide as they scroll, not have to go looking
+  // for it. The two defaults can't both live in `tabs.top_bar_hidden` (the same column already means \"follow
+  // the shared default\" for every other page), so this page's own explicit choice — closed, or shown again —
+  // is tracked separately, in its own `app_state` (keyed by this note's own file path, like any other web app's,
+  // so it persists per note and never collides with another page's), defaulting to shown when never touched.
+  var persistedHidden = false
+  var scrollHidden = false
+  function applyBarVisibility() {
+    bar.classList.toggle('csdrive-tb-persisted-hidden', persistedHidden)
+    bar.classList.toggle('csdrive-tb-scroll-hidden', !persistedHidden && scrollHidden)
+  }
+  function persistChoice(hidden) {
+    persistedHidden = hidden
+    applyBarVisibility()
+    try { t.core.invoke('set_app_state', { key: HIDDEN_KEY, value: hidden ? '1' : '0' }) } catch (e) {}
+  }
+  bar.querySelector('#csdrive-tb-back').addEventListener('click', function () {
+    t.core.invoke('window_go_back').catch(function () {})
+  })
+  bar.querySelector('#csdrive-tb-suspend').addEventListener('click', function () {
+    t.core.invoke('suspend_secondary_window', { guid: win.label }).catch(function () {})
+  })
+  bar.querySelector('#csdrive-tb-close-tab').addEventListener('click', function () {
+    if (tabGuid) t.core.invoke('close_tab', { tabGuid: tabGuid }).catch(function () {})
+  })
+  bar.querySelector('#csdrive-tb-close-window').addEventListener('click', function () {
+    t.core.invoke('close_secondary_window', { guid: win.label }).catch(function () {})
+  })
+  bar.querySelector('#csdrive-tb-hide').addEventListener('click', function () {
+    persistChoice(true)
+  })
+  win.listen('show-top-bar', function () {
+    scrollHidden = false
+    persistChoice(false)
+  })
+  // Scroll-driven collapse — `lib/scrollAutohide.ts`'s `useScrollAutohide` ported to plain JS for this page's
+  // one scrollable area (the whole document). `pinnedAtBottom` is the fix for \"the shake\" (this module's own
+  // doc comment): a negative delta that still leaves the page at its own maximum scroll position is the
+  // browser's own clamp reacting to the bar's *own* collapse shortening the page, not a real upward scroll, and
+  // reading it as one would show the bar again, shrink the page back, and repeat.
+  var HIDE_AFTER_PX = 40, DIRECTION_THRESHOLD_PX = 4
+  var lastScrollY = 0
+  window.addEventListener('scroll', function () {
+    var y = window.scrollY
+    var delta = y - lastScrollY
+    var pinnedAtBottom = y + window.innerHeight >= document.documentElement.scrollHeight - 2
+    if (y <= HIDE_AFTER_PX) scrollHidden = false
+    else if (delta > DIRECTION_THRESHOLD_PX) scrollHidden = true
+    else if (delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom) scrollHidden = false
+    lastScrollY = y
+    applyBarVisibility()
+  }, { passive: true })
+
   t.core.invoke('init_window_tab', { appVersion: 1, url: location.href, resourceType: null }).then(function (tab) {
+    tabGuid = tab.tabGuid
     apply(tab.codeSnippets)
+    barInfo.innerHTML = tab.topBarHtml || ''
+    return t.core.invoke('get_app_state', { key: HIDDEN_KEY })
+  }).then(function (stored) {
+    persistedHidden = stored === '1' // anything else (never touched, '0') defaults to shown — see above
+    applyBarVisibility()
     var label = { firstRow: [{ text: document.title, bold: true }], secondRow: [{ text: decodeURIComponent(location.pathname.replace(/^\\//, '')) }] }
     var resourceId = decodeURIComponent(location.pathname.replace(/^\\//, '')) + location.search
-    return t.core.invoke('update_tab_resource', { tabGuid: tab.tabGuid, tabText: label, resourceType: null, resourceId: resourceId })
+    return t.core.invoke('update_tab_resource', { tabGuid: tabGuid, tabText: label, resourceType: null, resourceId: resourceId })
+  }).then(function (result) {
+    // The label just set gives the tab its real title — `topBarHtml` recomputed from it replaces the
+    // near-empty one `init_window_tab` answered with (nothing had been labelled yet at that point).
+    if (result && typeof result.topBarHtml === 'string') barInfo.innerHTML = result.topBarHtml
   }).catch(function () {})
 })()
 ";
@@ -321,6 +521,55 @@ mod tests {
         // The webview's own history has its own idea of restoring the previous scroll position across a reload,
         // outside this script entirely — found live to override `NO_SCROLL_KEY`'s own decision unless disabled.
         assert!(page.contains("history.scrollRestoration = 'manual'"), "{page}");
+    }
+
+    #[test]
+    fn the_page_draws_its_own_top_bar_wired_to_the_same_backend_commands_as_example_toolbar() {
+        let page = render_page("text", "t.md");
+        assert!(page.contains("bar.id = 'csdrive-top-bar'"), "{page}");
+        // The same four actions and shape as csdrive-webhost-userapps/example-toolbar/index.html.
+        assert!(page.contains("window_go_back"), "{page}");
+        assert!(page.contains("suspend_secondary_window"), "{page}");
+        assert!(page.contains("close_tab"), "{page}");
+        assert!(page.contains("close_secondary_window"), "{page}");
+        // Starts shown (`persistedHidden = false`), not following the shared `tabs.top_bar_hidden`/
+        // `topBar.autohide` default every other page's bar does — tracked instead in this page's own
+        // `app_state`, defaulting to shown when the person has never explicitly closed or re-shown it.
+        assert!(page.contains("var persistedHidden = false"), "{page}");
+        assert!(page.contains("get_app_state"), "{page}");
+        assert!(page.contains("set_app_state"), "{page}");
+        assert!(page.contains("var HIDDEN_KEY = 'csdrive-top-bar-hidden'"), "{page}");
+        assert!(page.contains("tab.topBarHtml"), "{page}");
+        assert!(page.contains("win.listen('show-top-bar'"), "{page}");
+        // The CSS that makes the bar collapse — both the persisted-closed and the scroll-collapsed class share
+        // the same collapse, including the `margin-bottom` fix ("Leftover space when hidden").
+        assert!(page.contains("#csdrive-top-bar.csdrive-tb-persisted-hidden"), "{page}");
+        assert!(page.contains("#csdrive-top-bar.csdrive-tb-scroll-hidden"), "{page}");
+        assert!(page.contains("margin-bottom: -16px;"), "{page}");
+    }
+
+    #[test]
+    fn the_top_bars_scroll_collapse_guards_against_the_pinned_at_bottom_echo() {
+        let page = render_page("text", "t.md");
+        // The fix for "the shake": a negative scroll delta that still leaves the page at its own maximum
+        // scroll position is ignored, rather than read as a genuine upward scroll that would show the bar
+        // again (see `lib/scrollAutohide.ts`'s own identical guard and CLAUDE.md's "Top bar autohide…").
+        assert!(page.contains("pinnedAtBottom"), "{page}");
+        assert!(page.contains("y + window.innerHeight >= document.documentElement.scrollHeight"), "{page}");
+        assert!(page.contains("delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom"), "{page}");
+        // The collapse is a plain scroll listener on the window, not gated behind any element-specific
+        // ResizeObserver dance — this page has exactly one scrollable area (the whole document).
+        assert!(page.contains("window.addEventListener('scroll'"), "{page}");
+    }
+
+    #[test]
+    fn the_page_opts_out_of_scroll_anchoring() {
+        // A second, distinct feedback-loop mechanism from the pinned-at-bottom one above — found live
+        // ("I see a flicker") even with that guard in place and working: scroll anchoring compensates for a
+        // content-above-the-viewport height change from any scroll position, not only the document's own
+        // maximum, so only opting out of it entirely (not a delta-based guard) closes the loop everywhere.
+        let page = render_page("text", "t.md");
+        assert!(page.contains("html, body { overflow-anchor: none; }"), "{page}");
     }
 
     #[test]

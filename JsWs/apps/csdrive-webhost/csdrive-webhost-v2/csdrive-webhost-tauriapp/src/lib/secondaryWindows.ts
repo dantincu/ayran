@@ -396,6 +396,13 @@ export async function syncRefreshWithoutScroll(file: FileRef): Promise<number> {
   return invoke<number>('sync_refresh_without_scroll', { file })
 }
 
+/** The editor's own "Show its top bar" button: reveals the top bar of the web app that's showing `file` right
+ * now (its own window isn't listed in the System/User Apps tab, so there's no row there to do this from — see
+ * CLAUDE.md's "Markdown web apps"). Resolves to how many windows were told (0 when none is open). */
+export async function syncShowTopBar(file: FileRef): Promise<number> {
+  return invoke<number>('sync_show_top_bar', { file })
+}
+
 /** The address at which a system app's page loads `file` as a picture or media (see `lib/media.ts`). */
 export async function mediaUrl(file: FileRef): Promise<string> {
   return invoke<string>('media_url', { file })

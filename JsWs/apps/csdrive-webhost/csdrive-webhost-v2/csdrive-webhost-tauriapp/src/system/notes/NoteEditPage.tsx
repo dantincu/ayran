@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirm } from '../../lib/dialogs'
-import { AppWindow, ArrowLeft, Link2, Paperclip, RefreshCw, Save } from 'lucide-react'
+import { AppWindow, ArrowLeft, Link2, Paperclip, PanelTop, RefreshCw, Save } from 'lucide-react'
 import CodeEditor, { type CodeEditorHandle } from '../../components/CodeEditor'
 import IconButton from '../../components/IconButton'
 import PathStyleModal from '../../components/PathStyleModal'
 import { getAppState, setAppState } from '../../lib/appState'
-import { onShowTopBar, openExternalSite, openNoteTab, syncRefreshWithoutScroll, syncScrollNudge, syncScrollToLine } from '../../lib/secondaryWindows'
+import { onShowTopBar, openExternalSite, openNoteTab, syncRefreshWithoutScroll, syncScrollNudge, syncScrollToLine, syncShowTopBar } from '../../lib/secondaryWindows'
 import { resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
@@ -217,6 +217,20 @@ export default function NoteEditPage({
     }
   }
 
+  /** The editor's own "Show its top bar" button: the web app's own window is deliberately not listed in the
+   * System/User Apps tab (see "Web apps opened from Notes" — it's a child of this Notes tab, not a window of its
+   * own there), so there's no row offering "Show its top bar" the way there is for an ordinary window; this is
+   * the one way to reach it from the note that opened it. */
+  async function showWebAppTopBar() {
+    if (!source?.fileRef || !path) return
+    try {
+      const told = await syncShowTopBar(source.fileRef(path))
+      setNotice(told === 0 ? 'This note has no open web app to show it on.' : null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function leave(place: Place) {
     if (dirty && path) {
       await writeDraft(path, text) // kept: it comes back with the page
@@ -262,6 +276,7 @@ export default function NoteEditPage({
             <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
             <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
             <IconButton icon={RefreshCw} label="Refresh the web app — starts it over, without keeping its scroll position" onClick={refreshWebApp} disabled={!path} />
+            <IconButton icon={PanelTop} label="Show its top bar — the web app's own window isn't listed to do this from elsewhere" onClick={showWebAppTopBar} disabled={!path} />
             <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
             <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} disabled={!path} />
             <UserActionButton sourceId={sourceId} folder={folder} />

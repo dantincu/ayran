@@ -49,6 +49,7 @@ fn main() {
             "sync_scroll_to_line",
             "sync_scroll_nudge",
             "sync_refresh_without_scroll",
+            "sync_show_top_bar",
             "media_url",
             "open_note_tab",
             "note_tab_state",

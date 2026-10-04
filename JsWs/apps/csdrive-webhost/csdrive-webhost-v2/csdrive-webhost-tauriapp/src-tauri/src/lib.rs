@@ -350,6 +350,7 @@ pub fn run() {
             notes_pages::sync_scroll_to_line,
             notes_pages::sync_scroll_nudge,
             notes_pages::sync_refresh_without_scroll,
+            notes_pages::sync_show_top_bar,
             notes_pages::media_url,
             notes_pages::open_note_tab,
             notes_pages::note_tab_state,
