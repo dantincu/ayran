@@ -391,6 +391,15 @@ pub struct Cache {
     clock: Clock,
     /// One operation at a time per account (they read, fetch and then update the same rows and files).
     locks: StdMutex<HashMap<i64, Arc<Mutex<()>>>>,
+    /// One *download* at a time per account file (`user_id`, path) — narrower than, and released before,
+    /// `locks` above: a file's content can take an unbounded time to fetch (a slow network, a stuck
+    /// request — nothing here times one out), and holding the account-wide lock for that whole stretch
+    /// would queue every unrelated listing or read of the account behind it. This lock serializes only
+    /// concurrent attempts to download *this one file* — so a `<video>` element's own overlapping Range
+    /// probes, which each used to restart the whole file's download from scratch (a fresh `.part` file is
+    /// created, truncating any earlier attempt, on every call), instead coalesce: the second caller waits
+    /// for the first and then finds the file already cached, rather than racing it from the beginning.
+    download_locks: StdMutex<HashMap<(i64, String), Arc<Mutex<()>>>>,
 }
 
 #[derive(sqlx::FromRow, Clone, Debug)]
@@ -533,7 +542,7 @@ impl Cache {
         if has_remote_id == 0 {
             sqlx::query("ALTER TABLE entries ADD COLUMN remote_id TEXT").execute(&pool).await.map_err(sql)?;
         }
-        Ok(Self { pool, root, clock, locks: StdMutex::new(HashMap::new()) })
+        Ok(Self { pool, root, clock, locks: StdMutex::new(HashMap::new()), download_locks: StdMutex::new(HashMap::new()) })
     }
 
     /// Closes the database, releasing `files/data.db` — on Windows a file that is still open can't be
@@ -549,6 +558,12 @@ impl Cache {
 
     async fn lock(&self, user_id: i64) -> tokio::sync::OwnedMutexGuard<()> {
         let mutex = self.locks.lock().unwrap().entry(user_id).or_default().clone();
+        mutex.lock_owned().await
+    }
+
+    /// See `download_locks`'s own doc comment.
+    async fn download_lock(&self, user_id: i64, path: &str) -> tokio::sync::OwnedMutexGuard<()> {
+        let mutex = self.download_locks.lock().unwrap().entry((user_id, path.to_string())).or_default().clone();
         mutex.lock_owned().await
     }
 
@@ -1118,26 +1133,51 @@ impl Cache {
     /// copy is gone). The download goes to a .part file beside its target as it arrives — the whole
     /// file is never in memory — and is renamed into place only when it is complete, so an interrupted
     /// download leaves nothing that looks cached.
+    ///
+    /// **The account-wide lock (`locks`) is held only for the metadata steps below, never across the
+    /// download itself.** A file's content can take an unbounded time to fetch — there is no HTTP
+    /// timeout anywhere in the Filen client, and a `<video>` element's own buffering can leave a request
+    /// stuck — and holding the coarse account lock for that whole stretch used to queue every unrelated
+    /// listing or read of the same account behind it (reported live: after a Filen `.mkv` failed to play,
+    /// "the file manager no longer worked because the listings would take forever"). The narrower
+    /// `download_locks`, keyed by this one `(user_id, path)`, takes over for the download itself, so a
+    /// slow fetch of one file never blocks anything else of the account; concurrent callers for the exact
+    /// same file (a buffering `<video>`'s own overlapping Range probes) also coalesce there instead of
+    /// each independently truncating and restarting the `.part` file from zero.
     async fn cached_file_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<PathBuf, String> {
         let parent = parent_of(path).ok_or("That's the root folder, not a file.")?;
-        // A locked file that is cached is served as it is: nothing about it is validated (or fetched).
-        if let Some(entry) = self.entry(user_id, path).await? {
-            if entry.locked != 0 && entry.is_dir == 0 && entry.content_at.is_some() {
-                let local = self.mirror_path(user_id, path).await?;
-                if local.is_file() {
-                    return Ok(local);
+        let local = {
+            let _guard = self.lock(user_id).await;
+            // A locked file that is cached is served as it is: nothing about it is validated (or fetched).
+            if let Some(entry) = self.entry(user_id, path).await? {
+                if entry.locked != 0 && entry.is_dir == 0 && entry.content_at.is_some() {
+                    let local = self.mirror_path(user_id, path).await?;
+                    if local.is_file() {
+                        return Ok(local);
+                    }
                 }
             }
-        }
-        self.list_account(remote, user_id, &parent, false).await?; // validates the listing (and so the entry)
-        let entry = self.entry(user_id, path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
-        if entry.is_dir != 0 {
-            return Err(format!("\"{path}\" is a folder."));
-        }
-        let local = self.mirror_path(user_id, path).await?;
-        if entry.content_at.is_some() && local.is_file() {
+            self.list_account(remote, user_id, &parent, false).await?; // validates the listing (and so the entry)
+            let entry = self.entry(user_id, path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
+            if entry.is_dir != 0 {
+                return Err(format!("\"{path}\" is a folder."));
+            }
+            let local = self.mirror_path(user_id, path).await?;
+            if entry.content_at.is_some() && local.is_file() {
+                return Ok(local);
+            }
+            local
+        }; // the account-wide lock is released here
+
+        let _download_guard = self.download_lock(user_id, path).await;
+        // Someone else may have finished downloading this exact file while this call waited for the
+        // download lock (including while the account lock above was briefly held by them too): the
+        // rename into place below only ever happens once a download has fully succeeded, so finding the
+        // file there now means it's complete and there's nothing left to do.
+        if local.is_file() {
             return Ok(local);
         }
+
         if let Some(dir) = local.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
@@ -1153,6 +1193,7 @@ impl Cache {
         match downloaded {
             Ok(()) => {
                 std::fs::rename(&part, &local).map_err(io)?;
+                let _guard = self.lock(user_id).await;
                 self.mark_cached(user_id, path).await?;
                 Ok(local)
             }
@@ -1196,12 +1237,20 @@ impl Cache {
     }
 
     /// A file's bytes (opening or exporting it) — fetched only if it isn't cached.
+    ///
+    /// For the account itself (no branch), the account-wide lock is **not** held across this call: see
+    /// `cached_file_account`'s own doc comment for why — its narrower `download_locks` takes over for the
+    /// slow part instead. A branch's own locking is unchanged (out of scope for that fix: a branch's
+    /// `read`/`write`/commit already serialize through the one account lock, and nothing here reported a
+    /// problem with that).
     pub async fn read(&self, remote: &impl Remote, user_id: i64, branch: Option<i64>, path: &str) -> Result<Vec<u8>, String> {
         let path = norm_path(path)?;
-        let _guard = self.lock(user_id).await;
         match branch {
             None => self.read_account(remote, user_id, &path).await,
-            Some(branch) => self.read_branch(remote, user_id, branch, &path).await,
+            Some(branch) => {
+                let _guard = self.lock(user_id).await;
+                self.read_branch(remote, user_id, branch, &path).await
+            }
         }
     }
 
@@ -1667,12 +1716,17 @@ impl Cache {
 
     /// Where the file is on disk, fetched (streamed) into the cache if it isn't there yet — for
     /// callers that copy it somewhere (exporting) rather than hold its bytes. Never shown to a window.
+    /// This is also what media serving (`file_serving.rs`, a `<video>`/`<audio>`'s own Range requests)
+    /// goes through, which is why — for the account itself — it doesn't hold the account-wide lock across
+    /// the fetch; see `cached_file_account`'s own doc comment.
     pub async fn cached_file(&self, remote: &impl Remote, user_id: i64, branch: Option<i64>, path: &str) -> Result<PathBuf, String> {
         let path = norm_path(path)?;
-        let _guard = self.lock(user_id).await;
         match branch {
             None => self.cached_file_account(remote, user_id, &path).await,
-            Some(branch) => self.cached_file_branch(remote, user_id, branch, &path).await,
+            Some(branch) => {
+                let _guard = self.lock(user_id).await;
+                self.cached_file_branch(remote, user_id, branch, &path).await
+            }
         }
     }
 
@@ -2082,6 +2136,7 @@ fn sort_entries(entries: &mut [CacheEntry]) {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     /// An in-memory "Filen": a map from path to file bytes (folders are paths ending in `/`).
     #[derive(Default)]
@@ -2092,6 +2147,10 @@ mod tests {
         offline: AtomicBool,
         reads: AtomicUsize,
         listings: AtomicUsize,
+        /// Test hook: when set, the *next* `download()` call waits on it before doing anything else —
+        /// stands in for a slow or stuck network request, so a test can drive other calls concurrently
+        /// while one download is deliberately held open.
+        download_gate: StdMutex<Option<Arc<tokio::sync::Notify>>>,
     }
 
     impl MemoryRemote {
@@ -2117,6 +2176,12 @@ mod tests {
         }
         fn check_online(&self) -> Result<(), String> {
             if self.offline.load(Ordering::SeqCst) { Err("offline".into()) } else { Ok(()) }
+        }
+        /// Makes the next `download()` call wait until the returned `Notify` is told to go ahead.
+        fn gate_next_download(&self) -> Arc<tokio::sync::Notify> {
+            let notify = Arc::new(tokio::sync::Notify::new());
+            *self.download_gate.lock().unwrap() = Some(notify.clone());
+            notify
         }
     }
 
@@ -2149,6 +2214,10 @@ mod tests {
         }
         async fn download(&self, path: &str, sink: &mut (dyn FnMut(&[u8]) -> Result<(), String> + Send)) -> Result<(), String> {
             self.check_online()?;
+            let gate = self.download_gate.lock().unwrap().take();
+            if let Some(gate) = gate {
+                gate.notified().await;
+            }
             self.reads.fetch_add(1, Ordering::SeqCst);
             let bytes = self.files.lock().unwrap().get(path).cloned().ok_or_else(|| format!("{path} not found"))?;
             for piece in bytes.chunks(3) {
@@ -3087,6 +3156,77 @@ mod tests {
             assert_eq!(f.cache.create_branch(7, "third").await.unwrap().index, 1, "the gap the discarded branch left is filled");
             assert!(f.base.join("a/001/b/001-third").is_dir());
             assert_eq!(f.cache.create_branch(7, "fourth").await.unwrap().index, 3, "and with no gap left: the largest plus one");
+        });
+    }
+
+    /// Reproduces "the file manager no longer worked because the listings would take forever" after a
+    /// stuck Filen media download (CLAUDE.md, "Media"): a slow/stuck `download()` of one file must not
+    /// hold back an unrelated listing or an unrelated file's own read of the same account.
+    #[test]
+    fn a_slow_download_does_not_block_an_unrelated_listing_or_read() {
+        run(async {
+            let f = Fixture::new("slow-download").await;
+            f.remote.put("/d/a.txt", "the slow one");
+            f.remote.put("/d/b.txt", "a different file");
+            let gate = f.remote.gate_next_download();
+
+            let slow = async {
+                let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+                (bytes, Instant::now())
+            };
+            let listing = async {
+                tokio::time::sleep(Duration::from_millis(20)).await; // let the slow read reach the gate first
+                let listed = f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap();
+                (listed, Instant::now())
+            };
+            let other_read = async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let bytes = f.cache.read(&f.remote, 7, None, "/d/b.txt").await.unwrap();
+                (bytes, Instant::now())
+            };
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(120)).await; // well after the other two should have finished
+                gate.notify_one();
+            };
+
+            let ((slow_bytes, slow_at), (listed, listing_at), (other_bytes, other_at), ()) = tokio::join!(slow, listing, other_read, release);
+            assert_eq!(slow_bytes, b"the slow one");
+            assert_eq!(Fixture::names(&listed), ["a.txt", "b.txt"]);
+            assert_eq!(other_bytes, b"a different file");
+            assert!(listing_at < slow_at, "the listing finished well before the stuck download was released");
+            assert!(other_at < slow_at, "a different file's own read finished well before the stuck download was released");
+        });
+    }
+
+    /// The fix for the same bug's other half: concurrent attempts to download the *same* file (a
+    /// buffering `<video>` element's own overlapping Range probes) must coalesce rather than each
+    /// independently truncating and restarting the `.part` file from scratch.
+    #[test]
+    fn concurrent_downloads_of_the_same_file_coalesce_instead_of_restarting() {
+        run(async {
+            let f = Fixture::new("coalesce").await;
+            f.remote.put("/d/a.txt", "shared content");
+            let gate = f.remote.gate_next_download();
+
+            let first = async {
+                let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+                (bytes, Instant::now())
+            };
+            let second = async {
+                tokio::time::sleep(Duration::from_millis(20)).await; // let `first` take the download lock first
+                let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+                (bytes, Instant::now())
+            };
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(80)).await; // well after `second` is queued on the download lock
+                gate.notify_one();
+            };
+
+            let ((first_bytes, first_at), (second_bytes, second_at), ()) = tokio::join!(first, second, release);
+            assert_eq!(first_bytes, b"shared content");
+            assert_eq!(second_bytes, b"shared content");
+            assert!(second_at >= first_at, "`second` only finished once `first`'s download had — it wasn't racing an independent download of its own");
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1, "only one real download happened — `second` found the finished file instead of restarting it");
         });
     }
 }

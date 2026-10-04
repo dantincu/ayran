@@ -93,7 +93,7 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
                 Some(branch) => branch_file(app, root_id, branch, &path).await,
             };
             match real {
-                Ok(real) if real.is_file() => crate::file_serving::respond_file(&real, meta, csp),
+                Ok(real) if real.is_file() => crate::file_serving::respond_file_blocking(real, meta, csp).await,
                 Ok(_) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
                 Err(_) => forbidden(),
             }
@@ -107,7 +107,7 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
             .await;
             match fetched {
                 // In the cache on disk by now (a big file is fetched there piece by piece): served from there, in pieces if asked.
-                Ok(local) => crate::file_serving::respond_file(&local, meta, csp),
+                Ok(local) => crate::file_serving::respond_file_blocking(local, meta, csp).await,
                 Err(_) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
             }
         }

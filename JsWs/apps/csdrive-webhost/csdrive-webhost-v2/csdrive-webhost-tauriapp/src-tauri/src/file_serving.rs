@@ -12,7 +12,7 @@
 //! files it has no business with.
 
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tauri::http::header::CONTENT_TYPE;
 use tauri::http::{Response, StatusCode};
@@ -120,6 +120,25 @@ pub(crate) fn respond_file(path: &Path, meta: &RequestMeta, csp: &str) -> Respon
         }
         Err(()) => builder(StatusCode::RANGE_NOT_SATISFIABLE, "text/plain; charset=utf-8", csp, meta).header("Content-Range", format!("bytes */{len}")).body(Vec::new()).unwrap(),
     }
+}
+
+/// `respond_file`, run on a blocking-task thread of its own rather than directly on the async runtime's
+/// shared worker threads. Plain synchronous file I/O (`std::fs::File::open`, `.read_to_end`,
+/// `.seek`/`.read_exact`) run straight inside an async task occupies one of those shared workers for
+/// however long the read takes; a `<video>` element's ordinary behavior — several concurrent, overlapping
+/// Range requests while it buffers — can occupy every worker at once, starving every *other* task on the
+/// runtime, IPC command dispatch included. Reported live: playing a local `.mkv` from Notes' File Manager
+/// froze the whole window — its buttons stopped responding to clicks — until it was force-closed from the
+/// OS's own window controls. `respond_file` itself stays a plain, synchronous, directly unit-testable
+/// function (its own tests below call it with no async runtime at all); only its real callers — the
+/// `csuser://` protocol (`lib.rs`) and a picked folder's or Filen's own file (`notes_pages.rs`) — go
+/// through this instead of calling it directly.
+pub(crate) async fn respond_file_blocking(path: PathBuf, meta: &RequestMeta, csp: &str) -> Response<Vec<u8>> {
+    let meta = meta.clone();
+    let csp_for_task = csp.to_string();
+    tauri::async_runtime::spawn_blocking(move || respond_file(&path, &meta, &csp_for_task))
+        .await
+        .unwrap_or_else(|_| crate::respond_text(StatusCode::INTERNAL_SERVER_ERROR, "Internal error", csp))
 }
 
 #[cfg(test)]

@@ -222,9 +222,11 @@ pub(crate) fn respond_text(status: StatusCode, message: &str, csp: &str) -> Resp
 }
 
 /// Serves `request_path` from inside `base_dir` (whole, or the piece a range asks for — see `file_serving`).
-fn serve_file(base_dir: &Path, request_path: &str, default_document: &str, meta: &file_serving::RequestMeta, csp: &str) -> Response<Vec<u8>> {
+/// The actual read runs off the async runtime's own worker threads (`respond_file_blocking`'s own doc
+/// comment says why); this function is `async` only for that reason.
+async fn serve_file(base_dir: &Path, request_path: &str, default_document: &str, meta: &file_serving::RequestMeta, csp: &str) -> Response<Vec<u8>> {
     match resolve_file_in(base_dir, request_path, default_document) {
-        Some(file_path) => file_serving::respond_file(&file_path, meta, csp),
+        Some(file_path) => file_serving::respond_file_blocking(file_path, meta, csp).await,
         None => respond_text(StatusCode::FORBIDDEN, "Forbidden", csp),
     }
 }
@@ -297,7 +299,7 @@ pub(crate) async fn serve_user_path(app: &tauri::AppHandle, path: &str, meta: &f
         // The user folder, as ever.
         None => {
             let data_dir = data_location::effective_data_dir(app).expect("failed to resolve app data dir");
-            serve_file(&layout::user_dir(&data_dir), path, "index.html", meta, &csp)
+            serve_file(&layout::user_dir(&data_dir), path, "index.html", meta, &csp).await
         }
         Some(Err(())) => respond_text(StatusCode::FORBIDDEN, "Forbidden", &csp),
         Some(Ok(special)) => notes_pages::serve(app, special, meta, &csp).await,
@@ -720,7 +722,7 @@ mod tests {
         std::fs::write(dir.join("index.html"), "<h1>hi</h1>").unwrap();
 
         for (path, status) in [("/index.html", StatusCode::OK), ("/", StatusCode::OK), ("/missing.html", StatusCode::FORBIDDEN), ("/../x", StatusCode::FORBIDDEN)] {
-            let response = serve_file(&dir, path, "index.html", &file_serving::RequestMeta::default(), "default-src 'none'");
+            let response = tauri::async_runtime::block_on(serve_file(&dir, path, "index.html", &file_serving::RequestMeta::default(), "default-src 'none'"));
             assert_eq!(response.status(), status, "{path}");
             assert_eq!(
                 response.headers().get("Content-Security-Policy").and_then(|v| v.to_str().ok()),
