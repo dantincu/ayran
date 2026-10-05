@@ -849,16 +849,37 @@ pub(crate) async fn open_page_window(app: &AppHandle, relative_path: String) -> 
 /// stored resource id, except for a placeholder that was just created, which is filled in from the
 /// page's URL") only takes the "fill from the URL" branch for a placeholder with *nothing* stored, so
 /// setting it here first is what makes the viewer's own `init_window_tab` call get the right file back.
+///
+/// `file` is the same `FileRef` shape `media_url` takes (the admin-app's Files tab passes `UserFolder`/
+/// `DeviceFolder`; Notes' File Manager and Note Files Explorer — any of their sources, a Filen account or
+/// branch included — pass whatever `source.fileRef` gives them), so a PDF is viewable from everywhere a
+/// file can be opened, not only the user folder and picked folders.
 #[tauri::command]
-pub async fn open_pdf_viewer_window(app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, root: String, path: String) -> Result<String, String> {
+pub async fn open_pdf_viewer_window(app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, file: crate::notes_pages::FileRef) -> Result<String, String> {
     let page = Page::new(Kind::System, crate::system_apps::relative_path_of("pdf-viewer"));
     validate_page(&app, &page)?;
     let (guid, _) = insert_entry(&state.pool, &page).await?;
     let (tab_guid, _) = tab_for_opening(&state.pool, &guid, &page.relative_path, None).await?;
+    let mut parts: Vec<(&str, String)> = vec![("path", file.path.clone())];
+    match file.storage.as_str() {
+        "FilenCloud" => {
+            let user_id = file.user_id.ok_or("A Filen file needs its account.")?;
+            parts.push(("userId", user_id.to_string()));
+            if let Some(branch) = file.branch {
+                parts.push(("branch", branch.to_string()));
+            }
+        }
+        "UserFolder" => parts.push(("root", "user".to_string())),
+        "DeviceFolder" => parts.push(("root", file.root.clone().ok_or("A folder on the device needs its root.")?)),
+        other => return Err(format!("Unknown storage: \"{other}\".")),
+    }
     let resource_id = format!(
-        "system:pdf-viewer?root={}&path={}",
-        percent_encoding::utf8_percent_encode(&root, percent_encoding::NON_ALPHANUMERIC),
-        percent_encoding::utf8_percent_encode(&path, percent_encoding::NON_ALPHANUMERIC)
+        "system:pdf-viewer?{}",
+        parts
+            .iter()
+            .map(|(k, v)| format!("{k}={}", percent_encoding::utf8_percent_encode(v, percent_encoding::NON_ALPHANUMERIC)))
+            .collect::<Vec<_>>()
+            .join("&")
     );
     sqlx::query("UPDATE tabs SET resource_id = ?1 WHERE guid = ?2").bind(&resource_id).bind(&tab_guid).execute(&state.pool).await.map_err(|e| e.to_string())?;
     crate::window_host::open(&app, &guid, &page)?;

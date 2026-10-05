@@ -43,6 +43,19 @@ export interface NotebookEntry {
 
 const NOTEBOOKS_KEY = 'notes.notebooks'
 
+/** The identity of a *listed* entry: where it is. Two listed entries can share a GUID — the same notebook file
+ * copied (by the person, outside the app) to another location and added again — but never this: the list can
+ * hold at most one entry at a given `sourceId`/`folder`/`fileName` (`addExistingNotebook` treats a second add at
+ * the same location as "already listed", not a duplicate). Use this wherever `guid` alone used to key a single
+ * listed entry (a `Record`'s key, a React list `key`) and no longer can, now that it isn't list-wide unique. */
+export function entryKey(entry: NotebookEntry): string {
+  return `${entry.sourceId}|${entry.folder}|${entry.fileName}`
+}
+
+function sameLocation(a: NotebookEntry, b: NotebookEntry): boolean {
+  return a.sourceId === b.sourceId && a.folder === b.folder && a.fileName === b.fileName
+}
+
 function isEntry(value: unknown): value is NotebookEntry {
   if (typeof value !== 'object' || value === null) return false
   const e = value as Record<string, unknown>
@@ -131,23 +144,33 @@ export async function createNotebook(source: FileSource, folder: string, title: 
 }
 
 export type AddResult =
-  | { status: 'added'; entry: NotebookEntry }
-  /** It was in the list already (found by its GUID, or by where it is); `entry` is the listed one, brought up to date. */
+  | { status: 'added'; entry: NotebookEntry; /** Other listed entries that share this one's GUID — a copy of
+      the same notebook file, added from another location. Informational only: adding it is never refused for
+      this. */ sameGuidAs: NotebookEntry[] }
+  /** The exact location (source, folder and file name) was in the list already; `entry` is the listed one,
+   * brought up to date. A *different* location whose file happens to share a GUID with a listed entry is not
+   * this — it is `added`, with that entry named in `sameGuidAs` (see "Notebooks" in CLAUDE.md). */
   | { status: 'already-listed'; entry: NotebookEntry }
   | { status: 'not-a-notebook'; reason: string }
 
-/** Adds a notebook that exists but isn't listed: reads its file, and lists it — unless it is listed already. */
+/** Adds a notebook that exists but isn't listed at this exact location: reads its file, and lists it — unless
+ * this exact `source`/`folder`/`fileName` is listed already. A notebook file copied to more than one place (the
+ * same GUID at a different location) is allowed and listed as its own, separate entry — only the same location
+ * twice is "already listed". */
 export async function addExistingNotebook(source: FileSource, folder: string, fileName: string): Promise<AddResult> {
   const read = await readNotebookFile(source, folder, fileName)
   if (!read.ok) return { status: 'not-a-notebook', reason: read.reason }
   const fresh: NotebookEntry = { guid: read.guid, title: read.notebook.Title, sourceId: source.id, folder, fileName, addedAt: Date.now() }
-  let result: AddResult = { status: 'added', entry: fresh }
+  let result: AddResult = { status: 'added', entry: fresh, sameGuidAs: [] }
   await updateNotebooks((list) => {
-    const same = list.find((n) => n.guid === fresh.guid || (n.sourceId === fresh.sourceId && n.folder === fresh.folder && n.fileName === fresh.fileName))
-    if (!same) return [...list, fresh]
-    const updated: NotebookEntry = { ...same, title: fresh.title }
-    result = { status: 'already-listed', entry: updated }
-    return list.map((n) => (n === same ? updated : n))
+    const here = list.find((n) => sameLocation(n, fresh))
+    if (here) {
+      const updated: NotebookEntry = { ...here, title: fresh.title }
+      result = { status: 'already-listed', entry: updated }
+      return list.map((n) => (n === here ? updated : n))
+    }
+    result = { status: 'added', entry: fresh, sameGuidAs: list.filter((n) => n.guid === fresh.guid) }
+    return [...list, fresh]
   })
   return result
 }
@@ -159,13 +182,16 @@ export async function retitleNotebook(entry: NotebookEntry, source: FileSource, 
   if (!read.ok) throw new Error(`"${entry.fileName}" isn't a notebook file any more: ${read.reason}`)
   await source.write(joinRelative(entry.folder, entry.fileName), new TextEncoder().encode(serializeNotebookFile(withTitle(read.raw, title))))
   const updated = { ...entry, title: title.trim() }
-  await updateNotebooks((list) => list.map((n) => (n.guid === entry.guid ? updated : n)))
+  // By location, not by guid: two listed entries can now share a guid (see `entryKey`), and only the one at
+  // `entry`'s own location should be retitled — not every notebook that happens to share it.
+  await updateNotebooks((list) => list.map((n) => (sameLocation(n, entry) ? updated : n)))
   return updated
 }
 
-/** Takes a notebook out of the list. Its files are left exactly where they are. */
-export async function unlistNotebook(guid: string): Promise<NotebookEntry[]> {
-  return updateNotebooks((list) => list.filter((n) => n.guid !== guid))
+/** Takes a notebook out of the list, by its location (not its guid — see `entryKey`, since another listed entry
+ * can share it). Its files are left exactly where they are. */
+export async function unlistNotebook(entry: NotebookEntry): Promise<NotebookEntry[]> {
+  return updateNotebooks((list) => list.filter((n) => !sameLocation(n, entry)))
 }
 
 /** What is known of a listed notebook's file right now. */

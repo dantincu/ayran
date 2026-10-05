@@ -14,6 +14,7 @@ import {
   createNotebook,
   describeLocation,
   describeNotebookFilesIn,
+  entryKey,
   loadNotebooks,
   notebookFilesIn,
   retitleNotebook,
@@ -74,13 +75,14 @@ export default function NotebooksPage({
   useEffect(() => {
     if (!ready || !notebooks) return
     for (const entry of notebooks) {
-      if (checks[entry.guid]) continue
-      setChecks((all) => ({ ...all, [entry.guid]: { state: 'checking' } }))
+      const key = entryKey(entry)
+      if (checks[key]) continue
+      setChecks((all) => ({ ...all, [key]: { state: 'checking' } }))
       checkNotebook(entry, roots, accounts).then((result) => {
         if (!mounted.current) return
-        setChecks((all) => ({ ...all, [entry.guid]: result }))
+        setChecks((all) => ({ ...all, [key]: result }))
         if (result.state === 'ok' && result.title !== entry.title) {
-          updateNotebooks((list) => list.map((n) => (n.guid === entry.guid ? { ...n, title: result.title } : n))).then((list) => mounted.current && setNotebooks(list))
+          updateNotebooks((list) => list.map((n) => (entryKey(n) === key ? { ...n, title: result.title } : n))).then((list) => mounted.current && setNotebooks(list))
         }
       })
     }
@@ -121,7 +123,7 @@ export default function NotebooksPage({
       if (!source) throw new Error(`Can't reach where "${entry.title}" is kept, so its title can't be changed.`)
       await retitleNotebook(entry, source, title)
       setChecks((all) => {
-        const { [entry.guid]: _gone, ...rest } = all
+        const { [entryKey(entry)]: _gone, ...rest } = all
         return rest
       })
       await refresh()
@@ -133,25 +135,32 @@ export default function NotebooksPage({
     const yes = await confirm(`Take "${entry.title}" out of the list?\n\nNothing is deleted: its files stay where they are, and you can add it again later.`)
     if (!yes) return
     guarded(async () => {
-      setNotebooks(await unlistNotebook(entry.guid))
+      setNotebooks(await unlistNotebook(entry))
       setNotice(`"${entry.title}" is no longer in the list.`)
     })
   }
 
   // ── Adding ──
 
-  /** Lists a notebook that exists: its file is read, and it is added unless the list has it already. */
+  /** Lists a notebook that exists: its file is read, and it is added unless this exact location is listed
+   * already. A notebook file copied to more than one place is allowed, and listed again — `sameGuidAs` names
+   * the other listed copy or copies, purely for the person's own information. */
   function addFound(picked: Picked) {
     setAdding(null)
     guarded(async () => {
       const result = await addExistingNotebook(picked.source, picked.folder, picked.fileName ?? '')
       if (result.status === 'not-a-notebook') throw new Error(`"${picked.fileName}" isn't a notebook file: ${result.reason}`)
       await refresh()
-      setNotice(
-        result.status === 'added'
-          ? `Added "${result.entry.title}" to the list.`
-          : `"${result.entry.title}" is already in your list — it is the notebook found at ${describeLocation(result.entry, roots, accounts)}.`,
-      )
+      if (result.status === 'already-listed') {
+        setNotice(`"${result.entry.title}" is already in your list — it is the notebook found at ${describeLocation(result.entry, roots, accounts)}.`)
+      } else if (result.sameGuidAs.length > 0) {
+        const where = result.sameGuidAs.map((n) => describeLocation(n, roots, accounts)).join('; ')
+        setNotice(
+          `Added "${result.entry.title}" to the list. ${result.sameGuidAs.length === 1 ? 'Another copy of it is' : 'Other copies of it are'} already listed too, at ${where}.`,
+        )
+      } else {
+        setNotice(`Added "${result.entry.title}" to the list.`)
+      }
     })
   }
 
@@ -217,9 +226,9 @@ export default function NotebooksPage({
               </thead>
               <tbody>
                 {list.map((entry, i) => {
-                  const check = checks[entry.guid]
+                  const check = checks[entryKey(entry)]
                   return (
-                    <tr key={entry.guid} {...kbdItem(kbdFocus, i, setKbdFocus)}>
+                    <tr key={entryKey(entry)} {...kbdItem(kbdFocus, i, setKbdFocus)}>
                       <td>
                         <div className="notebook-title">
                           <strong>{entry.title}</strong>
@@ -232,7 +241,7 @@ export default function NotebooksPage({
                         <div className="muted notebook-where">{describeLocation(entry, roots, accounts)}</div>
                       </td>
                       <td className="row-actions">
-                        <CacheMenu source={sourceOf(entry.sourceId)} path={entry.folder} isDirectory onDone={async () => { await refresh(); setChecks((all) => { const { [entry.guid]: _gone, ...rest } = all; return rest }) }} onError={setError} onNotice={setNotice} />
+                        <CacheMenu source={sourceOf(entry.sourceId)} path={entry.folder} isDirectory onDone={async () => { await refresh(); setChecks((all) => { const { [entryKey(entry)]: _gone, ...rest } = all; return rest }) }} onError={setError} onNotice={setNotice} />
                         <RowActions
                           actions={[
                             { icon: Info, label: 'Details', onClick: () => setDetails(entry) },

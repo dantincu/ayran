@@ -115,3 +115,35 @@ export function linkAt(text: string, selectionStart: number, selectionEnd: numbe
   const touching = hits.filter((h) => (start === end ? h.start <= start && start <= h.end : h.start < end && start < h.end))
   return touching.sort((a, b) => a.start - b.start)[0] ?? null
 }
+
+/** A markdown link or image the caret (or the selection) is in — `[text](address)` or `![text](address)` — with its
+ * two parts kept apart (for the "Edit link" popup, `MarkdownLinkModal`, which `linkAt`'s plain `LinkHit` — the
+ * address alone — can't feed) and its own whole span (from `[` or `![` to the closing `)`), so the editor can
+ * replace exactly that and nothing around it. Unlike `linkAt`, which recognizes an HTML `href`/`src` and a bare
+ * web address too (for opening), this is markdown syntax specifically — those don't have a separate "text" to edit. */
+export interface MarkdownLinkHit {
+  /** Whether it is an image (`![…]`) — preserved on an edit, never offered as a choice when inserting a new one. */
+  image: boolean
+  text: string
+  address: string
+  start: number
+  end: number
+}
+
+const MARKDOWN_LINK = /(!?)\[([^\]\n]*)\]\(([^)\n]*)\)/g
+
+export function markdownLinkAt(text: string, selectionStart: number, selectionEnd: number): MarkdownLinkHit | null {
+  const start = Math.min(selectionStart, selectionEnd)
+  const end = Math.max(selectionStart, selectionEnd)
+  const lineStart = start === 0 ? 0 : text.lastIndexOf('\n', start - 1) + 1
+  const lineEndAt = text.indexOf('\n', end)
+  const lineEnd = lineEndAt < 0 ? text.length : lineEndAt
+  const line = text.slice(lineStart, lineEnd)
+  const hits: MarkdownLinkHit[] = []
+  for (const m of line.matchAll(MARKDOWN_LINK)) {
+    const hitStart = lineStart + m.index
+    hits.push({ image: m[1] === '!', text: m[2], address: m[3], start: hitStart, end: hitStart + m[0].length })
+  }
+  const touching = hits.filter((h) => (start === end ? h.start <= start && start <= h.end : h.start < end && start < h.end))
+  return touching.sort((a, b) => a.start - b.start)[0] ?? null
+}

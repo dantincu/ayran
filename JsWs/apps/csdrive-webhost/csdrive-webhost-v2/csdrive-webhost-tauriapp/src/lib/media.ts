@@ -18,6 +18,12 @@ export function mediaKindOf(name: string): MediaKind | null {
   return null
 }
 
+/** A `.pdf` file — opened in a window of the pdf-viewer system app (`openPdfViewerWindow`), not the media
+ * viewer above (it has its own viewer and isn't a `MediaKind`). Shared by the Files tab and Notes. */
+export function isPdfFile(name: string): boolean {
+  return /\.pdf$/i.test(name)
+}
+
 /** `83.4` → `1:23`, `3725` → `1:02:05`. */
 export function clock(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'

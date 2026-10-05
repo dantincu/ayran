@@ -50,7 +50,7 @@ import Modal from '../../components/Modal'
 import MediaViewer, { type MediaItem } from '../../components/MediaViewer'
 import { type MenuItem } from '../../components/ContextMenu'
 import Pagination from '../../components/Pagination'
-import { mediaKindOf } from '../../lib/media'
+import { isPdfFile, mediaKindOf } from '../../lib/media'
 import { decodeText, isDefaultTextFile, MAX_EDIT_BYTES, notDefaultTextMessage } from '../../lib/textFiles'
 import { readOsClipboardImage } from '../../lib/clipboard'
 import ThumbnailGrid from './ThumbnailGrid'
@@ -67,7 +67,7 @@ import { formatBytesExact } from '../../lib/format'
 import { pathForInput } from '../../lib/pathInput'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
-import { onShowTopBar, openExternalSite } from '../../lib/secondaryWindows'
+import { onShowTopBar, openExternalSite, openPdfViewerWindow } from '../../lib/secondaryWindows'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { findMarkdown, readNote } from './noteModel'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
@@ -736,6 +736,19 @@ export default function NotesApp({
     }
   }
 
+  /** Opens the file in a window of the pdf-viewer system app (`openPdfViewerWindow`) — the same command and
+   * window the admin-app's Files tab uses, reached here through whichever source the file is in (the user
+   * folder, a picked folder, or a Filen account/branch; `source.fileRef` already names it correctly for any
+   * of them — see "No real paths for web apps" in CLAUDE.md, nothing here ever sees a real path). */
+  async function viewPdf(entry: Entry, folder: string = path) {
+    if (!source?.fileRef) return
+    try {
+      await openPdfViewerWindow(source.fileRef(joinRelative(folder, entry.name)))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function openEntry(entry: Entry, folder: string = path, asText = false) {
     if (!source) return
     const rel = joinRelative(folder, entry.name)
@@ -743,6 +756,7 @@ export default function NotesApp({
       setPath(rel)
       return
     }
+    if (!asText && isPdfFile(entry.name) && source.fileRef) return viewPdf(entry, folder)
     if (!asText && mediaKindOf(entry.name) && source.fileRef) return viewMedia(entry, folder)
     // The default click opens only a recognized text file — for anything else, "Edit as text" (above) is how
     // it's opened on purpose; a plain click says why rather than silently trying to decode arbitrary bytes.
@@ -1277,10 +1291,11 @@ export default function NotesApp({
   /** What the three dots of a card (in the thumbnails view) offer for `entry`. */
   function menuFor(entry: Entry): MenuItem[] {
     const media = !entry.isDirectory && mediaKindOf(entry.name) !== null
-    const items: MenuItem[] = [{ label: entry.isDirectory ? 'Open the folder' : media ? 'View' : 'Open', icon: entry.isDirectory ? Folder : media ? Eye : FileIcon, onSelect: () => openEntry(entry) }]
-    // Offered whenever the default click *isn't* already "open as text" — a media file (svg included) or one
-    // whose extension isn't a recognized text one (see `lib/textFiles.ts`'s `isDefaultTextFile`).
-    if (!entry.isDirectory && (media || !isDefaultTextFile(entry.name))) items.push({ label: 'Edit as text', icon: Pencil, onSelect: () => openEntry(entry, path, true) })
+    const viewable = media || (!entry.isDirectory && isPdfFile(entry.name))
+    const items: MenuItem[] = [{ label: entry.isDirectory ? 'Open the folder' : viewable ? 'View' : 'Open', icon: entry.isDirectory ? Folder : viewable ? Eye : FileIcon, onSelect: () => openEntry(entry) }]
+    // Offered whenever the default click *isn't* already "open as text" — a media file (svg included), a PDF,
+    // or one whose extension isn't a recognized text one (see `lib/textFiles.ts`'s `isDefaultTextFile`).
+    if (!entry.isDirectory && (viewable || !isDefaultTextFile(entry.name))) items.push({ label: 'Edit as text', icon: Pencil, onSelect: () => openEntry(entry, path, true) })
     if (scope) items.push({ label: 'Open in File Manager', icon: FolderSearch, onSelect: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) })
     items.push({ label: 'Details', icon: Info, onSelect: () => showDetails(entry), separated: true })
     if (!entry.isDirectory) items.push({ label: 'Export', icon: Download, onSelect: () => exportEntry(entry) })
@@ -1731,8 +1746,8 @@ export default function NotesApp({
                           actions={[
                             { icon: Info, label: 'Details', onClick: () => showDetails(entry) },
                             ...(scope ? [{ icon: FolderSearch, label: 'Open in File Manager', onClick: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) }] : []),
-                            ...(!entry.isDirectory && mediaKindOf(entry.name) ? [{ icon: Eye, label: 'View', onClick: () => openEntry(entry) }] : []),
-                            ...(!entry.isDirectory && (mediaKindOf(entry.name) !== null || !isDefaultTextFile(entry.name))
+                            ...(!entry.isDirectory && (mediaKindOf(entry.name) || isPdfFile(entry.name)) ? [{ icon: Eye, label: 'View', onClick: () => openEntry(entry) }] : []),
+                            ...(!entry.isDirectory && (mediaKindOf(entry.name) !== null || isPdfFile(entry.name) || !isDefaultTextFile(entry.name))
                               ? [{ icon: Pencil, label: 'Edit as text', onClick: () => openEntry(entry, path, true) }]
                               : []),
                             ...(!entry.isDirectory && source?.openAsWebApp && /\.(html?|md|markdown)$/i.test(entry.name)

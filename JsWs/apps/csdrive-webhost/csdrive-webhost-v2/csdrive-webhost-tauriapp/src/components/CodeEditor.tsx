@@ -369,6 +369,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
         <div className="code-editor-toolbar">
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
+          {/* Reserves room for TextFieldMenu's own clipboard button (and, in Notes, the User Action pair beside it) to sit
+              in, instead of floating over the top-right corner of the text — which used to cover whatever happened to be
+              rendered there (reported live). */}
+          <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
       {/* The clipboard menu's button sits at the corner of the frame, not of the (tall) box. */}

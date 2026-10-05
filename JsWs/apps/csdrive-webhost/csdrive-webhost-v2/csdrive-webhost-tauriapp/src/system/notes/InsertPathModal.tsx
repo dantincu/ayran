@@ -4,7 +4,7 @@ import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
 import FileExplorerModal, { joinPath } from '../../components/FileExplorerModal'
 import { NOTE_FILES_INDEX, findMarkdown, readChildren, type NoteRef } from './noteModel'
-import { loadNotebooks, type NotebookEntry } from './notebooks'
+import { entryKey, loadNotebooks, type NotebookEntry } from './notebooks'
 import type { FileSource } from './sources'
 
 interface Props {
@@ -124,7 +124,7 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
           {notebooks === null && !error && <li className="muted">Loading…</li>}
           {notebooks?.length === 0 && <li className="muted">No notebooks are listed for this source.</li>}
           {notebooks?.map((n) => (
-            <li key={n.guid}>
+            <li key={entryKey(n)}>
               <button className="link-button entry-name" onClick={() => setBrowse({ view: 'notes', folder: n.folder, title: n.title })}>
                 <Folder size={15} strokeWidth={2} aria-hidden="true" /> {n.title}
               </button>

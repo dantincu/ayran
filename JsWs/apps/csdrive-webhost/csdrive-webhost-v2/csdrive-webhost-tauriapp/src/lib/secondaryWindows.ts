@@ -408,6 +408,13 @@ export async function mediaUrl(file: FileRef): Promise<string> {
   return invoke<string>('media_url', { file })
 }
 
+/** Opens `file` (a .pdf, from the user folder, a picked folder or a Filen account/branch) in a window of the
+ * pdf-viewer system app — the admin-app's Files tab and Notes' File Manager/Note Files Explorer both call this.
+ * Resolves to the new window's guid. */
+export async function openPdfViewerWindow(file: FileRef): Promise<string> {
+  return invoke<string>('open_pdf_viewer_window', { file })
+}
+
 /** For a page that was opened from Notes: opens another file next to its own (`path` is relative to the page's),
  * listed under the same Notes tab. */
 export async function openRelatedWebApp(path: string): Promise<string> {

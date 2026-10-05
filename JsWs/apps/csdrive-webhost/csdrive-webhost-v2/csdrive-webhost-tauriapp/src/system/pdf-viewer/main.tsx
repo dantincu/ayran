@@ -8,16 +8,24 @@ import { initWindowTab, onTabNavigate, type FileRef } from '../../lib/secondaryW
 import { applyCodeSnippets } from '../../lib/codeSnippets'
 import { initAppearance } from '../../lib/appearance'
 
-/** Decodes the `root`/`path` query the window was opened with (`secondary_windows::open_pdf_viewer_window`
- * sets the tab's own resource id to exactly this before the window ever opens — see that function's own
- * doc for why a system app needs this, unlike a plain web app whose own address already names its file). */
+/** Decodes the query the window was opened with (`secondary_windows::open_pdf_viewer_window` sets the
+ * tab's own resource id to exactly this before the window ever opens — see that function's own doc for why
+ * a system app needs this, unlike a plain web app whose own address already names its file): `path` plus
+ * either `root` (the user folder's own sentinel `user`, or a picked folder's id) or `userId`/`branch` (a
+ * Filen account, and the branch's index when the file was opened in one). */
 function fileFromResourceId(resourceId: string): FileRef | null {
   const q = resourceId.split('?')[1]
   if (!q) return null
   const params = new URLSearchParams(q)
-  const root = params.get('root')
   const path = params.get('path')
-  if (root == null || path == null) return null
+  if (path == null) return null
+  const userId = params.get('userId')
+  if (userId != null) {
+    const branch = params.get('branch')
+    return { storage: 'FilenCloud', userId: Number(userId), branch: branch == null ? null : Number(branch), path }
+  }
+  const root = params.get('root')
+  if (root == null) return null
   return root === 'user' ? { storage: 'UserFolder', path } : { storage: 'DeviceFolder', root, path }
 }
 

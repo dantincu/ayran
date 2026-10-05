@@ -72,16 +72,13 @@ import {
 } from '../lib/fileRoots'
 import { rootTagGuid } from '../lib/rootTags'
 import { contextTrigger } from './ContextMenu'
-import { listTags, notifyFileSaved, openNewSecondaryWindow, openWebAddress, type TagRecord } from '../lib/secondaryWindows'
+import { listTags, notifyFileSaved, openNewSecondaryWindow, openPdfViewerWindow, openWebAddress, type TagRecord } from '../lib/secondaryWindows'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../lib/textLinks'
+import { isPdfFile } from '../lib/media'
 
 /** A file that can be opened as a web app: a page, or a markdown document (rendered to a page by the backend). */
 function isHtmlFile(name: string): boolean {
   return /\.(html?|md|markdown)$/i.test(name)
-}
-
-function isPdfFile(name: string): boolean {
-  return /\.pdf$/i.test(name)
 }
 
 /** An `.html`/`.htm` file — converting one to markdown, one file at a time (`pdf_convert.rs`'s own
@@ -616,7 +613,11 @@ export default function FilesTab() {
   async function viewPdf(entry: EntryRow) {
     if (!activeRoot) return
     try {
-      await invoke('open_pdf_viewer_window', { root: activeRoot.id, path: joinRelative(path, entry.name) })
+      await openPdfViewerWindow({
+        storage: activeRoot.id === USER_ROOT_ID ? 'UserFolder' : 'DeviceFolder',
+        root: activeRoot.id,
+        path: joinRelative(path, entry.name),
+      })
     } catch (e) {
       setError(String(e))
     }

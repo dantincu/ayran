@@ -7,7 +7,7 @@ import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../l
 import { pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { joinRelative } from '../../lib/localFs'
 import { FILEN_PREFIX, LOCAL_PREFIX, type DirListing, type FilenAccountInfo, type FileSource } from './sources'
-import { notebookFilesIn, readNotebookFile, resolveSource, type NotebookEntry } from './notebooks'
+import { describeLocation, notebookFilesIn, readNotebookFile, resolveSource, type NotebookEntry } from './notebooks'
 import { isNotebookFileName } from './notebookFile'
 import { isPageFileName } from './userAction'
 
@@ -113,8 +113,13 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
   }, [source, path, listing, currentPage, pageSize])
 
   const infoOf = (name: string): FileInfo | undefined => (source ? infos[`${source.viewKey}|${path}|${name}`] : undefined)
-  const listedAs = (name: string, info: FileInfo | undefined): NotebookEntry | undefined =>
-    listed.find((n) => (info?.guid && n.guid === info.guid) || (n.sourceId === sourceId && n.folder === path && n.fileName === name))
+  /** The listed entry for exactly this file (this source, this folder, this name) — not merely one that shares
+   * its GUID: a notebook file copied to another location is a legitimate, separate listing (see "Notebooks" in
+   * CLAUDE.md), so sharing a GUID alone must not read as "already in your list" here. */
+  const listedHere = (name: string): NotebookEntry | undefined => listed.find((n) => n.sourceId === sourceId && n.folder === path && n.fileName === name)
+  /** Other listed entries that share this file's GUID — shown as a separate, non-blocking note. */
+  const listedElsewhere = (name: string, info: FileInfo | undefined): NotebookEntry[] =>
+    info?.guid ? listed.filter((n) => n.guid === info.guid && !(n.sourceId === sourceId && n.folder === path && n.fileName === name)) : []
 
   function go(next: string) {
     setNewFolder(null)
@@ -224,14 +229,23 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
               }
               const isNotebook = mode !== 'page' && isNotebookFileName(entry.name)
               const info = isNotebook ? infoOf(entry.name) : undefined
-              const inList = isNotebook ? listedAs(entry.name, info) : undefined
+              const here = isNotebook ? listedHere(entry.name) : undefined
+              const elsewhere = isNotebook ? listedElsewhere(entry.name, info) : []
               const badges = isNotebook && (
                 <>
                   {info?.title && <span className="notes-badge notes-badge-notebook" title="The notebook's title">{info.title}</span>}
                   {info?.problem && <span className="notes-badge notes-badge-delete" title={info.problem}>not a valid notebook file</span>}
                   {info && !info.problem && (
-                    <span className={`notes-badge ${inList ? 'notes-badge-listed' : ''}`} title={inList ? `Listed as "${inList.title}"` : 'It exists here, but the app has not been told about it'}>
-                      {inList ? 'in your list' : 'not in your list yet'}
+                    <span className={`notes-badge ${here ? 'notes-badge-listed' : ''}`} title={here ? `Listed as "${here.title}"` : 'It exists here, but the app has not been told about it'}>
+                      {here ? 'in your list' : 'not in your list yet'}
+                    </span>
+                  )}
+                  {info && !info.problem && elsewhere.length > 0 && (
+                    <span
+                      className="notes-badge"
+                      title={`The same notebook (same GUID) is also listed at: ${elsewhere.map((n) => describeLocation(n, roots, accounts)).join('; ')}`}
+                    >
+                      also listed elsewhere
                     </span>
                   )}
                 </>

@@ -24,6 +24,22 @@ body,
 .pdf-viewer-page-indicator {
   min-width: 5em;
   text-align: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+
+.pdf-viewer-page-input {
+  font: inherit;
+  font-size: 13px;
+  width: 3em;
+  padding: 3px 4px;
+  text-align: right;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
 }
 
 .pdf-viewer-page {

@@ -1617,6 +1617,13 @@ select {
   justify-content: flex-end;
 }
 
+/* An empty reserved slot — TextFieldMenu's own floating portal positions its buttons over it (see
+   `data-text-menu-target`), rather than over the top-right corner of the text underneath. */
+.code-editor-menu-slot {
+  width: 80px;
+  align-self: stretch;
+}
+
 .code-editor {
   position: relative;
   flex: 1;
