@@ -2312,8 +2312,20 @@ select {
 }
 
 .media-video {
-  width: 100%;
-  height: 100%;
+  /* Deliberately *not* 100% × 100%: a known WebView2/DirectComposition bug
+     (MicrosoftEdge/WebView2Feedback#5574) stops presenting fresh pixels to the whole host window — not
+     just the video — whenever a <video> element's own painted box matches the host window's client area
+     to within 2px, together with bottom-anchored absolutely-positioned siblings (`.media-bar-bottom`,
+     right below). `.media-viewer`/`.media-stage` both sit at `inset: 0` (the whole window), so without
+     this the video's box matches it exactly. Reported live: the whole viewer going solid black with every
+     control invisible yet still hoverable/clickable (the DOM was fine — nothing painted) — a rendering
+     bug, not the JS crash it initially looked like; `Page.captureScreenshot` over CDP never reproduced it
+     (that capture path bypasses the real OS-compositor presentation step this bug is actually in), which
+     is why it took a live, on-screen report to catch. `calc(100% - 4px)`, centered by the flex container
+     already in place, insets the video by 2px on every side — the documented threshold (1px still
+     triggers it, 2px clears it) — with no other change needed. */
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
   object-fit: contain;
   background: #000;
 }
@@ -2376,6 +2388,11 @@ select {
 
 .media-progress-bar .progress-bar-fill {
   background: #fff;
+}
+
+.media-downloading-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .media-downloading-back {

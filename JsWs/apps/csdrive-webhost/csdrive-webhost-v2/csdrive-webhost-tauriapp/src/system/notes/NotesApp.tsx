@@ -1797,6 +1797,7 @@ export default function NotesApp({
             <CacheMenu source={source} path={item.file.path.replace(/^\/+/, '')} isDirectory={false} onDone={async () => { reload(); await load(false) }} onError={setError} onNotice={setNotice} />
           )}
           downloadProgress={source?.cache ? (item) => source.cache!.downloadProgress(item.file.path.replace(/^\/+/, '')) : undefined}
+          downloadError={source?.cache ? (item) => source.cache!.downloadError(item.file.path.replace(/^\/+/, '')) : undefined}
         />
       )}
 
@@ -1811,7 +1812,20 @@ export default function NotesApp({
           onClose={() => setDetails(null)}
           onError={setError}
         >
-          {source?.cache && !details.isDirectory && <CachingProgress source={source} path={details.path} size={details.size} />}
+          {source?.cache && !details.isDirectory && (
+            <CachingProgress
+              source={source}
+              path={details.path}
+              size={details.size}
+              onCached={() => {
+                // Optimistic — we just watched this file finish caching — plus a real listing refresh in
+                // the background, so the folder's own rows (and a reopened popup) agree with it too.
+                setDetails((d) => (d && d.entry ? { ...d, entry: { ...d.entry, cached: true } } : d))
+                void load(false)
+              }}
+              onError={setError}
+            />
+          )}
         </DetailsModal>
       )}
 
@@ -1886,42 +1900,101 @@ export default function NotesApp({
   )
 }
 
-/** The file details popup's own "it's being fetched into the cache right now" row (Filen only) — shown only
- * while a download of this exact file is actually in flight, polled every half second while the popup is
- * open. Nothing is shown for a file that's already cached, or isn't on Filen at all. */
-function CachingProgress({ source, path, size }: { source: FileSource; path: string; size: number | null }) {
+/** The file details popup's own caching section (Filen only): **while a download of this exact file is
+ * actually in flight**, a progress bar (polled every half second while the popup is open); **if the last
+ * attempt failed**, the real error instead of a silent stop, with a *Retry* button; **always**, a *Cache
+ * it manually…* option — the escape hatch for a file whose own download keeps failing: pick a copy of it
+ * the person already has some other way (a previous export, a copy from another device, …) and it's
+ * written straight into the cache, no network involved. Reported live (Android): a Filen download that
+ * stopped partway through, while the person was looking at this exact popup, left no error anywhere —
+ * reopening the file just started the whole thing over with no explanation. `onCached` fires once, the
+ * moment a download (or a manual seed) finishes successfully, so the popup's own "State" field can refresh
+ * rather than keep showing the stale snapshot from when it was opened. */
+function CachingProgress({ source, path, size, onCached, onError }: { source: FileSource; path: string; size: number | null; onCached?: () => void; onError: (message: string) => void }) {
   const [bytes, setBytes] = useState<number | null>(null)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+  const [seeding, setSeeding] = useState(false)
+  const wasDownloading = useRef(false)
+
   useEffect(() => {
     if (!source.cache) return
+    const cache = source.cache
     let cancelled = false
-    const poll = () =>
-      source.cache!.downloadProgress(path).then(
-        (b) => !cancelled && setBytes(b),
-        () => {}, // not fatal: the row just won't show a number
-      )
+    const poll = async () => {
+      const [b, e] = await Promise.all([cache.downloadProgress(path).catch(() => null), cache.downloadError(path).catch(() => null)])
+      if (cancelled) return
+      if (wasDownloading.current && b === null && e === null) onCached?.()
+      wasDownloading.current = b !== null
+      setBytes(b)
+      setDownloadError(e)
+    }
     void poll()
     const id = window.setInterval(poll, 500)
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source, path])
-  if (bytes === null) return null
+
+  async function retry() {
+    if (!source.cache) return
+    try {
+      await source.cache.hardRefresh(path)
+    } catch (e) {
+      onError(String(e))
+    }
+  }
+
+  async function seedManually() {
+    if (!source.cache) return
+    const file = (await pickDeviceFiles())[0]
+    if (!file) return
+    setSeeding(true)
+    try {
+      await source.cache.seedFromFile(path, file)
+      onCached?.()
+    } catch (e) {
+      onError(String(e))
+    } finally {
+      setSeeding(false)
+    }
+  }
+
+  if (!source.cache) return null
   return (
     <div>
-      <div className="modal-field-label">Caching</div>
-      {size ? (
+      {bytes !== null && (
         <>
-          <div className="progress-bar">
-            <div className="progress-bar-fill" style={{ width: `${Math.min(100, (bytes / size) * 100)}%` }} />
-          </div>
-          <div className="muted">
-            {formatBytesExact(bytes)} of {formatBytesExact(size)}
-          </div>
+          <div className="modal-field-label">Caching</div>
+          {size ? (
+            <>
+              <div className="progress-bar">
+                <div className="progress-bar-fill" style={{ width: `${Math.min(100, (bytes / size) * 100)}%` }} />
+              </div>
+              <div className="muted">
+                {formatBytesExact(bytes)} of {formatBytesExact(size)}
+              </div>
+            </>
+          ) : (
+            <div className="muted">{formatBytesExact(bytes)} fetched so far</div>
+          )}
         </>
-      ) : (
-        <div className="muted">{formatBytesExact(bytes)} fetched so far</div>
       )}
+      {bytes === null && downloadError && (
+        <>
+          <div className="modal-field-label">Caching failed</div>
+          <div className="muted">{downloadError}</div>
+          <button type="button" className="link-button" onClick={retry}>
+            Retry
+          </button>
+        </>
+      )}
+      <div>
+        <button type="button" className="link-button" onClick={seedManually} disabled={seeding}>
+          {seeding ? 'Caching it manually…' : 'Cache it manually from a file you already have…'}
+        </button>
+      </div>
     </div>
   )
 }

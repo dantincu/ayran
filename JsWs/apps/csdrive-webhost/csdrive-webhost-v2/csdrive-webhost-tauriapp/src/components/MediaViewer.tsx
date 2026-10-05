@@ -39,6 +39,11 @@ interface Props {
    * be in the cache before any of it can be served — however the player asks for it — so a large file can otherwise look like
    * a stuck, blank viewer with no explanation; this shows real progress (and a way back) instead. */
   downloadProgress?: (item: MediaItem) => Promise<number | null>
+  /** The error of the item's own most recent failed download, or `null` when nothing has failed since the
+   * last (or current) attempt — polled alongside `downloadProgress`, so a download that stops partway
+   * through shows a real error (with a retry) instead of the viewer just sitting there with nothing to
+   * explain why. */
+  downloadError?: (item: MediaItem) => Promise<string | null>
 }
 
 /** How long the bars of a playing video stay after they were brought back. */
@@ -46,7 +51,7 @@ const HIDE_AFTER_MS = 3000
 const SKIP_SECONDS = 10
 const MAX_ZOOM = 16
 
-export default function MediaViewer({ items, start, onClose, renderCache, downloadProgress }: Props) {
+export default function MediaViewer({ items, start, onClose, renderCache, downloadProgress, downloadError }: Props) {
   const [index, setIndex] = useState(Math.min(Math.max(start, 0), items.length - 1))
   const item = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -61,23 +66,27 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
   // Bytes fetched so far of the item's own download into the cache — `null` once a download that was seen
   // in flight finishes (or one was never actually needed: an already-cached file never shows a number here).
   const [downloadedBytes, setDownloadedBytes] = useState<number | null>(null)
+  const [cacheError, setCacheError] = useState<string | null>(null)
   const downloading = downloadedBytes !== null
   useEffect(() => {
     setDownloadedBytes(null)
-    if (!downloadProgress) return
+    setCacheError(null)
+    if (!downloadProgress && !downloadError) return
     let cancelled = false
-    const poll = () =>
-      downloadProgress(item).then(
-        (bytes) => !cancelled && setDownloadedBytes(bytes),
-        () => {}, // not fatal: the viewer just won't show a number
-      )
+    const poll = async () => {
+      const [bytes, err] = await Promise.all([downloadProgress?.(item).catch(() => null) ?? null, downloadError?.(item).catch(() => null) ?? null])
+      if (!cancelled) {
+        setDownloadedBytes(bytes)
+        setCacheError(err)
+      }
+    }
     void poll()
     const id = window.setInterval(poll, 500)
     return () => {
       cancelled = true
       window.clearInterval(id)
     }
-  }, [downloadProgress, item, reloads])
+  }, [downloadProgress, downloadError, item, reloads])
 
   useEffect(() => {
     let cancelled = false
@@ -169,6 +178,23 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
           <button type="button" className="media-downloading-back" onClick={onClose}>
             Back to the listing
           </button>
+        </div>
+      )}
+
+      {/* Shown only once the download has actually stopped (not while `downloading` above is still showing its own
+          overlay) — reported live: a download that failed partway through left the viewer with nothing to explain why. */}
+      {!downloading && cacheError && (
+        <div className="media-downloading">
+          <div>"{item.name}" couldn't be fetched into the cache.</div>
+          <div className="muted">{cacheError}</div>
+          <div className="media-downloading-actions">
+            <button type="button" className="media-downloading-back" onClick={() => setReloads((n) => n + 1)}>
+              Retry
+            </button>
+            <button type="button" className="media-downloading-back" onClick={onClose}>
+              Back to the listing
+            </button>
+          </div>
         </div>
       )}
 

@@ -407,6 +407,12 @@ pub struct Cache {
     /// Read by `download_progress`/the `filen_cache_download_progress` command so a window can show a
     /// progress bar for a large file instead of an unexplained wait.
     download_progress: StdMutex<HashMap<(i64, String), Arc<AtomicU64>>>,
+    /// The most recent download failure of `(user_id, path)`'s own account file, if the last attempt
+    /// failed and no newer attempt has started or succeeded since (a fresh attempt clears it before it
+    /// does anything else, so a retry never shows the stale old error while it's running). Read by
+    /// `download_error`/the `filen_cache_download_error` command so a window can show a real error — and
+    /// offer a retry — instead of a download that silently stopped with nothing to explain why.
+    download_errors: StdMutex<HashMap<(i64, String), String>>,
 }
 
 #[derive(sqlx::FromRow, Clone, Debug)]
@@ -556,6 +562,7 @@ impl Cache {
             locks: StdMutex::new(HashMap::new()),
             download_locks: StdMutex::new(HashMap::new()),
             download_progress: StdMutex::new(HashMap::new()),
+            download_errors: StdMutex::new(HashMap::new()),
         })
     }
 
@@ -1182,13 +1189,19 @@ impl Cache {
     /// **Publishes its own running byte count to `download_progress`** for the whole time it runs — an
     /// entry for `(user_id, path)` appears the moment the download starts and is removed when it ends,
     /// success or failure, so `download_progress`'s own read of it can tell "not downloading" from "0
-    /// bytes so far" by whether the entry exists at all.
+    /// bytes so far" by whether the entry exists at all. **And records a failure to `download_errors`**:
+    /// cleared the moment a (this, or any later) attempt starts, so a retry never shows the previous
+    /// attempt's stale error while it's running, and set only if this attempt itself fails.
     async fn download_file(&self, remote: &impl Remote, user_id: i64, path: &str, local: &Path) -> Result<(), String> {
         let key = (user_id, path.to_string());
+        self.download_errors.lock().unwrap().remove(&key);
         let progress = Arc::new(AtomicU64::new(0));
         self.download_progress.lock().unwrap().insert(key.clone(), progress.clone());
         let result = self.download_file_inner(remote, path, local, &progress).await;
         self.download_progress.lock().unwrap().remove(&key);
+        if let Err(e) = &result {
+            self.download_errors.lock().unwrap().insert(key, e.clone());
+        }
         result
     }
 
@@ -1228,6 +1241,14 @@ impl Cache {
     pub async fn download_progress(&self, user_id: i64, path: &str) -> Result<Option<u64>, String> {
         let path = norm_path(path)?;
         Ok(self.download_progress.lock().unwrap().get(&(user_id, path)).map(|p| p.load(Ordering::SeqCst)))
+    }
+
+    /// The error of `path`'s own most recent failed download, if the last attempt failed and nothing
+    /// newer has started or succeeded since — `None` otherwise (nothing has failed, or a fresher attempt
+    /// has already superseded the failure being asked about).
+    pub async fn download_error(&self, user_id: i64, path: &str) -> Result<Option<String>, String> {
+        let path = norm_path(path)?;
+        Ok(self.download_errors.lock().unwrap().get(&(user_id, path)).cloned())
     }
 
     /// Where the account's file is cached, having fetched it from Filen if it wasn't (or the cached copy
@@ -1289,6 +1310,72 @@ impl Cache {
             self.mark_cached(user_id, path).await?;
         }
         Ok(local)
+    }
+
+    // ── Manual cache-seeding: a window hands over a file it already has, instead of Filen ──────────
+
+    /// Ends `seed_begin`/`seed_push`/`seed_finish` (or `seed_abort`): the escape hatch for a file whose
+    /// ordinary download keeps failing or won't finish — the person supplies a copy of the file they
+    /// already have some other way (a previous export, a copy from another device, …), piece by piece,
+    /// written directly to where a normal download would have put it. `expected_size` is Filen's own
+    /// listed size for the file, when known: `seed_finish` refuses to finish if what was actually written
+    /// doesn't match, so a mismatched or unrelated file can't silently become "the cache" of this one.
+    pub async fn seed_push(&self, job: &mut SeedJob, bytes: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        job.file.write_all(bytes).map_err(io)?;
+        job.written += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Validates the file is real and known (a fresh listing, same as a normal download would check) and
+    /// opens a fresh `.part` file beside where its cached copy would go.
+    ///
+    /// **Takes the same `download_locks` entry a real download of this file would** — held for the job's
+    /// whole lifetime (`SeedJob` owns the guard, released when the job is finished, aborted, or simply
+    /// dropped) — so a manual seed and a real download of the exact same file can never run at the same
+    /// time and write over each other's `.part` file; whichever starts first makes the other wait, the
+    /// same coalescing `cached_file_account_unlocked` already relies on for two concurrent downloads.
+    pub async fn seed_begin(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<SeedJob, String> {
+        let path = norm_path(path)?;
+        let parent = parent_of(&path).ok_or("That's the root folder, not a file.")?;
+        let (local, expected_size) = {
+            let _guard = self.lock(user_id).await;
+            self.list_account(remote, user_id, &parent, false).await?;
+            let entry = self.entry(user_id, &path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
+            if entry.is_dir != 0 {
+                return Err(format!("\"{path}\" is a folder."));
+            }
+            (self.mirror_path(user_id, &path).await?, entry.size.map(|s| s as u64))
+        }; // the account-wide lock is released here, before the (possibly long-held) download lock below
+        let download_guard = self.download_lock(user_id, &path).await;
+        if let Some(dir) = local.parent() {
+            std::fs::create_dir_all(dir).map_err(io)?;
+        }
+        let mut part = local.as_os_str().to_owned();
+        part.push(".part");
+        let part = PathBuf::from(part);
+        let file = std::fs::File::create(&part).map_err(io)?;
+        Ok(SeedJob { user_id, path, part, local, file, written: 0, expected_size, _download_guard: download_guard })
+    }
+
+    pub async fn seed_finish(&self, job: SeedJob) -> Result<(), String> {
+        drop(job.file);
+        if let Some(expected) = job.expected_size {
+            if job.written != expected {
+                let _ = std::fs::remove_file(&job.part);
+                return Err(format!(
+                    "That file is {} bytes, but Filen's own listing says this file should be {} bytes. Nothing was cached — make sure it's the same file.",
+                    job.written, expected
+                ));
+            }
+        }
+        std::fs::rename(&job.part, &job.local).map_err(io)?;
+        self.mark_cached(job.user_id, &job.path).await
+    }
+
+    pub fn seed_abort(&self, job: SeedJob) {
+        drop(job.file);
+        let _ = std::fs::remove_file(&job.part);
     }
 
     async fn store_content(&self, user_id: i64, path: &str, local: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -2054,6 +2141,22 @@ impl Cache {
         self.delete_branch_files_and_rows(user_id, branch, &name).await?;
         Ok(CommitReport { committed: true, applied, conflicts })
     }
+}
+
+/// A manual cache-seeding job (`Cache::seed_begin`/`seed_push`/`seed_finish`/`seed_abort`): a window hands
+/// over a file it already has, in pieces, written directly to where a normal download would put it —
+/// nothing here ever touches Filen. Dropping an unfinished job (`seed_abort`) deletes its `.part` file.
+pub struct SeedJob {
+    user_id: i64,
+    path: String,
+    part: PathBuf,
+    local: PathBuf,
+    file: std::fs::File,
+    written: u64,
+    /// Filen's own listed size for the file, when known — `seed_finish` refuses unless `written` matches.
+    expected_size: Option<u64>,
+    /// Held for the job's whole lifetime — see `Cache::seed_begin`'s own doc comment.
+    _download_guard: tokio::sync::OwnedMutexGuard<()>,
 }
 
 /// A file being uploaded to the account (or into a branch) a piece at a time — from the webview's
@@ -3342,6 +3445,145 @@ mod tests {
             assert_eq!(bytes, b"0123456789");
             assert_eq!(during, Some(0), "an entry exists — the download is in flight — even before any bytes have arrived (the gate hadn't released yet)");
             assert_eq!(f.cache.download_progress(7, "/d/a.txt").await.unwrap(), None, "the entry is gone once the download has finished");
+        });
+    }
+
+    /// Reported live: a Filen download that stops partway through (Android, while the person was looking
+    /// at the file's details popup) left no error anywhere — the viewer, reopened, just started the whole
+    /// download over with no explanation of what had happened. A real failure must be visible, and a
+    /// fresh attempt (success or not) must never show a *stale* error from a previous one.
+    #[test]
+    fn a_failed_download_is_recorded_as_an_error_and_cleared_by_the_next_attempt() {
+        run(async {
+            let f = Fixture::new("download-error").await;
+            f.remote.put("/d/a.txt", "content");
+            assert_eq!(f.cache.download_error(7, "/d/a.txt").await.unwrap(), None, "nothing has failed yet");
+            f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap(); // warms the listing so going offline below fails the *download*, not the listing
+
+            f.remote.offline.store(true, Ordering::SeqCst);
+            let failed = f.cache.read(&f.remote, 7, None, "/d/a.txt").await;
+            assert!(failed.is_err(), "offline: the download fails");
+            let error = f.cache.download_error(7, "/d/a.txt").await.unwrap();
+            assert_eq!(error.as_deref(), Some("offline"), "the failure is recorded");
+
+            f.remote.offline.store(false, Ordering::SeqCst);
+            let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+            assert_eq!(bytes, b"content", "a retry, once online again, succeeds");
+            assert_eq!(f.cache.download_error(7, "/d/a.txt").await.unwrap(), None, "the successful retry cleared the previous failure — it isn't shown as still failing");
+        });
+    }
+
+    /// A download that's gated (held open, simulating "still stuck") and then fails must *not* leave the
+    /// stale error from a previous, already-superseded attempt showing while the new one is still running.
+    #[test]
+    fn starting_a_new_attempt_clears_the_previous_error_even_before_the_new_one_finishes() {
+        run(async {
+            let f = Fixture::new("download-error-clear").await;
+            f.remote.put("/d/a.txt", "content");
+            f.cache.list(&f.remote, 7, None, "/d", false).await.unwrap(); // warms the listing so offline failures below are the *download*'s, not the listing's
+            f.remote.offline.store(true, Ordering::SeqCst);
+            assert!(f.cache.read(&f.remote, 7, None, "/d/a.txt").await.is_err());
+            assert!(f.cache.download_error(7, "/d/a.txt").await.unwrap().is_some());
+
+            f.remote.offline.store(false, Ordering::SeqCst);
+            let gate = f.remote.gate_next_download();
+            let read = async { f.cache.read(&f.remote, 7, None, "/d/a.txt").await };
+            let check = async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                f.cache.download_error(7, "/d/a.txt").await.unwrap()
+            };
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                gate.notify_one();
+            };
+            let (_, error_while_in_flight, ()) = tokio::join!(read, check, release);
+            assert_eq!(error_while_in_flight, None, "the new attempt starting cleared the old error immediately, before it even finished");
+        });
+    }
+
+    /// The escape hatch for a file whose own download keeps failing: a window hands over bytes it already
+    /// has, which land exactly where a real download would have put them and are marked cached the same
+    /// way — read back afterward with no network involved at all.
+    #[test]
+    fn manually_seeding_a_file_caches_it_without_any_download() {
+        run(async {
+            let f = Fixture::new("seed").await;
+            f.remote.put("/d/a.txt", "the real content");
+            let mut job = f.cache.seed_begin(&f.remote, 7, "/d/a.txt").await.unwrap();
+            f.cache.seed_push(&mut job, b"the real ").await.unwrap();
+            f.cache.seed_push(&mut job, b"content").await.unwrap();
+            f.cache.seed_finish(job).await.unwrap();
+
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 0, "no network download ever happened");
+            let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+            assert_eq!(bytes, b"the real content");
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 0, "the read was served from the seeded cache, not fetched");
+        });
+    }
+
+    /// Seeding the wrong file (a different size than Filen's own listing expects) must be refused —
+    /// never silently accepted as "the cache" of a file it doesn't actually match.
+    #[test]
+    fn seeding_the_wrong_size_is_refused_and_nothing_is_cached() {
+        run(async {
+            let f = Fixture::new("seed-mismatch").await;
+            f.remote.put("/d/a.txt", "sixteen letters!"); // 16 bytes
+            let mut job = f.cache.seed_begin(&f.remote, 7, "/d/a.txt").await.unwrap();
+            f.cache.seed_push(&mut job, b"too short").await.unwrap(); // 9 bytes
+            let err = f.cache.seed_finish(job).await;
+            assert!(err.is_err(), "a size mismatch is refused: {err:?}");
+
+            // Nothing was cached: reading it now goes to the network, as if seeding had never happened.
+            let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+            assert_eq!(bytes, b"sixteen letters!");
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1, "the real content came from a real download, not the mismatched seed");
+        });
+    }
+
+    /// A manual seed and a real download of the exact same file must never run at once — each writes to
+    /// the identical `.part` file, so running concurrently would corrupt whichever one loses the race.
+    /// `seed_begin` takes the same `download_locks` entry a real download does, so one blocks the other.
+    #[test]
+    fn a_seed_and_a_real_download_of_the_same_file_never_run_at_once() {
+        run(async {
+            let f = Fixture::new("seed-vs-download").await;
+            f.remote.put("/d/a.txt", "downloaded content");
+            let gate = f.remote.gate_next_download();
+            let started = Instant::now();
+
+            let download = async { f.cache.read(&f.remote, 7, None, "/d/a.txt").await };
+            let seed_attempt = async {
+                tokio::time::sleep(Duration::from_millis(20)).await; // let the download take the lock first
+                // seed_begin must block here, waiting for the download's lock, rather than racing it.
+                let job = f.cache.seed_begin(&f.remote, 7, "/d/a.txt").await.unwrap();
+                let got_turn_after = started.elapsed();
+                f.cache.seed_abort(job); // give up cleanly once it's our turn — the point was only to prove we waited
+                got_turn_after
+            };
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(80)).await;
+                gate.notify_one();
+            };
+
+            let (downloaded, got_turn_after, ()) = tokio::join!(download, seed_attempt, release);
+            assert_eq!(downloaded.unwrap(), b"downloaded content", "the real download won, untouched by the seed attempt");
+            assert!(got_turn_after >= Duration::from_millis(75), "seed_begin only returned once the download's lock was released (~80ms in), not when the seed first tried (~20ms in): waited {got_turn_after:?}");
+        });
+    }
+
+    /// `seed_abort` leaves nothing cached — a read afterward still goes to the network.
+    #[test]
+    fn aborting_a_seed_leaves_nothing_cached() {
+        run(async {
+            let f = Fixture::new("seed-abort").await;
+            f.remote.put("/d/a.txt", "content");
+            let mut job = f.cache.seed_begin(&f.remote, 7, "/d/a.txt").await.unwrap();
+            f.cache.seed_push(&mut job, b"content").await.unwrap();
+            f.cache.seed_abort(job);
+
+            let bytes = f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+            assert_eq!(bytes, b"content");
+            assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1, "the aborted seed left nothing behind — this read is a real download");
         });
     }
 }

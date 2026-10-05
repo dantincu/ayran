@@ -15,7 +15,7 @@ use tauri::ipc::{Request, Response};
 use tauri::{AppHandle, State};
 
 use crate::device_files::ExportState;
-use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FileVersion, FilenRemote, Listing, UploadJob, VersionCheck};
+use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FileVersion, FilenRemote, Listing, SeedJob, UploadJob, VersionCheck};
 use crate::fs_scope::FsScope;
 
 /// An upload that a window feeds piece by piece (`filen_cache_upload_begin` … `_finish`).
@@ -46,6 +46,38 @@ impl UploadSessions {
     fn remove(&self, id: &str, owner: &str) -> Option<Upload> {
         let mut open = self.open.lock().unwrap();
         if open.get(id).is_some_and(|u| u.owner == owner) {
+            open.remove(id)
+        } else {
+            None
+        }
+    }
+}
+
+struct Seed {
+    /// Who began it: only that window may push to it.
+    owner: String,
+    started: Instant,
+    job: Arc<tokio::sync::Mutex<SeedJob>>,
+}
+
+/// The manual cache-seeding jobs in progress, by a random id — the same shape as `UploadSessions`, for
+/// `filen_cache_seed_begin` … `_finish` (or `_abort`). One that is never finished is dropped (and its
+/// temporary file with it) an hour after it began, the next time another begins.
+#[derive(Default)]
+pub struct SeedSessions {
+    open: StdMutex<HashMap<String, Seed>>,
+}
+
+impl SeedSessions {
+    fn get(&self, id: &str, owner: &str) -> Result<Arc<tokio::sync::Mutex<SeedJob>>, String> {
+        let open = self.open.lock().unwrap();
+        let seed = open.get(id).filter(|s| s.owner == owner).ok_or("That isn't open.")?;
+        Ok(seed.job.clone())
+    }
+
+    fn remove(&self, id: &str, owner: &str) -> Option<Seed> {
+        let mut open = self.open.lock().unwrap();
+        if open.get(id).is_some_and(|s| s.owner == owner) {
             open.remove(id)
         } else {
             None
@@ -230,6 +262,14 @@ pub async fn filen_cache_download_progress(cache: State<'_, Cache>, user_id: u64
     cache.download_progress(user_id as i64, &path).await
 }
 
+/// The error of `path`'s own most recent failed download, if the last attempt failed and nothing newer
+/// has started or succeeded since — `null` otherwise. For a window to show a real error (and offer a
+/// retry) instead of a download that silently stopped with nothing to explain why.
+#[tauri::command]
+pub async fn filen_cache_download_error(cache: State<'_, Cache>, user_id: u64, path: String) -> Result<Option<String>, String> {
+    cache.download_error(user_id as i64, &path).await
+}
+
 /// Asks Filen itself whether the file is still at `base`, the version that was being worked on.
 #[tauri::command]
 pub async fn filen_cache_check_version(
@@ -357,6 +397,58 @@ pub async fn filen_cache_upload_finish(
 #[tauri::command]
 pub fn filen_cache_upload_abort(window: crate::window_host::CallerWindow, sessions: State<'_, UploadSessions>, id: String) -> Result<(), String> {
     sessions.remove(&id, &crate::window_host::caller_key(&window));
+    Ok(())
+}
+
+/// Starts manually seeding the cache of `path` (the account's own file, not a branch's) from a file the
+/// window already has some other way — the escape hatch for a download that keeps failing or won't
+/// finish. Validates the file is real and known (a fresh listing) before returning the session's id; the
+/// window then sends it in pieces with `filen_cache_seed_chunk` and ends with `filen_cache_seed_finish`
+/// (or gives up with `filen_cache_seed_abort`). Nothing here ever reaches Filen.
+#[tauri::command]
+pub async fn filen_cache_seed_begin(window: crate::window_host::CallerWindow, app: AppHandle, cache: State<'_, Cache>, sessions: State<'_, SeedSessions>, user_id: u64, path: String) -> Result<String, String> {
+    let remote = prepare(&app, &cache, user_id).await?;
+    let job = cache.seed_begin(&remote, user_id as i64, &path).await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut open = sessions.open.lock().unwrap();
+    open.retain(|_, s| s.started.elapsed() < Duration::from_secs(3600));
+    open.insert(id.clone(), Seed { owner: crate::window_host::caller_key(&window), started: Instant::now(), job: Arc::new(tokio::sync::Mutex::new(job)) });
+    Ok(id)
+}
+
+/// The next piece of a seeding job: its bytes are the request body and `id` an argument (see
+/// `ipc::body_bytes`/`field`). Any size will do. A piece that fails ends the job.
+#[tauri::command]
+pub async fn filen_cache_seed_chunk(window: crate::window_host::CallerWindow, cache: State<'_, Cache>, sessions: State<'_, SeedSessions>, request: Request<'_>) -> Result<(), String> {
+    let id = crate::ipc::field(&request, "id")?;
+    let bytes = crate::ipc::body_bytes(&request)?;
+    let owner = crate::window_host::caller_key(&window);
+    let job = sessions.get(&id, &owner)?;
+    let pushed = cache.seed_push(&mut *job.lock().await, &bytes).await;
+    if pushed.is_err() {
+        sessions.remove(&id, &owner);
+    }
+    pushed
+}
+
+/// Ends a seeding job: refuses (and leaves the account's cache untouched) if what was sent doesn't match
+/// the size Filen's own listing expects for this file — otherwise the file now exists in the cache,
+/// exactly as if it had been downloaded.
+#[tauri::command]
+pub async fn filen_cache_seed_finish(window: crate::window_host::CallerWindow, cache: State<'_, Cache>, sessions: State<'_, SeedSessions>, id: String) -> Result<(), String> {
+    let job = sessions.remove(&id, &crate::window_host::caller_key(&window)).ok_or("That isn't open.")?;
+    let job = Arc::try_unwrap(job.job).map_err(|_| "That is still busy.".to_string())?.into_inner();
+    cache.seed_finish(job).await
+}
+
+/// Gives up a seeding job: nothing is left of it.
+#[tauri::command]
+pub fn filen_cache_seed_abort(window: crate::window_host::CallerWindow, cache: State<'_, Cache>, sessions: State<'_, SeedSessions>, id: String) -> Result<(), String> {
+    if let Some(seed) = sessions.remove(&id, &crate::window_host::caller_key(&window)) {
+        if let Ok(job) = Arc::try_unwrap(seed.job) {
+            cache.seed_abort(job.into_inner());
+        }
+    }
     Ok(())
 }
 

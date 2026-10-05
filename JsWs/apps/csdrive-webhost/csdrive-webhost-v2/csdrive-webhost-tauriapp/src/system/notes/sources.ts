@@ -147,6 +147,15 @@ export interface FileSource {
     /** Bytes of the file fetched so far, or `null` when it isn't being downloaded right now (not started,
      * already finished, or already cached) — for a progress bar while a large file is still being fetched. */
     downloadProgress(path: string): Promise<number | null>
+    /** The error of the file's own most recent failed download, or `null` when nothing has failed since
+     * the last (or current) attempt — for showing a real error, with a retry, instead of a download that
+     * silently stopped with nothing to explain why. */
+    downloadError(path: string): Promise<string | null>
+    /** The escape hatch for a file whose own download keeps failing: hands over a file the person already
+     * has some other way, piece by piece, written directly to where a real download would have put it —
+     * nothing here ever reaches Filen. Refuses (and caches nothing) if `file`'s size doesn't match what
+     * Filen's own listing says this file should be. */
+    seedFromFile(path: string, file: File): Promise<void>
   }
 
   // Filen only ────────────────────────────────────────────────────────────────
@@ -437,6 +446,20 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
       hardRefresh: (path) => invoke<void>('filen_cache_hard_refresh', { userId, path: filenPath(path) }),
       clear: (path) => invoke<void>('filen_cache_clear_item', { userId, path: filenPath(path) }),
       downloadProgress: (path) => invoke<number | null>('filen_cache_download_progress', { userId, path: filenPath(path) }),
+      downloadError: (path) => invoke<string | null>('filen_cache_download_error', { userId, path: filenPath(path) }),
+      async seedFromFile(path, file) {
+        const id = await invoke<string>('filen_cache_seed_begin', { userId, path: filenPath(path) })
+        try {
+          for (let at = 0; at < file.size; at += UPLOAD_PIECE) {
+            const piece = new Uint8Array(await file.slice(at, at + UPLOAD_PIECE).arrayBuffer())
+            await invokeWithBytes('filen_cache_seed_chunk', piece, { id })
+          }
+          await invoke('filen_cache_seed_finish', { id })
+        } catch (e) {
+          await invoke('filen_cache_seed_abort', { id }).catch(() => {})
+          throw e
+        }
+      },
     },
     exportFile: (path, name, token) => invoke<string>('filen_cache_export', { ...target, path: filenPath(path), name, token }),
     copyFromLocal: (path, root, source) => invoke<void>('filen_cache_upload_from_path', { ...target, path: filenPath(path), root, source }),
@@ -494,6 +517,8 @@ export function scopedSource(base: FileSource, root: string, label: string): Fil
       hardRefresh: (path) => cache.hardRefresh(at(path)),
       clear: (path) => cache.clear(at(path)),
       downloadProgress: (path) => cache.downloadProgress(at(path)),
+      downloadError: (path) => cache.downloadError(at(path)),
+      seedFromFile: (path, file) => cache.seedFromFile(at(path), file),
     }
   } else scoped.cache = undefined
   if (base.version) scoped.version = (path) => base.version!(at(path))

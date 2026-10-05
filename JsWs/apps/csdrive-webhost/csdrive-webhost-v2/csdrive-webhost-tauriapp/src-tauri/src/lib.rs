@@ -466,6 +466,7 @@ pub fn run() {
             filen_cache::filen_cache_discard_branch,
             filen_cache::filen_cache_version,
             filen_cache::filen_cache_download_progress,
+            filen_cache::filen_cache_download_error,
             filen_cache::filen_cache_check_version,
             filen_cache::filen_cache_rebase,
             filen_cache::filen_cache_set_locked,
@@ -475,6 +476,10 @@ pub fn run() {
             filen_cache::filen_cache_upload_chunk,
             filen_cache::filen_cache_upload_finish,
             filen_cache::filen_cache_upload_abort,
+            filen_cache::filen_cache_seed_begin,
+            filen_cache::filen_cache_seed_chunk,
+            filen_cache::filen_cache_seed_finish,
+            filen_cache::filen_cache_seed_abort,
             filen_cache::filen_cache_upload_from_path,
             filen_cache::filen_cache_download_to,
             filen_cache::filen_cache_export,
@@ -596,6 +601,7 @@ pub fn run() {
             app.manage(internal_clipboard::InternalClipboard::default());
             app.manage(device_files::ExportState::default());
             app.manage(filen_cache::UploadSessions::default());
+            app.manage(filen_cache::SeedSessions::default());
             app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));
             // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
             app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
