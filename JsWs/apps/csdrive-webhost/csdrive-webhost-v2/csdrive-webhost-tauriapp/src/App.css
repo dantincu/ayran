@@ -3079,3 +3079,49 @@ select {
 .theme-grid {
   flex-shrink: 0;
 }
+
+/* The editable list of seed colours a generated rotation draws near (Settings → Appearance → "Edit the seed
+   colours…"): one `.rotation-row` per colour — the native colour swatch, its name, a remove button — indented a
+   touch so it reads as nested under the "Edit the seed colours…" toggle rather than a sibling of it. */
+.key-colors-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 4px;
+  border-left: 2px solid var(--border);
+}
+
+.key-color-row input[type='color'] {
+  width: 32px;
+  height: 28px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.key-color-row input[type='text'] {
+  flex: 1;
+  min-width: 8em;
+}
+
+/* A saved key-colour list's own row: its name (a plain button — pressing it makes the list active) with a strip
+   of small swatches ahead of it (up to six, enough to give a feel for the list without a full preview) and a
+   remove button after, the same shape a saved theme's own row would have if it weren't a grid of cards. */
+.key-color-list-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-color-list-swatches {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.key-color-list-swatches span {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}

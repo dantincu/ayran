@@ -10,9 +10,10 @@ export type ColorMode = 'system' | 'light' | 'dark'
 export type RotationMode = 'ascending' | 'descending' | 'random'
 export type RotationUnit = 'seconds' | 'minutes' | 'hours' | 'days'
 
-/** Whether the rotation makes up its own colours near the six key hues instead of going through the catalog
- * (`appearance.rs`'s `KEY_COLORS`/`KEY_COLOR_NAMES`, fetched with `keyColorNames`) — `mode` above is then
- * meaningless (a generated rotation always goes forward through the six) and ignored. */
+/** Whether the rotation makes up its own colours near a list of key hues instead of going through the catalog
+ * (`appearance.rs`'s `KEY_COLORS`/`KEY_COLOR_NAMES` by default, fetched with `getKeyColors` — editable and
+ * replaceable, see "Editable seed colours" in CLAUDE.md) — `mode` above is then meaningless (a generated rotation
+ * always goes forward through the list) and ignored. */
 export interface GeneratedColors {
   enabled: boolean
   /** How far each RGB channel may drift from the key colour it is near, 0–255 (0: exactly the key colour). */
@@ -64,6 +65,20 @@ export interface CustomTheme {
   name: string
   light: ThemeColors
   dark: ThemeColors
+}
+
+/** One of the colours a generated rotation can be drawn near — see "Editable seed colours" in CLAUDE.md. `color`
+ * is a plain `#rrggbb` string, like every other colour this module handles. */
+export interface KeyColor {
+  name: string
+  color: string
+}
+
+/** A list of key colours the person saved for picking again later — the key-colour counterpart of `CustomTheme`. */
+export interface SavedKeyColorList {
+  id: string
+  name: string
+  colors: KeyColor[]
 }
 
 export interface Appearance {
@@ -298,9 +313,36 @@ export async function setRotation(rotation: Rotation): Promise<void> {
   applyAppearance(fromBackend(await invoke('set_appearance_rotation', { rotation })))
 }
 
-/** The six key hues' names, in the order a generated rotation cycles through them (`appearance.rs`'s own list,
- * not a second copy kept here that could drift from it). */
-export const getKeyColorNames = (): Promise<string[]> => invoke('key_color_names')
+/** The key colours a generated rotation is currently drawing near, in the order it cycles through them
+ * (`appearance.rs`'s own list, not a second copy kept here that could drift from it). Any window may ask (the
+ * same read-only trust level as `listThemes`). */
+export const getKeyColors = (): Promise<KeyColor[]> => invoke('get_key_colors')
+
+/** The compiled-in six key colours — what "Revert to the default colours" puts back. */
+export const getDefaultKeyColors = (): Promise<KeyColor[]> => invoke('get_default_key_colors')
+
+/** Sets the key colours a generated rotation draws near from now on. Only the admin-app is allowed to (the
+ * backend refuses anyone else) — editing the rotation's own seed colours is the same trust level as `setRotation`
+ * itself. Takes effect on the next drawn colour, not the one on screen now (same as changing the spread). */
+export async function setKeyColors(colors: KeyColor[]): Promise<KeyColor[]> {
+  return invoke('set_key_colors', { colors })
+}
+
+/** Every list of key colours the person has saved so far — for the dialog's own "Your saved colour lists". Any
+ * window may ask (the same read-only trust level as `listCustomThemes`). */
+export const listSavedKeyColorLists = (): Promise<SavedKeyColorList[]> => invoke('list_saved_key_color_lists')
+
+/** Saves `colors` as a new named list, so it can be picked again later. Only the admin-app is allowed to, like
+ * every other part of editing the rotation's own seed colours. */
+export async function saveKeyColorList(name: string, colors: KeyColor[]): Promise<SavedKeyColorList> {
+  return invoke('save_key_color_list', { name, colors })
+}
+
+/** Removes a saved key-colour list (not the currently active one — `setKeyColors` is for that). Only the
+ * admin-app is allowed to. */
+export async function deleteKeyColorList(id: string): Promise<void> {
+  await invoke('delete_key_color_list', { id })
+}
 
 /** Every custom theme saved so far — for the dialog's own "Your saved themes" grid. Any window may ask (the
  * same read-only trust level as `list_themes`), though only the Settings dialog actually does today. */

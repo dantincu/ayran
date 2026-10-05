@@ -1,16 +1,21 @@
 import { useEffect, useState } from 'react'
-import { Palette as PaletteIcon, Save, Trash2 } from 'lucide-react'
+import { Palette as PaletteIcon, Plus, Save, Trash2 } from 'lucide-react'
 import Modal from './Modal'
 import IconButton from './IconButton'
 import {
   currentAppearance,
   deleteCustomTheme,
-  getKeyColorNames,
+  deleteKeyColorList,
+  getDefaultKeyColors,
+  getKeyColors,
   isDark,
   listCustomThemes,
+  listSavedKeyColorLists,
   MIN_ROTATION_SECONDS,
   saveCustomTheme,
+  saveKeyColorList,
   setAppearance,
+  setKeyColors,
   setRotation,
   subscribeAppearance,
   UNIT_SECONDS,
@@ -18,9 +23,11 @@ import {
   type CustomTheme,
   type GeneratedColors,
   type GeneratedPalette,
+  type KeyColor,
   type Rotation,
   type RotationMode,
   type RotationUnit,
+  type SavedKeyColorList,
 } from '../lib/appearance'
 import { FAMILIES, themeById, THEMES } from '../lib/themes'
 
@@ -90,14 +97,23 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
   // The spread is typed the same way: kept as text so an empty box or one being edited doesn't fight the person,
   // sent only once it is a whole number 0–255.
   const [spreadText, setSpreadText] = useState(String(chosen.rotation.generated.spread))
-  const [keyColorNames, setKeyColorNames] = useState<string[]>([])
+  const [keyColors, setKeyColorsState] = useState<KeyColor[]>([])
+  const [editingKeyColors, setEditingKeyColors] = useState(false)
+  const [savedKeyColorLists, setSavedKeyColorLists] = useState<SavedKeyColorList[]>([])
+  // The inline "name it" box for saving the current seed-colour list — `null` while it's closed.
+  const [keyColorListName, setKeyColorListName] = useState<string | null>(null)
   const [customThemes, setCustomThemes] = useState<CustomTheme[]>([])
   // Which generated palette the inline "name it" box is open for, if either — `null` while it's closed.
   const [savingSlot, setSavingSlot] = useState<'current' | 'previous' | null>(null)
   const [themeName, setThemeName] = useState('')
   useEffect(() => subscribeAppearance(setChosen), [])
+  const refreshKeyColors = () => getKeyColors().then(setKeyColorsState).catch(() => setKeyColorsState([]))
   useEffect(() => {
-    getKeyColorNames().then(setKeyColorNames).catch(() => setKeyColorNames([]))
+    void refreshKeyColors()
+  }, [])
+  const refreshSavedKeyColorLists = () => listSavedKeyColorLists().then(setSavedKeyColorLists).catch(() => {})
+  useEffect(() => {
+    void refreshSavedKeyColorLists()
   }, [])
   const refreshCustomThemes = () => listCustomThemes().then(setCustomThemes).catch(() => {})
   useEffect(() => {
@@ -132,6 +148,40 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
     attempt(async () => {
       await deleteCustomTheme(t.id)
       await refreshCustomThemes()
+    })
+
+  // ── Editable seed colours (the generated rotation's own key colours) ──
+  const applyKeyColors = (next: KeyColor[]) =>
+    attempt(async () => {
+      setKeyColorsState(await setKeyColors(next))
+    })
+  const updateKeyColorName = (i: number, name: string) => setKeyColorsState((list) => list.map((c, idx) => (idx === i ? { ...c, name } : c)))
+  const commitKeyColorNames = () => void applyKeyColors(keyColors)
+  const updateKeyColorValue = (i: number, color: string) => {
+    const next = keyColors.map((c, idx) => (idx === i ? { ...c, color } : c))
+    setKeyColorsState(next)
+    void applyKeyColors(next)
+  }
+  const addKeyColor = () => void applyKeyColors([...keyColors, { name: `Colour ${keyColors.length + 1}`, color: '#808080' }])
+  // The list can never go empty from here (the backend would refuse it anyway) — the last colour's own remove
+  // button is disabled rather than letting the person hit that error.
+  const removeKeyColor = (i: number) => keyColors.length > 1 && void applyKeyColors(keyColors.filter((_, idx) => idx !== i))
+  const revertKeyColors = () =>
+    attempt(async () => {
+      setKeyColorsState(await setKeyColors(await getDefaultKeyColors()))
+    })
+  const confirmSavingKeyColorList = () =>
+    attempt(async () => {
+      if (keyColorListName === null) return
+      await saveKeyColorList(keyColorListName, keyColors)
+      setKeyColorListName(null)
+      await refreshSavedKeyColorLists()
+    })
+  const useKeyColorList = (list: SavedKeyColorList) => void applyKeyColors(list.colors)
+  const removeKeyColorList = (list: SavedKeyColorList) =>
+    attempt(async () => {
+      await deleteKeyColorList(list.id)
+      await refreshSavedKeyColorLists()
     })
 
   const seconds = Number(every) * UNIT_SECONDS[unit]
@@ -256,8 +306,83 @@ function AppearanceDialog({ onClose }: { onClose: () => void }) {
             </div>
             {!spreadOk && <div className="rotation-warning">Type a whole number, 0 to 255.</div>}
             <p className="muted">
-              At every step, the next of these six hues is drawn near, one channel at a time: {keyColorNames.length ? keyColorNames.join(', ') : 'Red, Yellow, Green, Teal, Blue, Magenta'}. Choosing a theme below has no effect while this is on.
+              At every step, the next of these {keyColors.length || 6} colours is drawn near, one channel at a time: {keyColors.length ? keyColors.map((c) => c.name).join(', ') : 'Red, Yellow, Green, Teal, Blue, Magenta'}. Choosing a theme below has no effect while this is on.
             </p>
+
+            <div className="rotation-row">
+              <button type="button" onClick={() => setEditingKeyColors((e) => !e)}>
+                <PaletteIcon size={14} aria-hidden="true" /> {editingKeyColors ? 'Done editing the seed colours' : 'Edit the seed colours…'}
+              </button>
+            </div>
+
+            {editingKeyColors && (
+              <div className="key-colors-editor">
+                {keyColors.map((c, i) => (
+                  <div key={i} className="rotation-row key-color-row">
+                    <input type="color" value={c.color} onChange={(e) => updateKeyColorValue(i, e.target.value)} aria-label={`Colour ${i + 1}'s own colour`} />
+                    <input
+                      type="text"
+                      value={c.name}
+                      onChange={(e) => updateKeyColorName(i, e.target.value)}
+                      onBlur={commitKeyColorNames}
+                      onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+                      aria-label={`Colour ${i + 1}'s own name`}
+                    />
+                    <IconButton icon={Trash2} label="Remove this colour" variant="danger" disabled={keyColors.length <= 1} onClick={() => removeKeyColor(i)} />
+                  </div>
+                ))}
+                <div className="rotation-row">
+                  <button type="button" onClick={addKeyColor}>
+                    <Plus size={14} aria-hidden="true" /> Add a colour
+                  </button>
+                  <button type="button" onClick={() => void revertKeyColors()}>
+                    Revert to the default colours
+                  </button>
+                  <button type="button" onClick={() => setKeyColorListName('')}>
+                    <Save size={14} aria-hidden="true" /> Save this list…
+                  </button>
+                </div>
+                {keyColorListName !== null && (
+                  <div className="rotation-row">
+                    <input
+                      type="text"
+                      autoFocus
+                      placeholder="Name this list"
+                      value={keyColorListName}
+                      onChange={(e) => setKeyColorListName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void confirmSavingKeyColorList()
+                        else if (e.key === 'Escape') setKeyColorListName(null)
+                      }}
+                    />
+                    <button type="button" className="primary" onClick={() => void confirmSavingKeyColorList()} disabled={keyColorListName.trim() === ''}>
+                      Save
+                    </button>
+                    <button type="button" onClick={() => setKeyColorListName(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                )}
+                {savedKeyColorLists.length > 0 && (
+                  <>
+                    <div className="muted">Your saved colour lists</div>
+                    {savedKeyColorLists.map((list) => (
+                      <div key={list.id} className="key-color-list-row">
+                        <span className="key-color-list-swatches" aria-hidden="true">
+                          {list.colors.slice(0, 6).map((c, i) => (
+                            <span key={i} style={{ background: c.color }} />
+                          ))}
+                        </span>
+                        <button type="button" onClick={() => void useKeyColorList(list)}>
+                          {list.name}
+                        </button>
+                        <IconButton icon={Trash2} label={`Remove the saved list "${list.name}"`} variant="danger" onClick={() => void removeKeyColorList(list)} />
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
 
             {/* Saving a draw is the only way to keep one: a generated colour scheme is otherwise gone the moment the rotation moves
                 on, or the app closes. The previous draw stays offered for one step after the rotation has moved past it, so noticing

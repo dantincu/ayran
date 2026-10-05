@@ -46,11 +46,26 @@ const PREVIOUS_GENERATED_KEY: &str = "appearance.previousGenerated";
 /// other way to keep one: the catalog is compiled in, so a "custom" theme is the only kind that can be added at
 /// all) kept as its own list, never mixed into the compiled-in catalog it sits beside in the picker.
 const CUSTOM_THEMES_KEY: &str = "appearance.customThemes";
+/// The key colours a generated rotation is currently drawing near — absent (or empty) means the compiled-in
+/// default, [`KEY_COLORS`]/[`KEY_COLOR_NAMES`]. See "Editable seed colours" below.
+const KEY_COLORS_KEY: &str = "appearance.keyColors";
+/// Every list of key colours the person has saved for picking again later — the key-colour counterpart of
+/// [`CUSTOM_THEMES_KEY`], kept the same way and for the same reason (there's nowhere else a list that isn't the
+/// one currently active could live).
+const SAVED_KEY_COLOR_LISTS_KEY: &str = "appearance.savedKeyColorLists";
 /// The keys of the global settings that only this module writes.
 pub const RESERVED_PREFIX: &str = "appearance.";
 /// A saved custom theme's name is at most this many characters — plenty for a short, readable label, the same
 /// order of magnitude as a branch's own name limit (100, `docs/strategies/folder-pairs-strategy.md`'s neighbour).
 pub const MAX_CUSTOM_THEME_NAME_LEN: usize = 80;
+/// A key colour's own name is shorter — it's a one- or two-word label ("Red", "Sea foam"), not a theme's title.
+pub const MAX_KEY_COLOR_NAME_LEN: usize = 40;
+/// A saved key-colour list's name is the same order of magnitude as a saved theme's.
+pub const MAX_SAVED_KEY_COLOR_LIST_NAME_LEN: usize = 80;
+/// At least one colour to draw from (`generated_rgb`'s `% len()` would panic at zero), and a ceiling mostly to
+/// keep the dialog's own list from growing unreasonably — a longer list just means a longer cycle before it
+/// repeats, nothing breaks past this, but there's no real use for dozens of seed colours either.
+pub const MAX_KEY_COLORS: usize = 24;
 
 pub const DEFAULT_THEME: &str = "ayran-orange";
 const MODES: [&str; 3] = ["system", "light", "dark"];
@@ -235,6 +250,26 @@ pub struct CustomTheme {
     pub dark: ThemeColors,
 }
 
+/// One colour a generated rotation can be drawn near — see "Editable seed colours" below. `color` is a plain
+/// `#rrggbb` string, like every other colour this module stores (`ThemeColors`' own fields); never trusted into a
+/// CSS variable or parsed until `validate_key_colors` has checked it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct KeyColor {
+    pub name: String,
+    pub color: String,
+}
+
+/// A list of key colours the person saved for picking again later — the key-colour counterpart of
+/// [`CustomTheme`], same reasoning: there's nowhere else a list that isn't the currently active one could live.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedKeyColorList {
+    pub id: String,
+    pub name: String,
+    pub colors: Vec<KeyColor>,
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Appearance {
@@ -323,12 +358,14 @@ pub fn next_theme(current: &str, mode: &str, ids: &[&str], random: u64) -> Strin
     ids[index].to_string()
 }
 
-// ─── Generated colours: made up near six key hues instead of picked from the catalog ───────────────────────────
+// ─── Generated colours: made up near a list of key hues instead of picked from the catalog ──────────────────────
 
-/// Full-saturation RGB, in the order a generated rotation cycles through them — "the next one of these six
-/// colours", always forward, never ascending/descending/random (those only mean something for a fixed list).
+/// Full-saturation RGB, in the order a generated rotation cycles through them by default — "the next one of these
+/// six colours", always forward, never ascending/descending/random (those only mean something for a fixed list).
 /// "Teal" here is cyan (0, 255, 255): the six are the RGB colour wheel's primaries and secondaries, evenly spaced,
-/// so a person's own "close to red" / "close to yellow" reads as adjacent stops on the same wheel.
+/// so a person's own "close to red" / "close to yellow" reads as adjacent stops on the same wheel. **This is only
+/// the *default*** — see "Editable seed colours" below: the list actually in use is [`read_key_colors`]'s, which
+/// falls back to exactly this (via [`default_key_colors`]) until the person changes it.
 pub const KEY_COLORS: [(u8, u8, u8); 6] = [(255, 0, 0), (255, 255, 0), (0, 255, 0), (0, 255, 255), (0, 0, 255), (255, 0, 255)];
 pub const KEY_COLOR_NAMES: [&str; 6] = ["Red", "Yellow", "Green", "Teal", "Blue", "Magenta"];
 const DEFAULT_SPREAD: u8 = 64;
@@ -342,15 +379,72 @@ fn generated_channel(key: u8, spread: u8, random: u32) -> u8 {
     (key as i32 + offset).clamp(0, 255) as u8
 }
 
-/// The RGB drawn near `KEY_COLORS[key_index]`, each channel independently — never a hue-wheel rotation, so a big
-/// spread can pull one channel toward a neighbour's while another stays put, which is what "close to" means here.
-fn generated_rgb(key_index: usize, spread: u8, randoms: [u32; 3]) -> (u8, u8, u8) {
-    let (kr, kg, kb) = KEY_COLORS[key_index % KEY_COLORS.len()];
+/// The RGB drawn near `colors[key_index % colors.len()]`, each channel independently — never a hue-wheel
+/// rotation, so a big spread can pull one channel toward a neighbour's while another stays put, which is what
+/// "close to" means here. `colors` is never empty by the time this runs — [`read_key_colors`] guarantees it.
+fn generated_rgb(colors: &[(u8, u8, u8)], key_index: usize, spread: u8, randoms: [u32; 3]) -> (u8, u8, u8) {
+    let (kr, kg, kb) = colors[key_index % colors.len()];
     (generated_channel(kr, spread, randoms[0]), generated_channel(kg, spread, randoms[1]), generated_channel(kb, spread, randoms[2]))
 }
 
 fn to_hex((r, g, b): (u8, u8, u8)) -> String {
     format!("#{r:02x}{g:02x}{b:02x}")
+}
+
+/// Parses a `#rrggbb` string already checked by [`hex_color_valid`] — a malformed channel (there shouldn't be
+/// one, by the time this is called) reads as `0` rather than panicking, since a seed colour is cosmetic, not
+/// something worth crashing the rotation's background task over.
+fn from_hex(s: &str) -> (u8, u8, u8) {
+    let byte = |slice: &str| u8::from_str_radix(slice, 16).unwrap_or(0);
+    (byte(&s[1..3]), byte(&s[3..5]), byte(&s[5..7]))
+}
+
+/// The compiled-in six, as the same `{name, color}` shape a saved or edited list has — what "revert to the
+/// default" puts back, and what a fresh install starts from.
+fn default_key_colors() -> Vec<KeyColor> {
+    KEY_COLOR_NAMES.iter().zip(KEY_COLORS.iter()).map(|(&name, &rgb)| KeyColor { name: name.to_string(), color: to_hex(rgb) }).collect()
+}
+
+/// The key colours a generated rotation is currently drawing near — what was last saved with [`set_key_colors`],
+/// or the compiled-in default when nothing was (a fresh install, or the stored value is somehow empty/malformed:
+/// treated the same as "nothing saved" rather than refusing to rotate at all).
+async fn read_key_colors(pool: &sqlx::SqlitePool) -> Vec<KeyColor> {
+    get_setting(pool, KEY_COLORS_KEY)
+        .await
+        .and_then(|json| serde_json::from_str::<Vec<KeyColor>>(&json).ok())
+        .filter(|list| !list.is_empty())
+        .unwrap_or_else(default_key_colors)
+}
+
+/// Every key-colour list saved so far (`[]` when none has been) — `list_saved_key_color_lists` and
+/// `save_key_color_list`/`delete_key_color_list` all go through this rather than each keeping their own copy of
+/// how the list is stored, the same pattern `read_custom_themes` already follows.
+async fn read_saved_key_color_lists(pool: &sqlx::SqlitePool) -> Vec<SavedKeyColorList> {
+    get_setting(pool, SAVED_KEY_COLOR_LISTS_KEY).await.and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+}
+
+/// A key-colour list must have at least one colour (`generated_rgb`'s `% len()` would panic at zero) and at most
+/// [`MAX_KEY_COLORS`], and every colour needs a non-empty name (at most [`MAX_KEY_COLOR_NAME_LEN`] characters) and
+/// a real `#rrggbb` value.
+fn validate_key_colors(colors: &[KeyColor]) -> Result<(), String> {
+    if colors.is_empty() {
+        return Err("There must be at least one colour.".to_string());
+    }
+    if colors.len() > MAX_KEY_COLORS {
+        return Err(format!("At most {MAX_KEY_COLORS} colours."));
+    }
+    for c in colors {
+        if c.name.trim().is_empty() {
+            return Err("Every colour needs a name.".to_string());
+        }
+        if c.name.chars().count() > MAX_KEY_COLOR_NAME_LEN {
+            return Err(format!("A colour's name is at most {MAX_KEY_COLOR_NAME_LEN} characters."));
+        }
+        if !hex_color_valid(&c.color) {
+            return Err(format!("'{}' isn't a colour of the form #rrggbb.", c.name));
+        }
+    }
+    Ok(())
 }
 
 /// `a` moved `t` of the way toward `b` (0.0 stays `a`, 1.0 becomes `b`), per channel.
@@ -446,9 +540,9 @@ fn palette_for(rgb: (u8, u8, u8), dark: bool) -> ThemeColors {
     }
 }
 
-/// A fresh `GeneratedPalette` for `key_index`, drawn with `randoms` (three offsets — see [`generated_rgb`]).
-fn generated_palette(key_index: usize, spread: u8, randoms: [u32; 3]) -> GeneratedPalette {
-    let rgb = generated_rgb(key_index, spread, randoms);
+/// A fresh `GeneratedPalette` for `key_index` of `colors`, drawn with `randoms` (three offsets — see `generated_rgb`).
+fn generated_palette(colors: &[(u8, u8, u8)], key_index: usize, spread: u8, randoms: [u32; 3]) -> GeneratedPalette {
+    let rgb = generated_rgb(colors, key_index, spread, randoms);
     GeneratedPalette { key_index: key_index as u8, light: palette_for(rgb, false), dark: palette_for(rgb, true) }
 }
 
@@ -488,12 +582,15 @@ async fn read(pool: &sqlx::SqlitePool) -> Appearance {
     Appearance::new(theme, mode, rotation, generated, previous_generated, custom)
 }
 
-/// Draws a fresh palette for the next key colour after `previous` (`None`: the first one, key 0 — red), persists
-/// it and returns it — the one place both `rotate_if_due` and turning the generated rotation on call into, so a
-/// person is never left looking at "generated colours, enabled" with nothing actually drawn yet.
+/// Draws a fresh palette for the next key colour after `previous` (`None`: the first one, key 0), from whichever
+/// list of key colours is active right now (`read_key_colors` — the compiled-in default, or whatever was saved
+/// with `set_key_colors`), persists it and returns it — the one place both `rotate_if_due` and turning the
+/// generated rotation on call into, so a person is never left looking at "generated colours, enabled" with
+/// nothing actually drawn yet.
 async fn draw_generated(pool: &sqlx::SqlitePool, previous: Option<&GeneratedPalette>, spread: u8) -> Result<GeneratedPalette, String> {
-    let key_index = previous.map_or(0, |p| (p.key_index as usize + 1) % KEY_COLORS.len());
-    let palette = generated_palette(key_index, spread, random_channel_offsets());
+    let colors: Vec<(u8, u8, u8)> = read_key_colors(pool).await.iter().map(|k| from_hex(&k.color)).collect();
+    let key_index = previous.map_or(0, |p| (p.key_index as usize + 1) % colors.len());
+    let palette = generated_palette(&colors, key_index, spread, random_channel_offsets());
     write(pool, GENERATED_KEY, &serde_json::to_string(&palette).map_err(|e| e.to_string())?).await?;
     Ok(palette)
 }
@@ -599,11 +696,73 @@ pub fn list_themes() -> Vec<&'static str> {
     THEME_IDS.to_vec()
 }
 
-/// The six key hues' names, in the order a generated rotation cycles through them — for the dialog's legend,
-/// rather than a second, hand-kept copy of the list on the frontend that could drift from [`KEY_COLORS`]'s own.
+/// The key colours a generated rotation is currently drawing near, in the order it cycles through them — for the
+/// dialog's own legend and its editable list, rather than a second, hand-kept copy on the frontend that could
+/// drift from the backend's own. Any window (the same read-only trust level as `list_themes`).
 #[tauri::command]
-pub fn key_color_names() -> Vec<&'static str> {
-    KEY_COLOR_NAMES.to_vec()
+pub async fn get_key_colors(state: tauri::State<'_, AppDbState>) -> Result<Vec<KeyColor>, String> {
+    Ok(read_key_colors(&state.pool).await)
+}
+
+/// The compiled-in six key colours — what "Revert to the default colours" puts back, and what a fresh install
+/// starts from. Separate from `get_key_colors` so the dialog can show *both* at once (what's active, and what
+/// reverting would produce) without the frontend keeping its own copy of the default.
+#[tauri::command]
+pub fn get_default_key_colors() -> Vec<KeyColor> {
+    default_key_colors()
+}
+
+/// Sets the key colours a generated rotation draws near from now on. **Admin-app only** — editing the seed
+/// colours is editing the rotation's own configuration, the same trust level `set_appearance_rotation` already
+/// keeps to the admin-app alone. Takes effect on the *next* drawn colour, same as changing the spread does: the
+/// colour currently on screen (if generated colours are on) is left exactly as it is, so saving a changed list
+/// doesn't recolour the window out from under the person for no reason they asked for.
+#[tauri::command]
+pub async fn set_key_colors(window: crate::window_host::CallerWindow, state: tauri::State<'_, AppDbState>, colors: Vec<KeyColor>) -> Result<Vec<KeyColor>, String> {
+    crate::window_host::require_admin(&window, "set_key_colors")?;
+    validate_key_colors(&colors)?;
+    write(&state.pool, KEY_COLORS_KEY, &serde_json::to_string(&colors).map_err(|e| e.to_string())?).await?;
+    Ok(colors)
+}
+
+/// Every list of key colours the person has saved so far (`[]` when none has been). Any window (the same
+/// read-only trust level as `list_custom_themes`).
+#[tauri::command]
+pub async fn list_saved_key_color_lists(state: tauri::State<'_, AppDbState>) -> Result<Vec<SavedKeyColorList>, String> {
+    Ok(read_saved_key_color_lists(&state.pool).await)
+}
+
+/// Saves `colors` as a new named list, so it can be picked again later. **Admin-app only** — the key-colour
+/// counterpart of `save_custom_theme`, kept to the same trust level as every other part of editing the rotation's
+/// own configuration (unlike `save_custom_theme` itself, which *is* open to any window: saving a plain theme
+/// isn't configuring the rotation, only remembering a colour scheme to look at — a different thing).
+#[tauri::command]
+pub async fn save_key_color_list(window: crate::window_host::CallerWindow, state: tauri::State<'_, AppDbState>, name: String, colors: Vec<KeyColor>) -> Result<SavedKeyColorList, String> {
+    crate::window_host::require_admin(&window, "save_key_color_list")?;
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("Give the list a name.".to_string());
+    }
+    if trimmed.chars().count() > MAX_SAVED_KEY_COLOR_LIST_NAME_LEN {
+        return Err(format!("A list's name is at most {MAX_SAVED_KEY_COLOR_LIST_NAME_LEN} characters."));
+    }
+    validate_key_colors(&colors)?;
+    let mut lists = read_saved_key_color_lists(&state.pool).await;
+    let saved = SavedKeyColorList { id: format!("keycolors-{}", uuid::Uuid::new_v4()), name: trimmed.to_string(), colors };
+    lists.push(saved.clone());
+    write(&state.pool, SAVED_KEY_COLOR_LISTS_KEY, &serde_json::to_string(&lists).map_err(|e| e.to_string())?).await?;
+    Ok(saved)
+}
+
+/// Removes a saved key-colour list (not the *active* one — see `set_key_colors` for that; this only forgets a
+/// saved preset). **Admin-app only**, same as the rest of editing this configuration.
+#[tauri::command]
+pub async fn delete_key_color_list(window: crate::window_host::CallerWindow, state: tauri::State<'_, AppDbState>, id: String) -> Result<(), String> {
+    crate::window_host::require_admin(&window, "delete_key_color_list")?;
+    let mut lists = read_saved_key_color_lists(&state.pool).await;
+    lists.retain(|l| l.id != id);
+    write(&state.pool, SAVED_KEY_COLOR_LISTS_KEY, &serde_json::to_string(&lists).map_err(|e| e.to_string())?).await?;
+    Ok(())
 }
 
 /// Chooses the theme and the mode of the whole app. **Any window may** — and a rotation that is on goes on, from the theme chosen, with its
@@ -761,7 +920,7 @@ mod tests {
 
     #[test]
     fn the_reserved_keys_are_the_ones_this_module_writes() {
-        for key in [THEME_KEY, MODE_KEY, ROTATION_KEY, GENERATED_KEY, PREVIOUS_GENERATED_KEY, CUSTOM_THEMES_KEY] {
+        for key in [THEME_KEY, MODE_KEY, ROTATION_KEY, GENERATED_KEY, PREVIOUS_GENERATED_KEY, CUSTOM_THEMES_KEY, KEY_COLORS_KEY, SAVED_KEY_COLOR_LISTS_KEY] {
             assert!(key.starts_with(RESERVED_PREFIX));
         }
     }
@@ -836,10 +995,10 @@ mod tests {
 
     #[test]
     fn drawing_generated_colours_cycles_through_the_six_keys_in_order() {
-        let mut palette = generated_palette(0, 64, [0, 0, 0]);
+        let mut palette = generated_palette(&KEY_COLORS, 0, 64, [0, 0, 0]);
         for expected in [1u8, 2, 3, 4, 5, 0, 1] {
             let key_index = (palette.key_index as usize + 1) % KEY_COLORS.len();
-            palette = generated_palette(key_index, 64, [0, 0, 0]);
+            palette = generated_palette(&KEY_COLORS, key_index, 64, [0, 0, 0]);
             assert_eq!(palette.key_index, expected);
         }
     }
@@ -858,7 +1017,7 @@ mod tests {
         for key_index in 0..KEY_COLORS.len() {
             for spread in [0u8, 64, 128, 255] {
                 for randoms in [[0u32, 0, 0], [u32::MAX, u32::MAX, u32::MAX], [12345, 999_999, 42]] {
-                    let palette = generated_palette(key_index, spread, randoms);
+                    let palette = generated_palette(&KEY_COLORS, key_index, spread, randoms);
                     for colors in [&palette.light, &palette.dark] {
                         let bg = hex_to_rgb(&colors.bg);
                         let fg = hex_to_rgb(&colors.fg);
@@ -922,6 +1081,49 @@ mod tests {
         let mut bad = good();
         bad.accent = "not-a-colour".into();
         assert!(validate_theme_colors(&bad).unwrap_err().contains("accent"));
+    }
+
+    #[test]
+    fn from_hex_and_to_hex_round_trip() {
+        for rgb in [(0, 0, 0), (255, 255, 255), (18, 52, 86), (255, 0, 128)] {
+            assert_eq!(from_hex(&to_hex(rgb)), rgb);
+        }
+    }
+
+    #[test]
+    fn the_default_key_colours_match_the_compiled_in_six() {
+        let defaults = default_key_colors();
+        assert_eq!(defaults.len(), 6);
+        for (entry, (&name, &rgb)) in defaults.iter().zip(KEY_COLOR_NAMES.iter().zip(KEY_COLORS.iter())) {
+            assert_eq!(entry.name, name);
+            assert_eq!(from_hex(&entry.color), rgb);
+        }
+    }
+
+    #[test]
+    fn a_key_colour_list_is_checked_before_it_can_be_saved_or_made_active() {
+        assert!(validate_key_colors(&[]).unwrap_err().contains("at least one"));
+        let too_many: Vec<KeyColor> = (0..=MAX_KEY_COLORS).map(|i| KeyColor { name: format!("c{i}"), color: "#000000".into() }).collect();
+        assert!(validate_key_colors(&too_many).unwrap_err().contains("At most"));
+        assert!(validate_key_colors(&[KeyColor { name: "".into(), color: "#ffffff".into() }]).unwrap_err().contains("needs a name"));
+        assert!(validate_key_colors(&[KeyColor { name: "   ".into(), color: "#ffffff".into() }]).unwrap_err().contains("needs a name"), "whitespace-only isn't a name");
+        let long_name = "x".repeat(MAX_KEY_COLOR_NAME_LEN + 1);
+        assert!(validate_key_colors(&[KeyColor { name: long_name, color: "#ffffff".into() }]).unwrap_err().contains("at most"));
+        assert!(validate_key_colors(&[KeyColor { name: "Teal".into(), color: "cyan".into() }]).unwrap_err().contains("Teal"), "names the bad colour by its own entry's name");
+        assert!(validate_key_colors(&default_key_colors()).is_ok());
+        assert!(validate_key_colors(&[KeyColor { name: "Solo".into(), color: "#123456".into() }]).is_ok(), "exactly one colour is enough");
+    }
+
+    #[test]
+    fn generated_rgb_and_palette_draw_from_whichever_list_is_given_them_not_always_the_compiled_in_default() {
+        // A custom, two-colour list — nothing here should ever reach for `KEY_COLORS` directly.
+        let custom = [(10u8, 20, 30), (200u8, 150, 100)];
+        assert_eq!(generated_rgb(&custom, 0, 0, [0, 0, 0]), (10, 20, 30));
+        assert_eq!(generated_rgb(&custom, 1, 0, [0, 0, 0]), (200, 150, 100));
+        assert_eq!(generated_rgb(&custom, 2, 0, [0, 0, 0]), (10, 20, 30), "wraps by the custom list's own length (2), not 6");
+        let palette = generated_palette(&custom, 1, 0, [0, 0, 0]);
+        assert_eq!(palette.key_index, 1);
+        assert_eq!(hex_to_rgb(&palette.light.accent), (200, 150, 100), "the raw accent is the drawn colour itself, undiluted");
     }
 
     /// Test-only inverse of `to_hex`, to check contrast against the strings a palette actually stores.
