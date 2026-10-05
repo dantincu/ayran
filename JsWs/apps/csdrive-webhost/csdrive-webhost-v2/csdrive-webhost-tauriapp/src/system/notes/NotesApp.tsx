@@ -591,7 +591,7 @@ export default function NotesApp({
         const listed = folder === path ? entries : (await source.list(folder)).entries
         const items: MediaItem[] = listed.flatMap((e) => {
           const kind = e.isDirectory ? null : mediaKindOf(e.name)
-          return kind && source.fileRef ? [{ name: e.name, kind, file: source.fileRef(joinRelative(folder, e.name)) }] : []
+          return kind && source.fileRef ? [{ name: e.name, kind, file: source.fileRef(joinRelative(folder, e.name)), size: e.size ?? meta[e.name]?.size ?? null }] : []
         })
         const start = items.findIndex((item) => item.name === name)
         if (start >= 0) setViewer({ items, start })
@@ -727,7 +727,7 @@ export default function NotesApp({
       const listed = folder === path ? entries : (await source.list(folder)).entries
       const items: MediaItem[] = listed.flatMap((e) => {
         const kind = e.isDirectory ? null : mediaKindOf(e.name)
-        return kind && source.fileRef ? [{ name: e.name, kind, file: source.fileRef(joinRelative(folder, e.name)) }] : []
+        return kind && source.fileRef ? [{ name: e.name, kind, file: source.fileRef(joinRelative(folder, e.name)), size: e.size ?? meta[e.name]?.size ?? null }] : []
       })
       const start = items.findIndex((item) => item.name === entry.name)
       if (start >= 0) setViewer({ items, start })
@@ -1796,6 +1796,7 @@ export default function NotesApp({
           renderCache={(item, reload) => (
             <CacheMenu source={source} path={item.file.path.replace(/^\/+/, '')} isDirectory={false} onDone={async () => { reload(); await load(false) }} onError={setError} onNotice={setNotice} />
           )}
+          downloadProgress={source?.cache ? (item) => source.cache!.downloadProgress(item.file.path.replace(/^\/+/, '')) : undefined}
         />
       )}
 
@@ -1809,7 +1810,9 @@ export default function NotesApp({
           fields={detailFields()}
           onClose={() => setDetails(null)}
           onError={setError}
-        />
+        >
+          {source?.cache && !details.isDirectory && <CachingProgress source={source} path={details.path} size={details.size} />}
+        </DetailsModal>
       )}
 
       {goingTo && (
@@ -1878,6 +1881,46 @@ export default function NotesApp({
             </ul>
           )}
         </Modal>
+      )}
+    </div>
+  )
+}
+
+/** The file details popup's own "it's being fetched into the cache right now" row (Filen only) — shown only
+ * while a download of this exact file is actually in flight, polled every half second while the popup is
+ * open. Nothing is shown for a file that's already cached, or isn't on Filen at all. */
+function CachingProgress({ source, path, size }: { source: FileSource; path: string; size: number | null }) {
+  const [bytes, setBytes] = useState<number | null>(null)
+  useEffect(() => {
+    if (!source.cache) return
+    let cancelled = false
+    const poll = () =>
+      source.cache!.downloadProgress(path).then(
+        (b) => !cancelled && setBytes(b),
+        () => {}, // not fatal: the row just won't show a number
+      )
+    void poll()
+    const id = window.setInterval(poll, 500)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [source, path])
+  if (bytes === null) return null
+  return (
+    <div>
+      <div className="modal-field-label">Caching</div>
+      {size ? (
+        <>
+          <div className="progress-bar">
+            <div className="progress-bar-fill" style={{ width: `${Math.min(100, (bytes / size) * 100)}%` }} />
+          </div>
+          <div className="muted">
+            {formatBytesExact(bytes)} of {formatBytesExact(size)}
+          </div>
+        </>
+      ) : (
+        <div className="muted">{formatBytesExact(bytes)} fetched so far</div>
       )}
     </div>
   )

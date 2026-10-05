@@ -43,6 +43,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use serde::{Deserialize, Serialize};
@@ -400,6 +401,12 @@ pub struct Cache {
     /// created, truncating any earlier attempt, on every call), instead coalesce: the second caller waits
     /// for the first and then finds the file already cached, rather than racing it from the beginning.
     download_locks: StdMutex<HashMap<(i64, String), Arc<Mutex<()>>>>,
+    /// Bytes downloaded so far for an in-flight account-file download, keyed by `(user_id, path)` — an
+    /// entry exists only while that exact file's download is actually running (inserted when it starts,
+    /// removed when it ends, success or failure), so "no entry" means "not being downloaded right now."
+    /// Read by `download_progress`/the `filen_cache_download_progress` command so a window can show a
+    /// progress bar for a large file instead of an unexplained wait.
+    download_progress: StdMutex<HashMap<(i64, String), Arc<AtomicU64>>>,
 }
 
 #[derive(sqlx::FromRow, Clone, Debug)]
@@ -542,7 +549,14 @@ impl Cache {
         if has_remote_id == 0 {
             sqlx::query("ALTER TABLE entries ADD COLUMN remote_id TEXT").execute(&pool).await.map_err(sql)?;
         }
-        Ok(Self { pool, root, clock, locks: StdMutex::new(HashMap::new()), download_locks: StdMutex::new(HashMap::new()) })
+        Ok(Self {
+            pool,
+            root,
+            clock,
+            locks: StdMutex::new(HashMap::new()),
+            download_locks: StdMutex::new(HashMap::new()),
+            download_progress: StdMutex::new(HashMap::new()),
+        })
     }
 
     /// Closes the database, releasing `files/data.db` — on Windows a file that is still open can't be
@@ -1164,7 +1178,21 @@ impl Cache {
     /// memory — renamed into place only once complete, so an interrupted download leaves nothing that
     /// looks cached. Nothing about the cache's own bookkeeping (not even `mark_cached`): both callers
     /// compose that themselves, since whether it runs under the account-wide lock differs between them.
-    async fn download_file(&self, remote: &impl Remote, path: &str, local: &Path) -> Result<(), String> {
+    ///
+    /// **Publishes its own running byte count to `download_progress`** for the whole time it runs — an
+    /// entry for `(user_id, path)` appears the moment the download starts and is removed when it ends,
+    /// success or failure, so `download_progress`'s own read of it can tell "not downloading" from "0
+    /// bytes so far" by whether the entry exists at all.
+    async fn download_file(&self, remote: &impl Remote, user_id: i64, path: &str, local: &Path) -> Result<(), String> {
+        let key = (user_id, path.to_string());
+        let progress = Arc::new(AtomicU64::new(0));
+        self.download_progress.lock().unwrap().insert(key.clone(), progress.clone());
+        let result = self.download_file_inner(remote, path, local, &progress).await;
+        self.download_progress.lock().unwrap().remove(&key);
+        result
+    }
+
+    async fn download_file_inner(&self, remote: &impl Remote, path: &str, local: &Path, progress: &AtomicU64) -> Result<(), String> {
         if let Some(dir) = local.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
@@ -1174,7 +1202,13 @@ impl Cache {
         let mut file = std::fs::File::create(&part).map_err(io)?;
         let downloaded = {
             use std::io::Write;
-            remote.download(path, &mut |chunk: &[u8]| file.write_all(chunk).map_err(io)).await
+            remote
+                .download(path, &mut |chunk: &[u8]| {
+                    file.write_all(chunk).map_err(io)?;
+                    progress.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+                    Ok(())
+                })
+                .await
         };
         drop(file);
         match downloaded {
@@ -1184,6 +1218,16 @@ impl Cache {
                 Err(e)
             }
         }
+    }
+
+    /// Bytes downloaded so far for `path`'s in-flight download of the account's own copy, or `None` when
+    /// it isn't being downloaded right now (not started, already finished, or already cached). The
+    /// caller already knows the file's full size from its own listing, so only the running total is
+    /// reported here; a `None` while the caller still expects a download to be running just means it
+    /// already finished (or never actually needed one — the file was already cached).
+    pub async fn download_progress(&self, user_id: i64, path: &str) -> Result<Option<u64>, String> {
+        let path = norm_path(path)?;
+        Ok(self.download_progress.lock().unwrap().get(&(user_id, path)).map(|p| p.load(Ordering::SeqCst)))
     }
 
     /// Where the account's file is cached, having fetched it from Filen if it wasn't (or the cached copy
@@ -1202,7 +1246,7 @@ impl Cache {
             Ok(local) => return Ok(local),
             Err(local) => local,
         };
-        self.download_file(remote, path, &local).await?;
+        self.download_file(remote, user_id, path, &local).await?;
         self.mark_cached(user_id, path).await?;
         Ok(local)
     }
@@ -1239,7 +1283,7 @@ impl Cache {
         if local.is_file() {
             return Ok(local);
         }
-        self.download_file(remote, path, &local).await?;
+        self.download_file(remote, user_id, path, &local).await?;
         {
             let _guard = self.lock(user_id).await;
             self.mark_cached(user_id, path).await?;
@@ -3270,6 +3314,34 @@ mod tests {
             assert_eq!(second_bytes, b"shared content");
             assert!(second_at >= first_at, "`second` only finished once `first`'s download had — it wasn't racing an independent download of its own");
             assert_eq!(f.remote.reads.load(Ordering::SeqCst), 1, "only one real download happened — `second` found the finished file instead of restarting it");
+        });
+    }
+
+    /// For a window to show a progress bar instead of an unexplained wait on a large file: an entry
+    /// exists in `download_progress` for the whole time a download is actually running — even before any
+    /// bytes have arrived — and is gone again the moment it finishes.
+    #[test]
+    fn download_progress_is_reported_while_in_flight_and_cleared_once_done() {
+        run(async {
+            let f = Fixture::new("progress").await;
+            f.remote.put("/d/a.txt", "0123456789");
+            assert_eq!(f.cache.download_progress(7, "/d/a.txt").await.unwrap(), None, "nothing in flight yet");
+            let gate = f.remote.gate_next_download();
+
+            let read = async { f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap() };
+            let check_while_in_flight = async {
+                tokio::time::sleep(Duration::from_millis(20)).await; // let `read` reach the gate first
+                f.cache.download_progress(7, "/d/a.txt").await.unwrap()
+            };
+            let release = async {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                gate.notify_one();
+            };
+
+            let (bytes, during, ()) = tokio::join!(read, check_while_in_flight, release);
+            assert_eq!(bytes, b"0123456789");
+            assert_eq!(during, Some(0), "an entry exists — the download is in flight — even before any bytes have arrived (the gate hadn't released yet)");
+            assert_eq!(f.cache.download_progress(7, "/d/a.txt").await.unwrap(), None, "the entry is gone once the download has finished");
         });
     }
 }

@@ -255,6 +255,7 @@ pub(crate) fn content_type_for(path: &Path) -> &'static str {
         "webm" => "video/webm",
         "ogv" => "video/ogg",
         "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
         "mp3" => "audio/mpeg",
         "m4a" => "audio/mp4",
         "aac" => "audio/aac",
@@ -464,6 +465,7 @@ pub fn run() {
             filen_cache::filen_cache_commit_branch,
             filen_cache::filen_cache_discard_branch,
             filen_cache::filen_cache_version,
+            filen_cache::filen_cache_download_progress,
             filen_cache::filen_cache_check_version,
             filen_cache::filen_cache_rebase,
             filen_cache::filen_cache_set_locked,
@@ -624,6 +626,21 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every video extension the frontend recognizes as playable media (`lib/media.ts`'s `mediaKindOf`,
+    /// `video: ['mp4', 'm4v', 'webm', 'ogv', 'mov', 'mkv']`) must get a real video `Content-Type` here —
+    /// anything that falls through to `application/octet-stream` makes WebView2's `<video>` element treat
+    /// the response as an opaque, non-streamable blob rather than ranged media, which for a large file can
+    /// mean fetching (or appearing to hang on) the whole thing before anything shows. Reported live:
+    /// `.mkv` was the one extension missing from this table — opening even a local 2.7 GB `.mkv` left the
+    /// viewer's window black and completely unresponsive, before the person had even pressed play.
+    #[test]
+    fn every_recognized_video_extension_gets_a_real_video_content_type() {
+        for ext in ["mp4", "m4v", "webm", "ogv", "mov", "mkv"] {
+            let ct = content_type_for(Path::new(&format!("file.{ext}")));
+            assert!(ct.starts_with("video/"), "{ext} got {ct:?}, not a video/* content type");
+        }
+    }
 
     #[test]
     fn a_web_app_stays_on_its_own_page_and_links_to_the_web_go_to_the_browser() {

@@ -139,6 +139,7 @@
     "allow-filen-cache-commit-branch",
     "allow-filen-cache-discard-branch",
     "allow-filen-cache-version",
+    "allow-filen-cache-download-progress",
     "allow-filen-cache-check-version",
     "allow-filen-cache-rebase",
     "allow-filen-cache-set-locked",

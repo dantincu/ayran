@@ -154,6 +154,7 @@ fn main() {
             "filen_cache_commit_branch",
             "filen_cache_discard_branch",
             "filen_cache_version",
+            "filen_cache_download_progress",
             "filen_cache_check_version",
             "filen_cache_rebase",
             "filen_cache_set_locked",

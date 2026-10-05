@@ -157,6 +157,7 @@ export const API_REFERENCE: ApiCategory[] = [
       { call: "invoke('filen_cache_commit_branch', { userId, branch, force? })", returns: 'void, or the conflicts', summary: 'Applies the branch to Filen; refuses on conflict unless `force`.' },
       { call: "invoke('filen_cache_discard_branch', { userId, branch })", returns: 'void', summary: '' },
       { call: "invoke('filen_cache_version'/'filen_cache_check_version'/'filen_cache_rebase', { … })", returns: 'version info', summary: 'Detects a file changed elsewhere before you save over it.' },
+      { call: "invoke('filen_cache_download_progress', { userId, path })", returns: 'bytes so far, or null', summary: 'Non-null only while that file is actually being downloaded into the cache right now.' },
       { call: "invoke('filen_cache_set_locked', { userId, path, locked })", returns: 'void', summary: 'A locked file keeps its frozen copy, available offline, immune to refresh/expiry.' },
       { call: "invoke('filen_cache_checkout'/'filen_cache_release', { … })", returns: 'void', summary: 'Takes a file into a branch without changing it yet, or lets go of one that was never changed.' },
       { call: "invoke('filen_cache_upload_begin'/'_chunk'/'_finish'/'_abort', { … })", returns: 'a session id, then void', summary: 'Chunked upload into the cache/a branch (mirrors `fs_upload_*`).' },

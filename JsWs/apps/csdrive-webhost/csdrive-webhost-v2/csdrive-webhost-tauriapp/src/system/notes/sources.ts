@@ -144,6 +144,9 @@ export interface FileSource {
     hardRefresh(path: string): Promise<void>
     /** Throws away what the cache holds of it — content, listing, thumbnails (a locked file keeps its frozen copy). */
     clear(path: string): Promise<void>
+    /** Bytes of the file fetched so far, or `null` when it isn't being downloaded right now (not started,
+     * already finished, or already cached) — for a progress bar while a large file is still being fetched. */
+    downloadProgress(path: string): Promise<number | null>
   }
 
   // Filen only ────────────────────────────────────────────────────────────────
@@ -433,6 +436,7 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     cache: {
       hardRefresh: (path) => invoke<void>('filen_cache_hard_refresh', { userId, path: filenPath(path) }),
       clear: (path) => invoke<void>('filen_cache_clear_item', { userId, path: filenPath(path) }),
+      downloadProgress: (path) => invoke<number | null>('filen_cache_download_progress', { userId, path: filenPath(path) }),
     },
     exportFile: (path, name, token) => invoke<string>('filen_cache_export', { ...target, path: filenPath(path), name, token }),
     copyFromLocal: (path, root, source) => invoke<void>('filen_cache_upload_from_path', { ...target, path: filenPath(path), root, source }),
@@ -486,7 +490,11 @@ export function scopedSource(base: FileSource, root: string, label: string): Fil
   }
   if (base.cache) {
     const cache = base.cache
-    scoped.cache = { hardRefresh: (path) => cache.hardRefresh(at(path)), clear: (path) => cache.clear(at(path)) }
+    scoped.cache = {
+      hardRefresh: (path) => cache.hardRefresh(at(path)),
+      clear: (path) => cache.clear(at(path)),
+      downloadProgress: (path) => cache.downloadProgress(at(path)),
+    }
   } else scoped.cache = undefined
   if (base.version) scoped.version = (path) => base.version!(at(path))
   if (base.checkVersion) scoped.checkVersion = (path, known) => base.checkVersion!(at(path), known)

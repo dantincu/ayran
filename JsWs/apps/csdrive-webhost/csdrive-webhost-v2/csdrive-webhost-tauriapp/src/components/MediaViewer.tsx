@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, FastForward, Maximize, Minimize, Minus, Music, Pause, Play, Plus, Rewind, RectangleHorizontal, Volume2, VolumeX, X } from 'lucide-react'
 import IconButton from './IconButton'
 import { clock, mediaUrl, type MediaKind } from '../lib/media'
+import { formatBytes } from '../lib/format'
 import type { FileRef } from '../lib/secondaryWindows'
 
 /** **The media viewer**: a picture, a video or a sound of a folder, over the whole window, with the folder's other media a step
@@ -20,6 +21,9 @@ export interface MediaItem {
   name: string
   kind: MediaKind
   file: FileRef
+  /** The file's size, when known — shown as "so far / size" while it's still being fetched into the cache (`downloadProgress`
+   * below); without it, only the bytes fetched so far are shown. */
+  size?: number | null
 }
 
 interface Props {
@@ -30,6 +34,11 @@ interface Props {
   /** What the host puts in the bar for the item shown — the cache options of a file that has a cache. `reload` loads the media again
    * (after its cache was refreshed or cleared). */
   renderCache?: (item: MediaItem, reload: () => void) => ReactNode
+  /** Filen only: bytes of the item fetched into the cache so far, or `null` when it isn't being downloaded right now (not
+   * started, already cached, or already finished). Polled every half second while the item is open: the *whole* file has to
+   * be in the cache before any of it can be served — however the player asks for it — so a large file can otherwise look like
+   * a stuck, blank viewer with no explanation; this shows real progress (and a way back) instead. */
+  downloadProgress?: (item: MediaItem) => Promise<number | null>
 }
 
 /** How long the bars of a playing video stay after they were brought back. */
@@ -37,7 +46,7 @@ const HIDE_AFTER_MS = 3000
 const SKIP_SECONDS = 10
 const MAX_ZOOM = 16
 
-export default function MediaViewer({ items, start, onClose, renderCache }: Props) {
+export default function MediaViewer({ items, start, onClose, renderCache, downloadProgress }: Props) {
   const [index, setIndex] = useState(Math.min(Math.max(start, 0), items.length - 1))
   const item = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -48,6 +57,27 @@ export default function MediaViewer({ items, start, onClose, renderCache }: Prop
   /** How many times the media was asked to load again: the address gets it as a query, so the webview doesn't show what it kept. */
   const [reloads, setReloads] = useState(0)
   const root = useRef<HTMLDivElement>(null)
+
+  // Bytes fetched so far of the item's own download into the cache — `null` once a download that was seen
+  // in flight finishes (or one was never actually needed: an already-cached file never shows a number here).
+  const [downloadedBytes, setDownloadedBytes] = useState<number | null>(null)
+  const downloading = downloadedBytes !== null
+  useEffect(() => {
+    setDownloadedBytes(null)
+    if (!downloadProgress) return
+    let cancelled = false
+    const poll = () =>
+      downloadProgress(item).then(
+        (bytes) => !cancelled && setDownloadedBytes(bytes),
+        () => {}, // not fatal: the viewer just won't show a number
+      )
+    void poll()
+    const id = window.setInterval(poll, 500)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [downloadProgress, item, reloads])
 
   useEffect(() => {
     let cancelled = false
@@ -117,6 +147,29 @@ export default function MediaViewer({ items, start, onClose, renderCache }: Prop
         <ImageStage key={url} url={url} name={item.name} bars={bars} setBars={setBars} />
       ) : (
         <PlayerStage key={url} url={url} kind={item.kind} name={item.name} bars={bars} setBars={setBars} />
+      )}
+
+      {/* The media element above has already started its own (possibly stuck-looking) request by now — this sits on top of
+          it rather than replacing it, so the request that actually drives `downloadProgress` is never prevented from starting. */}
+      {downloading && (
+        <div className="media-downloading">
+          <div>Fetching "{item.name}" into the cache before it can play…</div>
+          {item.size ? (
+            <>
+              <div className="progress-bar media-progress-bar">
+                <div className="progress-bar-fill" style={{ width: `${Math.min(100, (downloadedBytes! / item.size) * 100)}%` }} />
+              </div>
+              <div className="muted">
+                {formatBytes(downloadedBytes!)} of {formatBytes(item.size)}
+              </div>
+            </>
+          ) : (
+            <div className="muted">{formatBytes(downloadedBytes!)} fetched so far</div>
+          )}
+          <button type="button" className="media-downloading-back" onClick={onClose}>
+            Back to the listing
+          </button>
+        </div>
       )}
 
       <div className={`media-bar media-bar-top ${bars ? '' : 'media-bar-hidden'}`}>

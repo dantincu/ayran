@@ -221,6 +221,15 @@ pub async fn filen_cache_version(cache: State<'_, Cache>, user_id: u64, branch: 
     cache.version(user_id as i64, branch, &path).await
 }
 
+/// Bytes downloaded so far of `path`'s own (not a branch's) in-flight download into the cache, or `null`
+/// when it isn't being downloaded right now — for a window to show a progress bar while a large file is
+/// still being fetched, in its details popup or in the media viewer. The caller already knows the file's
+/// full size from its own listing.
+#[tauri::command]
+pub async fn filen_cache_download_progress(cache: State<'_, Cache>, user_id: u64, path: String) -> Result<Option<u64>, String> {
+    cache.download_progress(user_id as i64, &path).await
+}
+
 /// Asks Filen itself whether the file is still at `base`, the version that was being worked on.
 #[tauri::command]
 pub async fn filen_cache_check_version(
