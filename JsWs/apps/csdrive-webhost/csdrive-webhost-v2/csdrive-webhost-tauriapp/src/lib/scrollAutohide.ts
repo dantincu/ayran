@@ -56,10 +56,26 @@ const AT_BOTTOM_SLACK_PX = 2
  * definition, moves *away from*. So the direction check's "show" branch is skipped specifically when that holds;
  * every other branch (hiding on a real downward scroll, showing on reaching the very top, the resize fallback) is
  * untouched and fires immediately, with no delay and no window to time out of.
+ *
+ * **Typing itself must not hide or show the header** — asked for directly: the browser's own "keep the caret
+ * visible" behaviour scrolls a text editor's box as a line is added past the bottom (or removed from below it),
+ * which is a perfectly genuine `scroll` event, correctly directional and nowhere near "pinned at the bottom" the
+ * way the shake's own echo is — so neither guard above catches it, and without a further fix every keystroke that
+ * happens to cross the viewport's edge would hide (or show) the header exactly as if the person had scrolled on
+ * purpose. The one thing that tells a content-driven scroll apart from a person's own gesture is `scrollHeight`
+ * itself: typing (or deleting) a line changes the element's *total* content height, where a wheel turn, a
+ * scrollbar drag or a Page Up/Down never does — only `scrollTop` moves for those. So each element's own
+ * `scrollHeight` is tracked alongside its `scrollTop`, and a scroll event is skipped entirely (no hide, no show,
+ * not even the "near the top" branch — `lastTop`/`lastHeight` are still updated, so the *next* genuine gesture's
+ * delta is still measured from the right place) whenever `scrollHeight` itself has changed since the last event.
+ * **The one case this must still catch — asked for in the same breath — is already a different mechanism**: the
+ * `ResizeObserver` above fires independently of any `scroll` event at all, the moment typing shrinks the content
+ * below the viewport's own height (nothing left to be hidden *from*), and is untouched by this guard.
  */
 export function useScrollAutohide(): [boolean, () => void, () => void] {
   const [hidden, setHidden] = useState(false)
   const lastTop = useRef(new WeakMap<Element, number>())
+  const lastHeight = useRef(new WeakMap<Element, number>())
   const observer = useRef<ResizeObserver | null>(null)
   const show = useCallback(() => setHidden(false), [])
   const hide = useCallback(() => setHidden(true), [])
@@ -76,18 +92,25 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
       if (!(target instanceof Element)) return
       if (!lastTop.current.has(target)) observer.current?.observe(target)
       const top = target.scrollTop
+      const height = target.scrollHeight
       // A target seen for the first time defaults to 0, not its current position: every scrollable region in this
       // app starts at the top when it mounts, so this gives the very *first* scroll event a real delta too — the
       // same thing the original, single-target implementation got for free by reading `scrollTop` once at mount,
       // before any scrolling had happened (defaulting to `top` itself instead left the first event's delta always
       // 0, silently swallowing the first scroll gesture on any newly-seen element — found live).
       const last = lastTop.current.get(target) ?? 0
-      const delta = top - last
-      const pinnedAtBottom = top + target.clientHeight >= target.scrollHeight - AT_BOTTOM_SLACK_PX
-      if (top <= HIDE_AFTER_PX) setHidden(false)
-      else if (delta > DIRECTION_THRESHOLD_PX) setHidden(true)
-      else if (delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom) setHidden(false)
+      // The *height* default is the opposite: the current height, not 0 — the first event for a newly-seen
+      // element must never read as "the content just changed" (see the module doc's own "typing itself" note).
+      const lastH = lastHeight.current.get(target) ?? height
+      if (height === lastH) {
+        const delta = top - last
+        const pinnedAtBottom = top + target.clientHeight >= target.scrollHeight - AT_BOTTOM_SLACK_PX
+        if (top <= HIDE_AFTER_PX) setHidden(false)
+        else if (delta > DIRECTION_THRESHOLD_PX) setHidden(true)
+        else if (delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom) setHidden(false)
+      }
       lastTop.current.set(target, top)
+      lastHeight.current.set(target, height)
     }
     document.addEventListener('scroll', onScroll, { capture: true, passive: true })
     return () => {

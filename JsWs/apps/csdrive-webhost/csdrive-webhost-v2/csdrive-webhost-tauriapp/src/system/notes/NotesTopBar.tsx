@@ -22,8 +22,14 @@ import type { Tab } from './tabs'
  * admin-app's "show top bar" clears the scroll-collapse too, so it comes back fully rather than staying
  * collapsed until the next upward scroll. The two states are independent: `shown` (persisted: an explicit close,
  * or the global autohide-by-default setting) decides whether the bar exists *at all* for this tab, and — only
- * while it does — `scrollHidden` decides whether it's momentarily collapsed. */
-export default function NotesTopBar({ tab }: { tab: Tab | null }) {
+ * while it does — `scrollHidden` decides whether it's momentarily collapsed.
+ *
+ * "Go back one step" tries the page's own in-app navigation first (`onBack`, from `backStack.ts` via
+ * `NotesRoot.tsx` — folder browsing, the editor, the media viewer, switching between Notes' own views) and
+ * falls back to the backend's `windowGoBack` (undoing a *tab switch*, the original and only thing this button
+ * did before — see CLAUDE.md's "Back undoes one navigation before it ever suspends") only once `onBack`
+ * reports there was nothing of its own to undo. */
+export default function NotesTopBar({ tab, onBack }: { tab: Tab | null; onBack: () => boolean }) {
   const [shown, setShown] = useState(false)
   const [info, setInfo] = useState<{ html: string; hidden: boolean } | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -53,7 +59,9 @@ export default function NotesTopBar({ tab }: { tab: Tab | null }) {
       <IconButton
         icon={ArrowLeft}
         label="Go back one step"
-        onClick={() => windowGoBack().catch((e) => setError(String(e)))}
+        onClick={() => {
+          if (!onBack()) windowGoBack().catch((e) => setError(String(e)))
+        }}
       />
       <IconButton
         icon={Pause}

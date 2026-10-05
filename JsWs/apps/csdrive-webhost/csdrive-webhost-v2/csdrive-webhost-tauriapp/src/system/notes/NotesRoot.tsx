@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import ChordHost from '../../components/ChordHost'
 import TextFieldMenu from '../../components/TextFieldMenu'
+import { clearBack, popBack, pushBack } from './backStack'
 import NoteEditPage from './NoteEditPage'
 import NoteFilesPage from './NoteFilesPage'
 import NotePage from './NotePage'
@@ -20,10 +21,13 @@ export default function NotesRoot({ tab: initialTab, initial }: { tab: Tab | nul
   const [tab, setTab] = useState<Tab | null>(initialTab)
   const [place, setPlace] = useState<Place>(initial ?? { view: 'home' })
 
-  // The user switched to another tab of this window: show its place, in place — no reload.
+  // The user switched to another tab of this window: show its place, in place — no reload. Nothing accumulated
+  // on the back stack describes a sensible "undo" for a switch it didn't cause (see `backStack.ts`); the
+  // backend's own `windowGoBack` already undoes the switch itself once the stack is found empty.
   useEffect(
     () =>
       subscribeNavigate((next) => {
+        clearBack()
         setTab(next)
         setPlace(decodePlace(next.resourceId) ?? { view: 'home' })
       }),
@@ -35,28 +39,37 @@ export default function NotesRoot({ tab: initialTab, initial }: { tab: Tab | nul
     if (tab && (place.view === 'home' || place.view === 'notebooks' || place.view === 'settings')) reportView(tab, place.view)
   }, [tab, place.view])
 
+  // Every discrete navigation the person makes between the views below (not the file manager's own folder
+  // browsing, which tracks itself — see `NotesApp.tsx`) records how to undo it before it happens, onto the
+  // one stack `NotesTopBar`'s "Go back" button pops.
+  function navigate(next: Place) {
+    const current = place
+    pushBack(() => setPlace(current))
+    setPlace(next)
+  }
+
   const showFolder = (entry: NotebookEntry) =>
-    setPlace({ view: 'files', location: { sourceId: entry.sourceId, branch: null, path: entry.folder } })
+    navigate({ view: 'files', location: { sourceId: entry.sourceId, branch: null, path: entry.folder } })
 
   const view =
     place.view === 'home' ? (
-      <NotesHome onFiles={() => setPlace({ view: 'files', location: null })} onNotebooks={() => setPlace({ view: 'notebooks' })} onSettings={() => setPlace({ view: 'settings' })} />
+      <NotesHome onFiles={() => navigate({ view: 'files', location: null })} onNotebooks={() => navigate({ view: 'notebooks' })} onSettings={() => navigate({ view: 'settings' })} />
     ) : place.view === 'settings' ? (
-      <NotesSettingsPage onHome={() => setPlace({ view: 'home' })} />
+      <NotesSettingsPage onHome={() => navigate({ view: 'home' })} />
     ) : place.view === 'notebooks' ? (
-      <NotebooksPage onHome={() => setPlace({ view: 'home' })} onShowFolder={showFolder} onOpenNotebook={(entry) => setPlace({ view: 'notes', sourceId: entry.sourceId, folder: entry.folder })} />
+      <NotebooksPage onHome={() => navigate({ view: 'home' })} onShowFolder={showFolder} onOpenNotebook={(entry) => navigate({ view: 'notes', sourceId: entry.sourceId, folder: entry.folder })} />
     ) : place.view === 'notes' ? (
-      <NotePage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={setPlace} onHome={() => setPlace({ view: 'home' })} />
+      <NotePage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={navigate} onHome={() => navigate({ view: 'home' })} />
     ) : place.view === 'noteEdit' ? (
-      <NoteEditPage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={setPlace} />
+      <NoteEditPage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={navigate} />
     ) : place.view === 'noteFiles' ? (
-      <NoteFilesPage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={setPlace} />
+      <NoteFilesPage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={navigate} />
     ) : (
-      <NotesApp key={place.location ? `${place.location.sourceId}|${place.location.path}` : 'last'} tab={tab} initial={place.location} onHome={() => setPlace({ view: 'home' })} />
+      <NotesApp key={place.location ? `${place.location.sourceId}|${place.location.path}` : 'last'} tab={tab} initial={place.location} onHome={() => navigate({ view: 'home' })} />
     )
   return (
     <>
-      <NotesTopBar tab={tab} />
+      <NotesTopBar tab={tab} onBack={popBack} />
       {view}
       {/* Every text box of Notes has the clipboard menu (with the app's own clipboard) and, beside it, the User Action's launch and close. */}
       <TextFieldMenu extra={(field) => <UserActionFieldButtons field={field} />} />

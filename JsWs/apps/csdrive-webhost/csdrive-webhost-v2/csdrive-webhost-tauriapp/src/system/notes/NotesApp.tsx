@@ -72,6 +72,7 @@ import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { findMarkdown, readNote } from './noteModel'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { getAppState, setAppState } from '../../lib/appState'
+import { clearMediaProgress, mediaProgress, saveMediaProgress } from '../../lib/mediaProgress'
 import { offsetOfPage, pageOfOffset } from '../../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../../lib/keyboard'
 import {
@@ -98,6 +99,7 @@ import {
   type FilenAccountInfo,
   type VersionCheck,
 } from './sources'
+import { discardOwner, pushOwned } from './backStack'
 import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
 import UserActionButton from './UserActionButton'
 import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
@@ -374,7 +376,11 @@ export default function NotesApp({
     if (ready) sourcesRef.current = { roots, accounts }
   }, [ready, roots, accounts])
 
-  // The user switched to another tab of this window: show its place, in place — no reload.
+  // The user switched to another tab of this window: show its place, in place — no reload. This isn't a step
+  // the person took *inside* the file manager, so it must not be recorded as one on the shared back stack
+  // (see `backStack.ts` and the signature effect below) — `suppressBackPush` tells that effect to skip the
+  // one push it would otherwise make for this change, without having to know anything about tab switches itself.
+  const suppressBackPush = useRef(false)
   useEffect(
     () =>
       subscribeNavigate((next) => {
@@ -385,11 +391,46 @@ export default function NotesApp({
           return
         }
         flushDraft() // the tab being left keeps what it hadn't saved
+        suppressBackPush.current = true
         setTab(next)
         void showLocation(decodeLocation(next.resourceId) ?? withoutEdit(lastRef.current), sources.roots, sources.accounts)
       }),
     [],
   )
+
+  // Records how to undo the file manager's own navigation (switching root/branch, browsing folders, opening
+  // or closing the editor or the media viewer) on the shared back stack (`backStack.ts`) `NotesTopBar`'s "Go
+  // back" button pops — covering every one of the many ways this component can change what it shows (a
+  // breadcrumb, a row click, a search result, "Go to a path…", the editor, the viewer) from one place, rather
+  // than wrapping each call site that changes one of these individually. Keyed on `editing?.path`/whether the
+  // viewer is open, not the objects themselves, so a keystroke in the editor (which replaces `editing` with a
+  // new object on every change) is never mistaken for a navigation step.
+  const prevBackSignature = useRef<string | null>(null)
+  const prevBackState = useRef<{ sourceId: string; branch: number | null; path: string; editing: Editing | null; viewer: { items: MediaItem[]; start: number } | null } | null>(null)
+  // Leaving this component (its own "Notes home" button, say) while some of its own navigation is still
+  // un-popped must not leave those entries stranded, pointing at an instance that's about to be gone — see
+  // `discardTo`'s own doc comment.
+  const mountBackCheckpoint = useRef(backCheckpoint())
+  useEffect(() => () => discardTo(mountBackCheckpoint.current), [])
+  useEffect(() => {
+    const signature = JSON.stringify([sourceId, branch, path, editing?.path ?? null, viewer !== null])
+    if (prevBackSignature.current !== null) {
+      if (suppressBackPush.current) {
+        suppressBackPush.current = false
+      } else if (signature !== prevBackSignature.current) {
+        const captured = prevBackState.current!
+        pushBack(() => {
+          setSourceId(captured.sourceId)
+          setBranch(captured.branch)
+          setPath(captured.path)
+          setEditing(captured.editing)
+          setViewer(captured.viewer)
+        })
+      }
+    }
+    prevBackSignature.current = signature
+    prevBackState.current = { sourceId, branch, path, editing, viewer }
+  }, [sourceId, branch, path, editing, viewer])
 
   const account = useMemo(() => accounts.find((a) => `${FILEN_PREFIX}${a.userId}` === sourceId) ?? null, [accounts, sourceId])
   const localRoot = useMemo(() => roots.find((r) => `${LOCAL_PREFIX}${r.id}` === sourceId) ?? null, [roots, sourceId])
@@ -1813,6 +1854,9 @@ export default function NotesApp({
           )}
           downloadProgress={source?.cache ? (item) => source.cache!.downloadProgress(item.file.path.replace(/^\/+/, '')) : undefined}
           downloadError={source?.cache ? (item) => source.cache!.downloadError(item.file.path.replace(/^\/+/, '')) : undefined}
+          initialTime={(item, duration) => mediaProgress(item.file, duration)}
+          onProgress={(item, time) => { void saveMediaProgress(item.file, time) }}
+          onFinished={(item) => { void clearMediaProgress(item.file) }}
         />
       )}
 

@@ -44,6 +44,17 @@ interface Props {
    * through shows a real error (with a retry) instead of the viewer just sitting there with nothing to
    * explain why. */
   downloadError?: (item: MediaItem) => Promise<string | null>
+  /** Video/audio only: the position to resume this item at, asked for once its `duration` is known (so a
+   * saved position near the very end can be told apart from one worth resuming) — `null`/`0` plays from the
+   * start, as if nothing were remembered. */
+  initialTime?: (item: MediaItem, duration: number) => Promise<number | null>
+  /** Video/audio only: how far the person has gotten, reported now and then while playing (throttled — not
+   * on every `timeupdate`) and once more on pause or when the viewer is closed, so the host can remember it
+   * for next time. */
+  onProgress?: (item: MediaItem, time: number) => void
+  /** Video/audio only: the item played to its own end — the host's cue to forget any saved position for it,
+   * since there's nothing left to resume. */
+  onFinished?: (item: MediaItem) => void
 }
 
 /** How long the bars of a playing video stay after they were brought back. */
@@ -51,7 +62,7 @@ const HIDE_AFTER_MS = 3000
 const SKIP_SECONDS = 10
 const MAX_ZOOM = 16
 
-export default function MediaViewer({ items, start, onClose, renderCache, downloadProgress, downloadError }: Props) {
+export default function MediaViewer({ items, start, onClose, renderCache, downloadProgress, downloadError, initialTime, onProgress, onFinished }: Props) {
   const [index, setIndex] = useState(Math.min(Math.max(start, 0), items.length - 1))
   const item = items[index]
   const [url, setUrl] = useState<string | null>(null)
@@ -155,7 +166,17 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
       ) : item.kind === 'image' ? (
         <ImageStage key={url} url={url} name={item.name} bars={bars} setBars={setBars} />
       ) : (
-        <PlayerStage key={url} url={url} kind={item.kind} name={item.name} bars={bars} setBars={setBars} />
+        <PlayerStage
+          key={url}
+          url={url}
+          kind={item.kind}
+          name={item.name}
+          bars={bars}
+          setBars={setBars}
+          initialTime={initialTime ? (duration) => initialTime(item, duration) : undefined}
+          onProgress={onProgress ? (time) => onProgress(item, time) : undefined}
+          onFinished={onFinished ? () => onFinished(item) : undefined}
+        />
       )}
 
       {/* The media element above has already started its own (possibly stuck-looking) request by now — this sits on top of
@@ -394,18 +415,28 @@ function ImageStage({ url, name, bars, setBars }: { url: string; name: string; b
 
 // ── Video and sound ───────────────────────────────────────────────────────────
 
+/** How often playback progress is reported while playing — not on every `timeupdate` (which fires several
+ * times a second), since nothing needs resolution finer than this to resume sensibly later. */
+const PROGRESS_REPORT_MS = 5000
+
 function PlayerStage({
   url,
   kind,
   name,
   bars,
   setBars,
+  initialTime,
+  onProgress,
+  onFinished,
 }: {
   url: string
   kind: 'video' | 'audio'
   name: string
   bars: boolean
   setBars: (visible: boolean) => void
+  initialTime?: (duration: number) => Promise<number | null>
+  onProgress?: (time: number) => void
+  onFinished?: () => void
 }) {
   const media = useRef<HTMLVideoElement | HTMLAudioElement | null>(null)
   const [playing, setPlaying] = useState(false)
@@ -416,6 +447,41 @@ function PlayerStage({
   const dragging = useRef(false)
   const hideTimer = useRef<number | undefined>(undefined)
   const isVideo = kind === 'video'
+  const resumedAt = useRef(false)
+  const lastReportedAt = useRef(0)
+  const lastReportedTime = useRef<number | null>(null)
+
+  /** Reports the current position now, regardless of the throttle — used on pause and on unmount, where a
+   * delayed report would never actually land. */
+  const flushProgress = useCallback(() => {
+    const el = media.current
+    if (!el || !onProgress || !Number.isFinite(el.currentTime)) return
+    if (lastReportedTime.current === el.currentTime) return
+    lastReportedTime.current = el.currentTime
+    onProgress(el.currentTime)
+  }, [onProgress])
+
+  // Resumes from a remembered position once the file's own duration is known — needed so a saved position
+  // near the very end can be told apart from one actually worth resuming (see `mediaProgress.ts`). Guarded by
+  // `resumedAt` so this only ever happens once per mount (a later `durationchange`, e.g. from seeking, must
+  // not seek the person back to where they started).
+  useEffect(() => {
+    const el = media.current
+    if (!el || !initialTime || resumedAt.current || duration <= 0) return
+    resumedAt.current = true
+    initialTime(duration).then((saved) => {
+      if (saved && saved > 0 && saved < duration) {
+        el.currentTime = saved
+        setTime(saved)
+      }
+    }, () => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duration])
+
+  // Reports progress now and then while playing, and once more as soon as playback stops for any reason —
+  // paused by the person, the item changed (this whole component remounts, via `PlayerStage`'s own `key`),
+  // or the viewer closed — so a position is never lost to the throttle's own delay.
+  useEffect(() => () => flushProgress(), [flushProgress])
 
   // The bars of a playing video go after a while; a sound keeps them (there is nothing else to look at).
   const scheduleHide = useCallback(() => {
@@ -467,12 +533,21 @@ function PlayerStage({
     onPause: () => {
       setPlaying(false)
       setBars(true)
+      flushProgress()
     },
-    onEnded: () => setBars(true),
+    onEnded: () => {
+      setBars(true)
+      onFinished?.()
+    },
     onLoadedMetadata: () => setDuration(media.current?.duration ?? 0),
     onDurationChange: () => setDuration(media.current?.duration ?? 0),
     onTimeUpdate: () => {
-      if (!dragging.current) setTime(media.current?.currentTime ?? 0)
+      const el = media.current
+      if (!dragging.current) setTime(el?.currentTime ?? 0)
+      if (onProgress && el && Date.now() - lastReportedAt.current >= PROGRESS_REPORT_MS) {
+        lastReportedAt.current = Date.now()
+        flushProgress()
+      }
     },
     onError: () => setFailed(true),
   }
@@ -526,7 +601,10 @@ function PlayerStage({
           value={Math.min(time, duration || 0)}
           aria-label="Position"
           onPointerDown={() => (dragging.current = true)}
-          onPointerUp={() => (dragging.current = false)}
+          onPointerUp={() => {
+            dragging.current = false
+            flushProgress()
+          }}
           onChange={(e) => {
             const at = Number(e.target.value)
             setTime(at)
