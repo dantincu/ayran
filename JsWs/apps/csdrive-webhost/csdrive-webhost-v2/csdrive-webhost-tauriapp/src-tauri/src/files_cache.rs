@@ -1122,62 +1122,49 @@ impl Cache {
         Ok(Listing { entries, fetched_at, stale })
     }
 
-    /// The content of a file of the account itself: from the cache, or fetched (and cached).
-    /// The file's bytes — for small files (the caller holds them all); see cached_file for the rest.
+    /// The content of a file of the account itself: from the cache, or fetched (and cached). The caller
+    /// does *not* hold the account-wide lock (see `read`'s own doc comment), so this goes through
+    /// `cached_file_account_unlocked`, not the plain, always-locked `cached_file_account` other internal
+    /// callers use. The file's bytes — for small files (the caller holds them all); see cached_file for
+    /// the rest.
     async fn read_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<Vec<u8>, String> {
-        let local = self.cached_file_account(remote, user_id, path).await?;
+        let local = self.cached_file_account_unlocked(remote, user_id, path).await?;
         std::fs::read(local).map_err(io)
     }
 
-    /// Where the account's file is cached, having fetched it from Filen if it wasn't (or the cached
-    /// copy is gone). The download goes to a .part file beside its target as it arrives — the whole
-    /// file is never in memory — and is renamed into place only when it is complete, so an interrupted
-    /// download leaves nothing that looks cached.
-    ///
-    /// **The account-wide lock (`locks`) is held only for the metadata steps below, never across the
-    /// download itself.** A file's content can take an unbounded time to fetch — there is no HTTP
-    /// timeout anywhere in the Filen client, and a `<video>` element's own buffering can leave a request
-    /// stuck — and holding the coarse account lock for that whole stretch used to queue every unrelated
-    /// listing or read of the same account behind it (reported live: after a Filen `.mkv` failed to play,
-    /// "the file manager no longer worked because the listings would take forever"). The narrower
-    /// `download_locks`, keyed by this one `(user_id, path)`, takes over for the download itself, so a
-    /// slow fetch of one file never blocks anything else of the account; concurrent callers for the exact
-    /// same file (a buffering `<video>`'s own overlapping Range probes) also coalesce there instead of
-    /// each independently truncating and restarting the `.part` file from zero.
-    async fn cached_file_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<PathBuf, String> {
-        let parent = parent_of(path).ok_or("That's the root folder, not a file.")?;
-        let local = {
-            let _guard = self.lock(user_id).await;
-            // A locked file that is cached is served as it is: nothing about it is validated (or fetched).
-            if let Some(entry) = self.entry(user_id, path).await? {
-                if entry.locked != 0 && entry.is_dir == 0 && entry.content_at.is_some() {
-                    let local = self.mirror_path(user_id, path).await?;
-                    if local.is_file() {
-                        return Ok(local);
-                    }
+    /// The locked-and-cached shortcut, the listing refresh and the already-cached check — the part of
+    /// fetching an account file that must run with the account-wide lock held. Shared by
+    /// `cached_file_account` (whose caller already holds that lock for the whole operation, download
+    /// included) and `cached_file_account_unlocked` (which holds it only for this part — see that
+    /// function's own doc comment). `Ok(Ok(local))`: already there, nothing more to do. `Ok(Err(local))`:
+    /// not cached yet; `local` is where the download below should end up.
+    async fn cached_file_account_metadata(&self, remote: &impl Remote, user_id: i64, path: &str, parent: &str) -> Result<Result<PathBuf, PathBuf>, String> {
+        // A locked file that is cached is served as it is: nothing about it is validated (or fetched).
+        if let Some(entry) = self.entry(user_id, path).await? {
+            if entry.locked != 0 && entry.is_dir == 0 && entry.content_at.is_some() {
+                let local = self.mirror_path(user_id, path).await?;
+                if local.is_file() {
+                    return Ok(Ok(local));
                 }
             }
-            self.list_account(remote, user_id, &parent, false).await?; // validates the listing (and so the entry)
-            let entry = self.entry(user_id, path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
-            if entry.is_dir != 0 {
-                return Err(format!("\"{path}\" is a folder."));
-            }
-            let local = self.mirror_path(user_id, path).await?;
-            if entry.content_at.is_some() && local.is_file() {
-                return Ok(local);
-            }
-            local
-        }; // the account-wide lock is released here
-
-        let _download_guard = self.download_lock(user_id, path).await;
-        // Someone else may have finished downloading this exact file while this call waited for the
-        // download lock (including while the account lock above was briefly held by them too): the
-        // rename into place below only ever happens once a download has fully succeeded, so finding the
-        // file there now means it's complete and there's nothing left to do.
-        if local.is_file() {
-            return Ok(local);
         }
+        self.list_account(remote, user_id, parent, false).await?; // validates the listing (and so the entry)
+        let entry = self.entry(user_id, path).await?.ok_or_else(|| format!("\"{path}\" doesn't exist."))?;
+        if entry.is_dir != 0 {
+            return Err(format!("\"{path}\" is a folder."));
+        }
+        let local = self.mirror_path(user_id, path).await?;
+        if entry.content_at.is_some() && local.is_file() {
+            return Ok(Ok(local));
+        }
+        Ok(Err(local))
+    }
 
+    /// Streams `path` from Filen into `local` via a `.part` file beside it — the whole file is never in
+    /// memory — renamed into place only once complete, so an interrupted download leaves nothing that
+    /// looks cached. Nothing about the cache's own bookkeeping (not even `mark_cached`): both callers
+    /// compose that themselves, since whether it runs under the account-wide lock differs between them.
+    async fn download_file(&self, remote: &impl Remote, path: &str, local: &Path) -> Result<(), String> {
         if let Some(dir) = local.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
         }
@@ -1191,17 +1178,73 @@ impl Cache {
         };
         drop(file);
         match downloaded {
-            Ok(()) => {
-                std::fs::rename(&part, &local).map_err(io)?;
-                let _guard = self.lock(user_id).await;
-                self.mark_cached(user_id, path).await?;
-                Ok(local)
-            }
+            Ok(()) => std::fs::rename(&part, local).map_err(io),
             Err(e) => {
                 let _ = std::fs::remove_file(&part);
                 Err(e)
             }
         }
+    }
+
+    /// Where the account's file is cached, having fetched it from Filen if it wasn't (or the cached copy
+    /// is gone). **Assumes the caller already holds the account-wide lock for the whole call, download
+    /// included** — unchanged from how this has always worked, and still right for `hard_refresh`,
+    /// `set_locked`, `checkout` and `cached_file_branch`, which each need their own larger sequence of
+    /// steps to stay atomic under that one lock, and aren't implicated in the bug `cached_file_account_unlocked`
+    /// exists for (below). A plain file read that does *not* already hold the lock must go through that
+    /// one instead — calling this one from such a context would deadlock (the account lock isn't
+    /// reentrant): found live, as every "locked file" test hanging after a first version of this change
+    /// mistakenly had this function take the lock itself, while `hard_refresh`/`set_locked`/`checkout`
+    /// still took it before calling in.
+    async fn cached_file_account(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<PathBuf, String> {
+        let parent = parent_of(path).ok_or("That's the root folder, not a file.")?;
+        let local = match self.cached_file_account_metadata(remote, user_id, path, &parent).await? {
+            Ok(local) => return Ok(local),
+            Err(local) => local,
+        };
+        self.download_file(remote, path, &local).await?;
+        self.mark_cached(user_id, path).await?;
+        Ok(local)
+    }
+
+    /// `cached_file_account`, for a caller that does *not* already hold the account-wide lock — `read`
+    /// and `cached_file`'s own `None` (account) branch, the paths an ordinary file read and media serving
+    /// (`file_serving.rs`, a `<video>`/`<audio>`'s own Range requests) go through.
+    ///
+    /// **The account-wide lock is held only for `cached_file_account_metadata` above, never across the
+    /// download itself.** A file's content can take an unbounded time to fetch — there is no HTTP timeout
+    /// anywhere in the Filen client, and a `<video>` element's own buffering can leave a request stuck —
+    /// and holding the coarse account lock for that whole stretch used to queue every unrelated listing
+    /// or read of the same account behind it (reported live: after a Filen `.mkv` failed to play, "the
+    /// file manager no longer worked because the listings would take forever"). The narrower
+    /// `download_locks`, keyed by this one `(user_id, path)`, takes over for the download itself, so a
+    /// slow fetch of one file never blocks anything else of the account; concurrent callers for the exact
+    /// same file (a buffering `<video>`'s own overlapping Range probes) also coalesce there instead of
+    /// each independently truncating and restarting the `.part` file from zero.
+    async fn cached_file_account_unlocked(&self, remote: &impl Remote, user_id: i64, path: &str) -> Result<PathBuf, String> {
+        let parent = parent_of(path).ok_or("That's the root folder, not a file.")?;
+        let local = {
+            let _guard = self.lock(user_id).await;
+            match self.cached_file_account_metadata(remote, user_id, path, &parent).await? {
+                Ok(local) => return Ok(local),
+                Err(local) => local,
+            }
+        }; // the account-wide lock is released here
+
+        let _download_guard = self.download_lock(user_id, path).await;
+        // Someone else may have finished downloading this exact file while this call waited for the
+        // download lock (including while the account lock above was briefly held by them too): the
+        // rename into place only ever happens once a download has fully succeeded, so finding the file
+        // there now means it's complete and there's nothing left to do.
+        if local.is_file() {
+            return Ok(local);
+        }
+        self.download_file(remote, path, &local).await?;
+        {
+            let _guard = self.lock(user_id).await;
+            self.mark_cached(user_id, path).await?;
+        }
+        Ok(local)
     }
 
     async fn store_content(&self, user_id: i64, path: &str, local: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1718,11 +1761,11 @@ impl Cache {
     /// callers that copy it somewhere (exporting) rather than hold its bytes. Never shown to a window.
     /// This is also what media serving (`file_serving.rs`, a `<video>`/`<audio>`'s own Range requests)
     /// goes through, which is why — for the account itself — it doesn't hold the account-wide lock across
-    /// the fetch; see `cached_file_account`'s own doc comment.
+    /// the fetch; see `cached_file_account_unlocked`'s own doc comment.
     pub async fn cached_file(&self, remote: &impl Remote, user_id: i64, branch: Option<i64>, path: &str) -> Result<PathBuf, String> {
         let path = norm_path(path)?;
         match branch {
-            None => self.cached_file_account(remote, user_id, &path).await,
+            None => self.cached_file_account_unlocked(remote, user_id, &path).await,
             Some(branch) => {
                 let _guard = self.lock(user_id).await;
                 self.cached_file_branch(remote, user_id, branch, &path).await
