@@ -7,8 +7,11 @@ import { invoke } from '@tauri-apps/api/core'
  *   lacks focus — and through the Clipboard API when that isn't possible. Read (text or an image) through the Clipboard
  *   API only (the webview may ask the person to allow it) — **Android's WebView refuses to read it at all**, text or
  *   image alike, so every reader here throws there; a caller shows that as "use the system's own paste instead".
- * - **The app's own clipboard** (`internal_clipboard.rs`): one text, kept by the backend and shared by every window of the
- *   admin-app and of the system apps. Nothing copied to it reaches other programs, and the OS clipboard is left alone.
+ * - **The app's own clipboard** (`internal_clipboard.rs`): a *stack* of text entries, kept by the backend and shared by
+ *   every window of the admin-app and of the system apps. Nothing copied to it reaches other programs, and the OS
+ *   clipboard is left alone. "Copy to it" pushes a new entry on top; "paste from it" peeks the top one without
+ *   removing it (so pasting twice pastes the same thing, the way a plain clipboard always has) — `pop` and the
+ *   rest of the stack are there for `ClipboardManagerModal.tsx`'s own "manage the app's clipboard" popup.
  */
 
 function copyViaExecCommand(text: string): boolean {
@@ -81,10 +84,16 @@ export async function readOsClipboardImage(): Promise<ClipboardImage | null> {
 }
 
 export const internalClipboard = {
-  /** The text on the app's own clipboard (empty when nothing was copied to it). */
-  get: () => invoke<string>('internal_clipboard_get'),
-  /** Replaces the text on the app's own clipboard. */
-  set: (text: string) => invoke<void>('internal_clipboard_set', { text }),
-  /** Empties it. */
+  /** The whole stack, top (most recently pushed) first — for `ClipboardManagerModal.tsx`. */
+  list: () => invoke<string[]>('internal_clipboard_list'),
+  /** The top entry, or `null` when the stack is empty — a plain "paste": it doesn't remove the entry. */
+  peek: () => invoke<string | null>('internal_clipboard_peek'),
+  /** Adds a new entry on top — a plain "copy". */
+  push: (text: string) => invoke<void>('internal_clipboard_push', { text }),
+  /** Removes and returns the top entry, or `null` when the stack is empty. */
+  pop: () => invoke<string | null>('internal_clipboard_pop'),
+  /** Replaces the whole stack — `ClipboardManagerModal.tsx`'s one write command. */
+  setAll: (entries: string[]) => invoke<void>('internal_clipboard_set_all', { entries }),
+  /** Empties it entirely. */
   clear: () => invoke<void>('internal_clipboard_clear'),
 }

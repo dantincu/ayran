@@ -100,6 +100,7 @@ import {
   type VersionCheck,
 } from './sources'
 import { discardOwner, pushOwned } from './backStack'
+import { isFolderTrusted, trustFolder } from './trustedFolders'
 import { decodeLocation, reportLocation, subscribeNavigate, type Location, type Tab } from './tabs'
 import UserActionButton from './UserActionButton'
 import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
@@ -409,9 +410,9 @@ export default function NotesApp({
   const prevBackState = useRef<{ sourceId: string; branch: number | null; path: string; editing: Editing | null; viewer: { items: MediaItem[]; start: number } | null } | null>(null)
   // Leaving this component (its own "Notes home" button, say) while some of its own navigation is still
   // un-popped must not leave those entries stranded, pointing at an instance that's about to be gone — see
-  // `discardTo`'s own doc comment.
-  const mountBackCheckpoint = useRef(backCheckpoint())
-  useEffect(() => () => discardTo(mountBackCheckpoint.current), [])
+  // `discardOwner`'s own doc comment. One fresh id per mount, tagging every entry this instance pushes.
+  const backOwner = useRef(Symbol('notesApp')).current
+  useEffect(() => () => discardOwner(backOwner), [])
   useEffect(() => {
     const signature = JSON.stringify([sourceId, branch, path, editing?.path ?? null, viewer !== null])
     if (prevBackSignature.current !== null) {
@@ -419,13 +420,13 @@ export default function NotesApp({
         suppressBackPush.current = false
       } else if (signature !== prevBackSignature.current) {
         const captured = prevBackState.current!
-        pushBack(() => {
+        pushOwned(() => {
           setSourceId(captured.sourceId)
           setBranch(captured.branch)
           setPath(captured.path)
           setEditing(captured.editing)
           setViewer(captured.viewer)
-        })
+        }, backOwner)
       }
     }
     prevBackSignature.current = signature
@@ -958,12 +959,29 @@ export default function NotesApp({
     }
   }
 
+  /** Asks before a destructive change (deleting an entry, overwriting one on upload) in `folder` — unless
+   * that folder (or an ancestor of it) was already trusted this session, in which case it proceeds without
+   * asking at all. The *first* such question in a folder offers trust for the whole folder (and everything
+   * under it) instead of just the one action; declining falls back to the plain, single-action question —
+   * so trusting a folder is always something the person opts into, never assumed. */
+  async function confirmDestructive(folder: string, question: string): Promise<boolean> {
+    if (isFolderTrusted(sourceId, branch, folder)) return true
+    const grant = await confirm(
+      `Allow changes (delete, overwrite) under "${folder || '/'}" — and everything under it — without asking again, for the rest of this session?\n\nCancel to be asked about just this one action instead.`,
+    )
+    if (grant) {
+      trustFolder(sourceId, branch, folder)
+      return true
+    }
+    return confirm(question)
+  }
+
   async function uploadFiles() {
     if (!source) return
     try {
       // The files are handed over unread: a big one is read and sent on piece by piece.
       for (const file of await pickDeviceFiles()) {
-        if (entries.some((e) => e.name === file.name) && !(await confirm(`Replace "${file.name}"?`))) continue
+        if (entries.some((e) => e.name === file.name) && !(await confirmDestructive(path, `Replace "${file.name}"?`))) continue
         await act(async () => {
           const target = joinRelative(path, file.name)
           if (source.writeFromFile) await source.writeFromFile(target, file)
@@ -988,7 +1006,7 @@ export default function NotesApp({
       if (!image) return setError('There is no image on the clipboard.')
       const name = window.prompt('Save the clipboard image as:', `clipboard-${Date.now()}.${image.ext}`)?.trim()
       if (!name || !nameOk(name)) return
-      if (entries.some((e) => e.name === name) && !(await confirm(`Replace "${name}"?`))) return
+      if (entries.some((e) => e.name === name) && !(await confirmDestructive(path, `Replace "${name}"?`))) return
       const file = new File([image.blob], name, { type: image.blob.type })
       await act(async () => {
         const target = joinRelative(path, name)
@@ -1019,7 +1037,7 @@ export default function NotesApp({
         : account
           ? "from the account — it goes to Filen's trash"
           : 'for good'
-    if (!(await confirm(`Delete "${entry.name}" ${where}?`))) return
+    if (!(await confirmDestructive(path, `Delete "${entry.name}" ${where}?`))) return
     await act(() => source.remove(joinRelative(path, entry.name), entry.isDirectory))
   }
 

@@ -124,10 +124,10 @@ export function UserActionFieldButtons({ field }: { field: HTMLInputElement | HT
   return (
     <>
       <button type="button" className="text-menu-trigger" aria-label="Launch the User Action from this box" title="Launch the User Action from this box" onMouseDown={keepFocus} onClick={() => launch(describeField(field))}>
-        <Zap size={14} strokeWidth={2} aria-hidden="true" />
+        <Zap size={16} strokeWidth={2} aria-hidden="true" />
       </button>
       <button type="button" className="text-menu-trigger" aria-label="Close the User Action window" title="Close the User Action window" disabled={!open} onMouseDown={keepFocus} onClick={close}>
-        <ZapOff size={14} strokeWidth={2} aria-hidden="true" />
+        <ZapOff size={16} strokeWidth={2} aria-hidden="true" />
       </button>
     </>
   )

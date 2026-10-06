@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { Eye, EyeOff, Eraser, FolderOpen, PanelTop, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
+import { ClipboardList, Eraser, FolderOpen, PanelTop, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import IconButton from './IconButton'
 import AppearanceSettings from './AppearanceSettings'
+import ClipboardManagerModal from './ClipboardManagerModal'
 import { internalClipboard } from '../lib/clipboard'
 import { invoke } from '@tauri-apps/api/core'
 import {
@@ -24,9 +25,9 @@ export default function SettingsTab() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [changed, setChanged] = useState(false)
-  // What the app's own clipboard holds (`null`: not read yet) and whether its text is shown.
-  const [clipboardText, setClipboardText] = useState<string | null>(null)
-  const [clipboardShown, setClipboardShown] = useState(false)
+  // What the app's own clipboard holds (`null`: not read yet) and whether the manage popup is open.
+  const [clipboardEntries, setClipboardEntries] = useState<string[] | null>(null)
+  const [managingClipboard, setManagingClipboard] = useState(false)
   // Whether every list's row of icon buttons collapses into a single "more actions" menu (`rowActionsCompact.ts`).
   const [rowActionsCompact, setRowActionsCompactState] = useState(false)
   useEffect(() => subscribeRowActionsCompact(setRowActionsCompactState), [])
@@ -89,7 +90,7 @@ export default function SettingsTab() {
 
   const readClipboard = useCallback(async () => {
     try {
-      setClipboardText(await internalClipboard.get())
+      setClipboardEntries(await internalClipboard.list())
     } catch (e) {
       setError(String(e))
     }
@@ -99,7 +100,6 @@ export default function SettingsTab() {
     setError(null)
     try {
       await internalClipboard.clear()
-      setClipboardShown(false)
       await readClipboard()
     } catch (e) {
       setError(String(e))
@@ -417,26 +417,27 @@ export default function SettingsTab() {
         </div>
       </div>
       <p className="muted">
-        One text that every window of the app — the admin-app, Notes and web apps — can copy to and paste from. It is kept in
-        memory only and is gone when the app closes; the system's clipboard is not touched.
+        A stack of text that every window of the app — the admin-app, Notes and web apps — can copy to and paste from. It is
+        kept in memory only and is gone when the app closes; the system's clipboard is not touched.
       </p>
       <div className="toolbar-actions">
         <span className="muted">
-          {clipboardText === null ? 'Reading…' : clipboardText === '' ? 'It is empty.' : `It holds ${clipboardText.length.toLocaleString()} character${clipboardText.length === 1 ? '' : 's'}.`}
+          {clipboardEntries === null
+            ? 'Reading…'
+            : clipboardEntries.length === 0
+              ? 'It is empty.'
+              : `It holds ${clipboardEntries.length.toLocaleString()} entr${clipboardEntries.length === 1 ? 'y' : 'ies'}.`}
         </span>
-        {clipboardText !== null && clipboardText !== '' && (
-          <IconButton
-            icon={clipboardShown ? EyeOff : Eye}
-            label={clipboardShown ? 'Hide what it holds' : 'Show what it holds'}
-            onClick={() => setClipboardShown((shown) => !shown)}
-          />
-        )}
-        <IconButton icon={Eraser} label="Clear the app's clipboard" onClick={clearClipboard} disabled={!clipboardText} />
+        <IconButton icon={ClipboardList} label="Manage the app's clipboard…" onClick={() => setManagingClipboard(true)} />
+        <IconButton icon={Eraser} label="Clear the app's clipboard" onClick={clearClipboard} disabled={!clipboardEntries || clipboardEntries.length === 0} />
       </div>
-      {clipboardShown && clipboardText && (
-        <pre className="path" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 160, overflow: 'auto' }}>
-          {clipboardText.length > 2000 ? `${clipboardText.slice(0, 2000)}…` : clipboardText}
-        </pre>
+      {managingClipboard && (
+        <ClipboardManagerModal
+          onClose={() => {
+            setManagingClipboard(false)
+            void readClipboard()
+          }}
+        />
       )}
 
       <div className="toolbar" style={{ marginTop: 24 }}>

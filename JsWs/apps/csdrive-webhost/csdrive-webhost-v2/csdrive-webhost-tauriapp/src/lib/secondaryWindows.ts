@@ -244,6 +244,37 @@ export async function windowGoBack(): Promise<boolean> {
   return invoke('window_go_back')
 }
 
+/** Brings the admin-app's own window to the front — not available on Android yet (the main activity has no
+ * counterpart to the secondary-window task-focusing this uses on desktop); the chord that calls it
+ * (`ChordHost.tsx`, Ctrl+K, A) shows the resulting error as its own passing message rather than hiding it. */
+export async function focusAdminWindow(): Promise<void> {
+  return invoke('focus_admin_window')
+}
+
+/** What `videoTranscodeProgress` reports for one conversion (`video_transcode.rs`). `percent` is a rough
+ * estimate (the converted file's own size against the source's, not the source position actually reached —
+ * see the module's own doc comment on why), capped at 99 until `done`. `url` is set only once `done` and
+ * `error` is absent. */
+export interface VideoTranscodeStatus {
+  percent: number
+  done: boolean
+  error: string | null
+  url: string | null
+}
+
+/** Starts converting a local video file (the user folder or a picked folder) for compatible in-app playback —
+ * decoding with whatever codec Windows itself has (a codec pack's own included) and re-encoding to H.264/AAC,
+ * which every engine this app ships on can play. Not available for a Filen file, and not on Android yet (see
+ * `video_transcode.rs`'s own doc comment for why). Resolves to a job id at once — poll `videoTranscodeProgress`
+ * for how far along it is; a file already converted (unchanged since) resolves `done: true` immediately. */
+export async function videoTranscodeBegin(root: string, path: string): Promise<string> {
+  return invoke('video_transcode_begin', { root, path })
+}
+
+export async function videoTranscodeProgress(jobId: string): Promise<VideoTranscodeStatus> {
+  return invoke('video_transcode_progress', { jobId })
+}
+
 export function onSecondaryWindowsChanged(callback: () => void): Promise<UnlistenFn> {
   return listen(EVENT_CHANGED, () => callback())
 }

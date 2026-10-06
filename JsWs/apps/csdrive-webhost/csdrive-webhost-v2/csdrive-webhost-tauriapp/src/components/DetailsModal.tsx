@@ -44,7 +44,7 @@ export default function DetailsModal({ title, fields, tags, children, onClose, o
   async function copy(field: DetailField, to: 'os' | 'app') {
     try {
       if (to === 'os') await copyToOsClipboard(field.value)
-      else await internalClipboard.set(field.value)
+      else await internalClipboard.push(field.value)
       said(`${field.label}: copied to ${to === 'os' ? 'the clipboard' : "the app's clipboard"}`)
     } catch (e) {
       onError(String(e))

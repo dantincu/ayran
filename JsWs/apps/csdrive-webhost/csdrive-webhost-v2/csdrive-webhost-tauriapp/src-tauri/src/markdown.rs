@@ -100,7 +100,254 @@ img { max-width: 100%; }
 #csdrive-top-bar button.icon:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
 #csdrive-top-bar button.icon svg { width: 16px; height: 16px; }
 #csdrive-tb-info { flex: 1; min-width: 0; overflow: hidden; }
+/* A CSS/JavaScript/JSON fenced code block's own colours (the script below, CODE_HIGHLIGHT_SCRIPT, applies the
+   tok-* classes — the same names and the same light/dark hex values as the admin-app's own `--tok-*` in
+   App.css, reused here rather than invented fresh, so a code block reads the same whether it's seen in the
+   editor or in this rendered page). This page has no [data-theme] attribute to switch on (a web app's
+   window doesn't inherit the admin-app's chosen theme — 'Appearance' in CLAUDE.md), so light/dark is purely
+   the `prefers-color-scheme` media query, matching `color-scheme: light dark` above. */
+:root {
+  --tok-heading: #c2410c;
+  --tok-list: #be185d;
+  --tok-code: #b45309;
+  --tok-url: #0e7490;
+  --tok-attr: #b45309;
+  --tok-string: #0f766e;
+  --tok-entity: #7c3aed;
+  --tok-quiet: #6b7280;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tok-heading: #fdba74;
+    --tok-list: #f9a8d4;
+    --tok-code: #fbbf24;
+    --tok-url: #67e8f9;
+    --tok-attr: #fdba74;
+    --tok-string: #5eead4;
+    --tok-entity: #c4b5fd;
+    --tok-quiet: #9ca3af;
+  }
+}
+.tok-comment, .tok-punct { color: var(--tok-quiet); }
+.tok-string { color: var(--tok-string); }
+.tok-attr { color: var(--tok-attr); }
+.tok-keyword { color: var(--tok-list); font-weight: 700; }
+.tok-number { color: var(--tok-code); }
+.tok-literal { color: var(--tok-entity); }
+.tok-regex { color: var(--tok-string); }
+.tok-function { color: var(--tok-heading); }
+.tok-property { color: var(--tok-attr); }
+.tok-selector { color: var(--tok-url); }
+.tok-atrule { color: var(--tok-entity); }
+.tok-tag { color: var(--tok-url); }
 ";
+
+/// Colours a fenced CSS/JavaScript/JSON code block of the rendered page — reported live: "in the rendered
+/// html no code block is highlighted at all" (the editor already highlights a markdown file's own fences in
+/// exactly these languages, `lib/highlightCode.ts` — this was the one place that logic had never reached,
+/// since `render_page` is pure `pulldown_cmark` conversion with no highlighting step of its own). **A plain,
+/// dependency-free JS port of `highlightCss`/`highlightJavaScript`/`highlightJson`, not a second
+/// implementation in Rust**: every regex and branch below is the same one `lib/highlightCode.ts` already
+/// has, with only its TypeScript type annotations stripped — reusing the exact, already-tested logic rather
+/// than risking a second, subtly different tokenizer that could highlight the same code differently in the
+/// editor and in this page. (HTML fences are deliberately not covered — `highlightHtml` is a much larger,
+/// stateful tag/attribute scanner, and this page already shows a fenced ```html block as plain, readable
+/// text, same as any other not-yet-covered language — not a regression, just not extended here.) Runs after
+/// `DOMContentLoaded` (or at once if the document is already past that point — this script sits at the very
+/// end of the body, so it usually is), independently of `BOOTSTRAP` below: it doesn't touch
+/// `window.__TAURI__` and must still colour the page's code even where that isn't available.
+const CODE_HIGHLIGHT_SCRIPT: &str = r#"
+(function () {
+  var ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;' }
+  function esc(text) { return text.replace(/[&<>]/g, function (c) { return ESCAPES[c] }) }
+  function span(kind, text) { return text === '' ? '' : '<span class="tok-' + kind + '">' + esc(text) + '</span>' }
+
+  var KEYWORDS = {}
+  'as async await break case catch class const continue debugger default delete do else enum export extends finally for from function get if implements import in instanceof interface let new of package private protected public return set static super switch this throw try typeof var void while with yield'
+    .split(' ').forEach(function (k) { KEYWORDS[k] = true })
+  var LITERALS = { 'true': true, 'false': true, 'null': true, 'undefined': true, 'NaN': true, 'Infinity': true }
+
+  var LINE_COMMENT = /\/\/[^\n]*/y
+  var BLOCK_COMMENT = /\/\*[\s\S]*?(?:\*\/|$)/y
+  var SINGLE_STRING = /'(?:\\[\s\S]|[^'\\\n])*'?/y
+  var DOUBLE_STRING = /"(?:\\[\s\S]|[^"\\\n])*"?/y
+  var TEMPLATE = /`(?:\\[\s\S]|[^`\\])*`?/y
+  var REGEX_LITERAL = /\/(?![*/])(?:\\.|[^/\\\n[]|\[(?:\\.|[^\]\\\n])*\])+\/[a-z]*/y
+  var NUMBER = /0[xX][\da-fA-F_]+n?|0[bB][01_]+n?|0[oO][0-7_]+n?|(?:\d[\d_]*\.?[\d_]*|\.\d[\d_]*)(?:[eE][+-]?\d+)?n?/y
+  var IDENTIFIER = /[A-Za-z_$ -￿][\w$ -￿]*/y
+
+  function matchAt(pattern, text, at) {
+    pattern.lastIndex = at
+    var m = pattern.exec(text)
+    return m && m[0] !== '' ? m[0] : null
+  }
+
+  function highlightJavaScript(text) {
+    var out = '', i = 0, plain = '', valueBefore = false
+    function flush() { if (plain !== '') out += esc(plain); plain = '' }
+    function emit(kind, token) { flush(); out += span(kind, token); i += token.length }
+    while (i < text.length) {
+      var ch = text[i]
+      if (/\s/.test(ch)) { plain += ch; i++; continue }
+      var token
+      if (ch === '/' && (token = matchAt(LINE_COMMENT, text, i))) emit('comment', token)
+      else if (ch === '/' && (token = matchAt(BLOCK_COMMENT, text, i))) emit('comment', token)
+      else if (ch === "'" && (token = matchAt(SINGLE_STRING, text, i))) { emit('string', token); valueBefore = true }
+      else if (ch === '"' && (token = matchAt(DOUBLE_STRING, text, i))) { emit('string', token); valueBefore = true }
+      else if (ch === '`' && (token = matchAt(TEMPLATE, text, i))) { emit('string', token); valueBefore = true }
+      else if (ch === '/' && !valueBefore && (token = matchAt(REGEX_LITERAL, text, i))) { emit('regex', token); valueBefore = true }
+      else if ((/\d/.test(ch) || (ch === '.' && /\d/.test(text[i + 1] || ''))) && (token = matchAt(NUMBER, text, i))) { emit('number', token); valueBefore = true }
+      else if ((token = matchAt(IDENTIFIER, text, i))) {
+        var next = /^\s*\(/.test(text.slice(i + token.length, i + token.length + 40))
+        if (KEYWORDS[token]) { emit('keyword', token); valueBefore = (token === 'this' || token === 'super') }
+        else if (LITERALS[token]) { emit('literal', token); valueBefore = true }
+        else {
+          if (next) emit('function', token)
+          else { plain += token; i += token.length }
+          valueBefore = true
+        }
+      } else {
+        plain += ch; i++
+        valueBefore = (ch === ')' || ch === ']' || ch === '}')
+      }
+    }
+    flush()
+    return out
+  }
+
+  var CSS_COMMENT = /\/\*[\s\S]*?(?:\*\/|$)/y
+  var CSS_STRING = /"(?:\\[\s\S]|[^"\\\n])*"?|'(?:\\[\s\S]|[^'\\\n])*'?/y
+
+  function statementEnd(text, from) {
+    var depth = 0
+    for (var i = from; i < text.length; i++) {
+      var ch = text[i]
+      if (ch === '"' || ch === "'") {
+        var s = matchAt(CSS_STRING, text, i)
+        if (s) i += s.length - 1
+      } else if (ch === '/' && text[i + 1] === '*') {
+        var c = matchAt(CSS_COMMENT, text, i)
+        if (c) i += c.length - 1
+      } else if (ch === '(' || ch === '[') depth++
+      else if (ch === ')' || ch === ']') depth = Math.max(0, depth - 1)
+      else if (depth === 0 && (ch === '{' || ch === ';' || ch === '}')) return { at: i, opens: ch === '{' }
+    }
+    return { at: text.length, opens: false }
+  }
+
+  function cssSelector(segment) {
+    var out = '', i = 0, plain = ''
+    function flush() { if (plain !== '') out += esc(plain); plain = '' }
+    while (i < segment.length) {
+      var rest = segment.slice(i)
+      var m
+      if ((m = /^\/\*[\s\S]*?(?:\*\/|$)/.exec(rest))) { flush(); out += span('comment', m[0]) }
+      else if ((m = /^@[\w-]+/.exec(rest))) { flush(); out += span('atrule', m[0]) }
+      else if ((m = /^"(?:\\[\s\S]|[^"\\\n])*"?|^'(?:\\[\s\S]|[^'\\\n])*'?/.exec(rest))) { flush(); out += span('string', m[0]) }
+      else if ((m = /^[.#][\w-]+/.exec(rest))) { flush(); out += span('selector', m[0]) }
+      else if ((m = /^::?[\w-]+/.exec(rest))) { flush(); out += span('atrule', m[0]) }
+      else if ((m = /^\[[^\]\n]*\]?/.exec(rest))) { flush(); out += span('attr', m[0]) }
+      else if ((m = /^[A-Za-z][\w-]*/.exec(rest))) { flush(); out += span('tag', m[0]) }
+      else { plain += rest[0]; i++; continue }
+      i += m[0].length
+    }
+    flush()
+    return out
+  }
+
+  function cssValue(segment) {
+    var out = '', i = 0, plain = ''
+    function flush() { if (plain !== '') out += esc(plain); plain = '' }
+    while (i < segment.length) {
+      var rest = segment.slice(i)
+      var m
+      if ((m = /^\/\*[\s\S]*?(?:\*\/|$)/.exec(rest))) { flush(); out += span('comment', m[0]) }
+      else if ((m = /^"(?:\\[\s\S]|[^"\\\n])*"?|^'(?:\\[\s\S]|[^'\\\n])*'?/.exec(rest))) { flush(); out += span('string', m[0]) }
+      else if ((m = /^#[\da-fA-F]{3,8}\b/.exec(rest))) { flush(); out += span('number', m[0]) }
+      else if ((m = /^!\s*important\b/i.exec(rest))) { flush(); out += span('keyword', m[0]) }
+      else if ((m = /^[A-Za-z_-][\w-]*(?=\()/.exec(rest))) { flush(); out += span('function', m[0]) }
+      else if ((m = /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?(?:%|[a-zA-Z]+)?/.exec(rest))) { flush(); out += span('number', m[0]) }
+      else if ((m = /^[A-Za-z_-][\w-]*/.exec(rest))) { plain += m[0] }
+      else { plain += rest[0]; i++; continue }
+      if (m) i += m[0].length
+    }
+    flush()
+    return out
+  }
+
+  function highlightCss(text) {
+    var out = '', i = 0
+    while (i < text.length) {
+      var gap = /^[\s}]+/.exec(text.slice(i))
+      if (gap) { out += esc(gap[0]); i += gap[0].length; continue }
+      var comment = /^\/\*[\s\S]*?(?:\*\/|$)/.exec(text.slice(i))
+      if (comment) { out += span('comment', comment[0]); i += comment[0].length; continue }
+      var end = statementEnd(text, i)
+      var segment = text.slice(i, end.at)
+      if (end.opens) { out += cssSelector(segment) + '{'; i = end.at + 1; continue }
+      var property = /^(\s*)(--?[A-Za-z_][\w-]*|[A-Za-z_][\w-]*)(\s*:)([\s\S]*)$/.exec(segment)
+      if (property && !segment.trimStart().startsWith('@')) {
+        out += esc(property[1]) + span('property', property[2]) + esc(property[3]) + cssValue(property[4])
+      } else if (segment.trimStart().startsWith('@')) {
+        out += cssSelector(segment)
+      } else {
+        out += esc(segment)
+      }
+      if (end.at < text.length) out += text[end.at] === ';' ? ';' : ''
+      i = end.at + (text[end.at] === ';' ? 1 : 0)
+      if (text[end.at] === '}' || end.at >= text.length) i = end.at
+    }
+    return out
+  }
+
+  var JSON_STRING = /"(?:\\[\s\S]|[^"\\\n])*"?/y
+  var JSON_NUMBER = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y
+  var JSON_LITERAL = /true|false|null/y
+
+  function highlightJson(text) {
+    var out = '', i = 0, plain = ''
+    function flush() { if (plain !== '') out += esc(plain); plain = '' }
+    while (i < text.length) {
+      var ch = text[i]
+      var token
+      if (ch === '"' && (token = matchAt(JSON_STRING, text, i))) {
+        flush()
+        var after = text.slice(i + token.length).match(/^\s*:/)
+        out += span(after ? 'attr' : 'string', token)
+        i += token.length
+      } else if ((/\d/.test(ch) || (ch === '-' && /\d/.test(text[i + 1] || ''))) && (token = matchAt(JSON_NUMBER, text, i))) {
+        flush(); out += span('number', token); i += token.length
+      } else if (/[A-Za-z]/.test(ch) && (token = matchAt(JSON_LITERAL, text, i))) {
+        flush(); out += span('literal', token); i += token.length
+      } else if (ch === '{' || ch === '}' || ch === '[' || ch === ']' || ch === ':' || ch === ',') {
+        flush(); out += span('punct', ch); i++
+      } else { plain += ch; i++ }
+    }
+    flush()
+    return out
+  }
+
+  function highlighterFor(lang) {
+    if (lang === 'css') return highlightCss
+    if (lang === 'js' || lang === 'javascript' || lang === 'jsx' || lang === 'mjs') return highlightJavaScript
+    if (lang === 'json' || lang === 'jsonc' || lang === 'json5') return highlightJson
+    return null
+  }
+
+  function run() {
+    var blocks = document.querySelectorAll('pre > code[class*="language-"]')
+    for (var i = 0; i < blocks.length; i++) {
+      var code = blocks[i]
+      var m = /language-([\w-]+)/.exec(code.className)
+      var fn = highlighterFor(m ? m[1] : '')
+      if (!fn) continue
+      code.innerHTML = fn(code.textContent)
+    }
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run)
+  else run()
+})()
+"#;
 
 /// Registers the page as a tab (see the module docs). Plain script, no dependencies: it runs where only
 /// `window.__TAURI__` exists.
@@ -428,7 +675,7 @@ pub fn render_page(source: &str, file_name: &str, ayran: &ayran_tags::AyranConfi
     let body = ayran_tags::apply(&body, ayran);
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>{}</title><style>{STYLE}</style></head><body>\n{body}\n<script>{BOOTSTRAP}</script></body></html>",
+         <title>{}</title><style>{STYLE}</style></head><body>\n{body}\n<script>{CODE_HIGHLIGHT_SCRIPT}</script>\n<script>{BOOTSTRAP}</script></body></html>",
         escape(&title)
     )
 }
@@ -473,6 +720,27 @@ mod tests {
         assert!(page.contains("<style>p { color: red }</style>") && page.contains("<script>window.hello = 1</script>"), "{page}");
         assert!(page.contains("init_window_tab"), "the page registers itself as a tab");
         assert!(page.starts_with("<!doctype html>"));
+    }
+
+    /// Reported live: "in the rendered html no code block is highlighted at all" — `render_page` itself does
+    /// no highlighting (that's pure `pulldown_cmark`), so this only checks that the page carries the script
+    /// and the colour rules that highlight a fenced CSS/JS/JSON block once it loads in a real browser; the
+    /// tokenizing itself (the ported `highlightCss`/`highlightJavaScript`/`highlightJson`) is the exact logic
+    /// `lib/highlightCode.ts` already has its own tests for, and is verified live in CLAUDE.md.
+    #[test]
+    fn a_fenced_code_block_carries_the_highlighting_script_and_its_colours() {
+        let page = render_page("```css\n.a { color: red; }\n```\n\n```js\nfunction f() {}\n```\n", "t.md");
+        assert!(page.contains(r#"<code class="language-css">"#), "{page}");
+        assert!(page.contains(r#"<code class="language-js">"#), "{page}");
+        assert!(page.contains("function highlightCss("), "the highlighter script is embedded");
+        assert!(page.contains("function highlightJavaScript("));
+        assert!(page.contains("function highlightJson("));
+        assert!(page.contains("pre > code[class*=\"language-\"]"), "it finds fenced blocks by their class");
+        assert!(page.contains(".tok-keyword"), "the colour rules are present");
+        assert!(page.contains("--tok-string"));
+        // An html fence is deliberately left alone (no `highlightHtml` port): still rendered, just plain text.
+        let html_fence = render_page("```html\n<b>x</b>\n```\n", "t.md");
+        assert!(html_fence.contains(r#"<code class="language-html">"#));
     }
 
     #[test]

@@ -39,6 +39,7 @@ mod sqlite_db;
 mod system_apps;
 mod top_bar;
 mod user_action;
+mod video_transcode;
 mod window_accelerators;
 mod window_host;
 mod window_scripts;
@@ -330,6 +331,9 @@ pub fn run() {
             secondary_windows::show_top_bar,
             secondary_windows::set_top_bar_hidden,
             secondary_windows::window_go_back,
+            secondary_windows::focus_admin_window,
+            video_transcode::video_transcode_begin,
+            video_transcode::video_transcode_progress,
             secondary_windows::list_tags,
             secondary_windows::add_window_tag,
             secondary_windows::update_window_tag,
@@ -358,8 +362,11 @@ pub fn run() {
             notes_pages::open_note_tab,
             notes_pages::note_tab_state,
             notes_pages::note_tab_action,
-            internal_clipboard::internal_clipboard_get,
-            internal_clipboard::internal_clipboard_set,
+            internal_clipboard::internal_clipboard_list,
+            internal_clipboard::internal_clipboard_peek,
+            internal_clipboard::internal_clipboard_push,
+            internal_clipboard::internal_clipboard_pop,
+            internal_clipboard::internal_clipboard_set_all,
             internal_clipboard::internal_clipboard_clear,
             external_sites::open_external_site,
             external_sites::open_web_address,
@@ -608,6 +615,7 @@ pub fn run() {
             app.manage(filen_cache::UploadSessions::default());
             app.manage(filen_cache::SeedSessions::default());
             app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));
+            app.manage(video_transcode::TranscodeJobs::default());
             // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
             app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
 

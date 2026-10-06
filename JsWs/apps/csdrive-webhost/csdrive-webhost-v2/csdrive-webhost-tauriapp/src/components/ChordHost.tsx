@@ -4,6 +4,7 @@ import { chordActions, CHORD_PREFIX, chordLabel, onChordsChanged, useChord, type
 import { internalClipboard } from '../lib/clipboard'
 import { isShortcut } from '../lib/keyboard'
 import { useButtonRowKeyboard } from '../lib/buttonRowKeyboard'
+import { focusAdminWindow } from '../lib/secondaryWindows'
 
 /** How long a chord waits for its second key. */
 const CHORD_WAIT_MS = 3000
@@ -32,6 +33,13 @@ export default function ChordHost() {
   useChord('x', "Clear the app's clipboard", async () => {
     await internalClipboard.clear()
     tell("The app's clipboard is empty now.")
+  })
+  useChord('a', "Focus the admin-app's window", async () => {
+    try {
+      await focusAdminWindow()
+    } catch (e) {
+      tell(e instanceof Error ? e.message : String(e))
+    }
   })
 
   function tell(text: string) {

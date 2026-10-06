@@ -1884,6 +1884,29 @@ pub async fn window_go_back(window: crate::window_host::CallerWindow, app: AppHa
     }
 }
 
+/// Brings the admin-app's own window to the front — a global shortcut (Ctrl+K, A) asked for directly, for
+/// getting back to it from a web app or a system app without hunting for its own window by hand. The admin
+/// window's label is always `"main"` (CLAUDE.md's "the admin-app is the window labelled main"), so the same
+/// `window_host::focus` every secondary window already uses to bring itself forward works here unchanged on
+/// desktop. **Android has no real counterpart yet**: each window there is its own Activity/task, and
+/// `android_windows::host::focus` only knows about the secondary-window tasks it itself registers — the main
+/// activity was never one of them, so there is nothing to look up. Rather than guess at new, unverifiable JNI
+/// plumbing for a one-off convenience shortcut, this is left as an honest "not available" there, matching
+/// CLAUDE.md's own standing allowance ("a real Android counterpart, or an honest 'not available on this
+/// platform' that the UI hides").
+#[tauri::command]
+pub fn focus_admin_window(_window: crate::window_host::CallerWindow, app: AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        crate::window_host::focus(&app, "main")
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Err("Focusing the admin-app's window isn't available on this platform yet.".to_string())
+    }
+}
+
 /// Reloads a tab — when it is **the one an open window is showing** (a tab that isn't shown has no page to reload).
 #[tauri::command]
 pub async fn reload_tab(app: AppHandle, state: tauri::State<'_, SecondaryWindowsState>, tab_guid: String) -> Result<(), String> {

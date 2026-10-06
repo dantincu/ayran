@@ -192,6 +192,10 @@ export default function HelpTab() {
           <h3>{category.title}</h3>
           {category.intro && <p className="muted">{category.intro}</p>}
           <table className="api-table">
+            <colgroup>
+              <col className="api-call-col" />
+              <col className="api-summary-col" />
+            </colgroup>
             <tbody>
               {category.entries.map((entry) => (
                 <tr key={entry.call}>

@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { ClipboardCopy, ClipboardPaste, ClipboardType, Copy, Ellipsis, ExternalLink, Link, Link2, TextCursorInput } from 'lucide-react'
+import { ClipboardCopy, ClipboardList, ClipboardPaste, ClipboardType, Copy, Ellipsis, ExternalLink, Link, Link2, TextCursorInput } from 'lucide-react'
 import { copyToOsClipboard, internalClipboard, readOsClipboard } from '../lib/clipboard'
 import { selectParagraphs } from '../lib/paragraphs'
 import { editorLinkHandlers, linkAt, markdownLinkAt } from '../lib/textLinks'
 import { useChord } from '../lib/chords'
+import ClipboardManagerModal from './ClipboardManagerModal'
 import MarkdownLinkModal from './MarkdownLinkModal'
 
 type Field = HTMLInputElement | HTMLTextAreaElement
+
+/** `.text-menu-trigger`'s own size in `App.css`, kept in step by hand — the placement math below needs the
+ * exact figure to reserve room for it (and, for `UserActionFieldButtons`, its own siblings) correctly. As big
+ * as an ordinary `.icon-button` now (34px), asked for directly: these used to read as noticeably smaller. */
+const TRIGGER_SIZE = 34
 
 /** The kinds of single-line box that hold text a person selects, copies and pastes (the others — numbers, e-mail addresses,
  * passwords, colours… — don't have a text selection to work with, or shouldn't be copied from). */
@@ -83,6 +89,11 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
   const [open, setOpen] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [linkEdit, setLinkEdit] = useState<LinkEdit | null>(null)
+  // The target to use/replace-in when the "manage the app's clipboard" popup is open — captured here, the same
+  // reason `LinkEdit.target` is (see its own doc): opening the popup may leave `field` itself not meaningfully
+  // changed, but relying on it directly here would couple this component's own focus-tracking to a popup that
+  // can stay open for a while.
+  const [managing, setManaging] = useState<{ field: Field; text: string } | null>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const messageTimer = useRef<number | undefined>(undefined)
 
@@ -132,6 +143,21 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
         setField(null)
         return
       }
+      // A newer modal may have opened on top of the one (if any) that contains this field, without the
+      // field itself ever losing focus — reported live: opening "New note…", then right-clicking its
+      // floating User Action launch button to open a second dialog on top of it left this component's own
+      // buttons (still anchored to the first dialog's title field) floating over the second dialog's own
+      // header, since nothing had told this component a *different* modal had since taken over the screen.
+      // Modals mount in the order they open, so the field's own menu is shown only while its nearest modal
+      // (if it is in one at all) is still the *last* — topmost — one in the document; a field on the plain
+      // page counts as covered the moment any modal opens at all, the same reasoning applying there too.
+      const overlays = document.querySelectorAll('.modal-overlay')
+      const topOverlay = overlays[overlays.length - 1] ?? null
+      if (topOverlay && field.closest('.modal-overlay') !== topOverlay) {
+        setPlacement((current) => (current === null ? current : null))
+        frame = requestAnimationFrame(update)
+        return
+      }
       // A box that says where its frame is (an editor whose box is as tall as its text) gets the button at the frame's corner —
       // unless that frame *also* says where it would rather have the buttons sit (`data-text-menu-target`, a reserved slot in
       // its own toolbar, beside its Undo/Redo — `CodeEditor.tsx`): floating over the corner would otherwise cover whatever
@@ -140,22 +166,22 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
       const target = anchor?.parentElement?.querySelector('[data-text-menu-target]') as HTMLElement | null
       const box = (target ?? anchor ?? field).getBoundingClientRect()
       const visible = box.width > 0 && box.height > 0 && box.bottom > 0 && box.top < window.innerHeight
-      const room = extra ? 26 * 2 : 0 // the buttons of `extra` are left of the trigger
+      const room = extra ? (TRIGGER_SIZE + 2) * 2 : 0 // the buttons of `extra` are left of the trigger
       if (!visible) {
         setPlacement((current) => (current === null ? current : null))
       } else if (target) {
         // A reserved slot: right-aligned within it (the same way the trigger sits at a plain box's own right end),
         // vertically centred — the slot's own height follows its toolbar row, taller than the trigger itself.
-        const top = box.top + (box.height - 22) / 2
-        const left = box.right - 28 - room
+        const top = box.top + (box.height - TRIGGER_SIZE) / 2
+        const left = box.right - (TRIGGER_SIZE + 4) - room
         setPlacement((current) => (current && current.top === top && current.left === left ? current : { top, left }))
       } else {
         // An editor: inside it, at its top-right corner (left of the scrollbar) — above it there is usually a dialog's
         // header with buttons of its own. A single-line box: just above it, at its right end, or inside it at the top when
         // it is at the top of the screen.
         const inside = field instanceof HTMLTextAreaElement
-        const top = inside ? Math.max(4, box.top + 4) : box.top >= 30 ? box.top - 26 : box.top + 2
-        const left = Math.max(4, Math.min(box.right - (inside ? 46 : 28) - room, window.innerWidth - 32 - room))
+        const top = inside ? Math.max(4, box.top + 4) : box.top >= TRIGGER_SIZE + 4 ? box.top - (TRIGGER_SIZE + 4) : box.top + 2
+        const left = Math.max(4, Math.min(box.right - (inside ? TRIGGER_SIZE + 22 : TRIGGER_SIZE + 4) - room, window.innerWidth - (TRIGGER_SIZE + 8) - room))
         setPlacement((current) => (current && current.top === top && current.left === left ? current : { top, left }))
       }
       frame = requestAnimationFrame(update)
@@ -218,7 +244,7 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
       const text = selected()
       if (!text) return 'Select some text first.'
       if (where === 'os') await copyToOsClipboard(text)
-      else await internalClipboard.set(text)
+      else await internalClipboard.push(text)
       return where === 'os' ? 'Copied to the clipboard.' : "Copied to the app's clipboard."
     })
 
@@ -226,7 +252,7 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
     run(async () => {
       if (!field) return
       if (field.readOnly || field.disabled) return "This box can't be changed."
-      const text = where === 'os' ? await readOsClipboard() : await internalClipboard.get()
+      const text = where === 'os' ? await readOsClipboard() : await internalClipboard.peek()
       if (!text) return where === 'os' ? 'The clipboard is empty.' : "The app's clipboard is empty."
       replaceSelection(field, text)
     })
@@ -271,7 +297,18 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
   // effect — the popup silently stayed open with the unedited text — because that is precisely what happened.)
   // Keeping the returned shape identical either way is what fixes it, not any change to the popup itself.
   const linkEditModal = linkEdit && (
-    <MarkdownLinkModal heading={linkEdit.heading} initialText={linkEdit.text} initialAddress={linkEdit.address} onSubmit={submitLink} onCancel={() => setLinkEdit(null)} />
+    <MarkdownLinkModal
+      heading={linkEdit.heading}
+      initialText={linkEdit.text}
+      initialAddress={linkEdit.address}
+      onSubmit={submitLink}
+      onCancel={() => setLinkEdit(null)}
+      onOpenExternal={
+        editorLinkHandlers.has(linkEdit.target)
+          ? (address) => void editorLinkHandlers.get(linkEdit.target)?.({ kind: 'web', target: address, start: 0, end: 0 })
+          : undefined
+      }
+    />
   )
 
   let menu: ReactNode = null
@@ -298,7 +335,7 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
           onMouseDown={keepFocus}
           onClick={() => setOpen((o) => !o)}
         >
-          <Ellipsis size={14} strokeWidth={2} aria-hidden="true" />
+          <Ellipsis size={16} strokeWidth={2} aria-hidden="true" />
         </button>
         {open && (
           <div className="text-menu-list" role="menu" style={placement.left < 210 ? { left: 0 } : { right: 0 }}>
@@ -332,6 +369,17 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
             <button type="button" role="menuitem" disabled={field.readOnly} onMouseDown={keepFocus} onClick={() => pasteFrom('app')}>
               <ClipboardType size={14} aria-hidden="true" /> Paste from the app's clipboard
             </button>
+            <button
+              type="button"
+              role="menuitem"
+              onMouseDown={keepFocus}
+              onClick={() => {
+                setManaging({ field, text: selected() })
+                setOpen(false)
+              }}
+            >
+              <ClipboardList size={14} aria-hidden="true" /> Manage the app's clipboard…
+            </button>
             <button type="button" role="menuitem" disabled={!hasSelection} onMouseDown={keepFocus} onClick={() => copyTo('os')}>
               <Copy size={14} aria-hidden="true" /> Copy to the clipboard
             </button>
@@ -353,6 +401,16 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
     <>
       {menu && createPortal(menu, document.body)}
       {linkEditModal}
+      {managing && (
+        <ClipboardManagerModal
+          onClose={() => setManaging(null)}
+          currentSelection={managing.text}
+          onPick={(text) => {
+            replaceSelection(managing.field, text)
+            setManaging(null)
+          }}
+        />
+      )}
     </>
   )
 }

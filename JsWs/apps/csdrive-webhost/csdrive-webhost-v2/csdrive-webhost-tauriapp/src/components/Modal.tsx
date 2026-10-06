@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Maximize2, Minimize2, X } from 'lucide-react'
 import IconButton from './IconButton'
 import { chordLabel } from '../lib/chords'
@@ -22,7 +23,17 @@ interface ModalProps {
 const openModals: symbol[] = []
 
 export default function Modal({ title, onClose, children, wide, actions, panelClass }: ModalProps) {
-  const { maximized, toggle } = useMaximizable()
+  const { maximized, toggle } = useMaximizable(title)
+  // Reported live: a freshly opened modal's own autofocused field sometimes looked focused
+  // (`document.activeElement` was it) but took no real keystrokes — the window had lost genuine OS
+  // focus (`document.hasFocus()` false) without anything in the page's own DOM showing it. Asking the
+  // OS for real focus explicitly, whenever a modal opens, closes that gap regardless of what left the
+  // window in that state; a window that already has focus is unaffected.
+  useEffect(() => {
+    getCurrentWebviewWindow()
+      .setFocus()
+      .catch(() => {})
+  }, [])
   useEffect(() => {
     const token = Symbol('modal')
     openModals.push(token)

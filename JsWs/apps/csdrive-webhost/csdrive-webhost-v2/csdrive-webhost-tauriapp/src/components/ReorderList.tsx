@@ -7,6 +7,10 @@ interface ReorderListProps<T> {
   getId: (item: T) => string
   renderItem: (item: T) => ReactNode
   onChange: (items: T[]) => void
+  /** Controlled selection, for a caller that needs to act on it too (`ClipboardManagerModal.tsx`'s own "remove
+   * selected") — omit both to keep the selection private, as every caller before this one did. */
+  selected?: Set<string>
+  onSelectedChange?: (selected: Set<string>) => void
 }
 
 /** A reorderable list: drag-and-drop for mouse users, plus a selection + up/down-arrow
@@ -18,8 +22,14 @@ interface ReorderListProps<T> {
 const HOLD_THRESHOLD_MS = 400
 const HOLD_REPEAT_MS = 100
 
-export default function ReorderList<T>({ items, getId, renderItem, onChange }: ReorderListProps<T>) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
+export default function ReorderList<T>({ items, getId, renderItem, onChange, selected: controlledSelected, onSelectedChange }: ReorderListProps<T>) {
+  const [ownSelected, setOwnSelected] = useState<Set<string>>(new Set())
+  const selected = controlledSelected ?? ownSelected
+  const setSelected = (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    const resolved = typeof next === 'function' ? next(selected) : next
+    if (onSelectedChange) onSelectedChange(resolved)
+    else setOwnSelected(resolved)
+  }
   const dragIndex = useRef<number | null>(null)
   const holdThresholdTimer = useRef<number | null>(null)
   const holdRepeatTimer = useRef<number | null>(null)

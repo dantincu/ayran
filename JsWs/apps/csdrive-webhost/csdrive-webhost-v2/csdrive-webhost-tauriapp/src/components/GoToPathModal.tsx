@@ -44,7 +44,7 @@ export default function GoToPathModal({ title = 'Go to a path', current, hint, o
 
   async function paste(from: 'os' | 'app') {
     try {
-      const pasted = from === 'os' ? await readOsClipboard() : await internalClipboard.get()
+      const pasted = from === 'os' ? await readOsClipboard() : ((await internalClipboard.peek()) ?? '')
       if (pasted === '') setError(from === 'os' ? 'The clipboard is empty.' : "The app's clipboard is empty.")
       else {
         setText(pasted.trim())

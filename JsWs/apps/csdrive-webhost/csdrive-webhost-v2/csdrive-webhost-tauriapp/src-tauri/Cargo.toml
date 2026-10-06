@@ -45,9 +45,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 keyring = "4.2.0"
 
 # A page's own JavaScript dialogs on Windows (`page_dialogs.rs`): the versions Tauri's webview already uses.
+# Win32_Media_MediaFoundation/Win32_System_Com are `video_transcode.rs`'s own: decoding a video with whatever
+# codec Windows has (any format the Source Reader's codec search finds, including a third-party codec pack's
+# own registered decoder) and re-encoding it to H.264/AAC in MP4, which every browser can play.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = "0.61"
+windows = { version = "0.61", features = ["Win32_Media_MediaFoundation", "Win32_System_Com", "Win32_Foundation"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"

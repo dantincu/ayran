@@ -465,6 +465,63 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
                     return
                   }
                 }
+                // Plain Page Up/Down (optionally with Shift, to extend the selection the same way Shift+Arrow
+                // already does): reported live as scrolling the view but leaving the caret exactly where it was.
+                // Root cause, confirmed live: the textarea is sized to fit its *entire* text (`fit()`, above) —
+                // nothing is ever clipped inside the box itself, only the `.code-editor` frame around it clips
+                // and scrolls — so the browser's own native Page Up/Down, which pages a textarea's own internal
+                // scroll and moves the caret along with *that*, finds nothing to page (the box has no overflow
+                // of its own) and silently does nothing to the caret; what visibly scrolls is a separate,
+                // unrelated browser fallback (paging the nearest scrollable ancestor, found live to be the
+                // `.code-editor` frame), which knows nothing about the caret at all. Handled by hand instead:
+                // move the caret by one page's worth of *source* lines (the same looser, wrap-unaware
+                // approximation `onVisibleLineChange` above already uses and documents) and page the frame by
+                // one whole screen — not merely "nudge it until the new line is barely visible": the new caret
+                // is computed to sit exactly one page below/above the old one, so a minimal "scroll until
+                // visible" would, by construction, land it right back at the edge of the page already on
+                // screen (found live: the caret moved correctly, but the view barely shifted) — a real page
+                // scroll is what lands it near the top/bottom of a genuinely new page instead.
+                if ((e.key === 'PageDown' || e.key === 'PageUp') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                  e.preventDefault()
+                  const goingDown = e.key === 'PageDown'
+                  const shiftKey = e.shiftKey
+                  const selStart = e.currentTarget.selectionStart
+                  const selEnd = e.currentTarget.selectionEnd
+                  const selectionDirection = e.currentTarget.selectionDirection
+                  setTimeout(() => {
+                    const input = inputRef.current
+                    const frame = frameRef.current
+                    if (!input || !frame) return
+                    const lines = value.split('\n')
+                    const lineHeightPx = parseFloat(getComputedStyle(input).lineHeight) || FALLBACK_LINE_HEIGHT_PX
+                    const linesPerPage = Math.max(1, Math.floor(frame.clientHeight / lineHeightPx))
+                    // The end that actually moves — the selection's own "focus" end, exactly what a real
+                    // Arrow key moves (and collapses to, without Shift).
+                    const activeOffset = selectionDirection === 'backward' ? selStart : selEnd
+                    const anchorOffset = selectionDirection === 'backward' ? selEnd : selStart
+                    let line = 0
+                    let acc = 0
+                    for (; line < lines.length - 1; line++) {
+                      if (acc + lines[line].length >= activeOffset) break
+                      acc += lines[line].length + 1
+                    }
+                    const col = activeOffset - acc
+                    const newLine = Math.min(lines.length - 1, Math.max(0, line + (goingDown ? linesPerPage : -linesPerPage)))
+                    const newCol = Math.min(col, lines[newLine].length)
+                    let newAcc = 0
+                    for (let i = 0; i < newLine; i++) newAcc += lines[i].length + 1
+                    const newOffset = newAcc + newCol
+                    if (shiftKey) {
+                      if (newOffset < anchorOffset) input.setSelectionRange(newOffset, anchorOffset, 'backward')
+                      else input.setSelectionRange(anchorOffset, newOffset, 'forward')
+                    } else {
+                      input.setSelectionRange(newOffset, newOffset)
+                    }
+                    const maxScroll = Math.max(0, frame.scrollHeight - frame.clientHeight)
+                    frame.scrollTop = Math.min(maxScroll, Math.max(0, frame.scrollTop + (goingDown ? frame.clientHeight : -frame.clientHeight)))
+                  }, 0)
+                  return
+                }
                 if (!(e.ctrlKey || e.metaKey) || e.altKey) return
                 const key = e.key.toLowerCase()
                 let action: 'undo' | 'redo' | null = null

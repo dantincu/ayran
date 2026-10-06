@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, FastForward, Maximize, Minimize, Minus, Music, Pause, Play, Plus, Rewind, RectangleHorizontal, Volume2, VolumeX, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FastForward, Maximize, Minimize, Minus, Music, Pause, Play, Plus, Rewind, RectangleHorizontal, Volume2, VolumeX, Wand2, X } from 'lucide-react'
 import IconButton from './IconButton'
 import { clock, mediaUrl, type MediaKind } from '../lib/media'
 import { formatBytes } from '../lib/format'
-import type { FileRef } from '../lib/secondaryWindows'
+import { videoTranscodeBegin, videoTranscodeProgress, type FileRef } from '../lib/secondaryWindows'
 
 /** **The media viewer**: a picture, a video or a sound of a folder, over the whole window, with the folder's other media a step
  * away (the arrows, PageUp/PageDown). The file is not read into the page: it is an address the webview loads by itself, served from
@@ -98,6 +98,60 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
       window.clearInterval(id)
     }
   }, [downloadProgress, downloadError, item, reloads])
+
+  // Converting a video for compatible playback (`video_transcode.rs`) — local files only (the user folder, a
+  // picked folder), not a Filen one: the conversion needs the file to already be a real path on this device,
+  // which a Filen file isn't until the cache has it, a different problem this pass didn't take on. `null`:
+  // not offered for this item at all; `undefined`: offered, not started.
+  const transcodeRoot: { root: string; path: string } | null =
+    item.kind === 'video' && item.file.storage === 'UserFolder'
+      ? { root: 'user', path: item.file.path }
+      : item.kind === 'video' && item.file.storage === 'DeviceFolder' && item.file.root
+        ? { root: item.file.root, path: item.file.path }
+        : null
+  const [transcoding, setTranscoding] = useState(false)
+  const [transcodePercent, setTranscodePercent] = useState(0)
+  const [transcodeError, setTranscodeError] = useState<string | null>(null)
+  // A fresh token per item/reload: a poll loop started for an earlier item checks this before touching state,
+  // so switching away (or reloading) stops an in-flight conversion's polling from updating the wrong item.
+  const transcodeToken = useRef(0)
+  useEffect(() => {
+    transcodeToken.current++
+    setTranscoding(false)
+    setTranscodePercent(0)
+    setTranscodeError(null)
+  }, [item, reloads])
+  const beginConvert = useCallback(() => {
+    if (!transcodeRoot) return
+    const token = transcodeToken.current
+    setTranscoding(true)
+    setTranscodePercent(0)
+    setTranscodeError(null)
+    const fail = (e: unknown) => {
+      if (transcodeToken.current !== token) return
+      setTranscoding(false)
+      setTranscodeError(e instanceof Error ? e.message : String(e))
+    }
+    videoTranscodeBegin(transcodeRoot.root, transcodeRoot.path).then(async (jobId) => {
+      while (transcodeToken.current === token) {
+        try {
+          const status = await videoTranscodeProgress(jobId)
+          if (transcodeToken.current !== token) return
+          setTranscodePercent(status.percent)
+          if (status.done) {
+            setTranscoding(false)
+            if (status.error) setTranscodeError(status.error)
+            else if (status.url) setUrl(status.url)
+            return
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 500))
+        } catch (e) {
+          fail(e)
+          return
+        }
+      }
+    }, fail)
+  }, [transcodeRoot?.root, transcodeRoot?.path])
 
   useEffect(() => {
     let cancelled = false
@@ -229,9 +283,33 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
         <IconButton icon={ChevronLeft} label="Previous (PageUp)" onClick={() => step(-1)} disabled={index === 0} />
         <IconButton icon={ChevronRight} label="Next (PageDown)" onClick={() => step(1)} disabled={index === items.length - 1} />
         {renderCache?.(item, () => setReloads((n) => n + 1))}
+        {transcodeRoot && (
+          <IconButton
+            icon={Wand2}
+            label={transcoding ? `Converting for compatible playback… ${transcodePercent}%` : 'Convert for compatible playback'}
+            onClick={beginConvert}
+            disabled={transcoding}
+          />
+        )}
         <IconButton icon={fullscreen ? Minimize : Maximize} label={fullscreen ? 'Leave full screen (F)' : 'Full screen (F)'} onClick={toggleFullscreen} />
         <IconButton icon={X} label="Close (Esc)" onClick={onClose} />
       </div>
+      {transcoding && (
+        <div className="media-notice media-transcode-notice">
+          Converting for compatible playback…
+          <div className="progress-bar media-progress-bar">
+            <div className="progress-bar-fill" style={{ width: `${transcodePercent}%` }} />
+          </div>
+        </div>
+      )}
+      {transcodeError && (
+        <div className="media-notice media-transcode-notice">
+          This video couldn't be converted: {transcodeError}
+          <button type="button" className="media-downloading-back" onClick={() => setTranscodeError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
       {notice && <div className="media-notice">{notice}</div>}
     </div>
   )

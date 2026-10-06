@@ -20,6 +20,7 @@ There are only so many letters to hold with Ctrl, so the app's shortcuts are **c
 | **Ctrl+K, C** | a text box or editor has the focus, with text selected | Copies the selection to the **app's own clipboard** (the one shared by every window; not the system's). |
 | **Ctrl+K, V** | a text box or editor has the focus | Pastes the app's clipboard over the selection. |
 | **Ctrl+K, X** | anywhere | **Clears** the app's clipboard. (Settings shows what it holds, and has a button for it.) |
+| **Ctrl+K, A** | anywhere | **Focuses the admin-app's own window**, bringing it to the front — getting back to it from Notes or a web app without hunting for it by hand. Not available on Android yet. |
 | **Ctrl+K, 2** | a file or note editor has the focus | Inserts **two tab-units'** worth of indentation at the caret (or indents every selected line). A quick multi-level indent, the same insertion Tab makes (Settings decides whether that is a real tab or a number of spaces). |
 | **Ctrl+K, 4** | a file or note editor has the focus | The same, with **four** tab-units. |
 
@@ -110,6 +111,7 @@ The popover is as tall as the screen allows; the list scrolls (vertically, insid
 | **Ctrl+Y** or **Ctrl+Shift+Z** | In a file or note editor: redoes what was undone (until something new is typed). |
 | **Tab** | In a file or note editor: inserts one tab-unit of indentation at the caret (a real tab or a number of spaces — Settings' "Text editors" section decides), or, with more than one line selected, indents every line the selection touches. |
 | **Shift+Tab** | In a file or note editor: **outdents** — removes one tab-unit's worth of leading whitespace from the line the caret is on, or from every line the selection touches. |
+| **Page Down** / **Page Up** | In a file or note editor: moves the caret down / up by one screenful of lines and pages the view with it (**Shift** extends the selection instead of moving the caret). |
 
 ## Text boxes and editors — select, copy, paste
 

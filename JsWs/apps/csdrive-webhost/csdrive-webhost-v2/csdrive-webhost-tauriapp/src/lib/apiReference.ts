@@ -67,6 +67,7 @@ export const API_REFERENCE: ApiCategory[] = [
       { call: "invoke('close_tab', { tabGuid })", returns: 'void', summary: 'Removes a tab and its tags; if it’s the tab an *open* window is showing, that window is suspended (its other tabs are kept).' },
       { call: "invoke('reload_tab', { tabGuid })", returns: 'void', summary: 'The same as `location.reload()` in the window currently showing that tab; keeps the page’s scroll position.' },
       { call: "invoke('window_go_back')", returns: 'a boolean', summary: 'Undoes one step of tab-switch/link navigation for this window — what a page’s own top bar’s Back button calls, and what Android’s hardware Back button does natively. `false`: there was nothing to undo — the page’s own business what to do then.' },
+      { call: "invoke('focus_admin_window')", returns: 'void', summary: 'Brings the admin-app’s own window to the front. Not available on Android yet.' },
       {
         call: "getCurrentWebviewWindow().listen('show-top-bar', () => { … })",
         returns: 'an unlisten function',
@@ -188,10 +189,13 @@ export const API_REFERENCE: ApiCategory[] = [
   },
   {
     title: "The app's clipboard",
-    intro: 'One text, kept by the backend and shared by every window of the app (not persisted; nothing copied to it reaches the OS clipboard). Any window may read and write it.',
+    intro: 'A stack of text entries, kept by the backend and shared by every window of the app (not persisted; nothing copied to it reaches the OS clipboard). Any window may read and write it. "Copy" pushes a new entry on top; "paste" peeks the top one without removing it, so pasting twice pastes the same thing.',
     entries: [
-      { call: "invoke('internal_clipboard_get')", returns: 'string', summary: '' },
-      { call: "invoke('internal_clipboard_set', { text })", returns: 'void', summary: '16 MiB at most.' },
+      { call: "invoke('internal_clipboard_list')", returns: 'string[]', summary: 'The whole stack, top (most recently pushed) first.' },
+      { call: "invoke('internal_clipboard_peek')", returns: 'string | null', summary: 'The top entry, or null when empty — does not remove it.' },
+      { call: "invoke('internal_clipboard_push', { text })", returns: 'void', summary: 'Adds a new entry on top. At most 200 entries, 16 MiB in total.' },
+      { call: "invoke('internal_clipboard_pop')", returns: 'string | null', summary: 'Removes and returns the top entry, or null when empty.' },
+      { call: "invoke('internal_clipboard_set_all', { entries })", returns: 'void', summary: 'Replaces the whole stack — add, insert, edit, remove or reorder by sending back the new complete list.' },
       { call: "invoke('internal_clipboard_clear')", returns: 'void', summary: '' },
     ],
   },

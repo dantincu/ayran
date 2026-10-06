@@ -41,6 +41,8 @@ pub enum Special {
     Device { root: String, path: String },
     /// A Filen account, in a branch (its index) or the account itself, and a path in the drive.
     Filen { user_id: u64, branch: Option<i64>, path: String },
+    /// A converted video (`video_transcode.rs`), by its own cache filename.
+    VideoTranscode { name: String },
 }
 
 /// A root as an address names it: the root id, and the branch when it reads `<id>~<branch>`.
@@ -76,6 +78,8 @@ pub fn parse_special(path: &str) -> Option<Result<Special, ()>> {
                 _ => Err(()),
             }
         }
+        "video-transcode" if !tail.is_empty() && !tail.contains('/') => Ok(Special::VideoTranscode { name: tail.to_string() }),
+        "video-transcode" => Err(()),
         _ => Err(()),
     })
 }
@@ -111,6 +115,7 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
                 Err(_) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
             }
         }
+        Special::VideoTranscode { name } => crate::video_transcode::serve(app, &name, meta, csp).await,
     }
 }
 
@@ -281,6 +286,9 @@ fn file_of(url: &tauri::Url) -> Option<String> {
     match parse_special(&path) {
         None => Some(path.trim_start_matches('/').to_string()),
         Some(Ok(Special::Device { path, .. })) | Some(Ok(Special::Filen { path, .. })) => Some(path.trim_start_matches('/').to_string()),
+        // A converted video has no "folder" of its own to resolve a relative link against — it's a raw media
+        // file, never a page with links in it — so, like an address that doesn't parse, this names nothing.
+        Some(Ok(Special::VideoTranscode { .. })) => None,
         Some(Err(())) => None,
     }
 }

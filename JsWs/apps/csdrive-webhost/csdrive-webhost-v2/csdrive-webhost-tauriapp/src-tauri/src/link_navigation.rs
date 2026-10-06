@@ -85,6 +85,9 @@ fn space_of(path: &str) -> Result<(Space, String, String), String> {
     match parse_special(path) {
         None => Ok((Space::User, path.to_string(), String::new())),
         Some(Err(())) => Err("That address isn't one of this app's pages.".to_string()),
+        // A converted video is a raw media file, never a page with links on it — the same "not a page" answer
+        // as an address that doesn't parse at all.
+        Some(Ok(Special::VideoTranscode { .. })) => Err("That address isn't one of this app's pages.".to_string()),
         Some(Ok(Special::Device { root, path })) => Ok((Space::Device(root.clone()), format!("/{path}"), format!("/@device/{root}"))),
         Some(Ok(Special::Filen { user_id, branch, path })) => {
             let prefix = format!("/@filen/{user_id}/{}", branch.map_or_else(|| "-".to_string(), |b| b.to_string()));
@@ -213,7 +216,7 @@ This kind of link can't be opened in a window.");
             }
         }
         Some(1) => {
-            let _ = app.state::<crate::internal_clipboard::InternalClipboard>().set(address);
+            let _ = app.state::<crate::internal_clipboard::InternalClipboard>().push(address);
         }
         _ => {}
     }

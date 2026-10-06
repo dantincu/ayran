@@ -964,6 +964,29 @@ select {
   word-break: break-all;
 }
 
+.clipboard-entry {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.clipboard-entry-text {
+  flex: 1;
+  min-width: 0;
+  min-height: 60px;
+  padding: 6px 8px;
+  font-family: 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  font-size: 13px;
+  white-space: pre;
+  overflow: auto;
+  resize: vertical;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
 .tab-groups-section {
   margin-left: 18px;
   padding: 6px 0 0;
@@ -1418,12 +1441,16 @@ select {
   width: auto;
   display: flex;
   gap: 2px;
-  height: 22px;
+  /* As big as an ordinary `.icon-button` (asked for directly: these — and the User Action pair beside them,
+     `UserActionFieldButtons`, which shares this same class — read as noticeably smaller than every other icon
+     button in the app). `TEXT_MENU_TRIGGER_SIZE` in `TextFieldMenu.tsx` is the same 34px, kept in step by hand
+     since the placement math there has to reserve exactly this much room. */
+  height: 34px;
 }
 
 .text-menu-trigger {
-  width: 24px;
-  height: 22px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   display: flex;
   align-items: center;
@@ -1443,7 +1470,7 @@ select {
 
 .text-menu-list {
   position: absolute;
-  top: 26px;
+  top: 38px; /* the trigger's own 34px height (`.text-menu-trigger`) plus a 4px gap */
   min-width: 230px;
   display: flex;
   flex-direction: column;
@@ -1838,9 +1865,17 @@ select {
   margin: 0 0 4px;
 }
 
+/* `table-layout: fixed` with an explicit `<colgroup>` (`HelpTab.tsx`) — not the default `auto` layout, which
+   let `.api-summary`'s own `width: 100%` and `.api-call`'s `word-break: break-word` fight over the same
+   space: a cell that can break at any character has next to no *minimum* width to defend, so the browser's
+   auto-layout algorithm handed it almost nothing (measured live: 14px, for a 38-character call) and every
+   character of the call signature wrapped onto its own line — reported live as "1 character lines". Fixed
+   widths side-step that fight entirely: each column gets its own fixed share regardless of either side's
+   content length. */
 .api-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .api-table td {
@@ -1849,14 +1884,18 @@ select {
   vertical-align: top;
 }
 
+.api-call-col {
+  width: 38%;
+}
+
+.api-summary-col {
+  width: 62%;
+}
+
 .api-call {
   font: 12px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.api-summary {
-  width: 100%;
 }
 
 .api-note {
@@ -2426,6 +2465,18 @@ select {
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.75);
   font-size: 13px;
+}
+
+.media-transcode-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 240px;
+}
+
+.media-transcode-notice .media-progress-bar {
+  width: 100%;
 }
 
 .media-bar {

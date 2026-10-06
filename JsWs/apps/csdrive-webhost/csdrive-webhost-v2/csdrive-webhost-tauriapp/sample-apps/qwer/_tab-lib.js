@@ -153,10 +153,17 @@ window.TabLib = (function () {
   function openPage(path) {
     return invoke('open_related_web_app', { path: path })
   }
-  // The app's own clipboard: one text, shared by every window of the app (not the system's clipboard).
+  // The app's own clipboard: a stack of text entries, shared by every window of the app (not the system's
+  // clipboard). push adds a new entry on top (an ordinary "copy"); peek reads the top one without removing it
+  // (an ordinary "paste" — pasting twice pastes the same thing); pop removes and returns it. list/setAll are
+  // for reading or replacing the whole stack (add/insert/edit/remove/reorder are all just "here is the new
+  // whole list", computed by the caller).
   var internalClipboard = {
-    get: function () { return invoke('internal_clipboard_get') },
-    set: function (text) { return invoke('internal_clipboard_set', { text: String(text) }) },
+    peek: function () { return invoke('internal_clipboard_peek') },
+    push: function (text) { return invoke('internal_clipboard_push', { text: String(text) }) },
+    pop: function () { return invoke('internal_clipboard_pop') },
+    list: function () { return invoke('internal_clipboard_list') },
+    setAll: function (entries) { return invoke('internal_clipboard_set_all', { entries: entries }) },
     clear: function () { return invoke('internal_clipboard_clear') },
   }
 
@@ -183,7 +190,7 @@ window.TabLib = (function () {
   //                         Notes tab's resource identifier), context says where from: { kind: 'button' }, or for a text box
   //                         { kind: 'input', fieldId, element, type, readOnly } — fieldId is a stable id distinct for every text box of Notes
   //                         (its data-ua-field, e.g. "notes.search.name"), so a page can tell which box without learning what is in it; to
-  //                         hand text over, the person copies it to the app's clipboard (TabLib.internalClipboard.get()). If the window was
+  //                         hand text over, the person copies it to the app's clipboard (TabLib.internalClipboard.peek()). If the window was
   //                         closed, the event comes once the page has registered its tab (openTab / init_window_tab).
   //   onScopeLeft(handler)  the person went elsewhere in Notes: { resourceId, now } — what opened it is out of scope (go to the default state).
   //   context()             resolves to the last launch this window was told of, or null.

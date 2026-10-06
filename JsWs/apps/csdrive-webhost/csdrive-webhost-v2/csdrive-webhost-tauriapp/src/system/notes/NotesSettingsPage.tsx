@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Eraser, House } from 'lucide-react'
+import { ClipboardList, Eraser, House } from 'lucide-react'
+import ClipboardManagerModal from '../../components/ClipboardManagerModal'
 import IconButton from '../../components/IconButton'
 import { internalClipboard } from '../../lib/clipboard'
 import { useNotesSettings } from './settings'
 import UserActionButton from './UserActionButton'
 
-/** The Notes app's settings: what it shows (the notes' indexes) and the app's clipboard, which can be cleared here. */
+/** The Notes app's settings: what it shows (the notes' indexes) and the app's clipboard, which can be managed or cleared here. */
 export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
   const { settings, change } = useNotesSettings()
-  const [clipboard, setClipboard] = useState<string | null>(null)
+  const [clipboardEntries, setClipboardEntries] = useState<string[] | null>(null)
+  const [managingClipboard, setManagingClipboard] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const read = useCallback(async () => {
     try {
-      setClipboard(await internalClipboard.get())
+      setClipboardEntries(await internalClipboard.list())
     } catch (e) {
       setError(String(e))
     }
@@ -71,17 +73,30 @@ export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
           <section className="notes-settings-section">
             <strong>The app's clipboard</strong>
             <p className="muted">
-              One text that every window of the app — the admin-app, Notes and web apps — can copy to and paste from. It is kept in memory only.
+              A stack of text that every window of the app — the admin-app, Notes and web apps — can copy to and paste from. It is kept in memory only.
             </p>
             <div className="notes-panel-row">
               <span className="muted">
-                {clipboard === null ? 'Reading…' : clipboard === '' ? 'It is empty.' : `It holds ${clipboard.length.toLocaleString()} character${clipboard.length === 1 ? '' : 's'}.`}
+                {clipboardEntries === null
+                  ? 'Reading…'
+                  : clipboardEntries.length === 0
+                    ? 'It is empty.'
+                    : `It holds ${clipboardEntries.length.toLocaleString()} entr${clipboardEntries.length === 1 ? 'y' : 'ies'}.`}
               </span>
-              <IconButton icon={Eraser} label="Clear the app's clipboard" onClick={clear} disabled={!clipboard} />
+              <IconButton icon={ClipboardList} label="Manage the app's clipboard…" onClick={() => setManagingClipboard(true)} />
+              <IconButton icon={Eraser} label="Clear the app's clipboard" onClick={clear} disabled={!clipboardEntries || clipboardEntries.length === 0} />
             </div>
           </section>
         </div>
       </main>
+      {managingClipboard && (
+        <ClipboardManagerModal
+          onClose={() => {
+            setManagingClipboard(false)
+            void read()
+          }}
+        />
+      )}
     </div>
   )
 }
