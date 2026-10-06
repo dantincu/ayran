@@ -237,9 +237,12 @@ impl Cache {
 
     /// A root that is forgotten loses its thumbnails (they are made again if it is picked again); its branches stay, with their
     /// pending changes, for the same reason.
+    /// Drops the root's own thumbnails and converted videos — both cheap to make again if the folder is
+    /// picked again, unlike its branches (kept, with their pending changes).
     pub fn local_drop_thumbnails(&self, guid: &str) {
         if let Ok(Some(root)) = self.root_dir(guid, false) {
             let _ = std::fs::remove_dir_all(root.join(crate::layout::FILES_THUMBNAILS_FOLDER));
+            let _ = std::fs::remove_dir_all(root.join(crate::layout::FILES_VIDEO_TRANSCODES_FOLDER));
         }
         self.drop_root_dir_if_empty(guid);
     }
@@ -785,6 +788,57 @@ impl Cache {
         }
         std::fs::write(target, bytes).map_err(io)
     }
+
+    // ── Converted videos ─────────────────────────────────────────────────────
+
+    /// `files/a/NNN/m` — where the root's own videos, re-encoded for compatible playback, are kept (see
+    /// `video_transcode.rs`). Not branch-aware, the same reasoning as the Filen account's own `m` (above): a
+    /// conversion is only ever of the root's real file, never a branch's own changed copy of it.
+    fn local_m_root(&self, guid: &str, make: bool) -> Result<Option<PathBuf>, String> {
+        let Some(root) = self.root_dir(guid, make)? else { return Ok(None) };
+        let parent = root.join(crate::layout::FILES_VIDEO_TRANSCODES_FOLDER);
+        if make {
+            std::fs::create_dir_all(&parent).map_err(io)?;
+        } else if !parent.is_dir() {
+            return Ok(None);
+        }
+        Ok(Some(parent))
+    }
+
+    /// Where a converted copy of this version of the root's `path` is (or would be) kept — see the Filen
+    /// `m_path`'s own doc comment for why older cached copies are *not* removed here (only once a new one is
+    /// confirmed in place, by `local_m_done`).
+    pub fn local_m_path(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<PathBuf, String> {
+        let path = norm_path(path)?;
+        let root = self.local_m_root(guid, true)?.ok_or("The folder of the root couldn't be made.")?;
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        if let Some(folder) = target.parent() {
+            std::fs::create_dir_all(folder).map_err(io)?;
+        }
+        Ok(target)
+    }
+
+    /// Called once a new converted copy has been renamed into place: removes every *other* cached conversion
+    /// of the same source file.
+    pub fn local_m_done(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.local_m_root(guid, false)? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        if let Some(folder) = target.parent() {
+            remove_older_versioned_cache_files(folder, &thumb_prefix(&path), "mp4", target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    /// The converted copy of this exact version of the root's `path`, if one is already cached — a plain,
+    /// read-only lookup (no folder created, no older version touched): see the Filen `m_lookup`'s own doc
+    /// comment for the two call sites this serves.
+    pub fn local_m_lookup(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<Option<PathBuf>, String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.local_m_root(guid, false)? else { return Ok(None) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        Ok(target.is_file().then_some(target))
+    }
 }
 
 #[cfg(test)]
@@ -999,6 +1053,29 @@ mod tests {
         assert!(s.cache.local_thumb_get(G, None, "/a.txt", 5, 5).await.unwrap().is_some(), "the root's stay");
         s.cache.local_drop_thumbnails(G);
         assert!(s.cache.local_thumb_get(G, None, "/a.txt", 5, 5).await.unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn converted_videos_are_cached_like_thumbnails_and_go_with_the_root() {
+        run(async {
+        let s = setup("converted_videos_are_c").await;
+        assert!(s.cache.local_m_lookup(G, "/a.txt", 100, 1000).unwrap().is_none(), "nothing converted yet");
+        let target = s.cache.local_m_path(G, "/a.txt", 100, 1000).unwrap();
+        std::fs::write(&target, b"converted").unwrap();
+        s.cache.local_m_done(G, "/a.txt", 100, 1000).unwrap();
+        assert_eq!(s.cache.local_m_lookup(G, "/a.txt", 100, 1000).unwrap().as_deref(), Some(target.as_path()));
+        // A changed version of the same file has no converted copy until one is made for it.
+        assert!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().is_none());
+        let newer = s.cache.local_m_path(G, "/a.txt", 200, 1000).unwrap();
+        assert_ne!(newer, target, "a different version gets its own cache entry");
+        std::fs::write(&newer, b"converted again").unwrap();
+        s.cache.local_m_done(G, "/a.txt", 200, 1000).unwrap();
+        assert!(!target.exists(), "the older conversion is removed only once the new one is confirmed in place");
+        assert_eq!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().as_deref(), Some(newer.as_path()));
+        // Forgetting the root drops its conversions too, the same as its thumbnails.
+        s.cache.local_drop_thumbnails(G);
+        assert!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().is_none());
         });
     }
 }

@@ -41,8 +41,9 @@ pub enum Special {
     Device { root: String, path: String },
     /// A Filen account, in a branch (its index) or the account itself, and a path in the drive.
     Filen { user_id: u64, branch: Option<i64>, path: String },
-    /// A converted video (`video_transcode.rs`), by its own cache filename.
-    VideoTranscode { name: String },
+    /// A converted video (`video_transcode.rs`) — `root`/`path` exactly as `/@device/` has them (the same
+    /// file, re-resolved and re-looked-up in the cache fresh on every request, never a cache-internal name).
+    VideoTranscode { root: String, path: String },
 }
 
 /// A root as an address names it: the root id, and the branch when it reads `<id>~<branch>`.
@@ -78,8 +79,10 @@ pub fn parse_special(path: &str) -> Option<Result<Special, ()>> {
                 _ => Err(()),
             }
         }
-        "video-transcode" if !tail.is_empty() && !tail.contains('/') => Ok(Special::VideoTranscode { name: tail.to_string() }),
-        "video-transcode" => Err(()),
+        "video-transcode" => match tail.split_once('/') {
+            Some((root, path)) if !root.is_empty() && !path.is_empty() => Ok(Special::VideoTranscode { root: root.to_string(), path: path.to_string() }),
+            _ => Err(()),
+        },
         _ => Err(()),
     })
 }
@@ -115,7 +118,14 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
                 Err(_) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
             }
         }
-        Special::VideoTranscode { name } => crate::video_transcode::serve(app, &name, meta, csp).await,
+        Special::VideoTranscode { root, path } => {
+            let scope = app.state::<FsScope>();
+            match crate::video_transcode::lookup(app, &scope, &root, &path).await {
+                Ok(Some(real)) => crate::file_serving::respond_file_blocking(real, meta, csp).await,
+                Ok(None) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
+                Err(_) => forbidden(),
+            }
+        }
     }
 }
 

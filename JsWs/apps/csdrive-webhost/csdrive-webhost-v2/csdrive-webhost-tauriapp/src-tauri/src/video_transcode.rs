@@ -49,14 +49,30 @@
 //! with just that one stream added — `AddStream`/`SetInputMediaType` are only ever called for a track that
 //! was actually found. A source with *neither* is refused outright.
 //!
-//! **Caching** (`files/video-transcodes/`, a flat, content-addressed working folder — see `layout.rs`'s own
-//! doc comment on why it isn't a folder-pairs cache like the Filen/local-branch ones). Keyed by a hash of the
-//! *root id + path* (so two different roots can't collide on the same relative path) plus the source's own
-//! size and modified time in the filename — the same "a changed file simply misses the cache" idea
-//! thumbnails already use elsewhere in this app. Written to a `.part` file and renamed into place only once
-//! `Finalize` succeeds — the same safety convention as everything else this app writes piece by piece — so
-//! an interrupted conversion never leaves a half-written file being served, and a crash mid-run leaves only
-//! an orphaned `.part` file, never something `video_transcode_url` could be handed.
+//! **Caching** is the exact same folder-pairs shape thumbnails already use (`files_cache.rs`'s `m_path`/
+//! `m_done`/`m_lookup` for a Filen account, `local_branches.rs`'s `local_m_path`/`local_m_done`/
+//! `local_m_lookup` for a root of this device) — `files/a/NNN/m/…`, laid out like the owner's own files and
+//! named `<name>.<modified>-<size>.mp4` (`layout.rs`'s `FILES_VIDEO_TRANSCODES_FOLDER`, `"m"`), so a changed
+//! source file simply has no converted copy until one is made for its new version, the entry goes with its
+//! owner (forgetting a root, or disconnecting a Filen account, drops it the same way it already drops
+//! thumbnails), and it's addressed the normal `/@video-transcode/<root>/<path>` way (below) rather than by an
+//! opaque, separately-tracked filename. Written to a `.part` file beside the final name and renamed into
+//! place only once `Finalize` succeeds — the same safety convention as everything else this app writes piece
+//! by piece — so an interrupted conversion never leaves a half-written file being served. **An older cached
+//! conversion of the same file is only removed once the new one is confirmed in place** (`m_done`/
+//! `local_m_done`, called after the rename succeeds) — not upfront, unlike a thumbnail's own instant write:
+//! a conversion can run for minutes and can fail partway, and deleting a still-good old copy before a
+//! replacement is confirmed would leave nothing cached at all if the new attempt never finishes.
+//!
+//! **Serving** (`notes_pages::serve`'s `Special::VideoTranscode` branch) is `/@video-transcode/<root>/<path>`
+//! — the identical shape `/@device/<root>/<path>` already has, not a cache-internal filename exposed as a
+//! public address: a request re-resolves the *real* file fresh (`FsScope::check_in`, re-stat'd) and re-looks
+//! up its cache entry by the file's *current* size/modified time, the same way `video_transcode_begin` does.
+//! This means **every request is re-validated against the caller's own file-scope access**, not just the
+//! first one that started the conversion (closing a gap the first version of this feature had, where the
+//! served address carried an unguessable hash but no per-request access check), and a source file that has
+//! since changed naturally serves "not found" rather than a stale conversion, with no separate invalidation
+//! step needed.
 //!
 //! **Progress** is a plain ratio of the *output* file's own growing size against the *input* file's size —
 //! not the input position Media Foundation is actually at, which would need `IMFPresentationDescriptor`'s own
@@ -65,20 +81,23 @@
 //! similar quality settings, so this is a reasonable, honest approximation of "how far along it is" — not an
 //! exact one — capped at 99% until `Finalize` actually completes, so it never visibly finishes early.
 //!
-//! **Ownership.** A job belongs to the window that began it (`caller_key`, the same convention
-//! `filen_cache.rs`'s `UploadSessions`/`SeedSessions` already use) — another window's `video_transcode_progress`/
-//! `video_transcode_url` for someone else's job id is refused, not merely ignored, since unlike those two this
-//! job keeps running in the background regardless of who asks about it.
+//! **Ownership.** A job (the in-flight conversion `video_transcode_begin` starts, polled by
+//! `video_transcode_progress`) belongs to the window that began it (`caller_key`, the same convention
+//! `filen_cache.rs`'s `UploadSessions`/`SeedSessions` already use) — another window's `video_transcode_progress`
+//! for someone else's job id is refused, not merely ignored, since unlike those two this job keeps running in
+//! the background regardless of who asks about it. The job itself is only ever about *progress* — the
+//! playable address it resolves to, once done, needs no job id at all (see "Serving" above).
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{Manager, State};
 
+use crate::app_state::AppDbState;
+use crate::files_cache::Cache;
 use crate::fs_scope::FsScope;
 use crate::window_host::{caller_key, CallerWindow};
 
@@ -87,7 +106,11 @@ struct Job {
     percent: AtomicU32,
     done: AtomicBool,
     error: Mutex<Option<String>>,
-    output: PathBuf,
+    /// What to address the result at, once done — `root`/`path` exactly as the caller gave them, so the
+    /// finished address is built the same deterministic way `video_transcode_progress` would build it even
+    /// for an already-cached hit (see `address_of`).
+    root: String,
+    path: String,
 }
 
 /// Jobs in flight or finished, by a random id — kept until the window that began them asks again after
@@ -108,21 +131,37 @@ pub struct TranscodeStatus {
     url: Option<String>,
 }
 
-/// `files/video-transcodes/<hash of root+path>.<modified ms>-<size>.mp4` — content-addressed, so a changed
-/// source file naturally misses the cache rather than serving a stale conversion, and two different roots
-/// can't collide on the same relative path.
-fn cache_path(dir: &Path, root: &str, path: &str, len: u64, modified_ms: u128) -> PathBuf {
-    let mut hasher = Sha256::new();
-    hasher.update(root.as_bytes());
-    hasher.update([0u8]);
-    hasher.update(path.as_bytes());
-    let digest = hasher.finalize();
-    let hash = hex::encode(&digest[..12]);
-    dir.join(format!("{hash}.{modified_ms}-{len}.mp4"))
+pub(crate) fn modified_ms(meta: &std::fs::Metadata) -> u64 {
+    meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-fn modified_ms(meta: &std::fs::Metadata) -> u128 {
-    meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis()).unwrap_or(0)
+/// The address a window may load the converted file of `root`/`path` at, once there is one — the same shape
+/// `/@device/<root>/<path>` already has (`window_host::navigation_url`, not a real path), re-resolved by
+/// `notes_pages::serve` on every request rather than naming a cache-internal file directly (see the module's
+/// own doc comment on "Serving").
+fn address_of(root: &str, path: &str) -> String {
+    let mut url = tauri::Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).expect("static URL");
+    url.path_segments_mut()
+        .expect("has a base")
+        .pop_if_empty()
+        .extend(["@video-transcode", root])
+        .extend(path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()));
+    crate::window_host::navigation_url(&url).to_string()
+}
+
+/// Where a converted copy of `root`/`path`'s *current* version is cached, if one exists — local roots only
+/// (a Filen file isn't a real local path until the cache has it, a different problem this pass didn't take
+/// on; `files_cache::Cache::m_lookup` exists for when it is). Used both by `video_transcode_begin`'s own
+/// "already converted" check and by `notes_pages::serve`'s `/@video-transcode/` handler — the two places that
+/// need to turn `root`/`path` into the real cache file, kept in one place so they can't disagree.
+pub(crate) async fn lookup(app: &tauri::AppHandle, scope: &FsScope, root: &str, path: &str) -> Result<Option<PathBuf>, String> {
+    let real = scope.check_in(root, path, true)?;
+    let meta = std::fs::metadata(&real).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    let guid = crate::picked_roots::root_guid_of(&app.state::<AppDbState>().pool, root).await?;
+    app.state::<Cache>().local_m_lookup(&guid, path, modified_ms(&meta), meta.len())
 }
 
 /// Starts converting `path` of `root` for compatible playback, or resolves at once if a cached conversion of
@@ -142,24 +181,28 @@ pub async fn video_transcode_begin(
     if !meta.is_file() {
         return Err("That isn't a file.".to_string());
     }
-    let data_dir = crate::data_location::effective_data_dir(&app)?;
-    let dir = crate::layout::video_transcodes_dir(&data_dir);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let output = cache_path(&dir, &root, &path, meta.len(), modified_ms(&meta));
+    let mtime = modified_ms(&meta);
+    let size = meta.len();
+    let guid = crate::picked_roots::root_guid_of(&app.state::<AppDbState>().pool, &root).await?;
     let owner = caller_key(&window);
     let id = uuid::Uuid::new_v4().to_string();
 
-    if output.is_file() {
-        let job = Arc::new(Job { owner, percent: AtomicU32::new(100), done: AtomicBool::new(true), error: Mutex::new(None), output });
+    if app.state::<Cache>().local_m_lookup(&guid, &path, mtime, size)?.is_some() {
+        let job = Arc::new(Job { owner, percent: AtomicU32::new(100), done: AtomicBool::new(true), error: Mutex::new(None), root, path });
         jobs.jobs.lock().unwrap().insert(id.clone(), job);
         return Ok(id);
     }
 
-    let job = Arc::new(Job { owner, percent: AtomicU32::new(0), done: AtomicBool::new(false), error: Mutex::new(None), output: output.clone() });
+    let output = app.state::<Cache>().local_m_path(&guid, &path, mtime, size)?;
+    let job = Arc::new(Job { owner, percent: AtomicU32::new(0), done: AtomicBool::new(false), error: Mutex::new(None), root: root.clone(), path: path.clone() });
     jobs.jobs.lock().unwrap().insert(id.clone(), job.clone());
 
-    let input_len = meta.len().max(1);
+    let input_len = size.max(1);
     let part = output.with_extension("mp4.part");
+    // `Cache` itself isn't `Clone` (and `State` can't outlive this async fn's own call) — the `AppHandle` is
+    // cheap to clone and lets the blocking task fetch the state it needs (`local_m_done`, once the rename
+    // below succeeds) fresh, from inside itself.
+    let app_for_task = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let part_for_progress = part.clone();
         let job_for_progress = job.clone();
@@ -182,6 +225,7 @@ pub async fn video_transcode_begin(
                 if let Err(e) = std::fs::rename(&part, &output) {
                     *job.error.lock().unwrap() = Some(format!("The conversion finished but couldn't be saved: {e}"));
                 } else {
+                    let _ = app_for_task.state::<Cache>().local_m_done(&guid, &path, mtime, size);
                     job.percent.store(100, Ordering::Relaxed);
                 }
             }
@@ -205,47 +249,8 @@ pub fn video_transcode_progress(window: CallerWindow, jobs: State<'_, TranscodeJ
     };
     let done = job.done.load(Ordering::Relaxed);
     let error = job.error.lock().unwrap().clone();
-    let url = if done && error.is_none() { Some(address_of(&job.output)) } else { None };
+    let url = if done && error.is_none() { Some(address_of(&job.root, &job.path)) } else { None };
     Ok(TranscodeStatus { percent: job.percent.load(Ordering::Relaxed), done, error, url })
-}
-
-/// The address a window may load the converted file at — not a real path (`window_host::navigation_url`
-/// builds it the same way `notes_pages::media_url` does for every other kind of media this app serves).
-fn address_of(output: &Path) -> String {
-    let name = output.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-    let mut url = tauri::Url::parse(&format!("{}://localhost/", crate::USER_PROTOCOL)).expect("static URL");
-    url.path_segments_mut().expect("has a base").pop_if_empty().extend(["@video-transcode", &name]);
-    crate::window_host::navigation_url(&url).to_string()
-}
-
-/// Serves a converted file by its cache filename (parsed out of the address `address_of` built) — not a job
-/// id, so the address survives past the job's own lifetime and a page can keep `<video src>` pointed at it.
-/// Still only ever a name *this module itself* generated (`cache_path`'s own hex-hash-dot-digits-dash-digits
-/// shape, checked below), inside `files/video-transcodes/` alone — never a caller-supplied path.
-pub async fn serve(app: &tauri::AppHandle, name: &str, meta: &crate::file_serving::RequestMeta, csp: &str) -> tauri::http::Response<Vec<u8>> {
-    use tauri::http::StatusCode;
-    let forbidden = || crate::respond_text(StatusCode::FORBIDDEN, "Forbidden", csp);
-    if !is_cache_file_name(name) {
-        return forbidden();
-    }
-    let Ok(data_dir) = crate::data_location::effective_data_dir(app) else { return forbidden() };
-    let path = crate::layout::video_transcodes_dir(&data_dir).join(name);
-    if !path.is_file() {
-        return crate::respond_text(StatusCode::NOT_FOUND, "Not found", csp);
-    }
-    crate::file_serving::respond_file_blocking(path, meta, csp).await
-}
-
-/// `cache_path`'s own shape: 24 hex characters, `.`, digits, `-`, digits, `.mp4` — rejecting anything else
-/// keeps `serve` (above) from ever joining an attacker-chosen name onto `video_transcodes_dir`.
-fn is_cache_file_name(name: &str) -> bool {
-    let Some(rest) = name.strip_suffix(".mp4") else { return false };
-    let Some((hash, suffix)) = rest.split_once('.') else { return false };
-    if hash.len() != 24 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return false;
-    }
-    let Some((modified, size)) = suffix.split_once('-') else { return false };
-    !modified.is_empty() && modified.bytes().all(|b| b.is_ascii_digit()) && !size.is_empty() && size.bytes().all(|b| b.is_ascii_digit())
 }
 
 #[cfg(windows)]
@@ -501,30 +506,20 @@ mod platform {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]
-    fn cache_paths_are_unique_per_root_and_path_and_change_with_the_file() {
-        let dir = Path::new("v");
-        let a = cache_path(dir, "user", "a.mkv", 100, 1000);
-        let b = cache_path(dir, "user", "b.mkv", 100, 1000);
-        let c = cache_path(dir, "picked-root", "a.mkv", 100, 1000);
-        let d = cache_path(dir, "user", "a.mkv", 200, 1000);
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-        assert_ne!(a, d);
-        assert_eq!(a, cache_path(dir, "user", "a.mkv", 100, 1000), "the same file names the same cache entry");
-    }
-
-    #[test]
-    fn only_this_modules_own_cache_file_shape_is_accepted_for_serving() {
-        let dir = Path::new("v");
-        let real = cache_path(dir, "user", "a.mkv", 100, 1000);
-        assert!(is_cache_file_name(real.file_name().unwrap().to_str().unwrap()));
-        assert!(!is_cache_file_name("../../admin/data.db"));
-        assert!(!is_cache_file_name("not-a-cache-file.mp4"));
-        assert!(!is_cache_file_name("deadbeefdeadbeefdeadbeef.1000-100.txt"), "must end .mp4");
-        assert!(!is_cache_file_name("short.1000-100.mp4"), "the hash must be the real length");
+    fn the_served_address_is_the_same_shape_device_paths_already_have() {
+        let a = address_of("user", "/a.mkv");
+        let b = address_of("user", "/b.mkv");
+        let c = address_of("picked-root", "/a.mkv");
+        assert_ne!(a, b, "a different path is a different address");
+        assert_ne!(a, c, "a different root is a different address");
+        assert_eq!(a, address_of("user", "/a.mkv"), "the same root and path address the same way every time");
+        assert!(a.contains("@video-transcode/user/"), "names the root, never a cache-internal file: {a}");
+        assert!(a.ends_with("a.mkv"), "names the real path, not a hash: {a}");
     }
 
     /// Not run by a plain `cargo test --lib` — a real, several-minute conversion of a real file, driven

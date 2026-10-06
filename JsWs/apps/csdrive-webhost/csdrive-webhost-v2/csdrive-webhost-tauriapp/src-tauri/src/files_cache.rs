@@ -339,34 +339,53 @@ fn thumb_prefix(path: &str) -> String {
     format!("{}.", mirror_name(name_of(path)))
 }
 
-/// The thumbnail file of the version (`mtime_ms`, `size`) of `path` under `root`: laid out like the files themselves, named
-/// `<name>.<modified>-<size>.jpg`, so a changed file simply has no thumbnail until one is made for its new version.
-fn thumb_file(root: &Path, path: &str, mtime_ms: u64, size: u64) -> PathBuf {
+/// The cache file of the version (`mtime_ms`, `size`) of `path` under `root`, with extension `ext`: laid out
+/// like the files themselves, named `<name>.<modified>-<size>.<ext>`, so a changed file simply has no cached
+/// copy until one is made for its new version. Shared by thumbnails (`thumb_file`, `ext` "jpg") and converted
+/// videos (`video_transcode.rs`'s `m_path`/`local_m_path`, `ext` "mp4") — the same idea, a different kind of
+/// derived file.
+fn versioned_cache_file(root: &Path, path: &str, mtime_ms: u64, size: u64, ext: &str) -> PathBuf {
     let mut file = root.to_path_buf();
     let names: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     for folder in names.iter().take(names.len().saturating_sub(1)) {
         file.push(mirror_name(folder));
     }
-    file.push(format!("{}{mtime_ms}-{size}.jpg", thumb_prefix(path)));
+    file.push(format!("{}{mtime_ms}-{size}.{ext}", thumb_prefix(path)));
     file
 }
 
-/// Whether `name` is a thumbnail of the file whose thumbnails start with `prefix` (`<name>.`): what follows is exactly
-/// `<digits>-<digits>.jpg`, so a file called `a.b` doesn't lose its thumbnails to one called `a`.
-fn is_thumb_of(name: &str, prefix: &str) -> bool {
-    let Some(rest) = name.strip_prefix(prefix).and_then(|r| r.strip_suffix(".jpg")) else { return false };
+/// The thumbnail file of the version (`mtime_ms`, `size`) of `path` under `root`.
+fn thumb_file(root: &Path, path: &str, mtime_ms: u64, size: u64) -> PathBuf {
+    versioned_cache_file(root, path, mtime_ms, size, "jpg")
+}
+
+/// Whether `name` is a cached file (of extension `ext`) of the file whose cache files start with `prefix`
+/// (`<name>.`): what follows is exactly `<digits>-<digits>.<ext>`, so a file called `a.b` doesn't lose its
+/// cache entries to one called `a`.
+fn is_versioned_cache_file_of(name: &str, prefix: &str, ext: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix).and_then(|r| r.strip_suffix(&format!(".{ext}"))) else { return false };
     matches!(rest.split_once('-'), Some((m, s)) if !m.is_empty() && !s.is_empty() && m.bytes().all(|b| b.is_ascii_digit()) && s.bytes().all(|b| b.is_ascii_digit()))
 }
 
-fn remove_older_thumbs(folder: &Path, prefix: &str, keep: String) {
+fn is_thumb_of(name: &str, prefix: &str) -> bool {
+    is_versioned_cache_file_of(name, prefix, "jpg")
+}
+
+/// Removes every cached file (of extension `ext`) of the file whose own start with `prefix`, except `keep` —
+/// so an older version's cached copy doesn't linger once a new one has been made.
+fn remove_older_versioned_cache_files(folder: &Path, prefix: &str, ext: &str, keep: String) {
     if let Ok(entries) = std::fs::read_dir(folder) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name != keep && is_thumb_of(&name, prefix) {
+            if name != keep && is_versioned_cache_file_of(&name, prefix, ext) {
                 let _ = std::fs::remove_file(entry.path());
             }
         }
     }
+}
+
+fn remove_older_thumbs(folder: &Path, prefix: &str, keep: String) {
+    remove_older_versioned_cache_files(folder, prefix, "jpg", keep)
 }
 
 /// `filen@@<email>@@<account id>` — the account's full-folder-name part (see the pairs strategy).
@@ -659,6 +678,67 @@ impl Cache {
             remove_older_thumbs(folder, &thumb_prefix(&path), target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
         }
         std::fs::write(target, bytes).map_err(io)
+    }
+
+    // ── Converted videos ─────────────────────────────────────────────────────
+
+    /// `files/a/NNN/m` — where the account's own videos, re-encoded for compatible playback, are kept (see
+    /// `video_transcode.rs`). Not branch-aware (unlike `t`/`tb`): a conversion is never attempted against a
+    /// branch's own changed copy of a file, only the account's real one, so there's no `mb` sibling to `tb`.
+    #[allow(dead_code)] // for a Filen source's own video conversion (to come): the architecture is ready, nothing calls it yet — video_transcode.rs converts local files only so far
+    async fn m_root(&self, user_id: i64, make: bool) -> Result<Option<PathBuf>, String> {
+        let parent = self.account_dir(user_id).await?.join(crate::layout::FILES_VIDEO_TRANSCODES_FOLDER);
+        if make {
+            std::fs::create_dir_all(&parent).map_err(io)?;
+        } else if !parent.is_dir() {
+            return Ok(None);
+        }
+        Ok(Some(parent))
+    }
+
+    /// Where a converted copy of this version of the account's `path` is (or would be) kept — the parent
+    /// folder is made so a caller can write there, but **no older version's cached copy is removed here**:
+    /// a conversion can take minutes and can fail partway, and unlike a thumbnail's own instant write (whose
+    /// `thumb_put` already has the finished bytes in hand when it clears the old one), deleting the old,
+    /// still-good copy *before* a new one is confirmed in place would leave nothing cached at all if the new
+    /// conversion never finishes. `m_done` (below) is the complementary step, called only once a new file has
+    /// actually been renamed into place. Never reads or writes the file's own bytes — a video is never held
+    /// whole in memory; `video_transcode.rs` streams directly to and serves directly from this path.
+    #[allow(dead_code)] // for a Filen source's own video conversion (to come): see `m_root`
+    pub async fn m_path(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<PathBuf, String> {
+        let path = norm_path(path)?;
+        let root = self.m_root(user_id, true).await?.ok_or("The account's folder couldn't be made.")?;
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        if let Some(folder) = target.parent() {
+            std::fs::create_dir_all(folder).map_err(io)?;
+        }
+        Ok(target)
+    }
+
+    /// Called once a new converted copy (`m_path`'s own target) has been renamed into place: removes every
+    /// *other* cached conversion of the same source file (an older version's, left over from before it
+    /// changed) now that there's a confirmed-good replacement.
+    #[allow(dead_code)] // for a Filen source's own video conversion (to come): see `m_root`
+    pub async fn m_done(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.m_root(user_id, false).await? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        if let Some(folder) = target.parent() {
+            remove_older_versioned_cache_files(folder, &thumb_prefix(&path), "mp4", target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    /// The converted copy of this exact version of the account's `path`, if one is already cached — a plain,
+    /// read-only lookup (no folder created, no older version touched): `video_transcode_begin`'s own "a
+    /// cached conversion already exists" check, and what `notes_pages::serve` resolves a `/@video-transcode/`
+    /// request to.
+    #[allow(dead_code)] // for a Filen source's own video conversion (to come): see `m_root`
+    pub async fn m_lookup(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<Option<PathBuf>, String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.m_root(user_id, false).await? else { return Ok(None) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        Ok(target.is_file().then_some(target))
     }
 
     /// Whether the branch has a change (a write, a new folder) at `path` — the file it shows is then not the account's.

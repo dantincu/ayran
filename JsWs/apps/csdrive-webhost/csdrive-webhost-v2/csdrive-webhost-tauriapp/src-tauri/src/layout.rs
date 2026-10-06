@@ -79,14 +79,15 @@ pub const FILES_BRANCH_THUMBNAILS_FOLDER: &str = "tb";
 pub const FILES_LOCAL_UPLOADS_FOLDER: &str = "local-uploads";
 pub const FILES_CONTENT_FOLDER: &str = "c";
 
-/// Inside `files`: cached, re-encoded copies of local video files converted for compatible in-app playback
-/// (`video_transcode.rs`) — a flat working folder like `local-uploads`, not a folder-pairs cache like `a`/`b`/
-/// `t`/`tb` (there's no "owner" with its own numbering to key this by; a flat, content-addressed filename is
-/// enough — see the module's own doc comment). Kept across restarts (unlike `local-uploads`, which holds only
-/// in-flight fragments): a transcode can take minutes, so throwing the result away every launch would be
-/// wasteful, and the filename already encodes the source's own size and modified time, so a changed source
-/// file naturally misses the cache rather than serving a stale conversion.
-pub const FILES_VIDEO_TRANSCODES_FOLDER: &str = "video-transcodes";
+/// Inside an account's or a root's own `NNN` (beside `c`/`b`/`t`/`tb`): re-encoded copies of its video files,
+/// converted for compatible in-app playback (`video_transcode.rs`) — the exact same folder-pairs shape as
+/// `t`'s thumbnails, laid out like the owner's own files and named the identical `<name>.<modified>-<size>.ext`
+/// way, so a changed source file simply has no converted copy until one is made for its new version (see
+/// `files_cache.rs`'s `versioned_cache_file`, which both `t` and `m` now share). Kept across restarts (a
+/// conversion can take minutes, so throwing the result away every launch would be wasteful) and goes with its
+/// owner the same way a thumbnail does (forgetting a root drops its thumbnails *and* its conversions;
+/// disconnecting a Filen account drops its whole `NNN`, this folder included).
+pub const FILES_VIDEO_TRANSCODES_FOLDER: &str = "m";
 
 /// The cache's own database: listings, metadata, settings and branch changes, inside `files`.
 pub const FILES_DB: &str = "data.db";
@@ -126,10 +127,6 @@ pub fn user_dir(data_dir: &Path) -> PathBuf {
 
 pub fn files_dir(data_dir: &Path) -> PathBuf {
     data_dir.join(FILES_FOLDER)
-}
-
-pub fn video_transcodes_dir(data_dir: &Path) -> PathBuf {
-    files_dir(data_dir).join(FILES_VIDEO_TRANSCODES_FOLDER)
 }
 
 pub fn filen_sessions_file(data_dir: &Path) -> PathBuf {
