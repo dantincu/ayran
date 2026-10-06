@@ -253,6 +253,66 @@ pub fn video_transcode_progress(window: CallerWindow, jobs: State<'_, TranscodeJ
     Ok(TranscodeStatus { percent: job.percent.load(Ordering::Relaxed), done, error, url })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscodeAvailability {
+    /// Whether a converted copy of the file's *current* version is already cached — never starts one.
+    cached: bool,
+    /// Set when `cached` — the same address `video_transcode_progress` would give for an already-cached
+    /// job, without having to start (or fake) one just to learn it.
+    url: Option<String>,
+}
+
+/// Whether a converted copy of `root`/`path`'s *current* version already exists, with no side effect —
+/// unlike `video_transcode_begin`, nothing is started and no job id is made. For a page that wants to show
+/// "already converted" (and offer to delete it) before the person ever presses Convert.
+#[tauri::command]
+pub async fn video_transcode_status(scope: State<'_, FsScope>, app: tauri::AppHandle, root: String, path: String) -> Result<TranscodeAvailability, String> {
+    match lookup(&app, &scope, &root, &path).await? {
+        Some(_) => Ok(TranscodeAvailability { cached: true, url: Some(address_of(&root, &path)) }),
+        None => Ok(TranscodeAvailability { cached: false, url: None }),
+    }
+}
+
+/// Deletes the cached converted copy of `root`/`path`'s *current* version, if one exists — the person's
+/// own "delete the re-encoded file" action. The source file is never touched, and nothing is refused if
+/// there was no cached copy to begin with (asking to delete an already-gone one isn't an error).
+#[tauri::command]
+pub async fn video_transcode_delete(scope: State<'_, FsScope>, app: tauri::AppHandle, root: String, path: String) -> Result<(), String> {
+    let real = scope.check_in(&root, &path, true)?;
+    let meta = std::fs::metadata(&real).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("That isn't a file.".to_string());
+    }
+    let guid = crate::picked_roots::root_guid_of(&app.state::<AppDbState>().pool, &root).await?;
+    app.state::<Cache>().local_m_delete(&guid, &path, modified_ms(&meta), meta.len())
+}
+
+/// What `video_playability` answers: the video and/or audio codec a file's streams are actually *in* (read
+/// straight from the file, never guessed from its extension — an `.mkv` can hold H.264/AAC, which already
+/// plays here, same as an `.mp4` can hold something that doesn't), and whether every one found is a codec
+/// this app's own webview reliably plays. `None` for a track the file doesn't have at all; `playable` is
+/// `false` for a file with neither track found (nothing to play), same as for one where any track found is
+/// an unsupported or unrecognized codec.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Probed {
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub playable: bool,
+}
+
+/// Whether `root`/`path` already plays in this app's own webview as is, or needs `video_transcode_begin`
+/// first — read directly from the file's real codecs (the same Media Foundation probe `convert` itself
+/// opens the file with, just without decoding or writing anything), not guessed from the extension. Local
+/// roots only, Windows only — the same scope `video_transcode_begin` is already limited to, and the same
+/// honest "not available on this platform yet" elsewhere.
+#[tauri::command]
+pub async fn video_playability(scope: State<'_, FsScope>, root: String, path: String) -> Result<Probed, String> {
+    let real = scope.check_in(&root, &path, true)?;
+    tauri::async_runtime::spawn_blocking(move || platform::probe(&real)).await.map_err(|e| e.to_string())?
+}
+
 #[cfg(windows)]
 mod platform {
     use std::path::Path;
@@ -320,6 +380,76 @@ mod platform {
             }
         }
         Ok((video, audio))
+    }
+
+    /// A subtype's own name, and whether this app's webview reliably plays it — **conservative**: an
+    /// unrecognized subtype, or one whose real-world browser support is inconsistent (HEVC: patent
+    /// licensing and OS-codec-pack dependent, the same kind of inconsistency this whole feature exists to
+    /// work around for other codecs; MPEG-2/WMV/VC-1: legacy formats Chromium doesn't ship decoders for),
+    /// is always answered `false` rather than guessed at — a wrong "needs conversion" costs nothing beyond
+    /// an unnecessary conversion job, where a wrong "plays here" would leave the person's own "is this
+    /// video playable" question answered with exactly the kind of silent failure this feature exists to
+    /// prevent.
+    fn codec_info(guid: &windows::core::GUID) -> (String, bool) {
+        const KNOWN: &[(windows::core::GUID, &str, bool)] = &[
+            (MFVideoFormat_H264, "H.264", true),
+            (MFVideoFormat_HEVC, "HEVC", false),
+            (MFVideoFormat_VP80, "VP8", true),
+            (MFVideoFormat_VP90, "VP9", true),
+            (MFVideoFormat_AV1, "AV1", true),
+            (MFVideoFormat_MPEG2, "MPEG-2", false),
+            (MFVideoFormat_WMV3, "WMV", false),
+            (MFVideoFormat_WVC1, "VC-1", false),
+            (MFAudioFormat_AAC, "AAC", true),
+            (MFAudioFormat_MP3, "MP3", true),
+            (MFAudioFormat_Opus, "Opus", true),
+            (MFAudioFormat_Vorbis, "Vorbis", true),
+            (MFAudioFormat_FLAC, "FLAC", true),
+            (MFAudioFormat_Dolby_AC3, "AC3 (Dolby Digital)", false),
+            (MFAudioFormat_DTS, "DTS", false),
+        ];
+        for (candidate, name, playable) in KNOWN {
+            if candidate == guid {
+                return (name.to_string(), *playable);
+            }
+        }
+        ("an unrecognized codec".to_string(), false)
+    }
+
+    /// What `input`'s video and audio tracks actually are — the same `GetNativeMediaType` probe
+    /// `find_streams` already makes for the real conversion, one step further: each selected stream's own
+    /// `MF_MT_SUBTYPE`. Nothing is decoded and no file is written; this only opens the source reader and
+    /// reads what it already knows about the file's own streams.
+    pub fn probe(input: &Path) -> Result<super::Probed, String> {
+        let to_err = |e: windows::core::Error| format!("{}", e.message());
+        unsafe {
+            let _com = ComGuard::new().map_err(to_err)?;
+            let _mf = MfGuard::new().map_err(to_err)?;
+            let reader = MFCreateSourceReaderFromURL(PCWSTR(hstring_url(input).as_ptr()), None)
+                .map_err(|e| format!("This file can't be opened: {}", to_err(e)))?;
+            let (video_idx, audio_idx) = find_streams(&reader).map_err(to_err)?;
+
+            let mut video_codec = None;
+            let mut video_ok = true;
+            if let Some(idx) = video_idx {
+                let native = reader.GetNativeMediaType(idx, 0).map_err(to_err)?;
+                let subtype = native.GetGUID(&MF_MT_SUBTYPE).map_err(to_err)?;
+                let (name, ok) = codec_info(&subtype);
+                video_codec = Some(name);
+                video_ok = ok;
+            }
+            let mut audio_codec = None;
+            let mut audio_ok = true;
+            if let Some(idx) = audio_idx {
+                let native = reader.GetNativeMediaType(idx, 0).map_err(to_err)?;
+                let subtype = native.GetGUID(&MF_MT_SUBTYPE).map_err(to_err)?;
+                let (name, ok) = codec_info(&subtype);
+                audio_codec = Some(name);
+                audio_ok = ok;
+            }
+            let has_any = video_idx.is_some() || audio_idx.is_some();
+            Ok(super::Probed { video_codec, audio_codec, playable: has_any && video_ok && audio_ok })
+        }
     }
 
     /// An AAC output type the system's own encoder actually supports — its sample rate/channel count/bitrate
@@ -492,6 +622,20 @@ mod platform {
             assert_eq!(hstring_url(Path::new(r"\\?\UNC\server\share\a.mkv")).to_string(), r"\\server\share\a.mkv");
             assert_eq!(hstring_url(Path::new(r"C:\Temp\a.mkv")).to_string(), r"C:\Temp\a.mkv", "an already-plain path is left alone");
         }
+
+        /// The exact GUID this project found live for the person's own real `.mkv` file
+        /// (`E06D802C-DB46-11CF-B4D1-00805F6CBBEA`, "Media: the viewer…" in CLAUDE.md) must still read back
+        /// as AC3 and not-playable — this is the one codec this whole feature exists to flag.
+        #[test]
+        fn codec_info_names_known_codecs_and_is_conservative_about_the_rest() {
+            assert_eq!(codec_info(&MFVideoFormat_H264), ("H.264".to_string(), true));
+            assert_eq!(codec_info(&MFAudioFormat_AAC), ("AAC".to_string(), true));
+            assert_eq!(codec_info(&MFAudioFormat_Dolby_AC3), ("AC3 (Dolby Digital)".to_string(), false));
+            assert_eq!(codec_info(&MFVideoFormat_HEVC).1, false, "inconsistent real-world support is treated as not reliably playable");
+            let (name, playable) = codec_info(&windows::core::GUID::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888));
+            assert!(!playable, "an unrecognized subtype is never assumed playable");
+            assert_eq!(name, "an unrecognized codec");
+        }
     }
 }
 
@@ -501,6 +645,10 @@ mod platform {
 
     pub fn convert(_input: &Path, _output: &Path) -> Result<(), String> {
         Err("Converting a video for compatible playback isn't available on this platform yet.".to_string())
+    }
+
+    pub fn probe(_input: &Path) -> Result<super::Probed, String> {
+        Err("Checking a video's codecs isn't available on this platform yet.".to_string())
     }
 }
 

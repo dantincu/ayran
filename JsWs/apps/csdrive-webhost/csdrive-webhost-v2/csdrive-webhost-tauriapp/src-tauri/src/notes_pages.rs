@@ -666,7 +666,24 @@ mod tests {
             parse_special("/@filen/7/3/a.html"),
             Some(Ok(Special::Filen { user_id: 7, branch: Some(3), path: "/a.html".into() }))
         );
-        for bad in ["/@device/", "/@device/root", "/@device//x", "/@filen/x/-/a.md", "/@filen/7/y/a.md", "/@filen/7/-", "/@other/x", "/@"] {
+        assert_eq!(
+            parse_special("/@video-transcode/ab12cd/docs/a b.mkv"),
+            Some(Ok(Special::VideoTranscode { root: "ab12cd".into(), path: "docs/a b.mkv".into() })),
+            "the same root/path shape as /@device/"
+        );
+        for bad in [
+            "/@device/",
+            "/@device/root",
+            "/@device//x",
+            "/@filen/x/-/a.md",
+            "/@filen/7/y/a.md",
+            "/@filen/7/-",
+            "/@video-transcode/",
+            "/@video-transcode/root",
+            "/@video-transcode//x",
+            "/@other/x",
+            "/@",
+        ] {
             assert_eq!(parse_special(bad), Some(Err(())), "{bad}");
         }
     }

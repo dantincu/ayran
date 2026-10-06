@@ -741,6 +741,20 @@ impl Cache {
         Ok(target.is_file().then_some(target))
     }
 
+    /// Removes the converted copy of this exact version of the account's `path`, if one exists — the
+    /// person's own "delete the re-encoded file" action (`video_transcode_delete`). A version that isn't
+    /// cached is not an error, simply nothing to do.
+    #[allow(dead_code)] // for a Filen source's own video conversion (to come): see `m_root`
+    pub async fn m_delete(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.m_root(user_id, false).await? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        if target.is_file() {
+            std::fs::remove_file(&target).map_err(io)?;
+        }
+        Ok(())
+    }
+
     /// Whether the branch has a change (a write, a new folder) at `path` — the file it shows is then not the account's.
     async fn changed_in_branch(&self, user_id: i64, branch: i64, path: &str) -> Result<bool, String> {
         let changed: Option<i64> = sqlx::query_scalar("SELECT 1 FROM branch_changes WHERE user_id = ?1 AND branch = ?2 AND path = ?3 AND kind = 'put'")

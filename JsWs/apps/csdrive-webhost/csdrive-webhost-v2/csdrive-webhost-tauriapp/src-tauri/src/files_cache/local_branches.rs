@@ -839,6 +839,19 @@ impl Cache {
         let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
         Ok(target.is_file().then_some(target))
     }
+
+    /// Removes the converted copy of this exact version of the root's `path`, if one exists — the person's
+    /// own "delete the re-encoded file" action (`video_transcode_delete`). Leaves the source file and
+    /// everything else in `m` untouched; a version that isn't cached is not an error, simply nothing to do.
+    pub fn local_m_delete(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.local_m_root(guid, false)? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp4");
+        if target.is_file() {
+            std::fs::remove_file(&target).map_err(io)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1073,7 +1086,17 @@ mod tests {
         s.cache.local_m_done(G, "/a.txt", 200, 1000).unwrap();
         assert!(!target.exists(), "the older conversion is removed only once the new one is confirmed in place");
         assert_eq!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().as_deref(), Some(newer.as_path()));
-        // Forgetting the root drops its conversions too, the same as its thumbnails.
+        // Deleting it (the person's own "delete the re-encoded file" action) removes just that one entry.
+        s.cache.local_m_delete(G, "/a.txt", 200, 1000).unwrap();
+        assert!(!newer.exists());
+        assert!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().is_none());
+        // Deleting a version that isn't cached is not an error.
+        s.cache.local_m_delete(G, "/a.txt", 200, 1000).unwrap();
+        s.cache.local_m_delete(G, "/never-converted.txt", 1, 1).unwrap();
+        // Forgetting the root drops any remaining conversions too, the same as its thumbnails.
+        s.cache.local_m_path(G, "/a.txt", 200, 1000).unwrap();
+        std::fs::write(&newer, b"converted once more").unwrap();
+        s.cache.local_m_done(G, "/a.txt", 200, 1000).unwrap();
         s.cache.local_drop_thumbnails(G);
         assert!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().is_none());
         });

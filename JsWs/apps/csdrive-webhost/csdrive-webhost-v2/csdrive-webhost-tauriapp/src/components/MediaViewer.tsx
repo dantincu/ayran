@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, FastForward, Maximize, Minimize, Minus, Music, Pause, Play, Plus, Rewind, RectangleHorizontal, Volume2, VolumeX, Wand2, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, FastForward, Maximize, Minimize, Minus, Music, Pause, Play, Plus, Rewind, RectangleHorizontal, Trash2, Volume2, VolumeX, Wand2, X } from 'lucide-react'
 import IconButton from './IconButton'
 import { clock, mediaUrl, type MediaKind } from '../lib/media'
 import { formatBytes } from '../lib/format'
-import { videoTranscodeBegin, videoTranscodeProgress, type FileRef } from '../lib/secondaryWindows'
+import {
+  videoPlayability,
+  videoTranscodeBegin,
+  videoTranscodeDelete,
+  videoTranscodeProgress,
+  videoTranscodeStatus,
+  type FileRef,
+  type VideoPlayability,
+} from '../lib/secondaryWindows'
 
 /** **The media viewer**: a picture, a video or a sound of a folder, over the whole window, with the folder's other media a step
  * away (the arrows, PageUp/PageDown). The file is not read into the page: it is an address the webview loads by itself, served from
@@ -121,6 +129,40 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
     setTranscodePercent(0)
     setTranscodeError(null)
   }, [item, reloads])
+  // Whether the file's own codecs are ones this app's webview already plays, and whether a converted copy
+  // of this exact version is already cached — both read straight from the backend (never guessed from the
+  // extension), so the person can see "plays here" / "needs conversion" / "already converted" before ever
+  // pressing Convert. `null`: not known yet, or not applicable (not a transcodable item, or the backend
+  // couldn't say — e.g. not on Windows); treated the same as "nothing to show" either way.
+  const [playability, setPlayability] = useState<VideoPlayability | null>(null)
+  const [transcodeCached, setTranscodeCached] = useState(false)
+  const refreshTranscodeCached = useCallback(() => {
+    if (!transcodeRoot) {
+      setTranscodeCached(false)
+      return
+    }
+    videoTranscodeStatus(transcodeRoot.root, transcodeRoot.path).then(
+      (status) => setTranscodeCached(status.cached),
+      () => setTranscodeCached(false),
+    )
+  }, [transcodeRoot?.root, transcodeRoot?.path])
+  useEffect(() => {
+    setPlayability(null)
+    if (!transcodeRoot) {
+      setTranscodeCached(false)
+      return
+    }
+    let cancelled = false
+    videoPlayability(transcodeRoot.root, transcodeRoot.path).then(
+      (result) => !cancelled && setPlayability(result),
+      () => !cancelled && setPlayability(null),
+    )
+    refreshTranscodeCached()
+    return () => {
+      cancelled = true
+    }
+  }, [transcodeRoot?.root, transcodeRoot?.path, reloads, refreshTranscodeCached])
+
   const beginConvert = useCallback(() => {
     if (!transcodeRoot) return
     const token = transcodeToken.current
@@ -141,7 +183,10 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
           if (status.done) {
             setTranscoding(false)
             if (status.error) setTranscodeError(status.error)
-            else if (status.url) setUrl(status.url)
+            else if (status.url) {
+              setUrl(status.url)
+              refreshTranscodeCached()
+            }
             return
           }
           await new Promise((resolve) => window.setTimeout(resolve, 500))
@@ -151,15 +196,42 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
         }
       }
     }, fail)
-  }, [transcodeRoot?.root, transcodeRoot?.path])
+  }, [transcodeRoot?.root, transcodeRoot?.path, refreshTranscodeCached])
+
+  // The deliberately-not-converted address: `url` below can become the converted copy's own address once
+  // a conversion succeeds, but this one always names the real source file, so "delete the converted copy"
+  // knows what to fall back to and the playability probe above is never checked against the wrong file.
+  const [sourceUrl, setSourceUrl] = useState<string | null>(null)
+  const [deletingConverted, setDeletingConverted] = useState(false)
+  const deleteConvertedCopy = useCallback(() => {
+    if (!transcodeRoot) return
+    setDeletingConverted(true)
+    videoTranscodeDelete(transcodeRoot.root, transcodeRoot.path).then(
+      () => {
+        setDeletingConverted(false)
+        setTranscodeCached(false)
+        // If the converted copy was the one actually playing, fall back to the real source address.
+        if (sourceUrl && url !== sourceUrl) setUrl(sourceUrl)
+      },
+      (e) => {
+        setDeletingConverted(false)
+        setTranscodeError(e instanceof Error ? e.message : String(e))
+      },
+    )
+  }, [transcodeRoot?.root, transcodeRoot?.path, sourceUrl, url])
 
   useEffect(() => {
     let cancelled = false
     setUrl(null)
+    setSourceUrl(null)
     setError(null)
     setBars(true)
     mediaUrl(item.file).then(
-      (address) => !cancelled && setUrl(reloads > 0 ? `${address}${address.includes('?') ? '&' : '?'}r=${reloads}` : address),
+      (address) => {
+        if (cancelled) return
+        setSourceUrl(address)
+        setUrl(reloads > 0 ? `${address}${address.includes('?') ? '&' : '?'}r=${reloads}` : address)
+      },
       (e) => !cancelled && setError(String(e)),
     )
     return () => {
@@ -291,9 +363,29 @@ export default function MediaViewer({ items, start, onClose, renderCache, downlo
             disabled={transcoding}
           />
         )}
+        {transcodeRoot && transcodeCached && (
+          <IconButton
+            icon={Trash2}
+            label={deletingConverted ? 'Deleting the converted copy…' : 'Delete the converted copy'}
+            onClick={deleteConvertedCopy}
+            disabled={deletingConverted || transcoding}
+          />
+        )}
         <IconButton icon={fullscreen ? Minimize : Maximize} label={fullscreen ? 'Leave full screen (F)' : 'Full screen (F)'} onClick={toggleFullscreen} />
         <IconButton icon={X} label="Close (Esc)" onClick={onClose} />
       </div>
+      {/* Whether this file already plays here, or needs converting first — read straight from its real
+          codecs, never guessed from its extension — and whether a converted copy is already cached. Hidden
+          while a conversion is actively running or just failed, since those notices already say enough. */}
+      {transcodeRoot && !transcoding && !transcodeError && (playability || transcodeCached) && (
+        <div className="media-notice">
+          {playability &&
+            (playability.playable
+              ? 'This video plays in this app as is.'
+              : `This video needs conversion to play here (video: ${playability.videoCodec ?? 'none found'}, audio: ${playability.audioCodec ?? 'none found'}).`)}
+          {transcodeCached && <div className="muted">A converted copy is already cached.</div>}
+        </div>
+      )}
       {transcoding && (
         <div className="media-notice media-transcode-notice">
           Converting for compatible playback…

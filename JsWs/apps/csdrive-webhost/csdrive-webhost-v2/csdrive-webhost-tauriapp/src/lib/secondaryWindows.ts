@@ -275,6 +275,41 @@ export async function videoTranscodeProgress(jobId: string): Promise<VideoTransc
   return invoke('video_transcode_progress', { jobId })
 }
 
+/** Whether a converted copy of a local video's *current* version is already cached — a plain, read-only
+ * check: unlike `videoTranscodeBegin`, nothing is started and no job id is made. For showing "already
+ * converted" (and offering to delete it) before the person presses Convert. */
+export interface VideoTranscodeAvailability {
+  cached: boolean
+  url: string | null
+}
+
+export async function videoTranscodeStatus(root: string, path: string): Promise<VideoTranscodeAvailability> {
+  return invoke('video_transcode_status', { root, path })
+}
+
+/** Deletes the cached converted copy of a local video's *current* version, if one exists — the person's
+ * own "delete the re-encoded file" action. The source file is never touched. */
+export async function videoTranscodeDelete(root: string, path: string): Promise<void> {
+  return invoke('video_transcode_delete', { root, path })
+}
+
+/** What `videoPlayability` answers: the video and/or audio codec a local file's streams actually are
+ * (read straight from the file by `video_transcode.rs`'s own Media Foundation probe — never guessed from
+ * the extension), and whether every one found is a codec this app's own webview reliably plays. `null`
+ * for a track the file doesn't have at all. */
+export interface VideoPlayability {
+  videoCodec: string | null
+  audioCodec: string | null
+  playable: boolean
+}
+
+/** Whether a local video already plays in this app's own webview as is, or needs `videoTranscodeBegin`
+ * first — Windows only; refused with a plain error elsewhere, which the caller should treat as "can't
+ * tell" rather than either answer. */
+export async function videoPlayability(root: string, path: string): Promise<VideoPlayability> {
+  return invoke('video_playability', { root, path })
+}
+
 export function onSecondaryWindowsChanged(callback: () => void): Promise<UnlistenFn> {
   return listen(EVENT_CHANGED, () => callback())
 }
