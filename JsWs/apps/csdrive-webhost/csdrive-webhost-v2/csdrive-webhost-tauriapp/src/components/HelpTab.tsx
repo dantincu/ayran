@@ -31,6 +31,7 @@ const SECTIONS = [
   { id: 'help-the-essentials', label: 'The essentials' },
   { id: 'help-example-toolbar', label: "Example: a page's own toolbar" },
   { id: 'help-api-reference', label: 'API reference' },
+  { id: 'help-codecs', label: 'Installing audio/video codecs' },
 ]
 
 /** The Help tab's own autohiding header: the page's title, and a button opening the table of contents. Hides
@@ -85,12 +86,15 @@ export default function HelpTab() {
   const [sampleError, setSampleError] = useState<string | null>(null)
   const [shortcutsHtml, setShortcutsHtml] = useState<string | null>(null)
   const [shortcutsError, setShortcutsError] = useState<string | null>(null)
+  const [codecHtml, setCodecHtml] = useState<string | null>(null)
+  const [codecError, setCodecError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [query, setQuery] = useState('')
 
   useEffect(() => {
     invoke<string>('get_deployable_app_html', { appId: 'example-toolbar' }).then(setSampleHtml, (e) => setSampleError(String(e)))
     invoke<string>('get_keyboard_shortcuts_html').then(setShortcutsHtml, (e) => setShortcutsError(String(e)))
+    invoke<string>('get_codec_help_html').then(setCodecHtml, (e) => setCodecError(String(e)))
   }, [])
 
   const filtered = useMemo(() => {
@@ -213,6 +217,23 @@ export default function HelpTab() {
           </table>
         </div>
       ))}
+
+      <div className="toolbar" id="help-codecs" style={{ marginTop: 24 }}>
+        <strong>Installing audio/video codecs</strong>
+      </div>
+      <p className="muted">
+        Some video files — an <code>.mkv</code> with AC3/DTS audio is the common case — use a codec this app's
+        built-in player wasn't built with a decoder for, so the video plays but the audio stays silent. Notes'
+        own <strong>Convert for compatible playback</strong> button (in the video viewer, Windows desktop only
+        for now) re-encodes such a file using whatever codec Windows itself can find a decoder for; this section
+        is about making sure Windows (or, failing that, Android) actually has one.
+      </p>
+      {codecError && <div className="error-banner">{codecError}</div>}
+      {codecHtml === null && !codecError ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        codecHtml && <div className="markdown-fragment" dangerouslySetInnerHTML={{ __html: codecHtml }} />
+      )}
     </div>
   )
 }

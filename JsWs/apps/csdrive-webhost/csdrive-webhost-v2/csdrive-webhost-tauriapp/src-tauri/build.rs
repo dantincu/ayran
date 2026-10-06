@@ -212,6 +212,7 @@ fn main() {
             "list_deployable_apps",
             "get_deployable_app_html",
             "get_keyboard_shortcuts_html",
+            "get_codec_help_html",
             "get_ayran_tag_config",
             "set_ayran_tag_config",
         ]),

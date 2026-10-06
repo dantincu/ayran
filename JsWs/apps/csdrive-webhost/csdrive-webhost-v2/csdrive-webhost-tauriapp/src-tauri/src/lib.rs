@@ -507,6 +507,7 @@ pub fn run() {
             deployable_apps::list_deployable_apps,
             deployable_apps::get_deployable_app_html,
             help_docs::get_keyboard_shortcuts_html,
+            help_docs::get_codec_help_html,
             sqlite_db::sqlite_load,
             sqlite_db::sqlite_close,
             sqlite_db::sqlite_execute,

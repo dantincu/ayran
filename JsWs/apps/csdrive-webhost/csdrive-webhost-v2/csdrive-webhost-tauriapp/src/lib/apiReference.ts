@@ -249,6 +249,14 @@ export const API_REFERENCE: ApiCategory[] = [
     ],
   },
   {
+    title: 'Converting video for compatible playback (Windows desktop only)',
+    intro: 'For a local video file (the user folder or a picked folder — not a Filen file) whose codec the browser can’t play (an .mkv with AC3/DTS audio, say): decodes with whatever Windows itself has a decoder for — a third-party codec pack’s own included — and re-encodes to H.264/AAC in MP4, cached so asking again for the same, unchanged file is instant. Not available on Android/iOS yet (refused with a plain error).',
+    entries: [
+      { call: "invoke('video_transcode_begin', { root, path })", returns: 'a job id', summary: 'Starts converting, or resolves at once if a cached conversion of the file as it is right now already exists.' },
+      { call: "invoke('video_transcode_progress', { jobId })", returns: '{ percent, done, error, url }', summary: 'Poll every ~500ms. `percent` is a rough estimate (the output file’s own growing size against the input’s), capped at 99 until `done`. `url` is set once `done` and `error` is null — point a `<video src>` at it.' },
+    ],
+  },
+  {
     title: 'Dialogs',
     intro: 'Native boxes under the app’s own prompt rules (one at a time, counted, refusable by "Prevent this app from showing prompts") — not the browser’s own `confirm`/`alert`, which are intercepted and rerouted through these same rules automatically.',
     entries: [
