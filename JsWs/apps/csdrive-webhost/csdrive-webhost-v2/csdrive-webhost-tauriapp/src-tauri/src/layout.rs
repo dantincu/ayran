@@ -26,6 +26,25 @@ use std::path::{Path, PathBuf};
 /// The last path component doubles as the name of this app's OS-keychain entries
 /// (Filen sessions, the pointer file's encryption key) â€” so pointing this somewhere
 /// else also gives a run its own, separate keychain entries.
+/// **A *debug* build gets its own, separate default — `-debug`, below — so `cargo run`/`cargo tauri dev` never
+/// shares a data folder with an installed release build at all, and both can run genuinely at once.** Asked for
+/// directly ("a way to run the debug app without closing the production app"): before this, both build kinds
+/// read this one same constant, so a debug and a release process running together would have fought over the
+/// very same `data.db`/`filen-sessions.enc` — not merely risky, but two processes genuinely writing the same
+/// SQLite file concurrently. `cfg(debug_assertions)` is exactly the distinction already used for this throughout
+/// the ecosystem (true for `cargo build`/`cargo run`, false for `--release` and for `cargo tauri build`'s own
+/// release profile), so this needed no new build flag or feature — the ordinary debug/release split already
+/// decides it. **The accepted consequence, flagged before this was built, not found after**: anything only ever
+/// reachable from a debug run before now — in particular, a Filen account logged into from a `cargo run` session
+/// — lived in what was, until this change, the *one shared* default folder; a debug run from now on starts fresh
+/// in its own folder and won't see it, the same as it wouldn't see anything else that only ever lived in the
+/// release folder. Logging in again, once, under the new debug folder is what's expected. The data-folder-
+/// relocation pointer file lives *inside* whichever default folder is active (`data_location.rs`'s
+/// `config_file_path`), so a custom folder set from a release build and one set from a debug build are already
+/// two completely independent pointers — this was already true, and remains true, regardless of this change.
+#[cfg(debug_assertions)]
+pub const DEFAULT_DATA_FOLDER: &str = "com.ayran.csdrive-webhost-tauriapp-debug";
+#[cfg(not(debug_assertions))]
 pub const DEFAULT_DATA_FOLDER: &str = "com.ayran.csdrive-webhost-tauriapp";
 
 /// The app's own files inside the data folder (`data.db`, the Filen sessions). Nothing

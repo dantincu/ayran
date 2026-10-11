@@ -276,6 +276,43 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     input.style.height = `${Math.max(input.scrollHeight, frame.clientHeight)}px`
   }
   useLayoutEffect(fit, [value])
+
+  /** Keeps the frame scrolled to its own bottom through a highlight update — approximate or exact — when the
+   * caret is at (or within a few characters of) the very end of the text and that end is no longer visible.
+   * Reported live: appending new lines at the end of a file could leave the view short of them once the
+   * Worker's exact pass replaced the approximate one, changing the rendered height a second time — `fit()`
+   * above only resizes the box for a `value` change, not for `html` alone, and the browser's own native "keep
+   * the caret visible" scroll (confirmed elsewhere in this file to fire for an ordinary keystroke) only ever
+   * responds to the keystroke itself, never to a later, asynchronous re-render that changes the rendered
+   * height again on its own.
+   *
+   * **Checks whether the content's own bottom edge is still inside the frame's visible area, not whether the
+   * frame's `scrollTop` already equals its maximum** — a first version tried the latter and it didn't work:
+   * by the time this effect runs, the browser's own native caret-follow scroll may have *already* nudged
+   * `scrollTop` partway toward the new bottom (but not all the way, since it only reacts to the keystroke
+   * itself, not to this later update), which already reads as "not exactly at the maximum" even though the
+   * person is still, in every meaningful sense, watching the tail of the file — comparing bounding rects
+   * instead needs no such exact equality and isn't thrown off by that partial, native-driven nudge. Also
+   * avoids a collapsed-`Range` measurement at the caret's own position entirely, which can return a
+   * degenerate, all-zero rect at exactly the kind of boundary a file's final line sits on (`lib/wrappedLineRows.ts`'s
+   * own doc comment has the full story on that failure mode) — `highlightEl`'s own element-level bounding rect
+   * has no such edge case. Gated on the caret being at the end, not just "the content overflows the frame"
+   * alone — a file being edited in its *middle*, with its end already scrolled out of view on purpose, would
+   * otherwise get yanked down to that end on every keystroke, which isn't what was asked for. Runs after
+   * `fit`'s own effect above (declared earlier, so it always resizes first) and keys off `html`, not `value` —
+   * `html` changes for *both* the approximate and the exact pass of the same edit, which is exactly the second
+   * update this needs to catch that a plain `[value]` effect wouldn't fire for again. */
+  useLayoutEffect(() => {
+    const frame = frameRef.current
+    const highlightEl = highlightRef.current
+    if (!frame || !highlightEl) return
+    if (value.length - caretOffset() > 4) return
+    if (highlightEl.getBoundingClientRect().bottom > frame.getBoundingClientRect().bottom) {
+      frame.scrollTop = frame.scrollHeight - frame.clientHeight
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [html])
+
   // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
   // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the
   // reason `value` changed — in both cases the DOM's own native text needs to be forced to match, since nothing
@@ -417,8 +454,19 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * `MAX_LINES_FOR_WRAP_MEASUREMENT`, or while "wrap long lines" is off (every line is trivially one row then, so
    * there's nothing to measure) — or, for one render right after an edit, while `wrapMeasure` is still the
    * *previous* text's measurement (the `wrapMeasure.value === value` check below; see `wrapMeasure`'s own doc
-   * comment for why trusting it regardless of `value` was the real bug). */
-  const rowsForCurrentValue = wrapMeasure?.value === value ? wrapMeasure.rows : null
+   * comment for why trusting it regardless of `value` was the real bug).
+   *
+   * **`settings?.wrapLines === false` always wins, regardless of what `wrapMeasure` holds** — asked for
+   * directly: a wrap-based measurement must never leak into the nowrap gutter. `measureWrappedRows` itself
+   * already skips measuring while wrap is off, but that alone isn't enough to guarantee this: `settings` starts
+   * out `undefined` (not yet loaded), and `undefined !== false`, so a measurement taken in that brief window —
+   * genuinely reflecting wrap-like CSS, since the nowrap class also hasn't applied yet — can land in
+   * `wrapMeasure` just before `settings` resolves to `wrapLines: false`; nothing afterwards ever clears it (the
+   * now-skipped `measureWrappedRows` just leaves it as is), and the plain `wrapMeasure.value === value` check
+   * alone would keep trusting it, tagged with a `value` that still matches. Checking the setting here too closes
+   * that gap outright, rather than relying on the measurement effect's own early return to happen to starve
+   * `wrapMeasure` of ever being asked to update. */
+  const rowsForCurrentValue = settings?.wrapLines === false ? null : wrapMeasure?.value === value ? wrapMeasure.rows : null
   const gutterRowStarts = useMemo(() => {
     const lineHeightPx = wrapMeasure?.lineHeightPx ?? FALLBACK_LINE_HEIGHT_PX
     const starts: number[] = []
@@ -446,7 +494,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       <div className={`code-editor ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`} ref={frameRef} onScroll={handleScroll} data-text-menu-anchor>
         <div className="code-editor-rows">
           {settings?.lineNumbers !== false && (
-            <div className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `${gutterDigits}ch` }}>
+            <div className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `calc(${gutterDigits}ch + 16px)` }}>
               {Array.from({ length: lineCount }, (_, i) => (
                 // A position:absolute child is placed relative to its containing block's *padding* edge, ignoring
                 // that padding for its own offset — so the 8px top offset (matching `.code-editor-highlight`'s

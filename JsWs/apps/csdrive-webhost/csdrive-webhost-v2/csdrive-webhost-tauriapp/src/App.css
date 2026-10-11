@@ -1645,9 +1645,17 @@ select {
 }
 
 /* An empty reserved slot — TextFieldMenu's own floating portal positions its buttons over it (see
-   `data-text-menu-target`), rather than over the top-right corner of the text underneath. */
+   `data-text-menu-target`), rather than over the top-right corner of the text underneath.
+   **110px, not 80px** — reported live: the Redo button sitting immediately to this slot's own left was almost
+   completely covered by the floating cluster's own first button. Measured directly: the cluster TextFieldMenu
+   actually renders here can be the trigger *plus* Notes' own User Action pair (`extra`) — three 34px buttons,
+   106px total (`TRIGGER_SIZE` and its own "room" calculation in `TextFieldMenu.tsx`) — but this slot was only
+   80px, so the cluster's own placement math (anchored to the slot's *right* edge, extending left by its full
+   width) started 30px to the left of the slot's own left edge every time all three buttons were present,
+   landing squarely on Redo. 110px covers the full three-button cluster with 4px to spare, matching
+   `TextFieldMenu.tsx`'s own right-edge margin, so the cluster's own left edge now never goes past this slot's. */
 .code-editor-menu-slot {
-  width: 80px;
+  width: 110px;
   align-self: stretch;
 }
 
@@ -1705,10 +1713,15 @@ select {
   pointer-events: none;
 }
 
+/* Asked for directly: the numbers used to sit flush against the gutter's own left edge (only the right side,
+   against the divider, had any breathing room — `right: 8px`, matching `.code-editor-highlight`'s own left
+   padding on the other side of that divider). `left`/`right` stay matched for a symmetric, deliberately-padded
+   look; `.code-editor-gutter`'s own inline `minWidth` (`CodeEditor.tsx`) is widened by the same amount so a
+   gutter sized to just fit its digits still has room for both sides' padding, not just the digits themselves. */
 .code-editor-gutter-number {
   position: absolute;
   right: 8px;
-  left: 0;
+  left: 8px;
   text-align: right;
   white-space: nowrap;
 }
