@@ -628,6 +628,84 @@ Measuring is real DOM work (`getBoundingClientRect` forces layout) and keeps a l
 
 **After inserting lines at the end of a file, the view could be left short of them once the Worker's exact highlight pass landed — reported live, reproduced with real CDP keystrokes (not a synthetic event dispatch, which didn't reliably trigger the same native behaviour this bug lived next to).** `fit()` (`CodeEditor.tsx`) resizes the textarea for a `value` change, but the Worker's *exact* re-tokenisation lands later, changing only `html` — a second height change `fit()`'s own `[value]`-only effect never reacts to — and the browser's native "keep the caret visible" scroll (confirmed elsewhere in this file to fire for an ordinary keystroke) only ever responds to the keystroke itself, never to this later, asynchronous one. **A first fix attempt checked whether the frame's own `scrollTop` already equalled its maximum ("was at bottom") and didn't work**: by the time the new effect runs, the browser's own native caret-follow may have *already* nudged `scrollTop` partway toward the new bottom without fully reaching it (reacting only to the keystroke, not to this later update) — which already reads as "not exactly at the maximum," even though the person is still, in every meaningful sense, watching the tail of the file. **Fixed by comparing bounding rects instead**: a new `useLayoutEffect` keyed on `html` (so it fires for both the approximate *and* the exact pass) checks, only while the caret is within 4 characters of the very end of `value`, whether `highlightEl`'s own bottom edge has gone past `frame`'s visible bottom edge — if so, sets `frame.scrollTop = frame.scrollHeight - frame.clientHeight`. No exact-equality check to be thrown off by, and no collapsed-`Range` measurement at the caret's own position either (which, per the gutter fix above, can return a degenerate all-zero rect at exactly the kind of boundary a file's final line sits on) — `highlightEl`'s own element-level bounding rect has no such failure mode. Gated on the caret being at the end specifically, not just "the content overflows the frame," so editing in the *middle* of a file with its own end deliberately scrolled out of view is left alone. Verified live (isolated data folder, desktop, real CDP keystrokes via `Input.insertText`/`Input.dispatchKeyEvent`, a Notes File Manager editor): scrolled to the bottom of a 60-line file, caret at the very end, six real alternating `Input.insertText`/Enter rounds — before the fix, settled at `scrollTop 655` against a required `675` (20px short, content cut off); after the fix, settled at exactly `scrollTop 675` for a `675 + 648 = 1323` total, matching `scrollHeight` precisely. A control case (scrolled to the *top*, caret near the *start*, same kind of edit) confirmed the gate: `scrollTop` stayed at `0` throughout, unmoved. `npx tsc --noEmit`, `npm run build`, `cargo build` and `cargo test --lib` (276 tests, untouched — all four fixes in this section are pure frontend) all clean.
 
+## Debouncing the per-keystroke cost of highlighting and the gutter, on a genuinely large file
+
+**"Continuously recalculating the entire highlighting of the file can be fine on desktop but on mobile I'm worried
+it might drain the battery"** — discussed first, since the person's own proposed fix (detect in advance, per
+keystroke, whether a re-scan is even *needed* — "surrounded by letters" being safe, a keyword boundary or a
+string/comment terminator not) was a real architectural choice, not a bug fix. **Turned down**: whether a word is
+a keyword depends on the *whole word after the edit*, not the inserted character in isolation (`i`→`if`, `if`→`ifx`),
+and a string/comment terminator's own escaping rules differ per language's scanner — getting this exhaustively
+right would mean mirroring every highlighter's own keyword/escape/boundary logic a second time, in a second,
+approximate form, and a wrong "safe to skip" guess produces a silently stuck wrong colour nothing afterward
+self-corrects — a worse failure mode than the Worker pass's own always-eventually-correct one. **Debouncing the
+*dispatch* to the Worker instead** (`EXACT_DISPATCH_DEBOUNCE_MS`, 200ms, `CodeEditor.tsx`'s `useBackgroundHighlighted`)
+needs none of that: the instant, approximate stand-in already makes every keystroke feel immediate regardless of
+when the exact pass actually runs, so delaying *only* the dispatch — reset on every further keystroke, fired once
+typing actually pauses — cuts how often the whole dispatch → Worker → reply → reparse cycle runs during a
+sustained burst, with no new correctness surface: a person who never pauses simply keeps seeing the (already
+correct, for the overwhelmingly common case) approximate colouring until they do.
+
+**Verifying it against a real file turned up a second, bigger problem the debounce alone didn't touch.** Tested
+against the person's own real 191 KB, 2,808-line markdown note (hard-linked into an isolated debug data folder's
+`user/` for the session, never copied into or touched in the person's own real notebook — confirmed via `git
+status` on that notebook's repo before and after). A CPU profile (`Profiler.start`/`Profiler.stop` over CDP) of an
+11-keystroke burst found `getClientRects` — not anything to do with highlighting at all — as by far the single
+hottest function, at ~80ms *per keystroke* on this file: the line-number gutter's wrapped-row measurement
+(`lib/wrappedLineRows.ts`'s `computeRowsPerLine`, one `Range.getClientRects()` call per source line) was deferred
+by only one macrotask (`setTimeout(fn, 0)`), not actually debounced — on a file with long lines (few lines, 2,808,
+well under the existing `MAX_LINES_FOR_WRAP_MEASUREMENT` safety net, but each one expensive to measure), this ran
+to completion on *every* settled keystroke during continuous typing, identically whether the experimental editor
+was on or off (the gutter is shared by both). **Fixed the same way**: `WRAP_MEASURE_DEBOUNCE_MS` (250ms) — the
+measurement's own `setTimeout` is now reset on every keystroke instead of firing after a fixed one macrotask, so
+a sustained burst pays this cost once, after it stops, not once per keystroke; the gutter simply keeps its
+last-known spacing until then (the same "an approximate is fine for a moment, it self-corrects" trade already
+used everywhere else in this file). Re-profiled identically afterward: `getClientRects`' total dropped from
+861ms to 323ms across the same burst (≈62% less) — a real, measured improvement, not assumed from the code read
+alone. A control profile of 3 idle seconds with the field still focused but *no* typing showed essentially zero
+cost (3000ms idle, 17.6ms overhead, nothing else) — confirming both costs are genuinely keystroke-triggered, not
+a fixed background tax this fix could never have touched.
+
+**A third, real inefficiency was found along the way, unrelated to either debounce**: `useBackgroundHighlighted`'s
+approximate branch (`tokenClassAtOffset` scanning up to the caret, then `escapeHtml`/`markWhitespace` scanning the
+*entire* value) ran **unconditionally on every keystroke, in both editor modes** — even though in experimental mode
+its result (`html` state) is never rendered at all (`CodeEditor`'s JSX gives the experimental `<pre>` no
+`dangerouslySetInnerHTML`; only `RunPatchController`'s own, already-cheaper, localised approximate patch is), which
+is exactly why toggling the experimental editor on and off made no measurable difference on this file before this
+fix — the patcher's own cheaper work was paying for the old, wasteful computation too, on top of its own. **Fixed**
+by reordering `CodeEditor`'s own hooks so `experimental` is known before `useBackgroundHighlighted` is called, and
+skipping the expensive branch entirely when it's on — `html` is set to a cheap, merely-identity-changing counter
+instead (all the scroll-to-bottom effect below it needs: that an approximate *or* exact pass just landed, never
+its content). The default editor's own cost here is unchanged and unavoidable without replacing its rendering with
+the same token-diff approach (not asked for) — it actually renders this string, so nothing here was wasted work
+for it.
+
+**A real, separate cost was found and *not* fixed, flagged rather than silently chased or silently dropped**: the
+same CPU profile's next two hottest entries (after the wrap-measurement fix, roughly 600ms and 550ms respectively
+across the same burst) are `TextFieldMenu.tsx`'s own continuous `requestAnimationFrame` loop that keeps the
+floating "…" clipboard-menu trigger positioned at a focused field's corner "wherever the page scrolls or resizes
+it to" — a generic mechanism every text field in the whole app shares, not something specific to `CodeEditor` or
+to a big file, and confirmed (by the same idle-profile control above) to cost nothing while nothing is typed —
+its own per-frame `getBoundingClientRect()` apparently becomes measurably more expensive once the adjacent
+53K+-node `<pre>` has made the page's layout this heavy, piggybacking on the same reflow the fixes above already
+address, but widening today's scope to a shared, app-wide component used everywhere else too wasn't done without
+checking first.
+
+Verified live throughout (isolated debug data folder — `-debug`, see "Folder layout" — never the person's real
+data; the real test file was a hard link, read-only for this purpose, confirmed untouched by `git status`
+afterward): `npx tsc --noEmit` and `npm run build` clean after each change; the CPU-profile comparisons above, run
+against the same file reopened fresh each time (discarding any unsaved in-memory edits from a previous test run,
+since nothing was ever saved to disk) so every comparison started from the identical 191,591-character content;
+a fixed-wall-clock-cadence typing simulation (each character's `execCommand('insertText', …)` scheduled at its
+own independent `i * 45ms` timer from the start, rather than sequentially awaited — the latter silently
+serializes every character's own full reaction chain before the next one can even begin, which doesn't represent
+how a real keyboard delivers keystrokes at a fixed pace regardless of how busy the app is) confirmed all
+characters still land correctly, in order, with no data loss, even while visibly falling behind schedule during
+the heaviest moments — the same honest trade this file's own "Editor performance" section already documents
+elsewhere (a person who never pauses sees the approximate colouring throughout, catching up once they do) rather
+than a claim that this one real file now has zero lag. `cargo test --lib` (276 tests, untouched — every change in
+this section is pure frontend) clean throughout.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.

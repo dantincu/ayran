@@ -18,6 +18,17 @@ const MAX_LINES_FOR_WRAP_MEASUREMENT = 20_000
 /** The gutter's own fallback row height (one row per line) before a real measurement lands — `.code-editor-gutter`'s
  * font shorthand in App.css is `13px/1.5`, i.e. 13 * 1.5. */
 const FALLBACK_LINE_HEIGHT_PX = 19.5
+/** How long `useBackgroundHighlighted` waits, after the *last* keystroke, before dispatching the real Worker pass —
+ * see that hook's own doc comment for why this exists and why debouncing the dispatch (not the Worker's own run) is
+ * the right lever. */
+const EXACT_DISPATCH_DEBOUNCE_MS = 200
+/** How long the wrapped-row gutter measurement (below, `measureWrappedRows`) waits after the *last* keystroke
+ * before actually measuring — found, by CPU-profiling a real 190 KB file, to be the single most expensive thing
+ * this editor does per keystroke (see that effect's own doc comment), dwarfing the highlighting cost the debounce
+ * above was built for. Same lever, same reasoning: the gutter simply keeps its last-known row spacing (already
+ * self-correcting, same "an approximate is fine for a moment" trade used everywhere else in this file) until
+ * typing actually pauses. */
+const WRAP_MEASURE_DEBOUNCE_MS = 250
 
 interface Props {
   value: string
@@ -83,11 +94,46 @@ interface ExactResult {
  * moment the real background pass catches up; `markWhitespace` is still applied so "show whitespace" doesn't
  * flicker on or off during the brief window it's showing.
  *
- * **The real pass**, in `highlightWorker.ts`, is asked for on every change via a `HighlightScheduler`
- * (`lib/highlightScheduler.ts`): it keeps at most one request running in the Worker at a time, so a person
- * typing faster than one full re-scan takes is never queued up behind a growing backlog of stale requests —
- * only the *latest* text is ever waiting, picked up the instant the Worker is free, and the Worker's answer
- * replaces the instant guess the moment it arrives.
+ * **The real pass**, in `highlightWorker.ts`, goes through a `HighlightScheduler` (`lib/highlightScheduler.ts`):
+ * it keeps at most one request running in the Worker at a time, so a person typing faster than one full re-scan
+ * takes is never queued up behind a growing backlog of stale requests — only the *latest* text is ever waiting,
+ * picked up the instant the Worker is free, and the Worker's answer replaces the instant guess the moment it
+ * arrives.
+ *
+ * **Dispatching to that scheduler is itself debounced by `EXACT_DISPATCH_DEBOUNCE_MS`**, asked for directly after
+ * a large real file (hundreds of KB) was reported as consistently harder to type in and "bad for the eyes" —
+ * not a main-thread stall (the Worker already keeps that off the critical path) but the *sustained* cost of
+ * running a full re-scan back to back on every single settled keystroke while someone types continuously: each
+ * exact reply also means re-parsing/laying out a large HTML string on the main thread (`setHtml`, or the
+ * experimental path's own diff — see `RunPatchController`), which is real, repeated work for a big file even
+ * though each individual pass is "only" off the main thread. On a phone this is also squarely a battery
+ * question, which is what was actually asked about — a heuristic that decides, per keystroke, whether a
+ * re-scan is even *needed* (the first idea floated) was turned down: that would mean mirroring every highlighter's
+ * own keyword/escape/boundary rules in a second, approximate form, and a wrong "safe to skip" guess produces a
+ * silently stuck wrong colour that nothing afterward self-corrects — a worse failure mode than today's
+ * always-eventually-correct Worker pass. Debouncing the *dispatch* instead needs none of that: the approximate,
+ * instant stand-in above already makes every keystroke feel immediate regardless of when the exact pass actually
+ * runs, so delaying *only* the Worker call — reset on every further keystroke, fired once typing actually pauses
+ * for `EXACT_DISPATCH_DEBOUNCE_MS` — cuts how often the whole dispatch → Worker → reply → reparse cycle runs
+ * during a sustained burst, with no new correctness surface: a person who never pauses simply keeps seeing the
+ * approximate colouring (already correct for the overwhelmingly common case of typing inside the same token) until
+ * they do, the same guarantee the scheduler's own coalescing already relies on elsewhere.
+ *
+ * **The debounce above wasn't the whole story on the same real file, found live while verifying it**: toggling
+ * the experimental editor on and off made almost no measurable difference on a real 190 KB markdown transcript,
+ * which shouldn't have been true — `RunPatchController.applyApproximate` is specifically the *cheaper*,
+ * localised approximate pass. Timing each keystroke directly (`performance.now()` around a real
+ * `document.execCommand('insertText', …)`, not a synthetic event) showed why: this hook's own approximate branch
+ * — `tokenClassAtOffset` scanning up to the caret, then `escapeHtml`/`markWhitespace` scanning the *entire*
+ * value — ran **unconditionally on every keystroke, in both modes**, costing over 100ms by itself on that file,
+ * even though in experimental mode its result (`html`) is never actually rendered (`CodeEditor`'s own JSX gives
+ * the experimental `<pre>` no `dangerouslySetInnerHTML`) — pure waste sitting in front of the patcher's own,
+ * already-cheaper work. **Fixed** by skipping that computation entirely while `experimental` is on, setting
+ * `html` to a cheap, merely-identity-changing placeholder instead (a counter) — all it still needs to provide,
+ * since nothing reads its *content* in that mode, only the scroll-to-bottom effect below reacting to it having
+ * changed at all. The default editor's own cost here is unchanged (and unavoidable without replacing its
+ * rendering with the same token-diff approach, which wasn't asked for): it actually renders this string, so
+ * nothing here was wasted work for it.
  *
  * **The very first render is still computed synchronously**, on the main thread, exactly as before this change —
  * there's no previous *exact* highlight yet to approximate a caret colour from, and a freshly opened file should
@@ -100,9 +146,17 @@ interface ExactResult {
  * editor's own DOM patcher (`lib/runPatchController.ts`, wired up in `CodeEditor` below) reacts to this
  * separately from `html` itself: it needs to know precisely when a *real* tokenisation is ready to diff
  * against, which `html` alone (updated on both approximate and exact steps) can't tell it. */
-function useBackgroundHighlighted(value: string, language: Language, caretOffset: () => number): { html: string; exact: ExactResult } {
+function useBackgroundHighlighted(
+  value: string,
+  language: Language,
+  caretOffset: () => number,
+  experimental: boolean,
+): { html: string; exact: ExactResult } {
   const trailer = (text: string) => (text.endsWith('\n') ? ' ' : '')
   const schedulerRef = useRef<HighlightScheduler<{ text: string; language: Language }, string> | null>(null)
+  /** A cheap, ever-changing stand-in for `html` used only while `experimental` is on — see the `useLayoutEffect`
+   * below for why the real approximate computation is skipped entirely in that mode. */
+  const placeholderTick = useRef(0)
   /** The last *exact* (Worker-computed, or the very first synchronous) highlight — what the real `value`/`language`
    * it was computed for were, and the html itself (both to tell "is this still current" and to read a caret colour
    * from while a newer one is on its way). Kept as a ref, not just the `exact` state below, because the layout
@@ -110,6 +164,9 @@ function useBackgroundHighlighted(value: string, language: Language, caretOffset
    * itself being a reason to re-run (a plain state read inside an effect not listed in its own deps would be
    * stale); `exact` state exists purely so code *outside* this hook can react to "a new one landed." */
   const lastExact = useRef<ExactResult | null>(null)
+  /** The pending, debounced dispatch to the Worker — reset on every keystroke, so only the one that's still the
+   * latest after `EXACT_DISPATCH_DEBOUNCE_MS` of no further change actually fires. */
+  const dispatchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [html, setHtml] = useState(() => {
     const computed = highlight(value, language) + trailer(value)
     lastExact.current = { value, language, html: computed }
@@ -140,17 +197,41 @@ function useBackgroundHighlighted(value: string, language: Language, caretOffset
     return () => {
       worker.terminate()
       schedulerRef.current = null
+      if (dispatchTimer.current !== null) clearTimeout(dispatchTimer.current)
+      dispatchTimer.current = null
     }
   }, [])
 
   useLayoutEffect(() => {
     const last = lastExact.current
     if (last && last.value === value && last.language === language) return // already exact and current
-    const cls = last ? tokenClassAtOffset(last.html, caretOffset()) : null
-    const approximate = markWhitespace(cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value))
-    setHtml(approximate + trailer(value))
-    schedulerRef.current?.request({ text: value, language })
-  }, [value, language])
+    // The experimental editor's own DOM patcher (`RunPatchController.applyApproximate`) does its own, already
+    // cheaper, localised approximate colouring directly against the managed `<pre>` — this hook's `html` state
+    // is never rendered in that mode at all (`CodeEditor`'s own JSX gives the experimental `<pre>` no
+    // `dangerouslySetInnerHTML`), so recomputing the exact same full-document escape-and-whitespace-mark here,
+    // every keystroke, just to throw the result away was pure, unconditional waste — confirmed live against a
+    // real 190 KB file: this one computation alone (`tokenClassAtOffset` scanning up to the caret, `escapeHtml`
+    // and `markWhitespace` both scanning the *entire* value) cost upward of 100ms per keystroke, present on
+    // *every* keystroke regardless of the exact-dispatch debounce above (which only ever touched the Worker
+    // side of this, not this synchronous one) — exactly the "typing is harder on a big file" symptom this was
+    // asked about, and the reason the experimental editor measured no faster than the default one on that file
+    // before this fix, despite its own patcher being the cheaper design. A placeholder that merely changes
+    // identity every time is all `html` still needs to provide here: the scroll-to-bottom effect below keys off
+    // it to know an approximate *or* exact pass just landed, never its actual content.
+    if (experimental) {
+      placeholderTick.current++
+      setHtml(String(placeholderTick.current))
+    } else {
+      const cls = last ? tokenClassAtOffset(last.html, caretOffset()) : null
+      const approximate = markWhitespace(cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value))
+      setHtml(approximate + trailer(value))
+    }
+    if (dispatchTimer.current !== null) clearTimeout(dispatchTimer.current)
+    dispatchTimer.current = setTimeout(() => {
+      dispatchTimer.current = null
+      schedulerRef.current?.request({ text: value, language })
+    }, EXACT_DISPATCH_DEBOUNCE_MS)
+  }, [value, language, experimental])
 
   return { html, exact }
 }
@@ -197,10 +278,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   const programmaticEditPending = useRef(false)
   const effectiveLanguage = language ?? languageOf(fileName)
   const caretOffset = () => inputRef.current?.selectionEnd ?? value.length
-  const { html, exact } = useBackgroundHighlighted(value, effectiveLanguage, caretOffset)
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
   const experimental = settings?.experimentalEditor ?? false
+  const { html, exact } = useBackgroundHighlighted(value, effectiveLanguage, caretOffset, experimental)
 
   /** The experimental editor's own DOM half (`lib/runPatchController.ts`) — one controller per mounted editor,
    * reused across every patch; its own module doc explains why it owns this state independently of React
@@ -261,8 +342,19 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   // wrapping only depends on the text itself, never on which colour a span is drawn in, so measuring twice for
   // one edit would be pure waste. Measuring is real DOM work (`getBoundingClientRect` forces layout), exactly the
   // kind of thing this file already keeps off a keystroke's own critical path.
+  //
+  // **Debounced by `WRAP_MEASURE_DEBOUNCE_MS`, not just deferred by one tick** — found live, by CPU-profiling a
+  // real 190 KB file while typing a short burst: `getClientRects` (called once per source line by
+  // `computeRowsPerLine`, below) was by far the single hottest thing in the whole profile — roughly 80ms per
+  // keystroke on that file, dwarfing the cost of highlighting itself (the actual thing item #8's own debounce,
+  // `EXACT_DISPATCH_DEBOUNCE_MS` above, was built for) and present identically whether the experimental editor
+  // was on or off, since the gutter is unrelated to which one is rendering the text. A plain `setTimeout(fn, 0)`
+  // still measures on every settled keystroke during continuous typing (each one gets its own macrotask to run
+  // in before the next keystroke's own effect replaces it) — resetting the timer on every further keystroke,
+  // the same lever as the Worker dispatch above, means a sustained burst pays this cost once, after it actually
+  // stops, not once per keystroke.
   useEffect(() => {
-    const id = setTimeout(measureWrappedRows, 0)
+    const id = setTimeout(measureWrappedRows, WRAP_MEASURE_DEBOUNCE_MS)
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, settings?.wrapLines])
