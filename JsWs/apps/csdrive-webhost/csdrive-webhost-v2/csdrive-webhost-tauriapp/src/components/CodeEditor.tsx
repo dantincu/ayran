@@ -9,6 +9,7 @@ import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
 import { computeRowsPerLine } from '../lib/wrappedLineRows'
+import { RunPatchController } from '../lib/runPatchController'
 
 /** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
  * wrapped-row measurement existed) rather than measuring — tens of thousands of `Range` queries would be a real
@@ -49,6 +50,15 @@ export interface CodeEditorHandle {
   insertAtCursor: (text: string) => void
 }
 
+/** A genuinely exact (never approximate) highlight result and what it was computed for — see
+ * `useBackgroundHighlighted`'s own doc comment for why this is kept separately from the plain `html` string it
+ * also returns. */
+interface ExactResult {
+  value: string
+  language: Language
+  html: string
+}
+
 /** The highlighted copy of `value` — recomputed off the main thread, in a Worker, with an **instant, approximate**
  * stand-in shown the moment a keystroke happens rather than making the keystroke wait for the real result.
  *
@@ -82,19 +92,30 @@ export interface CodeEditorHandle {
  * **The very first render is still computed synchronously**, on the main thread, exactly as before this change —
  * there's no previous *exact* highlight yet to approximate a caret colour from, and a freshly opened file should
  * show correctly coloured from its first paint, not a flash of plain text while the Worker starts up. Every
- * change after that goes through the Worker. */
-function useBackgroundHighlighted(value: string, language: Language, caretOffset: () => number): string {
+ * change after that goes through the Worker.
+ *
+ * **Also returns `exact`** — the same `{value, language, html}` snapshot kept internally for the caret-colour
+ * lookup above, but as reactive state rather than a plain ref, updated *only* when a genuinely new exact result
+ * lands (the very first synchronous one, or a Worker reply) — never on an approximate step. The experimental
+ * editor's own DOM patcher (`lib/runPatchController.ts`, wired up in `CodeEditor` below) reacts to this
+ * separately from `html` itself: it needs to know precisely when a *real* tokenisation is ready to diff
+ * against, which `html` alone (updated on both approximate and exact steps) can't tell it. */
+function useBackgroundHighlighted(value: string, language: Language, caretOffset: () => number): { html: string; exact: ExactResult } {
   const trailer = (text: string) => (text.endsWith('\n') ? ' ' : '')
   const schedulerRef = useRef<HighlightScheduler<{ text: string; language: Language }, string> | null>(null)
   /** The last *exact* (Worker-computed, or the very first synchronous) highlight — what the real `value`/`language`
    * it was computed for were, and the html itself (both to tell "is this still current" and to read a caret colour
-   * from while a newer one is on its way). */
-  const lastExact = useRef<{ value: string; language: Language; html: string } | null>(null)
+   * from while a newer one is on its way). Kept as a ref, not just the `exact` state below, because the layout
+   * effect's own "is this already exact and current" check must read the *latest* value synchronously without
+   * itself being a reason to re-run (a plain state read inside an effect not listed in its own deps would be
+   * stale); `exact` state exists purely so code *outside* this hook can react to "a new one landed." */
+  const lastExact = useRef<ExactResult | null>(null)
   const [html, setHtml] = useState(() => {
     const computed = highlight(value, language) + trailer(value)
     lastExact.current = { value, language, html: computed }
     return computed
   })
+  const [exact, setExact] = useState<ExactResult>(() => lastExact.current!)
 
   useEffect(() => {
     const worker = new Worker(new URL('../lib/highlightWorker.ts', import.meta.url), { type: 'module' })
@@ -110,8 +131,10 @@ function useBackgroundHighlighted(value: string, language: Language, caretOffset
         }),
       (resultHtml, req) => {
         const computed = resultHtml + trailer(req.text)
-        lastExact.current = { value: req.text, language: req.language, html: computed }
+        const result = { value: req.text, language: req.language, html: computed }
+        lastExact.current = result
         setHtml(computed)
+        setExact(result)
       },
     )
     return () => {
@@ -129,7 +152,7 @@ function useBackgroundHighlighted(value: string, language: Language, caretOffset
     schedulerRef.current?.request({ text: value, language })
   }, [value, language])
 
-  return html
+  return { html, exact }
 }
 
 /** The one text editor of the app's file views: a `textarea` — so everything a text box does (selection, the clipboard
@@ -172,15 +195,56 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * prop does — forcing it to match the prop in that case would silently erase them. See the module doc comment
    * on why the textarea below is deliberately uncontrolled. */
   const programmaticEditPending = useRef(false)
-  const html = useBackgroundHighlighted(value, language ?? languageOf(fileName), () => inputRef.current?.selectionEnd ?? value.length)
+  const effectiveLanguage = language ?? languageOf(fileName)
+  const caretOffset = () => inputRef.current?.selectionEnd ?? value.length
+  const { html, exact } = useBackgroundHighlighted(value, effectiveLanguage, caretOffset)
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
+  const experimental = settings?.experimentalEditor ?? false
+
+  /** The experimental editor's own DOM half (`lib/runPatchController.ts`) — one controller per mounted editor,
+   * reused across every patch; its own module doc explains why it owns this state independently of React
+   * rather than ever re-reading the real DOM. Two effects, not one, each attaching the container itself first
+   * (a cheap no-op when it hasn't actually changed): the approximate patch reacts to exactly what the default
+   * path's own approximation does (`[value, effectiveLanguage]`), the exact patch only to a genuinely *new*
+   * exact result landing (`exact`'s own identity, not `value`) — reading the current `value` inside it, at the
+   * moment it runs, is deliberate (see `RunPatchController.applyExact`'s own doc comment on why a reply for an
+   * older value must be told apart from one for the current value, not just applied). */
+  const runPatchController = useRef<RunPatchController | null>(null)
+  if (!runPatchController.current) runPatchController.current = new RunPatchController()
+  useLayoutEffect(() => {
+    const controller = runPatchController.current!
+    controller.attachContainer(experimental ? highlightRef.current : null)
+    if (!experimental) return
+    controller.applyApproximate(value, exact.html, caretOffset())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, effectiveLanguage, experimental])
+  useLayoutEffect(() => {
+    const controller = runPatchController.current!
+    controller.attachContainer(experimental ? highlightRef.current : null)
+    if (!experimental) return
+    controller.applyExact(exact.html, exact.value, value)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exact, experimental])
 
   /** How many visual rows each source line actually occupies once wrapped, and the pixel `line-height` it was
    * measured against — `null` until the first measurement lands (the gutter falls back to one row per line until
    * then, the same thing it always showed before this existed). See `lib/wrappedLineRows.ts`'s own doc comment
-   * for why this can't be a character-count calculation and has to measure the real, already-wrapped DOM. */
-  const [wrapMeasure, setWrapMeasure] = useState<{ rows: number[]; lineHeightPx: number } | null>(null)
+   * for why this can't be a character-count calculation and has to measure the real, already-wrapped DOM.
+   *
+   * **Tagged with the exact `value` it was measured against** — reported live ("line numbers show as if there
+   * was no wrapped line... the first line spans hundreds of actual lines"), not reproduced in several live
+   * attempts, but a real structural gap either way: the measurement is deferred (`setTimeout`, below), so after
+   * *any* edit there's a render where `value`/`lineCount` already reflect the new text but `wrapMeasure` still
+   * holds whatever was last measured for the *previous* text — a completely different line-start/row-count
+   * shape. `gutterRowStarts` used to read `wrapMeasure.rows[i]` regardless, which for that one render reads a
+   * stale line's row-count as if it belonged to the current line `i` — exactly capable of producing a wildly
+   * wrong offset like "hundreds of rows" for a line that wrapped a lot in the *previous* text (or in a
+   * previously open, unrelated file, if this same editor instance is reused across files) but not in the
+   * current one. Tagging the measurement with its own `value` and only trusting it when that matches the
+   * current `value` closes the gap: during that one render it falls back to the same honest "not measured yet"
+   * flat spacing a fresh measurement always starts from, never a mismatched one. */
+  const [wrapMeasure, setWrapMeasure] = useState<{ value: string; rows: number[]; lineHeightPx: number } | null>(null)
   const measureWrappedRows = () => {
     const highlightEl = highlightRef.current
     if (!highlightEl || settings?.wrapLines === false) return
@@ -190,7 +254,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     if (value.split('\n').length > MAX_LINES_FOR_WRAP_MEASUREMENT) return
     const lineHeightPx = parseFloat(getComputedStyle(highlightEl).lineHeight) || 0
     const rows = computeRowsPerLine(highlightEl, value, lineHeightPx)
-    if (rows) setWrapMeasure({ rows, lineHeightPx })
+    if (rows) setWrapMeasure({ value, rows, lineHeightPx })
   }
   // Deferred (not a `useLayoutEffect`) and off `value`/`settings?.wrapLines` only — not `html`, which also changes
   // for the *approximate* and then the *exact* highlight pass of the very same edit (`useBackgroundHighlighted`):
@@ -351,18 +415,21 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * which is only true while nothing wraps. Falls back to that same one-row-per-line assumption — the base pixel
    * offset is just `index * lineHeightPx` — until the first real measurement lands, or above
    * `MAX_LINES_FOR_WRAP_MEASUREMENT`, or while "wrap long lines" is off (every line is trivially one row then, so
-   * there's nothing to measure). */
+   * there's nothing to measure) — or, for one render right after an edit, while `wrapMeasure` is still the
+   * *previous* text's measurement (the `wrapMeasure.value === value` check below; see `wrapMeasure`'s own doc
+   * comment for why trusting it regardless of `value` was the real bug). */
+  const rowsForCurrentValue = wrapMeasure?.value === value ? wrapMeasure.rows : null
   const gutterRowStarts = useMemo(() => {
     const lineHeightPx = wrapMeasure?.lineHeightPx ?? FALLBACK_LINE_HEIGHT_PX
     const starts: number[] = []
     let row = 0
     for (let i = 0; i < lineCount; i++) {
       starts.push(row)
-      row += wrapMeasure?.rows[i] ?? 1
+      row += rowsForCurrentValue?.[i] ?? 1
     }
     return { starts, lineHeightPx }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wrapMeasure, lineCount])
+  }, [rowsForCurrentValue, wrapMeasure?.lineHeightPx, lineCount])
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -392,12 +459,27 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
             </div>
           )}
           <div className="code-editor-content">
-            <pre
-              ref={highlightRef}
-              className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
-              aria-hidden="true"
-              dangerouslySetInnerHTML={{ __html: html }}
-            />
+            {/* Two genuinely different elements, not one re-purposed — `key` forces a clean remount rather than
+                React trying to reconcile "has dangerouslySetInnerHTML" into "has none" (or back) on the same
+                node across a mode switch. The experimental one is given no children/`dangerouslySetInnerHTML`
+                prop at all: only `RunPatchController` (above) ever touches what's inside it — see its own
+                module doc for why that's what makes mixing imperative DOM management with React safe here. */}
+            {experimental ? (
+              <pre
+                key="experimental"
+                ref={highlightRef}
+                className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
+                aria-hidden="true"
+              />
+            ) : (
+              <pre
+                key="default"
+                ref={highlightRef}
+                className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
+                aria-hidden="true"
+                dangerouslySetInnerHTML={{ __html: html }}
+              />
+            )}
             <textarea
               ref={inputRef}
               className="code-editor-input"

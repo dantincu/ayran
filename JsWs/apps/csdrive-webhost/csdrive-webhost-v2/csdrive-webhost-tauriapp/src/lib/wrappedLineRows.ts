@@ -63,21 +63,50 @@ export function findTextPositions(root: Node, offsets: number[]): { node: Text; 
  * measured from `highlightEl`'s own already-rendered DOM — see the module doc above. `lineHeightPx` is the box's
  * own resolved `line-height` (`parseFloat(getComputedStyle(...).lineHeight)`, the same value the editor's mirror-
  * scroll already reads). Returns `null` when there's nothing to measure against yet (`highlightEl` not mounted),
- * leaving the caller to fall back to "one row per line" until the next render provides it. */
+ * leaving the caller to fall back to "one row per line" until the next render provides it.
+ *
+ * **Measures each line's own *span* (`[lineStart, lineEnd)`, including its own terminating `\n`), never a
+ * *collapsed* (zero-width) `Range` sitting at the bare offset** — found live, reported as a line's number
+ * landing dozens of rows away from where its content actually begins: a collapsed `Range`'s own
+ * `getBoundingClientRect()` can come back as an all-zero rect (`{top: 0, ...}`), with **zero** entries in
+ * `getClientRects()` too, at certain boundary positions a caret has no well-defined box to report for — the one
+ * directly confirmed live is the start of a genuinely *blank* line (a position sitting between two consecutive
+ * `\n` characters, with nothing else around for the browser to anchor a caret rect to). `rowOf` then turns that
+ * stray `0` into a wildly wrong row index for *that* line — and since each line's own row *count* is the delta
+ * between two consecutive row-*starts*, the damage lands on the **next** line's count too (a `-9` row-start next
+ * to a correct `+3` one computes a bogus 12-row gap), which is what actually produced the reported "hundreds of
+ * rows." A **non-collapsed** range spanning real content — even content that renders with no visible glyph of
+ * its own, like a bare `\n` — always has at least one real client rect (confirmed live against the exact
+ * degenerate position above: a one-character range covering just that `\n` reports a correct, non-zero rect),
+ * so reading `getClientRects()[0]` instead removes the failure mode at its root rather than special-casing the
+ * one blank-line shape found live — any other position a collapsed `Range` might fail at the same way is
+ * covered by the same fix, not just that one. Every line but the very last always has at least one character to
+ * measure this way (its own `\n`, at minimum) — **only** the implicit, truly empty trailing "line" after a
+ * final newline (or an empty file entirely) can have a genuinely zero-length span, which can't wrap by
+ * definition, so it's taken as exactly one row ending at the very bottom (`totalRows - 1`) with no measurement
+ * attempted at all, rather than risking the one case nothing could reliably measure anyway. */
 export function computeRowsPerLine(highlightEl: HTMLElement, value: string, lineHeightPx: number): number[] | null {
   if (!lineHeightPx || lineHeightPx <= 0) return null
   const starts = lineStartOffsets(value)
-  const positions = findTextPositions(highlightEl, starts)
-  if (positions.length !== starts.length) return null
+  // One extra offset at the very end so each line's *end* position (needed to build a non-collapsed range) is
+  // just the next line's own start — already in `positions` — except for the last line, whose end is this one
+  // new entry.
+  const allOffsets = [...starts, value.length]
+  const positions = findTextPositions(highlightEl, allOffsets)
+  if (positions.length !== allOffsets.length) return null
   const containerTop = highlightEl.getBoundingClientRect().top
   const range = document.createRange()
   const rowOf = (px: number) => Math.round((px - containerTop) / lineHeightPx)
-  const rowStarts = positions.map(({ node, offset }) => {
-    range.setStart(node, Math.min(offset, node.data.length))
-    range.collapse(true)
-    return rowOf(range.getBoundingClientRect().top)
-  })
   const totalRows = Math.max(1, rowOf(containerTop + highlightEl.scrollHeight))
+  const rowStarts = starts.map((_, i) => {
+    if (allOffsets[i] === allOffsets[i + 1]) return totalRows - 1 // the empty trailing line only — see doc above
+    const start = positions[i]
+    const end = positions[i + 1]
+    range.setStart(start.node, start.offset)
+    range.setEnd(end.node, end.offset)
+    const rects = range.getClientRects()
+    return rowOf(rects.length > 0 ? rects[0].top : range.getBoundingClientRect().top)
+  })
   const rows: number[] = []
   for (let i = 0; i < rowStarts.length; i++) {
     const next = i + 1 < rowStarts.length ? rowStarts[i + 1] : totalRows
