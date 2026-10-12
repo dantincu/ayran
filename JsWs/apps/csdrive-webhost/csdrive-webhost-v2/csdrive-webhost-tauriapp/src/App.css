@@ -1958,6 +1958,11 @@ select {
   padding-top: 0;
   padding-bottom: 0;
   border-bottom-color: transparent;
+  /* Same gap as `.notes-top-bar-scroll-hidden` (`notes.css`): `max-height: 0` never shrinks a border's own
+     *width*, only `border-bottom-color: transparent` makes it invisible — the 1px itself was still there,
+     reported live as a genuine, persistent extra page-level scrollbar with "barely any space left to
+     scroll... just a few pixels" once everything else had collapsed. */
+  border-bottom-width: 0;
   margin-bottom: -12px;
 }
 
@@ -1988,6 +1993,10 @@ select {
   padding-top: 0;
   padding-bottom: 0;
   border-bottom-color: transparent;
+  /* Same gap as `.notes-top-bar-scroll-hidden`/`.help-header-hidden` above: the collapsed border's own *width*
+     (1px, from `.editor-top-bar`) was never actually zeroed, only its colour — reported live as the same
+     persistent, barely-there extra scrollbar once an editor page's header had otherwise fully collapsed. */
+  border-bottom-width: 0;
   margin-bottom: -12px;
 }
 

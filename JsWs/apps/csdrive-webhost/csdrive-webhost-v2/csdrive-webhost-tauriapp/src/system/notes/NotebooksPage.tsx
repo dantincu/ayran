@@ -10,13 +10,16 @@ import { pathForInput } from '../../lib/pathInput'
 import LocationPicker, { type Picked } from './LocationPicker'
 import {
   addExistingNotebook,
+  addFolderNotebook,
   checkNotebook,
   createNotebook,
   describeLocation,
   describeNotebookFilesIn,
   entryKey,
+  isFolderNotebook,
   loadNotebooks,
   notebookFilesIn,
+  notebookTitle,
   retitleNotebook,
   unlistNotebook,
   updateNotebooks,
@@ -37,6 +40,9 @@ type Adding =
   | { step: 'folder'; title: string; at?: { sourceId: string; path: string } }
   /** The chosen folder already holds notebook file(s): the person is told, and decides. */
   | { step: 'warn'; title: string; picked: Picked; found: { name: string; title: string | null }[] }
+  /** Choosing a folder to use directly as a notebook — no title asked for (its own path is the name, see
+   * `notebookTitle`) and no file written. */
+  | { step: 'use-folder'; at?: { sourceId: string; path: string } }
 
 /** The page for managing notebooks: the list of the ones this app knows, with what can be done to each — show its folder,
  * give it another title, take it out of the list — and how to add one: an existing notebook (one that is on this device or
@@ -120,7 +126,7 @@ export default function NotebooksPage({
     setEditing(null)
     guarded(async () => {
       const source = sourceOf(entry.sourceId)
-      if (!source) throw new Error(`Can't reach where "${entry.title}" is kept, so its title can't be changed.`)
+      if (!source) throw new Error(`Can't reach where "${notebookTitle(entry)}" is kept, so its title can't be changed.`)
       await retitleNotebook(entry, source, title)
       setChecks((all) => {
         const { [entryKey(entry)]: _gone, ...rest } = all
@@ -132,11 +138,11 @@ export default function NotebooksPage({
   }
 
   async function remove(entry: NotebookEntry) {
-    const yes = await confirm(`Take "${entry.title}" out of the list?\n\nNothing is deleted: its files stay where they are, and you can add it again later.`)
+    const yes = await confirm(`Take "${notebookTitle(entry)}" out of the list?\n\nNothing is deleted: its files stay where they are, and you can add it again later.`)
     if (!yes) return
     guarded(async () => {
       setNotebooks(await unlistNotebook(entry))
-      setNotice(`"${entry.title}" is no longer in the list.`)
+      setNotice(`"${notebookTitle(entry)}" is no longer in the list.`)
     })
   }
 
@@ -194,6 +200,20 @@ export default function NotebooksPage({
     }
   }
 
+  /** A folder was chosen to use directly as a notebook: no file is written, no title is asked for. */
+  function useFolder(picked: Picked) {
+    setAdding(null)
+    guarded(async () => {
+      const result = await addFolderNotebook(picked.source, picked.folder)
+      await refresh()
+      if (result.status === 'already-listed') {
+        setNotice(`${notebookTitle(result.entry)} is already in your list.`)
+      } else if (result.status === 'added') {
+        setNotice(`Added ${notebookTitle(result.entry)} to the list.`)
+      }
+    })
+  }
+
   const where = (picked: Picked) => `${picked.source.label} · /${picked.folder}`
 
   return (
@@ -231,7 +251,12 @@ export default function NotebooksPage({
                     <tr key={entryKey(entry)} {...kbdItem(kbdFocus, i, setKbdFocus)}>
                       <td>
                         <div className="notebook-title">
-                          <strong>{entry.title}</strong>
+                          <strong>{notebookTitle(entry)}</strong>
+                          {isFolderNotebook(entry) && (
+                            <span className="notes-badge" title="A folder used directly as a notebook — no [note-book].json file">
+                              folder
+                            </span>
+                          )}
                           {check?.state === 'problem' && (
                             <span className="notes-badge notes-badge-delete" title={check.reason}>
                               can't be opened
@@ -247,7 +272,9 @@ export default function NotebooksPage({
                             { icon: Info, label: 'Details', onClick: () => setDetails(entry) },
                             { icon: BookOpen, label: 'Open the notebook — its notes', onClick: () => onOpenNotebook(entry) },
                             { icon: FolderOpen, label: 'Show its folder in the file manager', onClick: () => onShowFolder(entry) },
-                            { icon: Pencil, label: 'Change its title', onClick: () => setEditing(entry), disabled: busy },
+                            ...(isFolderNotebook(entry)
+                              ? []
+                              : [{ icon: Pencil, label: 'Change its title', onClick: () => setEditing(entry), disabled: busy }]),
                             { icon: Trash2, label: 'Take it out of the list (its files stay where they are)', danger: true, onClick: () => remove(entry), disabled: busy },
                           ]}
                         />
@@ -265,11 +292,15 @@ export default function NotebooksPage({
         <DetailsModal
           title="Notebook"
           fields={[
-            { label: 'Title', value: details.title },
+            { label: 'Title', value: notebookTitle(details) },
             { label: 'Where', value: describeLocation(details, roots, accounts) },
             { label: 'Root folder', value: pathForInput(details.folder), mono: true },
-            { label: 'Notebook file', value: pathForInput(details.folder ? `${details.folder}/${details.fileName}` : details.fileName), mono: true },
-            { label: 'Notebook GUID', value: details.guid, mono: true, hidden: true },
+            ...(isFolderNotebook(details)
+              ? []
+              : [
+                  { label: 'Notebook file', value: pathForInput(details.folder ? `${details.folder}/${details.fileName}` : details.fileName!), mono: true },
+                  { label: 'Notebook GUID', value: details.guid!, mono: true, hidden: true },
+                ]),
             { label: 'Added', value: new Date(details.addedAt).toLocaleString(), copy: false },
           ]}
           onClose={() => setDetails(null)}
@@ -292,6 +323,12 @@ export default function NotebooksPage({
             <button type="button" className="notes-choice" onClick={() => setAdding({ step: 'title' })}>
               <strong>Create a new notebook</strong>
               <span className="muted">You give it a title, then choose the folder that will be its root.</span>
+            </button>
+            <button type="button" className="notes-choice" onClick={() => setAdding({ step: 'use-folder' })}>
+              <strong>Use a folder as a notebook</strong>
+              <span className="muted">
+                No file is written and nothing is created in it — the folder is its own root as it is. It's shown by its own path, since there's no file to give it a title.
+              </span>
             </button>
           </div>
         </Modal>
@@ -331,6 +368,20 @@ export default function NotebooksPage({
           initial={adding.at}
           onPick={(picked) => folderChosen(adding.title, picked)}
           onCancel={() => setAdding({ step: 'title' })}
+        />
+      )}
+
+      {adding?.step === 'use-folder' && (
+        <LocationPicker
+          mode="folder"
+          title="Choose the folder to use as a notebook"
+          roots={roots}
+          accounts={accounts}
+          onAddRoot={addRoot}
+          listed={list}
+          initial={adding.at}
+          onPick={useFolder}
+          onCancel={() => setAdding({ step: 'choose' })}
         />
       )}
 

@@ -68,13 +68,17 @@ export default function NotesRoot({ tab: initialTab, initial }: { tab: Tab | nul
       <NotesApp key={place.location ? `${place.location.sourceId}|${place.location.path}` : 'last'} tab={tab} initial={place.location} onHome={() => navigate({ view: 'home' })} />
     )
   return (
-    <>
+    // A real flex-column element, not a bare Fragment — `NotesTopBar` and `{view}`'s own `.app-shell` need to be
+    // true flex siblings (`.notes-shell-root`, `notes.css`), or `.app-shell`'s `height: 100%` resolves against the
+    // full window regardless of the top bar's own height, leaving a genuine, persistent extra scrollbar for the
+    // whole page — see that class's own doc comment for the live-measured bug this replaced.
+    <div className="notes-shell-root">
       <NotesTopBar tab={tab} onBack={popBack} />
       {view}
       {/* Every text box of Notes has the clipboard menu (with the app's own clipboard) and, beside it, the User Action's launch and close. */}
       <TextFieldMenu extra={(field) => <UserActionFieldButtons field={field} />} />
       <UserActionDialogs />
       <ChordHost />
-    </>
+    </div>
   )
 }

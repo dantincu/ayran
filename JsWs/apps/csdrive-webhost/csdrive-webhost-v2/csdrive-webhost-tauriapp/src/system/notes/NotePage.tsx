@@ -40,7 +40,7 @@ import DeleteNotesModal from './DeleteNotesModal'
 import IndexesModal from './IndexesModal'
 import { setNoteClipboard, useNoteClipboard } from './noteClipboard'
 import { indexText, parseIndex, type NoteInterval } from './noteIndexes'
-import { loadNotebooks, type NotebookEntry } from './notebooks'
+import { loadNotebooks, notebookTitle, type NotebookEntry } from './notebooks'
 import { ancestorsOf, changeNoteIndex, createNote, deleteNote, findMarkdown, normalizeChildren, parentOf, readChildren, readNote, renameNote, type NoteRef } from './noteModel'
 import NewNoteModal from './NewNoteModal'
 import PasteNotesModal from './PasteNotesModal'
@@ -452,7 +452,7 @@ export default function NotePage({
               <>
                 <ChevronRight size={14} aria-hidden="true" />
                 <button className="link-button" onClick={() => onPlace({ view: 'notes', sourceId, folder: root })} disabled={folder === root}>
-                  {notebook.title}
+                  {notebookTitle(notebook)}
                 </button>
               </>
             )}

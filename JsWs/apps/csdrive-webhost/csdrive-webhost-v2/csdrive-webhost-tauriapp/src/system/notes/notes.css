@@ -267,6 +267,37 @@
   color: var(--error-fg);
 }
 
+/* `NotesRoot.tsx`'s own wrapper around `<NotesTopBar/>` and whichever page it shows (`.app-shell`, below) — a real
+   element now, not a bare Fragment, specifically so the two can be true flex siblings. **Found live, reported as
+   "a second, external scrollbar... that is second to the scrollbar of the listing or the editor" and confirmed
+   visible even on the plain home page, which has no internal scroll of its own at all**: `#root` (`index.css`,
+   shared by every system app) has `height: 100%`, and `.app-shell` (below) *also* has its own `height: 100%` —
+   which, as a bare Fragment's children, are **block-level siblings with no flex coordination at all**: `.app-shell`'s
+   `100%` resolves straight against `#root`'s own full height, completely ignoring that `.notes-top-bar` sits above
+   it taking up real space of its own. The two heights simply *add up* — confirmed live by measuring
+   `document.documentElement.scrollHeight` (815px) against its own `clientHeight` (768px) on a page with zero
+   internal overflow of its own: the 47px gap matched the top bar's own real height exactly, and persisted
+   regardless of scroll state, since `useScrollAutohide`'s own listener only ever reacts to a *descendant* of
+   `.tab-content` scrolling — this body-level overflow was never something it could see or collapse away, on any
+   page. (The border-width residual fixed just below is real too, and still worth keeping, but it was only ever
+   the last, smallest remainder of this much bigger gap — not the gap's own cause.) **Fixed** by making this wrapper
+   a flex column (so `.notes-top-bar` keeps its own natural height and the page below it gets the genuine
+   *remainder*) and, via the scoped override right after it, switching `.app-shell` from `height: 100%` to `flex: 1;
+   min-height: 0` **only inside this wrapper** — `.app-shell`'s own base rule (`height: 100%`) is shared by the
+   admin-app's own root and every other system app, none of which have this same "another bar above it" shape, so
+   it was left completely untouched everywhere else. */
+.notes-shell-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.notes-shell-root > .app-shell {
+  height: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 /* The closable bar at the top of every Notes page (NotesTopBar.tsx), hidden until asked for. It sits outside
    `.tab-content` (a sibling in `NotesRoot.tsx`, above it), so nothing ever scrolls *past* it — no `position: sticky`
    needed, unlike `.help-header`/`.editor-top-bar` below, which live inside the area that scrolls. The scroll-driven
@@ -290,6 +321,15 @@
   padding-top: 0;
   padding-bottom: 0;
   border-bottom-color: transparent;
+  /* `max-height: 0` constrains the content/padding box, not the border — a `border-bottom-width` of its own
+     (1px, above) still renders at full width regardless, since browsers don't shrink a border to fit a
+     height constraint. Reported live: a genuine, persistent extra scrollbar on the whole page, sitting beside
+     this already-scrollable area's own — "barely any space left to scroll... just a few pixels" is exactly
+     this one leftover pixel, since this bar sits outside `.tab-content` as the page's own topmost sibling (see
+     this file's own doc comment above), so its own un-collapsible height adds directly to the page's total.
+     `border-bottom-color: transparent` alone (the original fix) only ever faded the line to invisible — it was
+     never actually gone. */
+  border-bottom-width: 0;
 }
 
 .notes-top-bar-info {
