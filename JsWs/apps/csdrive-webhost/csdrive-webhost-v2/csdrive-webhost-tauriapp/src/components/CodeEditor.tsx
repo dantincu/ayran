@@ -333,14 +333,22 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   const measureWrappedRows = (full = false) => {
     const highlightEl = highlightRef.current
     if (!highlightEl || settings?.wrapLines === false) return
+    // **Nothing ever reads this measurement while the gutter itself isn't shown** — `rowsForCurrentValue`/
+    // `gutterRowStarts` (below) are the only consumers of `wrapMeasure`, and both are inside the gutter's own
+    // `settings?.lineNumbers !== false` render branch. This check was simply missing until reported live
+    // ("it's slower when I disable line numbers altogether too"): every edit still paid for a full wrapped-row
+    // measurement pass — the prefix/suffix scan, `findTextPositions`, `getClientRects()`, all of it — for a
+    // gutter that was never going to be drawn with the result. Checking `wrapLines` alone (above) was never enough,
+    // since the two settings are independent: wrapping can stay on while only the *numbers* are turned off.
+    if (settings?.lineNumbers === false) return
     // A file this long would mean tens of thousands of Range measurements, a real pause rather than the brief
     // background pass this is meant to be — the same kind of size-based safety net `useBackgroundHighlighted`
     // already has for a different reason. Falls back to one row per line, same as before this feature existed.
     if (value.split('\n').length > MAX_LINES_FOR_WRAP_MEASUREMENT) return
     const lineHeightPx = parseFloat(getComputedStyle(highlightEl).lineHeight) || 0
     const previous = wrapMeasure
-    // **Reuses the row count of every line `diffLines` finds unchanged since the last measurement, instead of
-    // re-measuring the whole file on every edit** — asked for directly, reported live on a big file: "every time
+    // **Reuses the row count of every line found unchanged since the last measurement, instead of re-measuring
+    // the whole file on every edit** — asked for directly, reported live on a big file: "every time
     // a new line is added, all line numbers disappear for a few seconds then show again correctly." The debounce
     // above (`WRAP_MEASURE_DEBOUNCE_MS`) already cuts *how often* a measurement runs during a sustained burst,
     // but each individual run was still `computeRowsPerLine`'s own cost — one `Range.getClientRects()` call *per
@@ -351,7 +359,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     // before the edit, visibly out of step with it ("disappear" is this mismatch, not a literal empty gutter).
     // `computeRowsPerLineIncremental` turns that per-edit cost from the whole file down to just the handful of
     // lines that actually changed — typically one, on an ordinary edit, however long the file around them is —
-    // by reusing a line's own last-known row count whenever `diffLines` finds it untouched (a line's row count
+    // by reusing a line's own last-known row count whenever it's found untouched (a line's row count
     // depends only on its own text and the box's width, never on its position in the document, so this is exactly
     // as correct as measuring it again, never an approximation). Guarded on the line-height still matching
     // `previous`'s own (confirming nothing about the font/zoom has changed since) — a mismatch there falls back to
@@ -381,8 +389,11 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   useEffect(() => {
     const id = setTimeout(measureWrappedRows, WRAP_MEASURE_DEBOUNCE_MS)
     return () => clearTimeout(id)
+    // `settings?.lineNumbers` added alongside `wrapLines` so turning the gutter back *on* mid-session schedules a
+    // real measurement at once, rather than leaving `wrapMeasure` stuck on whatever (possibly long-stale) value it
+    // held from before it was turned off.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, settings?.wrapLines])
+  }, [value, settings?.wrapLines, settings?.lineNumbers])
 
   // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
   // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the

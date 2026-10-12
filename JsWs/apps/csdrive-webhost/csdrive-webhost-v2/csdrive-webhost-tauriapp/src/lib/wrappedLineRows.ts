@@ -115,27 +115,53 @@ export function computeRowsPerLine(highlightEl: HTMLElement, value: string, line
   return rows
 }
 
-/** How many lines at the start (`prefix`) and at the end (`suffix`, counted back from each array's own end,
- * never overlapping the prefix) are character-for-character identical between `oldLines` and `newLines` — the
- * line-array counterpart of `lib/highlightTokens.ts`'s own `diffRuns` prefix/suffix trim, used for the same
- * reason: an ordinary edit changes only a small, localized run of lines, and finding exactly which ones lets a
- * caller skip redoing work for everything outside that run. Pure and trivial; split out so it's covered without
- * a browser. */
-export function diffLines(oldLines: string[], newLines: string[]): { prefix: number; suffix: number } {
-  const maxCommon = Math.min(oldLines.length, newLines.length)
-  let prefix = 0
-  while (prefix < maxCommon && oldLines[prefix] === newLines[prefix]) prefix++
-  let suffix = 0
-  while (suffix < maxCommon - prefix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix++
-  return { prefix, suffix }
+/** The largest `i` such that source line `i` (0-based, against `starts`) — its *entire* span, including its own
+ * trailing `\n` — ends at or before `prefixLen`; i.e. how many leading lines are wholly inside a matched common
+ * prefix of that many characters. A line that the prefix only reaches partway through doesn't count: the rest of
+ * it could still differ. `starts` is sorted ascending, so a binary search finds this in `O(log lines)` rather
+ * than a linear scan — pure and trivial, split out so it's covered without a browser, the same reason
+ * `lineStartOffsets` itself is. */
+export function countLeadingUnchangedLines(starts: number[], totalLength: number, prefixLen: number): number {
+  let lo = 0
+  let hi = starts.length - 1
+  let count = 0
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    const lineEnd = mid + 1 < starts.length ? starts[mid + 1] : totalLength
+    if (lineEnd <= prefixLen) {
+      count = mid + 1
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  return count
 }
 
-/** Like `computeRowsPerLine`, but reuses the row *count* of every line that didn't change between `previousValue`
- * and `value` (found with `diffLines`, on each one's own split-by-`\n` lines) instead of asking the browser to
- * measure it again — a line's own row count depends only on its own text and the box's own width, never on where
- * it sits in the document, so a line `diffLines` finds unchanged keeps exactly the count it already had. Only
- * the genuinely changed run in the middle (almost always just the one or few lines actually being typed in, on
- * an ordinary edit) is measured at all.
+/** The mirror image of `countLeadingUnchangedLines`: how many *trailing* lines start at or after `suffixStart` —
+ * i.e. lie wholly inside a matched common suffix starting there. Also a binary search, for the same reason. */
+export function countTrailingUnchangedLines(starts: number[], suffixStart: number): number {
+  let lo = 0
+  let hi = starts.length - 1
+  let count = 0
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (starts[mid] >= suffixStart) {
+      count = starts.length - mid
+      hi = mid - 1
+    } else {
+      lo = mid + 1
+    }
+  }
+  return count
+}
+
+/** Like `computeRowsPerLine`, but reuses the row *count* of every line that's provably unchanged between
+ * `previousValue` and `value` instead of asking the browser to measure it again — a line's own row count depends
+ * only on its own text and the box's own width, never on where it sits in the document, so a line that's
+ * genuinely identical in both texts keeps exactly the count it already had. Only the genuinely changed run in the
+ * middle (almost always just the one or few lines actually being typed in, on an ordinary edit) is measured at
+ * all.
  *
  * **Why this matters**: `computeRowsPerLine`'s own cost is one `Range.getClientRects()` call *per source line* —
  * fine for a short file, measurably slow for a big one (reported live, on a file with many thousands of lines:
@@ -145,6 +171,54 @@ export function diffLines(oldLines: string[], newLines: string[]): { prefix: num
  * `WRAP_MEASURE_DEBOUNCE_MS` doc comment for that separate, already-fixed cost). Reusing almost every line's
  * already-known count turns that per-edit cost from *O(the whole file)* into *O(the few lines that actually
  * changed)* — typically one — regardless of how long the file around them is.
+ *
+ * **Finds the unchanged run by the longest common prefix/suffix of the two raw *strings*, never by splitting
+ * either one into an array of line strings first.** A first version of this function did exactly that —
+ * `oldLines = previousValue.split('\n')`, `newLines = value.split('\n')`, then a per-line `===` comparison
+ * (`diffLines`, since removed) — which was correct, but paid for two full `String.split('\n')` allocations, *and*
+ * then the line-by-line comparison itself, proportional to the *whole file*, on every single debounced
+ * remeasure, whatever the edit's own position. Reported live, after shipping, as "slower now... just as slow as
+ * the default editor" on a real file — profiled and confirmed: those two splits (each allocating one substring
+ * per line) were real, measurable, whole-file-sized overhead paid back on *every* remeasure, eating most of what
+ * the incremental approach was meant to save, and (together with the missing `lineNumbers` gate above, in
+ * `CodeEditor.tsx`) could leave this function no faster than simply remeasuring everything. Comparing the raw
+ * strings character by character from each end, with **no allocation at all**, finds the exact same boundary at
+ * the same (or better) cost for the common, localized-edit case — a handful of characters near one spot — while
+ * removing the always-paid, whole-file-sized splitting cost entirely. A line only counts as unchanged once its
+ * *entire* span — including its own trailing `\n` — falls inside the matched prefix/suffix
+ * (`countLeadingUnchangedLines`/`countTrailingUnchangedLines`, each a binary search over `lineStartOffsets`, not
+ * a scan): a half-matched line, where the common prefix ends partway through it, must still be remeasured, the
+ * same rule the line-array version already enforced.
+ *
+ * **Three further correctness gaps were caught by a dedicated Node stress test before this ever reached a
+ * browser** — comparing, over tens of thousands of randomized edits, how many leading/trailing lines this
+ * approach trusts against what the old, slower line-array `diffLines` would have trusted, flagging any case
+ * where *this* function trusted *more* (the only unsafe direction — trusting fewer is just a missed, harmless
+ * optimization):
+ * 1. **Value's own last line, specifically** — measured with `lineEnd = value.length` rather than a confirmed
+ *    `starts[mid + 1]`, the one place `countLeadingUnchangedLines` can validate a line without a genuine `\n`
+ *    backing it up. `prefixLen` reaching all the way to `value.length` doesn't by itself mean `previousValue`'s
+ *    own structure beyond that point lines up the same way — `previousValue` can keep going (more characters,
+ *    on the *same* line or a new one) in a way that makes its line at this same index a *different* line than
+ *    value's own (now possibly truncated) last one. Concretely: `previousValue = "ab\ncd"`, `value = "ab\n"` —
+ *    the confirmed 3-character prefix covers all of `value`, but `previousRows`'s line 1 is `"cd"`'s row count,
+ *    not an empty line's. Guarded by requiring `previousValue.length === prefixLen` too whenever the leading
+ *    count would otherwise reach every line of `value` — i.e. nothing of `previousValue` is left over past the
+ *    confirmed match.
+ * 2. **The suffix's mirror image**: the *outermost* (smallest-index) trailing line counted as unchanged is
+ *    vulnerable in the same way, but only when its own start lands *exactly* on the matched suffix's edge — an
+ *    interior boundary is always safe (the matched suffix content is identical on both sides, so any `\n`
+ *    strictly inside it exists at the same relative position in both), but the very edge is the one place
+ *    `previousValue`'s own corresponding position can fail to be a genuine line start too (landing mid-line
+ *    there instead). Guarded by checking that `previousValue.length - suffixLen` is itself `0` or follows a
+ *    `\n` in `previousValue` — the cheap, one-character check `previousBoundaryIsLineStart` makes, rather than
+ *    computing a second full `lineStartOffsets` array just to confirm it.
+ * 3. **Value's own implicit trailing line, specifically, on the suffix side** — if `value` ends with `\n` (or is
+ *    empty), its one trailing empty "line" trivially satisfies `start >= suffixBoundary` for *any* `suffixLen`,
+ *    including `0` (a wholly vacuous match confirming zero real characters) — and because a trailing run always
+ *    includes the very last line the moment its count is `>= 1`, this one can't be fixed by capping the count
+ *    the way gap 1 is; it has to be subtracted unconditionally whenever `value`'s last line is degenerate,
+ *    before the edge check above even runs.
  *
  * **Only valid when nothing *else* that could change a reused line's own row count has changed since
  * `previousValue` was measured** — the box's own width, in particular (a width change can move where *every*
@@ -162,23 +236,62 @@ export function computeRowsPerLineIncremental(
   previousRows: number[],
 ): number[] | null {
   if (!lineHeightPx || lineHeightPx <= 0) return null
-  const oldLines = previousValue.split('\n')
-  const newLines = value.split('\n')
-  if (oldLines.length !== previousRows.length) return computeRowsPerLine(highlightEl, value, lineHeightPx)
-  const { prefix, suffix } = diffLines(oldLines, newLines)
-  const rows = new Array<number>(newLines.length)
-  for (let i = 0; i < prefix; i++) rows[i] = previousRows[i]
-  for (let i = 0; i < suffix; i++) rows[newLines.length - 1 - i] = previousRows[oldLines.length - 1 - i]
-  const changedStart = prefix
-  const changedEndExclusive = newLines.length - suffix // one past the last changed line, in `newLines`' own indices
-  if (changedStart >= changedEndExclusive) return rows // the prefix/suffix trim covered everything — nothing left to measure
+  // `lineStartOffsets(previousValue).length` is the same count `previousValue.split('\n').length` would give, at
+  // a fraction of the cost: a single pass counting `\n`s, no substring allocated for a single one of its lines.
+  const previousLineCount = lineStartOffsets(previousValue).length
+  if (previousLineCount !== previousRows.length) return computeRowsPerLine(highlightEl, value, lineHeightPx)
   const starts = lineStartOffsets(value)
+
+  const maxCommonChars = Math.min(previousValue.length, value.length)
+  let prefixLen = 0
+  while (prefixLen < maxCommonChars && previousValue.charCodeAt(prefixLen) === value.charCodeAt(prefixLen)) prefixLen++
+  let suffixLen = 0
+  while (
+    suffixLen < maxCommonChars - prefixLen &&
+    previousValue.charCodeAt(previousValue.length - 1 - suffixLen) === value.charCodeAt(value.length - 1 - suffixLen)
+  )
+    suffixLen++
+
+  let prefixLines = countLeadingUnchangedLines(starts, value.length, prefixLen)
+  // Gap 1 above: only trust *every* line of `value` (including its last) when `previousValue` has nothing left
+  // over past the confirmed prefix either.
+  if (prefixLines === starts.length && previousValue.length !== prefixLen) prefixLines--
+
+  let suffixLines = countTrailingUnchangedLines(starts, value.length - suffixLen)
+  // Gap 3 above: `value`'s own trailing degenerate line (if it has one) is always the outermost line counted the
+  // moment `suffixLines >= 1`, and always vacuously - exclude it unconditionally before the edge check below,
+  // which only ever handles a *non*-degenerate outermost line landing exactly on the matched edge.
+  const valueEndsDegenerate = starts.length > 0 && starts[starts.length - 1] === value.length
+  if (valueEndsDegenerate) suffixLines = Math.max(0, suffixLines - 1)
+  // Gap 2 above: the (possibly just-adjusted) outermost trailing line, only when its own start lands exactly on
+  // the matched suffix's edge - an interior boundary needs no check at all (see this function's own doc comment).
+  if (suffixLines > 0) {
+    const outerStart = starts[starts.length - suffixLines]
+    const suffixBoundary = value.length - suffixLen
+    if (outerStart === suffixBoundary) {
+      const previousBoundary = previousValue.length - suffixLen
+      const previousBoundaryIsLineStart = previousBoundary === 0 || previousValue.charCodeAt(previousBoundary - 1) === 10 // '\n'
+      if (!previousBoundaryIsLineStart) suffixLines--
+    }
+  }
+  // Defensive, mirroring the bound the character-level scan above already keeps (`suffixLen < maxCommonChars -
+  // prefixLen`): the two runs shouldn't be able to overlap, but never trust a reused line twice over one that
+  // genuinely needs remeasuring.
+  const maxLines = Math.min(starts.length, previousLineCount)
+  if (prefixLines + suffixLines > maxLines) suffixLines = Math.max(0, maxLines - prefixLines)
+
+  const rows = new Array<number>(starts.length)
+  for (let i = 0; i < prefixLines; i++) rows[i] = previousRows[i]
+  for (let i = 0; i < suffixLines; i++) rows[starts.length - 1 - i] = previousRows[previousRows.length - 1 - i]
+  const changedStart = prefixLines
+  const changedEndExclusive = starts.length - suffixLines // one past the last changed line
+  if (changedStart >= changedEndExclusive) return rows // the prefix/suffix trim covered everything — nothing left to measure
   // One extra position, right after the changed run: either the first *unchanged* suffix line's own start (so the
   // changed run's own last line gets a correct "next row" boundary to measure its row *count* against — the row
   // immediately after it, exactly as `computeRowsPerLine`'s own `rowStarts[i+1]` does for an interior line), or
   // the true end of the document when the changed run reaches it (`totalRows`, below, is what that boundary
   // means then — the same convention `computeRowsPerLine` itself uses for its own true last line).
-  const hasTrailingSuffix = changedEndExclusive < newLines.length
+  const hasTrailingSuffix = changedEndExclusive < starts.length
   const changedLineStarts = starts.slice(changedStart, changedEndExclusive)
   const allOffsets = hasTrailingSuffix ? [...changedLineStarts, starts[changedEndExclusive]] : [...changedLineStarts, value.length]
   const positions = findTextPositions(highlightEl, allOffsets)
