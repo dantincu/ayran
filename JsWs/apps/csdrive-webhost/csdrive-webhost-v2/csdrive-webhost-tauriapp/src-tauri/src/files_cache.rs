@@ -183,6 +183,16 @@ pub struct BranchInfo {
     pub changes: i64,
 }
 
+/// How far `Cache::clear_items` reaches for a branch's own thumbnail cache (`tb`), beyond the account's own
+/// shared cache it always clears regardless: not at all, one branch, or every branch of the account.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", tag = "kind", content = "branch")]
+pub enum BranchClearScope {
+    AccountOnly,
+    Current(i64),
+    All,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchChange {
@@ -975,6 +985,55 @@ impl Cache {
             } else {
                 let _ = std::fs::remove_dir_all(target);
             }
+        }
+        Ok(())
+    }
+
+    /// **Clear the cache of several items at once** (CLAUDE.md's item 13: a folder, its children's contents, and the same
+    /// recursively for its subfolders — for one item at a time that is exactly `clear_item`, called here once per path — plus a
+    /// branch-scope choice `clear_item` alone has no notion of, since it only ever touches the account's own, shared cache
+    /// (`c`/`t`). **Never touches a branch's own pending *changes* (`b`)** — deleting those would be data loss, not cache
+    /// clearing, and nothing here does it. The only thing branch-scoped at all is a branch's own *thumbnail* cache (`tb`),
+    /// which, like the account's own, is purely re-makeable: `scope` decides whether, beyond the account's own cache (always
+    /// cleared, for every path), the current branch's own thumbnails under each path are cleared too (`BranchClearScope::Current`),
+    /// every branch's are (`BranchClearScope::All`), or none beyond the account's own (`BranchClearScope::AccountOnly` — the
+    /// plain, single-item `clear_item` path keeps exactly this behavior, unchanged, by never calling this method at all).
+    pub async fn clear_items(&self, user_id: i64, paths: &[String], scope: BranchClearScope) -> Result<(), String> {
+        for path in paths {
+            self.clear_item(user_id, path).await?;
+        }
+        match scope {
+            BranchClearScope::AccountOnly => {}
+            BranchClearScope::Current(branch) => {
+                for path in paths {
+                    self.clear_branch_thumbs_below(user_id, branch, path).await?;
+                }
+            }
+            BranchClearScope::All => {
+                let branches = self.branches(user_id).await?;
+                for branch in branches {
+                    for path in paths {
+                        self.clear_branch_thumbs_below(user_id, branch.index, path).await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The branch-specific thumbnail cache (`tb`) of `path`, and everything below it if it's a folder, for one branch — the
+    /// counterpart, for a branch's own thumbnails, of what `clear_item`'s own thumbnail-clearing already does for the
+    /// account's shared ones. Tries both shapes defensively (a folder's whole mirrored subtree, and a file's own entries
+    /// beside it in its parent's mirror folder) since the caller may not know — or `path` may no longer exist to ask —
+    /// which one it was; whichever doesn't apply is a harmless no-op.
+    async fn clear_branch_thumbs_below(&self, user_id: i64, branch: i64, path: &str) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.thumb_root(user_id, Some(branch), false).await? else { return Ok(()) };
+        let target = path.split('/').filter(|p| !p.is_empty()).fold(root.clone(), |dir, part| dir.join(mirror_name(part)));
+        let _ = std::fs::remove_dir_all(&target);
+        let file = thumb_file(&root, &path, 0, 0);
+        if let Some(folder) = file.parent() {
+            remove_older_thumbs(folder, &thumb_prefix(&path), String::new());
         }
         Ok(())
     }
@@ -2745,6 +2804,47 @@ mod tests {
             f.cache.clear_item(7, "/d").await.unwrap();
             assert!(!f.base.join("a/001/c/d/b.txt").exists() && f.base.join("a/001/c/e/c.txt").is_file(), "a folder clears itself and what is below it, not its neighbours");
             assert!(f.cache.thumb_get(7, None, "/d/b.txt", 5, 3).await.unwrap().is_none() && f.cache.thumb_get(7, None, "/e/c.txt", 5, 3).await.unwrap().is_some());
+        });
+    }
+
+    #[test]
+    fn clear_items_clears_the_account_for_every_path_and_the_chosen_branch_scope_of_thumbnails() {
+        run(async {
+            let f = Fixture::new("clear-items").await;
+            f.remote.put("/d/a.txt", "one");
+            f.remote.put("/e/c.txt", "sea");
+            for p in ["/d/a.txt", "/e/c.txt"] {
+                f.cache.read(&f.remote, 7, None, p).await.unwrap();
+                f.cache.thumb_put(7, None, p, 5, 3, b"account jpeg").await.unwrap();
+            }
+            let one = f.cache.create_branch(7, "one").await.unwrap();
+            let two = f.cache.create_branch(7, "two").await.unwrap();
+            // The same file, changed (so it has its own thumbnail) in two different branches.
+            f.cache.write(&f.remote, 7, Some(one.index), "/d/a.txt", b"one's own").await.unwrap();
+            f.cache.thumb_put(7, Some(one.index), "/d/a.txt", 9, 9, b"one jpeg").await.unwrap();
+            f.cache.write(&f.remote, 7, Some(two.index), "/d/a.txt", b"two's own").await.unwrap();
+            f.cache.thumb_put(7, Some(two.index), "/d/a.txt", 9, 9, b"two jpeg").await.unwrap();
+
+            // AccountOnly: both paths' account cache clears, neither branch's own thumbnail does.
+            f.cache.clear_items(7, &["/d/a.txt".to_string(), "/e/c.txt".to_string()], BranchClearScope::AccountOnly).await.unwrap();
+            assert!(!f.base.join("a/001/c/d/a.txt").exists() && !f.base.join("a/001/c/e/c.txt").exists(), "the account's own content cleared for both paths");
+            assert_eq!(f.cache.thumb_get(7, Some(one.index), "/d/a.txt", 9, 9).await.unwrap(), Some(b"one jpeg".to_vec()), "untouched by AccountOnly");
+            assert_eq!(f.cache.thumb_get(7, Some(two.index), "/d/a.txt", 9, 9).await.unwrap(), Some(b"two jpeg".to_vec()), "untouched by AccountOnly");
+
+            // Current(one): branch one's own thumbnail for the path goes, branch two's does not.
+            f.cache.clear_items(7, &["/d/a.txt".to_string()], BranchClearScope::Current(one.index)).await.unwrap();
+            assert_eq!(f.cache.thumb_get(7, Some(one.index), "/d/a.txt", 9, 9).await.unwrap(), None, "branch one's own thumbnail cleared");
+            assert_eq!(f.cache.thumb_get(7, Some(two.index), "/d/a.txt", 9, 9).await.unwrap(), Some(b"two jpeg".to_vec()), "branch two's own, left alone");
+
+            // Put branch one's thumbnail back, then clear with All: every branch's own thumbnail for the path goes.
+            f.cache.thumb_put(7, Some(one.index), "/d/a.txt", 9, 9, b"one jpeg again").await.unwrap();
+            f.cache.clear_items(7, &["/d/a.txt".to_string()], BranchClearScope::All).await.unwrap();
+            assert_eq!(f.cache.thumb_get(7, Some(one.index), "/d/a.txt", 9, 9).await.unwrap(), None, "cleared by All");
+            assert_eq!(f.cache.thumb_get(7, Some(two.index), "/d/a.txt", 9, 9).await.unwrap(), None, "cleared by All too");
+
+            // Neither branch's own pending change (the content itself, not its thumbnail) was ever touched.
+            assert_eq!(f.cache.read(&f.remote, 7, Some(one.index), "/d/a.txt").await.unwrap(), b"one's own");
+            assert_eq!(f.cache.read(&f.remote, 7, Some(two.index), "/d/a.txt").await.unwrap(), b"two's own");
         });
     }
 

@@ -288,6 +288,34 @@ pub async fn video_transcode_delete(scope: State<'_, FsScope>, app: tauri::AppHa
     app.state::<Cache>().local_m_delete(&guid, &path, modified_ms(&meta), meta.len())
 }
 
+/// Exports the cached converted copy of `root`/`path` to a device location the person chooses —
+/// "Compress and save a copy…" in Notes' File Manager and Note Files Explorer (CLAUDE.md's "item 9":
+/// a raw phone-camera or screen-recording file, asked for directly). **Reuses this feature's own
+/// existing pipeline and bitrate target as-is** — the person's own choice, over a second, separately
+/// tuned "compression" bitrate — so this command adds nothing to the conversion itself, only an export
+/// step once it's done: `device_files::export_file` is the exact same copy-to-a-chosen-location
+/// primitive `export_local_file`/`filen_cache_export` already use, just handed the cache's own real
+/// path (`lookup`, above) instead of a path the file scope would resolve, since the converted copy
+/// lives in the protected `files/` cache, never in a folder an ordinary file command can reach.
+/// Refuses if nothing is cached yet (the frontend always runs `video_transcode_begin`/`_progress` to
+/// completion first — see the media viewer's own "Convert for compatible playback", which this reuses
+/// the identical job/progress machinery of) rather than silently starting a conversion of its own.
+#[tauri::command]
+pub async fn video_transcode_export(
+    window: CallerWindow,
+    app: tauri::AppHandle,
+    scope: State<'_, FsScope>,
+    exports: State<'_, crate::device_files::ExportState>,
+    root: String,
+    path: String,
+    name: String,
+    token: Option<String>,
+) -> Result<String, String> {
+    crate::device_files::confirm_export(&app, &window, &name).await?;
+    let cached = lookup(&app, &scope, &root, &path).await?.ok_or("Nothing is cached yet — compress it first.")?;
+    crate::device_files::export_file(exports.inner(), name, token, cached).await
+}
+
 /// What `video_playability` answers: the video and/or audio codec a file's streams are actually *in* (read
 /// straight from the file, never guessed from its extension — an `.mkv` can hold H.264/AAC, which already
 /// plays here, same as an `.mp4` can hold something that doesn't), and whether every one found is a codec

@@ -144,6 +144,11 @@ export interface FileSource {
     hardRefresh(path: string): Promise<void>
     /** Throws away what the cache holds of it — content, listing, thumbnails (a locked file keeps its frozen copy). */
     clear(path: string): Promise<void>
+    /** Clears several items at once, each exactly as `clear` would (so a folder among them is recursive,
+     * exactly as one given to `clear` alone is) — plus, for a Filen source with branches, how far to also
+     * clear the branch-specific thumbnail cache alongside the account's own (always cleared): not beyond
+     * it, the current branch's own too, or every branch's. Never touches a branch's own pending changes. */
+    clearMany(paths: string[], scope: BranchClearScope): Promise<void>
     /** Bytes of the file fetched so far, or `null` when it isn't being downloaded right now (not started,
      * already finished, or already cached) — for a progress bar while a large file is still being fetched. */
     downloadProgress(path: string): Promise<number | null>
@@ -334,6 +339,13 @@ export interface BranchInfo {
   changes: number
 }
 
+/** How far clearing the cache of several items at once (`FileSource.cache.clearMany`) reaches for the
+ * branch-specific thumbnail cache, beyond the account's own shared cache it always clears regardless:
+ * not at all (`accountOnly`), the one named branch's own too (`current`), or every branch's (`all`). Must
+ * match `files_cache::BranchClearScope`'s own adjacently-tagged shape exactly (`{kind:"current",branch:N}` —
+ * not a plain discriminated union with the number inline, which is how Rust's `#[serde(tag, content)]` reads). */
+export type BranchClearScope = { kind: 'accountOnly' } | { kind: 'current'; branch: number } | { kind: 'all' }
+
 export interface BranchChange {
   path: string
   kind: 'put' | 'mkdir' | 'delete' | 'checkout'
@@ -445,6 +457,7 @@ export function filenSource(account: FilenAccountInfo, branch: number | null): F
     cache: {
       hardRefresh: (path) => invoke<void>('filen_cache_hard_refresh', { userId, path: filenPath(path) }),
       clear: (path) => invoke<void>('filen_cache_clear_item', { userId, path: filenPath(path) }),
+      clearMany: (paths, scope) => invoke<void>('filen_cache_clear_items', { userId, paths: paths.map(filenPath), scope }),
       downloadProgress: (path) => invoke<number | null>('filen_cache_download_progress', { userId, path: filenPath(path) }),
       downloadError: (path) => invoke<string | null>('filen_cache_download_error', { userId, path: filenPath(path) }),
       async seedFromFile(path, file) {
@@ -516,6 +529,7 @@ export function scopedSource(base: FileSource, root: string, label: string): Fil
     scoped.cache = {
       hardRefresh: (path) => cache.hardRefresh(at(path)),
       clear: (path) => cache.clear(at(path)),
+      clearMany: (paths, scope) => cache.clearMany(paths.map(at), scope),
       downloadProgress: (path) => cache.downloadProgress(at(path)),
       downloadError: (path) => cache.downloadError(at(path)),
       seedFromFile: (path, file) => cache.seedFromFile(at(path), file),

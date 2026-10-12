@@ -6,7 +6,7 @@
 //!
 //! What is in it: the folder pairs' `.keep` file and its content, the temporary prefix, the longest name part, the default numbering
 //! (what the Filen cache's accounts and branches use), and everything the notes call by name — `[note].json`, `[note-children].json`,
-//! `[note-book].json`, the markdown's prefix and suffix, the four numberings of the note items and sections, and the internals' pairs.
+//! `[note-book].json`, the markdown's prefix and suffix, the five numberings of the note items and sections, and the internals' pairs.
 
 use std::sync::{LazyLock, OnceLock};
 
@@ -69,6 +69,7 @@ pub struct NoteNumberings {
     pub primary_sections: NumberingConfig,
     pub secondary_sections: NumberingConfig,
     pub ternary_sections: NumberingConfig,
+    pub archive_section: NumberingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +165,7 @@ pub fn validate(config: &Config) -> Result<(), String> {
         ("primarySections", &n.primary_sections),
         ("secondarySections", &n.secondary_sections),
         ("ternarySections", &n.ternary_sections),
+        ("archiveSection", &n.archive_section),
         ("noteFiles", &internals.note_files),
         ("noteInternals", &internals.note_internals),
         ("notebook", &internals.notebook),
@@ -180,8 +182,8 @@ pub fn validate(config: &Config) -> Result<(), String> {
             return Err(format!("{key}: {widest} doesn't fit in {} digits", numbering.digits));
         }
     }
-    // The four numberings of the note items and sections (three digits) share a parent folder: their intervals must not overlap.
-    let kinds: Vec<(&str, &NumberingConfig)> = all[1..5].to_vec();
+    // The five numberings of the note items and sections (three digits) share a parent folder: their intervals must not overlap.
+    let kinds: Vec<(&str, &NumberingConfig)> = all[1..6].to_vec();
     for (i, (a_key, a)) in kinds.iter().enumerate() {
         for (b_key, b) in &kinds[i + 1..] {
             let (a_low, a_high) = (a.from.min(a.to), a.from.max(a.to));
@@ -192,7 +194,7 @@ pub fn validate(config: &Config) -> Result<(), String> {
         }
     }
     // The internals are two digits, so they can never be taken for a three-digit note.
-    for (key, numbering) in &all[5..] {
+    for (key, numbering) in &all[6..] {
         if numbering.digits != 2 || numbering.from != numbering.to || numbering.name.is_empty() {
             return Err(format!("{key}: an internal pair is a constant (one index), of two digits, with a name"));
         }
@@ -215,6 +217,9 @@ mod tests {
         let items = &config.notes.numberings.note_items;
         assert_eq!((items.from, items.to, items.digits), (999, 401, 3));
         assert_eq!(items.indexing, IndexingConfig::AfterLargest);
+        let archive = &config.notes.numberings.archive_section;
+        assert_eq!((archive.from, archive.to, archive.digits), (109, 101, 3));
+        assert_eq!(archive.indexing, IndexingConfig::AfterLargest);
         let default = DEFAULT_NUMBERING.short_name(1);
         assert_eq!(default, "001", "the cache's pairs are numbered upward from 001 as before");
     }
@@ -226,6 +231,10 @@ mod tests {
         overlap.notes.numberings.primary_sections.from = 450;
         overlap.notes.numberings.primary_sections.to = 350;
         assert!(validate(&overlap).is_err(), "a section interval that runs into the note items'");
+        let mut archive_overlap = good.clone();
+        archive_overlap.notes.numberings.archive_section.from = 150;
+        archive_overlap.notes.numberings.archive_section.to = 100;
+        assert!(validate(&archive_overlap).is_err(), "the archive section running into the primary sections'");
         let mut digit_prefix = good.clone();
         digit_prefix.folder_pairs.temporary_prefix = "1_".into();
         assert!(validate(&digit_prefix).is_err());

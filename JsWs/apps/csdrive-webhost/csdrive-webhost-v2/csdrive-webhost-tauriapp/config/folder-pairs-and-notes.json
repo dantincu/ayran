@@ -22,7 +22,8 @@
       "noteItems": { "label": "Note items", "prefix": "", "from": 999, "to": 401, "digits": 3, "indexing": "afterLargest" },
       "primarySections": { "label": "Primary note sections", "prefix": "", "from": 199, "to": 111, "digits": 3, "indexing": "afterLargest" },
       "secondarySections": { "label": "Secondary note sections", "prefix": "", "from": 299, "to": 201, "digits": 3, "indexing": "afterLargest" },
-      "ternarySections": { "label": "Ternary note sections", "prefix": "", "from": 399, "to": 301, "digits": 3, "indexing": "afterLargest" }
+      "ternarySections": { "label": "Ternary note sections", "prefix": "", "from": 399, "to": 301, "digits": 3, "indexing": "afterLargest" },
+      "archiveSection": { "label": "Note Archive Section", "prefix": "", "from": 109, "to": 101, "digits": 3, "indexing": "afterLargest" }
     },
     "internals": {
       "noteFiles": { "label": "The note's files", "prefix": "", "from": 1, "to": 1, "digits": 2, "indexing": "fillGaps", "name": "[note-files]" },

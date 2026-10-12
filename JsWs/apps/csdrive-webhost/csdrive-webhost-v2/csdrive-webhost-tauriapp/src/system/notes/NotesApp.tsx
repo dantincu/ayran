@@ -8,6 +8,7 @@ import {
   Copy,
   Download,
   Eraser,
+  FileArchive,
   Link2,
   Eye,
   File as FileIcon,
@@ -27,6 +28,7 @@ import {
   List,
   Navigation,
   AppWindow,
+  CheckSquare,
   ListChecks,
   Lock,
   Pencil,
@@ -34,6 +36,7 @@ import {
   Save,
   Scissors,
   Search,
+  Square,
   Trash2,
   Undo2,
   Unlock,
@@ -67,7 +70,7 @@ import { formatBytesExact } from '../../lib/format'
 import { pathForInput } from '../../lib/pathInput'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
-import { onShowTopBar, openExternalSite, openPdfViewerWindow } from '../../lib/secondaryWindows'
+import { onShowTopBar, openExternalSite, openPdfViewerWindow, videoTranscodeBegin, videoTranscodeExport, videoTranscodeProgress } from '../../lib/secondaryWindows'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { findMarkdown, readNote } from './noteModel'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
@@ -90,6 +93,7 @@ import {
   uniqueName,
   type BranchApi,
   type BranchChange,
+  type BranchClearScope,
   type BranchInfo,
   type CacheInfo,
   type DirListing,
@@ -243,6 +247,12 @@ export default function NotesApp({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** "Compress and save a copy…" in progress — `null` when nothing is. Closing its dialog only stops
+   * *showing* it: the backend job isn't cancellable (same as the media viewer's own "Convert for compatible
+   * playback"), so it keeps running and its result is still cached for next time — see `compressDismissed`
+   * and `compressAndExport`'s own doc comment. */
+  const [compressing, setCompressing] = useState<{ entry: Entry; percent: number; error: string | null } | null>(null)
+  const compressDismissed = useRef(false)
 
   const [page, setPage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
@@ -282,6 +292,25 @@ export default function NotesApp({
   const [kbdFocus, setKbdFocus] = useState(-1)
   const pendingFocusRef = useRef<string | 'first' | null>(null)
   const [details, setDetails] = useState<DetailsOf | null>(null)
+  /** **Multiple entries selected at once** (CLAUDE.md's item 13), by name — scoped to the folder shown, the
+   * same as `kbdFocus`: cleared the moment `sourceId`/`branch`/`path` changes (below), the same place that
+   * already resets everything else that only makes sense for one particular folder's own listing. The
+   * selection bar (count, "Select all", the bulk actions, "Clear the selection") appears the moment it holds
+   * anything; a checkbox on each row follows the same "selecting && …" gate `NotePage.tsx`'s own selection
+   * already uses, so the list stays uncluttered until the person has actually started selecting. */
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const selecting = selected.size > 0
+  const toggleSelected = (name: string) =>
+    setSelected((current) => {
+      const next = new Set(current)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  /** The branch-scope choice for a bulk "Clear the cache…" (`null` when none is open): the paths it is about,
+   * and — only when the account actually has at least one branch, else the choice could never make a real
+   * difference and asking would just be friction — the two real choices to offer (see `clearCacheWithBranchChoice`). */
+  const [clearingCache, setClearingCache] = useState<{ paths: string[] } | null>(null)
   const [rootMenu, setRootMenu] = useState<RootMenu | null>(null)
   /** The ids of a root being shown (its guid comes from the backend). */
   const [rootIds, setRootIds] = useState<{ title: string; fields: DetailField[] } | null>(null)
@@ -1029,6 +1058,94 @@ export default function NotesApp({
     }
   }
 
+  /** A local video file only (`videoTranscodeBegin`'s own limit: Windows desktop, and "a Filen file isn't
+   * a real local path until the cache has it" — the same restriction the media viewer's own "Convert for
+   * compatible playback" already has) — `(root, path)` built the identical way `MediaViewer.tsx`'s own
+   * `transcodeRoot` does, from the entry's `FileRef`. */
+  function localVideoRoot(entry: Entry): { root: string; path: string } | null {
+    const ref = source?.fileRef?.(joinRelative(path, entry.name))
+    if (!ref) return null
+    if (ref.storage === 'UserFolder') return { root: 'user', path: ref.path }
+    if (ref.storage === 'DeviceFolder' && ref.root) return { root: ref.root, path: ref.path }
+    return null
+  }
+
+  /** "Compress and save a copy…" (CLAUDE.md's "item 9": a raw phone-camera or screen-recording file) —
+   * the exact same conversion/bitrate `videoTranscodeBegin` already does for in-app playback compatibility
+   * (the person's own choice, over a second, separately tuned target), with an export step once it's done
+   * instead of caching it purely for the media viewer. Compresses *before* asking where to save, not after:
+   * the result is cached regardless (useful again later, or for in-app playback), so there's nothing wasted
+   * by not knowing the destination up front, and the person isn't left staring at a native "save as" dialog
+   * for however long the conversion actually takes.
+   *
+   * **Dismissing the progress dialog only stops *showing* it, not the job itself** (the backend job isn't
+   * cancellable, same as the media viewer's own "Convert for compatible playback") — `compressDismissed`
+   * tracks that separately from `compressing`'s own `null`-ness so a later poll tick doesn't silently pop
+   * the dialog back open the instant it has new progress to report; the save-location dialog still opens
+   * once the job finishes either way, since getting a saved copy is the whole point of having asked. */
+  async function compressAndExport(entry: Entry) {
+    const target = localVideoRoot(entry)
+    if (!target) return
+    compressDismissed.current = false
+    setCompressing({ entry, percent: 0, error: null })
+    try {
+      const jobId = await videoTranscodeBegin(target.root, target.path)
+      for (;;) {
+        const status = await videoTranscodeProgress(jobId)
+        if (status.error) {
+          if (compressDismissed.current) setError(status.error)
+          else setCompressing({ entry, percent: status.percent, error: status.error })
+          return
+        }
+        if (!compressDismissed.current) setCompressing({ entry, percent: status.percent, error: null })
+        if (status.done) break
+        await new Promise((r) => setTimeout(r, 500))
+      }
+    } catch (e) {
+      if (compressDismissed.current) setError(String(e))
+      else setCompressing({ entry, percent: 0, error: String(e) })
+      return
+    }
+    setCompressing(null)
+    try {
+      const saved = await exportPathToDevice(entry.name, (token) => videoTranscodeExport(target.root, target.path, entry.name, token))
+      if (saved && isMobile) setNotice(`Saved to ${saved}`)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  /** **Remove the cache for one or several files and folders at once, recursively** (CLAUDE.md's item 13) — each
+   * path exactly as the plain, single-item "Clear its cache" already does (so a folder among them clears its
+   * own listing, its children's cached content and, recursively, the same for every subfolder at any depth —
+   * `files_cache.rs`'s `clear_item`, unchanged), reached both from a selected row of the parent listing (the
+   * selection bar, below) and from the folder itself (the toolbar button beside the plain `CacheMenu`). The one
+   * thing `clear_item` alone never reaches — a *branch's* own thumbnail cache (`tb`) — is what the branch-scope
+   * choice is about: asked only when the account actually has at least one branch (with none, the two choices
+   * could never make a real difference, so this clears right away with `accountOnly`, the plain single-item
+   * path's own, unchanged behavior). */
+  function clearCacheWithBranchChoice(paths: string[]) {
+    if (!source?.cache || paths.length === 0) return
+    if (branches.length === 0) {
+      void runClearMany(paths, { kind: 'accountOnly' })
+      return
+    }
+    setClearingCache({ paths })
+  }
+
+  async function runClearMany(paths: string[], scope: BranchClearScope) {
+    if (!source?.cache) return
+    setClearingCache(null)
+    try {
+      await source.cache.clearMany(paths, scope)
+      setSelected(new Set())
+      setNotice(paths.length === 1 ? 'Its cache was cleared.' : `The cache of ${paths.length} items was cleared.`)
+      await load(false)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function deleteEntry(entry: Entry) {
     if (!source) return
     const where =
@@ -1259,6 +1376,7 @@ export default function NotesApp({
   // A new folder: nothing is focused until a key is pressed — unless it was entered with the keys.
   useEffect(() => {
     setKbdFocus(-1)
+    setSelected(new Set())
   }, [sourceId, branch, path])
   useEffect(() => {
     const pending = pendingFocusRef.current
@@ -1358,6 +1476,9 @@ export default function NotesApp({
     if (scope) items.push({ label: 'Open in File Manager', icon: FolderSearch, onSelect: () => scope.onOpenInFileManager(joinRelative(path, entry.name)) })
     items.push({ label: 'Details', icon: Info, onSelect: () => showDetails(entry), separated: true })
     if (!entry.isDirectory) items.push({ label: 'Export', icon: Download, onSelect: () => exportEntry(entry) })
+    if (!account && mediaKindOf(entry.name) === 'video' && localVideoRoot(entry))
+      items.push({ label: 'Compress and save a copy…', icon: FileArchive, onSelect: () => compressAndExport(entry) })
+    items.push({ label: selected.has(entry.name) ? 'Deselect' : 'Select', icon: selected.has(entry.name) ? Square : CheckSquare, onSelect: () => toggleSelected(entry.name) })
     items.push({ label: 'Copy', icon: Copy, onSelect: () => clip(entry, 'copy') })
     items.push({ label: 'Cut', icon: Scissors, onSelect: () => clip(entry, 'cut') })
     items.push({ label: 'Rename', icon: Pencil, onSelect: () => startRename(entry) })
@@ -1661,8 +1782,32 @@ export default function NotesApp({
               {clipboard && <IconButton icon={ClipboardPaste} label={`Paste "${clipboard.name}"`} onClick={paste} />}
               <IconButton icon={RefreshCw} label={account ? 'Refresh from Filen' : 'Refresh'} onClick={() => load(true)} />
               <CacheMenu source={source} path={path} isDirectory onDone={() => load(false)} onError={setError} onNotice={setNotice} />
+              {source?.cache && (
+                <IconButton
+                  icon={Eraser}
+                  label="Clear this folder's cache, recursively, with a branch choice…"
+                  onClick={() => clearCacheWithBranchChoice([path])}
+                />
+              )}
             </div>
           </div>
+
+          {selecting && !criteria && (
+            <div className="notes-panel-row note-selection">
+              <strong>{selected.size} selected</strong>
+              <button type="button" className="link-button" onClick={() => setSelected(new Set(entries.map((e) => e.name)))}>
+                Select all
+              </button>
+              {source?.cache && (
+                <IconButton
+                  icon={Eraser}
+                  label="Clear the cache of the selected items, recursively, with a branch choice…"
+                  onClick={() => clearCacheWithBranchChoice([...selected].map((name) => joinRelative(path, name)))}
+                />
+              )}
+              <IconButton icon={X} label="Clear the selection" onClick={() => setSelected(new Set())} />
+            </div>
+          )}
 
           {error && <div className="error-banner">{error}</div>}
           {notice && <div className="status-banner">{notice}</div>}
@@ -1758,6 +1903,9 @@ export default function NotesApp({
                   return (
                     <tr key={entry.name} {...kbdItem(kbdFocus, currentPage * pageSize + i, setKbdFocus)}>
                       <td>
+                        {selecting && (
+                          <input type="checkbox" checked={selected.has(entry.name)} onChange={() => toggleSelected(entry.name)} aria-label={`Select "${entry.name}"`} />
+                        )}
                         {renaming === entry.name ? (
                           <input
                             autoFocus
@@ -1813,6 +1961,9 @@ export default function NotesApp({
                               ? [{ icon: AppWindow, label: 'Open as web app — in a window of its own, listed under this tab', onClick: () => openAsWebApp(entry) }]
                               : []),
                             ...(!entry.isDirectory ? [{ icon: Download, label: 'Export', onClick: () => exportEntry(entry) }] : []),
+                            ...(!account && !entry.isDirectory && mediaKindOf(entry.name) === 'video' && localVideoRoot(entry)
+                              ? [{ icon: FileArchive, label: 'Compress and save a copy…', onClick: () => compressAndExport(entry) }]
+                              : []),
                             ...(account && !entry.isDirectory
                               ? [
                                   {
@@ -1830,6 +1981,7 @@ export default function NotesApp({
                             ...(branchApi && branch !== null && entry.changed === 'checkout'
                               ? [{ icon: Undo2, label: 'Let go of the checkout', onClick: () => releaseEntry(entry) }]
                               : []),
+                            { icon: selected.has(entry.name) ? Square : CheckSquare, label: selected.has(entry.name) ? 'Deselect' : 'Select', onClick: () => toggleSelected(entry.name) },
                             { icon: Copy, label: 'Copy', onClick: () => clip(entry, 'copy') },
                             { icon: Scissors, label: 'Cut', onClick: () => clip(entry, 'cut') },
                             { icon: Pencil, label: 'Rename', onClick: () => startRename(entry) },
@@ -1904,6 +2056,63 @@ export default function NotesApp({
             />
           )}
         </DetailsModal>
+      )}
+
+      {compressing && (
+        <Modal
+          title="Compress and save a copy…"
+          onClose={() => {
+            compressDismissed.current = true
+            setCompressing(null)
+          }}
+        >
+          <div className="modal-field-label">{compressing.entry.name}</div>
+          {compressing.error ? (
+            <div className="error-banner">{compressing.error}</div>
+          ) : (
+            <>
+              <div className="progress-bar">
+                <div className="progress-bar-fill" style={{ width: `${compressing.percent}%` }} />
+              </div>
+              <div className="muted">{compressing.percent}%</div>
+            </>
+          )}
+          <div className="dialog-actions">
+            <button
+              type="button"
+              onClick={() => {
+                compressDismissed.current = true
+                setCompressing(null)
+              }}
+            >
+              {compressing.error ? 'Close' : 'Keep running in the background'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {clearingCache && (
+        <Modal title="Clear the cache…" onClose={() => setClearingCache(null)}>
+          <div className="modal-field-label">
+            {clearingCache.paths.length === 1
+              ? `Clear the cache of "${clearingCache.paths[0]}", recursively?`
+              : `Clear the cache of ${clearingCache.paths.length} items, recursively?`}
+          </div>
+          <div className="muted">
+            The account's own cache is always cleared. Branches of this account also keep their own thumbnails of a file they changed — how far should this reach for those?
+          </div>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => void runClearMany(clearingCache.paths, branch === null ? { kind: 'accountOnly' } : { kind: 'current', branch })}>
+              {branch === null ? "Just the account's cache" : 'Only for the current branch'}
+            </button>
+            <button type="button" onClick={() => void runClearMany(clearingCache.paths, { kind: 'all' })}>
+              For all branches
+            </button>
+            <button type="button" onClick={() => setClearingCache(null)}>
+              Cancel
+            </button>
+          </div>
+        </Modal>
       )}
 
       {goingTo && (

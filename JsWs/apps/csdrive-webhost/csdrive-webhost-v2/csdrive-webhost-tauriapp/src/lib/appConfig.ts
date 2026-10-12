@@ -29,7 +29,13 @@ interface AppConfig {
   notes: {
     files: { notebook: string; note: string; children: string; userAction: string }
     markdown: { prefix: string; suffix: string }
-    numberings: { noteItems: NumberingDef; primarySections: NumberingDef; secondarySections: NumberingDef; ternarySections: NumberingDef }
+    numberings: {
+      noteItems: NumberingDef
+      primarySections: NumberingDef
+      secondarySections: NumberingDef
+      ternarySections: NumberingDef
+      archiveSection: NumberingDef
+    }
     internals: { noteFiles: NumberingDef; noteInternals: NumberingDef; notebook: NumberingDef }
   }
 }

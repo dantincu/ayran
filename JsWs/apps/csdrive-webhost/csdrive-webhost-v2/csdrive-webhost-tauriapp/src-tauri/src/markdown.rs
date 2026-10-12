@@ -50,7 +50,7 @@ table { border-collapse: collapse; }
 th, td { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); padding: 4px 10px; }
 blockquote { margin-left: 0; padding-left: 14px; border-left: 4px solid color-mix(in srgb, currentColor 25%, transparent); opacity: 0.9; }
 img { max-width: 100%; }
-/* The page's own top bar (the bootstrap script below builds it) — Back/Suspend/Close tab/Close window, the
+/* The page's own top bar (the bootstrap script below builds it) — Back/Refresh/Suspend/Close tab/Close window, the
    tab's own label/tags/root markup (`topBarHtml`, styled by the `csdrive-tb-*` code snippet applied alongside
    this), and its own hide button. Bleeds to the body's own edges with a negative margin, the same trick
    `App.css`'s `.help-header` uses, and collapses the identical way `.editor-top-bar-hidden`/`.help-header-hidden`
@@ -386,8 +386,13 @@ const CODE_HIGHLIGHT_SCRIPT: &str = r#"
 /// tree entirely, with none of that for free). It's the same four actions `csdrive-webhost-userapps/
 /// example-toolbar/index.html` demonstrates as the reference shape for "a user app adding its own header of
 /// this kind" (CLAUDE.md's "The top bar"): Back (`window_go_back`), Suspend this window, Close this tab, Close
-/// this window, plus its own × and the tab's `topBarHtml` (its label/tags/root markup, already styled for free
-/// by the `csdrive-tb-*` code snippet this page already applies via `apply(tab.codeSnippets)`). It starts shown
+/// this window — **plus a fifth, `csdrive-tb-refresh`, this page's own** (asked for directly: "for the note as a
+/// web app's top header add a refresh button" — a plain `location.reload()`, the same "start over" every
+/// other *Reload* button in this app already means, CLAUDE.md's "Reload" — not part of `example-toolbar`'s own
+/// four-button reference shape, since a static sample page has nothing dynamic worth refreshing the way a note
+/// synced from its editor does) — plus its own × and the tab's `topBarHtml` (its label/tags/root markup,
+/// already styled for free by the `csdrive-tb-*` code snippet this page already applies via
+/// `apply(tab.codeSnippets)`). It starts shown
 /// **starts shown**, not hidden — asked for directly, after live testing showed it starting hidden like every
 /// other page's top bar does: that default reads as a deliberate "ask for it the first time you'd want it"
 /// choice, sensible for a bar someone can always summon again (a chord, the admin's "Show the top bar") — but
@@ -492,6 +497,8 @@ const BOOTSTRAP: &str = "
   bar.innerHTML =
     '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-back\" title=\"Go back one step\">' +
     '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m12 19-7-7 7-7\"/><path d=\"M19 12H5\"/></svg></button>' +
+    '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-refresh\" title=\"Refresh this page\">' +
+    '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/></svg></button>' +
     '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-suspend\" title=\"Suspend this window\">' +
     '<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"14\" y=\"4\" width=\"4\" height=\"16\" rx=\"1\"/><rect x=\"6\" y=\"4\" width=\"4\" height=\"16\" rx=\"1\"/></svg></button>' +
     '<button type=\"button\" class=\"icon\" id=\"csdrive-tb-close-tab\" title=\"Close this tab\">' +
@@ -529,6 +536,9 @@ const BOOTSTRAP: &str = "
   }
   bar.querySelector('#csdrive-tb-back').addEventListener('click', function () {
     t.core.invoke('window_go_back').catch(function () {})
+  })
+  bar.querySelector('#csdrive-tb-refresh').addEventListener('click', function () {
+    location.reload()
   })
   bar.querySelector('#csdrive-tb-suspend').addEventListener('click', function () {
     t.core.invoke('suspend_secondary_window', { guid: win.label }).catch(function () {})
@@ -800,6 +810,9 @@ mod tests {
         assert!(page.contains("suspend_secondary_window"), "{page}");
         assert!(page.contains("close_tab"), "{page}");
         assert!(page.contains("close_secondary_window"), "{page}");
+        // A fifth, this page's own: Refresh — a plain reload, not a backend command.
+        assert!(page.contains("csdrive-tb-refresh"), "{page}");
+        assert!(page.contains("location.reload()"), "{page}");
         // Starts shown (`persistedHidden = false`), not following the shared `tabs.top_bar_hidden`/
         // `topBar.autohide` default every other page's bar does — tracked instead in this page's own
         // `app_state`, defaulting to shown when the person has never explicitly closed or re-shown it.

@@ -2,7 +2,7 @@
  *
  * A note's index is the three-digit name of its short folder (`999`). The indexes are not one long run: the config file
  * (`config/folder-pairs-and-notes.json`, `notes.numberings`) gives each *kind* its own **interval** — note items `999`→`401` going down,
- * and the note sections `199`→`111`, `299`→`201`, `399`→`301` — so several kinds can share one parent folder without ever taking each
+ * and the note sections `199`→`111`, `299`→`201`, `399`→`301`, and the Note Archive Section `109`→`101` — so several kinds can share one parent folder without ever taking each
  * other's numbers (`docs/strategies/folder-pairs-strategy.md`). A note whose index is in none of them (the notes of the first
  * versions of the app were numbered `001`, `002`…) is **outside the intervals**: it is listed and works as ever, and can be *converted*
  * into an interval.

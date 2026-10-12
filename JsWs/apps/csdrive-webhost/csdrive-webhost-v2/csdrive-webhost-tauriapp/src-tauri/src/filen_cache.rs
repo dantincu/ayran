@@ -15,7 +15,7 @@ use tauri::ipc::{Request, Response};
 use tauri::{AppHandle, State};
 
 use crate::device_files::ExportState;
-use crate::files_cache::{AccountCacheInfo, BranchChange, BranchInfo, Cache, CommitReport, FileVersion, FilenRemote, Listing, SeedJob, UploadJob, VersionCheck};
+use crate::files_cache::{AccountCacheInfo, BranchChange, BranchClearScope, BranchInfo, Cache, CommitReport, FileVersion, FilenRemote, Listing, SeedJob, UploadJob, VersionCheck};
 use crate::fs_scope::FsScope;
 
 /// An upload that a window feeds piece by piece (`filen_cache_upload_begin` … `_finish`).
@@ -313,6 +313,16 @@ pub async fn filen_cache_hard_refresh(app: AppHandle, cache: State<'_, Cache>, u
 #[tauri::command]
 pub async fn filen_cache_clear_item(cache: State<'_, Cache>, user_id: u64, path: String) -> Result<(), String> {
     cache.clear_item(user_id as i64, &path).await
+}
+
+/// **Clear the cache of several items at once** (CLAUDE.md's item 13) — a file or a folder each, recursively (what
+/// `filen_cache_clear_item` already does per path), plus a branch-scope choice for the branch-specific thumbnail cache
+/// (`tb`) under each path: `scope.kind` is `"accountOnly"` (what the single-item command above does — none beyond the
+/// account's own), `"current"` (also the one named branch's own thumbnails, `scope.branch`) or `"all"` (every branch of
+/// the account). Never touches a branch's own pending changes.
+#[tauri::command]
+pub async fn filen_cache_clear_items(cache: State<'_, Cache>, user_id: u64, paths: Vec<String>, scope: BranchClearScope) -> Result<(), String> {
+    cache.clear_items(user_id as i64, &paths, scope).await
 }
 
 /// Takes a file into the branch without changing it, so it is among the branch's pending changes.

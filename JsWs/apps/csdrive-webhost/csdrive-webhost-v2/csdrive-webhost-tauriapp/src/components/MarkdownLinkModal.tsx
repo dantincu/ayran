@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, ExternalLink, X } from 'lucide-react'
+import { ArrowUp, Check, ExternalLink, X } from 'lucide-react'
 import IconButton from './IconButton'
 import Modal from './Modal'
 
@@ -25,7 +25,14 @@ const WEB_ADDRESS = /^https?:\/\//i
  * "manage" popup) are not a separate feature here** — both boxes are ordinary recognized text fields, so
  * `TextFieldMenu`'s own floating clipboard menu already covers all of it the moment either one has the focus,
  * the same as any other text box in the app; see CLAUDE.md for why a second, redundant copy of that menu
- * wasn't added to this popup specifically. */
+ * wasn't added to this popup specifically.
+ *
+ * **"Use the address as the link text" (asked for directly: "a button for repeating the url, without the
+ * https scheme if present, in the title textbox")** — the `ArrowUp` button beside the Link text box replaces
+ * it with the address, `https://`/`http://` stripped if the address starts with one (`addressWithoutScheme`;
+ * a plain case-insensitive prefix strip, not a URL parse — this box also accepts a bare relative/account-
+ * absolute path, which has no scheme to strip at all, so the regex simply doesn't match and the path is used
+ * as it is). Disabled while the address is empty, since there is nothing to repeat yet. */
 export default function MarkdownLinkModal({
   heading,
   initialText,
@@ -43,12 +50,14 @@ export default function MarkdownLinkModal({
 }) {
   const [text, setText] = useState(initialText)
   const [address, setAddress] = useState(initialAddress)
-  const valid = address.trim() !== ''
-  const isWebAddress = WEB_ADDRESS.test(address.trim())
+  const trimmedAddress = address.trim()
+  const valid = trimmedAddress !== ''
+  const isWebAddress = WEB_ADDRESS.test(trimmedAddress)
+  const addressWithoutScheme = trimmedAddress.replace(/^https?:\/\//i, '')
 
   function submit() {
     if (!valid) return
-    onSubmit(text, address.trim())
+    onSubmit(text, trimmedAddress)
   }
 
   return (
@@ -60,7 +69,22 @@ export default function MarkdownLinkModal({
         }}
       >
         <div className="modal-field-label">Link text — what it reads as</div>
-        <input data-ua-field="textMenu.link.text" autoFocus value={text} onChange={(e) => setText(e.target.value)} placeholder="(optional)" />
+        <div className="toolbar-actions">
+          <input
+            data-ua-field="textMenu.link.text"
+            autoFocus
+            style={{ flex: 1 }}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="(optional)"
+          />
+          <IconButton
+            icon={ArrowUp}
+            label="Use the address (without its scheme) as the link text"
+            disabled={trimmedAddress === ''}
+            onClick={() => setText(addressWithoutScheme)}
+          />
+        </div>
         <div className="modal-field-label" style={{ marginTop: 10 }}>
           Link address — a web address, or a path
         </div>
@@ -73,7 +97,7 @@ export default function MarkdownLinkModal({
             onChange={(e) => setAddress(e.target.value)}
           />
           {onOpenExternal && isWebAddress && (
-            <IconButton icon={ExternalLink} label="Open in external browser" onClick={() => onOpenExternal(address.trim())} />
+            <IconButton icon={ExternalLink} label="Open in external browser" onClick={() => onOpenExternal(trimmedAddress)} />
           )}
         </div>
         <div className="toolbar-actions" style={{ justifyContent: 'flex-end', marginTop: 10 }}>

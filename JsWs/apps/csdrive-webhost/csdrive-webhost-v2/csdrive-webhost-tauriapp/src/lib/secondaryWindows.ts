@@ -293,6 +293,15 @@ export async function videoTranscodeDelete(root: string, path: string): Promise<
   return invoke('video_transcode_delete', { root, path })
 }
 
+/** Exports the cached converted copy of a local video to a device location — "Compress and save a
+ * copy…" (Notes' File Manager and Note Files Explorer): the same conversion/bitrate `videoTranscodeBegin`
+ * already does, reused as-is, with an export step once it's done. Refuses if nothing is cached yet —
+ * run `videoTranscodeBegin`/`videoTranscodeProgress` to completion first. `token` is `lib/platform.ts`'s
+ * `exportPathToDevice`'s own one-time "where to save" token (`null` on Android, where there's no dialog). */
+export async function videoTranscodeExport(root: string, path: string, name: string, token: string | null): Promise<string> {
+  return invoke('video_transcode_export', { root, path, name, token })
+}
+
 /** What `videoPlayability` answers: the video and/or audio codec a local file's streams actually are
  * (read straight from the file by `video_transcode.rs`'s own Media Foundation probe — never guessed from
  * the extension), and whether every one found is a codec this app's own webview reliably plays. `null`
