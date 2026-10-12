@@ -953,6 +953,61 @@ can no longer cost `O(file)` on this path, the same reasoning the earlier, now-s
 incremental-measurement work already relied on for its own CPU-profile comparisons. `npx tsc --noEmit` and
 `npm run build` both clean throughout; no Rust change, so `cargo test --lib` doesn't apply.
 
+**Reported live, immediately after deploying the above: "if I navigate to the middle of the file, put the
+cursor somewhere and type one letter, the image changes completely like I would have quickly scrolled away
+instead of just typing a letter."** Reproduced exactly (a real markdown file, several thousand lines, scrolled
+to the middle, caret placed there, one real keystroke) — two real, compounding bugs, both introduced by this
+same virtualization feature, found live and fixed in sequence:
+
+1. **The scroll position itself was jumping, on *every* keystroke, not just this one.** `fit()` (unchanged by
+   this feature — it's always resized the real `<textarea>` by briefly setting its height to `0px` to
+   re-measure `scrollHeight`, then restoring it) used to be harmless because, pre-virtualization, the
+   highlighted `<pre>` sitting beside the textarea always held the *whole* file, so its own rendered height
+   never depended on the textarea's momentary state. Once the overlay became windowed, it only had a
+   `paddingTop` for the space *before* the window — nothing for the space *after* it — so `.code-editor`'s
+   true scrollable height, during that one `0px` instant, collapsed down to roughly "the window's own
+   position," far short of wherever the file was actually scrolled to, for any window short of the very end of
+   the file. Reading `scrollHeight` forces that collapsed state to actually lay out, and the browser clamps
+   `scrollTop` down to fit it, synchronously — a clamp that sticks even once the textarea's height is restored
+   a moment later, since growing the box back doesn't restore a `scrollTop` the engine already overwrote.
+   **Fixed** with a matching `paddingBottom` on the highlighted `<pre>` (`windowBottomPaddingPx`, `CodeEditor.tsx`:
+   the pixel height of every line *after* the window, read from the same `gutterRowStarts.totalRows` the gutter
+   itself now also exposes) — the element's own total height always equals the whole document's from then on,
+   independent of whatever the textarea's own height happens to be at any given instant, including the one
+   frame `fit()` spends at `0px`.
+2. **That very fix broke something else**, found live immediately after deploying it, before trusting it: the
+   gutter numbering for everything *before* the window started inflating, worse with every further keystroke
+   — a 5,000-line file's own line ~2,400 reporting a cumulative row position around 7,200 after just a handful
+   of edits. Root cause: `computeRowsPerLine` (`lib/wrappedLineRows.ts`) derives `totalRows` — used only for the
+   window's own *last* line's row count — directly from `highlightEl.scrollHeight`, which, now that the element
+   carries the new `paddingBottom` (and the pre-existing `paddingTop`), includes the padding too, not just the
+   measured window's own content. The window's last line's row count (`totalRows - rowStarts[last]`) silently
+   absorbed "everything after this window, compressed into one line's row delta" — and `carryForwardRows`
+   (unaware anything was wrong) carried that one corrupted entry forward, uncorrected, on every subsequent edit,
+   compounding further each time exactly where it had already been carried into the running gutter total.
+   **Fixed** by having `computeRowsPerLine` read the element's own computed `paddingTop`/`paddingBottom` and
+   work in one consistent coordinate system throughout: `contentTop` (where rows are measured *from*) is offset
+   past the padding, and `totalRows` has both paddings subtracted back out — so the function measures only
+   `value`'s own rows again, exactly as it did before either padding existed. A caller with no padding at all
+   (the small-file, fully-covered-by-the-window case) is unaffected either way, since both paddings are then
+   simply `0`.
+
+Verified live (isolated **debug** data folder, desktop, real CDP, a real 5,000-line markdown file, real
+`execCommand('insertText', ...)` keystrokes — reproducing the exact reported shape, not a synthetic shortcut):
+scrolled to the file's own middle, caret placed there, one keystroke — `frame.scrollTop` measured bit-for-bit
+identical before and after (`48768` both times), where the unfixed build's own first attempt (fix #1 alone,
+before #2 was found) showed the gutter's own cumulative position for a line well before the window inflated to
+roughly 3× what it should have been. With both fixes in place: nine more real keystrokes, spaced realistically
+(400ms apart, past the debounce), left `scrollTop` unchanged throughout and the gutter's own spacing for the
+window shown (lines 2414–2618) exactly `19.5px` apart at every single step — no drift, no compounding. The
+width-change/resize path (both narrowing to 350px and restoring full width) was re-verified against this same
+fixed build: wrapped correctly into 3 rows/line at the narrow width and back to 1 at full width, with the
+*absolute* position of the line just before the window (`47061.5px`) identical in both directions — confirming
+the padding-aware measurement composes correctly with the resize path too, not just the keystroke path. The
+small-file case (a fresh 5-line file, window covering it entirely) was re-checked and remained byte-identical
+to the textarea's own value, with both paddings correctly `0px`. `npx tsc --noEmit` and `npm run build` both
+clean throughout; no Rust change.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.

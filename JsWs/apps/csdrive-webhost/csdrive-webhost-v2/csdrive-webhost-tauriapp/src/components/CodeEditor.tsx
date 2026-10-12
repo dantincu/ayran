@@ -332,7 +332,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       starts.push(row)
       row += rowsForCurrentValue?.[i] ?? 1
     }
-    return { starts, lineHeightPx }
+    // `row` here is the total row count across the *whole* document — not just the window — needed so the
+    // highlighted `<pre>` can be given a `paddingBottom` matching `paddingTop`'s own idea (below): the space the
+    // window's *trailing*, unrendered lines would have taken, not only its leading ones.
+    return { starts, lineHeightPx, totalRows: row }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowsForCurrentValue, wrapMeasure?.lineHeightPx, lineCount])
 
@@ -371,6 +374,31 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   }
   const windowStartChar = lineStarts[windowRange.startLine] ?? 0
   const windowEndChar = windowRange.endLine < lineStarts.length ? lineStarts[windowRange.endLine] : value.length
+  /** The row the window's content *ends* at — `gutterRowStarts.totalRows` itself when the window already
+   * reaches the document's own end, so `windowBottomPaddingPx` (below) comes out to exactly `0` rather than a
+   * stray fractional row. */
+  const windowEndRow = windowRange.endLine < lineCount ? gutterRowStarts.starts[windowRange.endLine] : gutterRowStarts.totalRows
+  /** The highlighted `<pre>`'s own `paddingBottom` — the mirror image of its existing `paddingTop` (below, in the
+   * JSX): the pixel height of every line *after* the window, so the element's own total rendered height always
+   * equals the *whole document's*, never just the window's own small slice.
+   *
+   * **This is load-bearing, not cosmetic** — reported live: typing one ordinary character in the middle of a
+   * large file made the view "look like I'd quickly scrolled away," on every single keystroke, not just near an
+   * edge. Root cause: `fit()` (below) momentarily sets the real `<textarea>`'s height to `0px` to re-measure its
+   * own `scrollHeight` — the textarea is what's *supposed* to keep `.code-editor-content`'s (and so
+   * `.code-editor`'s own scrollable) height correct, since it alone spans the whole file, unvirtualized. Without
+   * this padding, `.code-editor-highlight`'s own height was only `paddingTop` (everything *before* the window)
+   * plus the window's own small content — missing everything *after* it — so during that brief `0px` instant,
+   * with the textarea not yet propping anything up, `.code-editor`'s true scrollable height collapsed down to
+   * roughly "the window's own position," well short of wherever the window actually was scrolled to for a window
+   * anywhere but the very end of the file. Reading `scrollHeight` forces that collapsed state to be laid out for
+   * real, and the browser clamps `scrollTop` down to fit it, synchronously — a clamp that sticks even once the
+   * textarea's height is restored a moment later, since growing the box back doesn't restore a `scrollTop` the
+   * engine already overwrote. Giving the `<pre>` the matching trailing padding means its own total height always
+   * equals the whole document's, independent of whatever the textarea's own height happens to be at that
+   * instant — the frame's true scrollable height is never wrong, even for the single frame `fit()` spends at
+   * `0px`. */
+  const windowBottomPaddingPx = Math.max(0, (gutterRowStarts.totalRows - windowEndRow) * gutterRowStarts.lineHeightPx)
 
   /** The editor's own DOM half (`lib/runPatchController.ts`) — one controller per mounted editor, reused across
    * every patch; its own module doc explains why it owns this state independently of React rather than ever
@@ -778,12 +806,17 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
                 DOM management with React safe here. `paddingTop` re-anchors the window's own rendered content to
                 the Y position it would actually have in the full, unvirtualized document — the existing fixed
                 8px (App.css) plus the pixel height of every line *before* the window, read from the same
-                `gutterRowStarts` the gutter's own numbers use, so the two always agree. */}
+                `gutterRowStarts` the gutter's own numbers use, so the two always agree. `paddingBottom`
+                (`windowBottomPaddingPx`, above) is the mirror image, for everything *after* the window — load-
+                bearing, not cosmetic; see its own doc comment. */}
             <pre
               ref={highlightRef}
               className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
               aria-hidden="true"
-              style={{ paddingTop: 8 + (gutterRowStarts.starts[windowRange.startLine] ?? 0) * gutterRowStarts.lineHeightPx }}
+              style={{
+                paddingTop: 8 + (gutterRowStarts.starts[windowRange.startLine] ?? 0) * gutterRowStarts.lineHeightPx,
+                paddingBottom: windowBottomPaddingPx,
+              }}
             />
             <textarea
               ref={inputRef}

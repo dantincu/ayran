@@ -102,10 +102,32 @@ export function computeRowsPerLine(highlightEl: HTMLElement, value: string, line
   const allOffsets = [...starts, value.length]
   const positions = findTextPositions(highlightEl, allOffsets)
   if (positions.length !== allOffsets.length) return null
-  const containerTop = highlightEl.getBoundingClientRect().top
+  // **Every position this function measures is expressed in one consistent coordinate system: rows counted from
+  // the *content* box's own top, never the padding/border box's.** Before virtualization `highlightEl` held
+  // nothing but `value` itself, so its border-box top *was* its content's top (no padding at all) and this
+  // distinction never mattered. The editor's own windowing (`CodeEditor.tsx`) now gives the element a
+  // `paddingTop`/`paddingBottom` representing everything *outside* the window (so the frame's real scrollable
+  // height stays correct regardless of the window's own size — see that component's own doc comment on
+  // `windowBottomPaddingPx`) — which moves the real text down by `paddingTop` and inflates `scrollHeight` by
+  // `paddingTop + paddingBottom`. Both are accounted for here: `contentTop` is offset past the padding before any
+  // row is measured from it, and `totalRows` has both paddings subtracted back out, so the two stay in the same
+  // "rows since the content started" units `rows.push(next - rowStarts[i])`'s own subtraction below assumes.
+  // **Found live, not by inspection, as a second regression from the same `paddingBottom` fix**: a version that
+  // got `totalRows` right (subtracting both paddings) but left `rowOf`'s own reference point at the unmoved
+  // border-box top still broke — every *ordinary* row's delta still cancelled correctly (both ends of the
+  // subtraction shared the same, consistent-if-offset border-box reference), but the window's own *last* line's
+  // delta (`totalRows - rowStarts[last]`) mixed a padding-free `totalRows` against a padding-*laden* `rowStarts`,
+  // coming out wildly wrong — and, carried forward uncorrected by `carryForwardRows` on the very next edit,
+  // compounding further with every edit after that (reported live as "typing one letter changes the entire
+  // gutter numbering before the cursor"). A file with no padding at all (the small-file, non-windowed case, or
+  // any caller that never sets one) measures identically either way — `paddingTop`/`paddingBottom` are then `0`.
+  const cs = getComputedStyle(highlightEl)
+  const paddingTop = parseFloat(cs.paddingTop) || 0
+  const paddingBottom = parseFloat(cs.paddingBottom) || 0
+  const contentTop = highlightEl.getBoundingClientRect().top + paddingTop
   const range = document.createRange()
-  const rowOf = (px: number) => Math.round((px - containerTop) / lineHeightPx)
-  const totalRows = Math.max(1, rowOf(containerTop + highlightEl.scrollHeight))
+  const rowOf = (px: number) => Math.round((px - contentTop) / lineHeightPx)
+  const totalRows = Math.max(1, Math.round((highlightEl.scrollHeight - paddingTop - paddingBottom) / lineHeightPx))
   const rowStarts = starts.map((_, i) => {
     if (allOffsets[i] === allOffsets[i + 1]) return totalRows - 1 // the empty trailing line only — see doc above
     const start = positions[i]
