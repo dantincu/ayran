@@ -20,11 +20,6 @@ export interface EditorSettings {
   /** How many spaces `tabInsertsSpaces` inserts, or how many columns a literal tab is treated as wide for Shift+Tab
    * outdenting either way. */
   tabSpaceCount: number
-  /** Off by default: patches only the changed run of the highlighted copy on each edit (`lib/runPatchController.ts`),
-   * instead of replacing the whole thing via `dangerouslySetInnerHTML` — meant to remove the flicker a full
-   * replace can cause on every keystroke. A genuinely different rendering mechanism for the same visible result,
-   * opted into deliberately rather than risking it for every editor by default. */
-  experimentalEditor: boolean
 }
 
 const DEFAULTS: EditorSettings = {
@@ -33,7 +28,6 @@ const DEFAULTS: EditorSettings = {
   lineNumbers: true,
   tabInsertsSpaces: false,
   tabSpaceCount: 4,
-  experimentalEditor: false,
 }
 
 const KEYS = {
@@ -42,7 +36,6 @@ const KEYS = {
   lineNumbers: 'editor.lineNumbers',
   tabInsertsSpaces: 'editor.tabInsertsSpaces',
   tabSpaceCount: 'editor.tabSpaceCount',
-  experimentalEditor: 'editor.experimentalEditor',
 } as const satisfies Record<keyof EditorSettings, string>
 
 async function getBool(key: string, fallback: boolean): Promise<boolean> {
@@ -55,17 +48,16 @@ async function setBool(key: string, value: boolean): Promise<void> {
 }
 
 export async function getEditorSettings(): Promise<EditorSettings> {
-  const [wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCountRaw, experimentalEditor] = await Promise.all([
+  const [wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCountRaw] = await Promise.all([
     getBool(KEYS.wrapLines, DEFAULTS.wrapLines),
     getBool(KEYS.showWhitespace, DEFAULTS.showWhitespace),
     getBool(KEYS.lineNumbers, DEFAULTS.lineNumbers),
     getBool(KEYS.tabInsertsSpaces, DEFAULTS.tabInsertsSpaces),
     invoke<string | null>('get_global_setting', { key: KEYS.tabSpaceCount }),
-    getBool(KEYS.experimentalEditor, DEFAULTS.experimentalEditor),
   ])
   const parsedCount = Number(tabSpaceCountRaw)
   const tabSpaceCount = Number.isInteger(parsedCount) && parsedCount > 0 && parsedCount <= 16 ? parsedCount : DEFAULTS.tabSpaceCount
-  return { wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCount, experimentalEditor }
+  return { wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCount }
 }
 
 let current: EditorSettings | null = null

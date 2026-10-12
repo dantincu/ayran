@@ -2,14 +2,15 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, u
 import { Redo2, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import { UndoHistory } from '../lib/undoHistory'
-import { escapeHtml, highlight, languageOf, markWhitespace, tokenClassAtOffset, type Language } from '../lib/highlight'
+import { highlight, languageOf, type Language } from '../lib/highlight'
 import { HighlightScheduler } from '../lib/highlightScheduler'
 import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
-import { computeRowsPerLine, computeRowsPerLineIncremental } from '../lib/wrappedLineRows'
+import { carryForwardRows, computeRowsPerLine, computeWindowRange, lineAtOffset, lineStartOffsets, type WindowRange } from '../lib/wrappedLineRows'
 import { RunPatchController } from '../lib/runPatchController'
+import { splitRunsAt, tokensOf } from '../lib/highlightTokens'
 
 /** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
  * wrapped-row measurement existed) rather than measuring — tens of thousands of `Range` queries would be a real
@@ -29,6 +30,10 @@ const EXACT_DISPATCH_DEBOUNCE_MS = 200
  * self-correcting, same "an approximate is fine for a moment" trade used everywhere else in this file) until
  * typing actually pauses. */
 const WRAP_MEASURE_DEBOUNCE_MS = 250
+/** How many screens' worth of lines, above and below what's actually visible, the virtualized rendering
+ * (below) keeps as real DOM — the buffer a normal scroll (or Page Up/Down) consumes before the window has to
+ * shift at all. Asked for directly as "3 or so screens." */
+const WINDOW_BUFFER_SCREENS = 3
 
 interface Props {
   value: string
@@ -70,92 +75,61 @@ interface ExactResult {
   html: string
 }
 
-/** The highlighted copy of `value` — recomputed off the main thread, in a Worker, with an **instant, approximate**
- * stand-in shown the moment a keystroke happens rather than making the keystroke wait for the real result.
+/** The *exact*, fully re-tokenised highlight of `value` — computed off the main thread, in a Worker, since the
+ * DOM rendering itself is `RunPatchController`'s job (`lib/runPatchController.ts`, wired up in `CodeEditor`
+ * below): this hook's only remaining responsibility is handing that controller a real, correctly-tokenised html
+ * string to diff against, the moment one is ready, and otherwise staying out of the way.
  *
- * Reported live as per-keystroke lag on a large file, worse the longer the editor had been open and gone once it
- * was reopened (the undo history, `lib/undoHistory.ts`, retaining up to 500 steps/16 MB of a big file is a
- * separate, likely contributor to that — but its bounds are deliberate, documented and tested, and were left
- * alone here). An earlier fix only changed *when* the expensive, synchronous, main-thread re-scan ran — a pause
- * in typing, debounced — not *where*: a person typing continuously still saw nothing update, since the box's own
- * visible text is the *highlighted copy* drawn underneath it (`CodeEditor`'s own module doc), not the real
- * (transparent) textarea — confirmed live by reading back the actual `color`/`-webkit-text-fill-color` the box
- * is drawn with. Reported again, still happening, with a different fix asked for directly: move the real
- * re-scan off the main thread entirely (`highlightWorker.ts`), and — since a background pass still takes *some*
- * real time, however short — show *something* correctly-ish coloured the instant the keystroke happens rather
- * than nothing at all until the pass finishes.
- *
- * **The instant stand-in**: the moment `value` changes, before the Worker has even been asked, this hook sets
- * the highlighted copy to the *current* text as one single flat colour — `tokenClassAtOffset` (`lib/highlight.ts`)
- * reads which `tok-*` class was open, in the *last exact* highlight, at the caret's own position (so continuing
- * to type inside a string keeps reading in "string colour," inside a comment in "comment colour," and so on) —
- * rather than the correct, fully re-tokenised colouring, which the keystroke is never made to wait for. This is
- * a deliberately cheap, approximate guess (one string scan up to the caret, not a real parse), replaced the
- * moment the real background pass catches up; `markWhitespace` is still applied so "show whitespace" doesn't
- * flicker on or off during the brief window it's showing.
- *
- * **The real pass**, in `highlightWorker.ts`, goes through a `HighlightScheduler` (`lib/highlightScheduler.ts`):
- * it keeps at most one request running in the Worker at a time, so a person typing faster than one full re-scan
- * takes is never queued up behind a growing backlog of stale requests — only the *latest* text is ever waiting,
- * picked up the instant the Worker is free, and the Worker's answer replaces the instant guess the moment it
- * arrives.
+ * Reported live as per-keystroke lag on a large file, worse the longer the editor had been open (the undo
+ * history, `lib/undoHistory.ts`, retaining up to 500 steps/16 MB of a big file is a separate, likely contributor
+ * to that — but its bounds are deliberate, documented and tested, and were left alone here). The real,
+ * synchronous re-scan used to run on the main thread, on every keystroke; moving it into a Worker
+ * (`highlightWorker.ts`) keeps that cost off the critical path entirely, through a `HighlightScheduler`
+ * (`lib/highlightScheduler.ts`): it keeps at most one request running in the Worker at a time, so a person
+ * typing faster than one full re-scan takes is never queued up behind a growing backlog of stale requests — only
+ * the *latest* text is ever waiting, picked up the instant the Worker is free.
  *
  * **Dispatching to that scheduler is itself debounced by `EXACT_DISPATCH_DEBOUNCE_MS`**, asked for directly after
  * a large real file (hundreds of KB) was reported as consistently harder to type in and "bad for the eyes" —
  * not a main-thread stall (the Worker already keeps that off the critical path) but the *sustained* cost of
  * running a full re-scan back to back on every single settled keystroke while someone types continuously: each
- * exact reply also means re-parsing/laying out a large HTML string on the main thread (`setHtml`, or the
- * experimental path's own diff — see `RunPatchController`), which is real, repeated work for a big file even
- * though each individual pass is "only" off the main thread. On a phone this is also squarely a battery
- * question, which is what was actually asked about — a heuristic that decides, per keystroke, whether a
- * re-scan is even *needed* (the first idea floated) was turned down: that would mean mirroring every highlighter's
- * own keyword/escape/boundary rules in a second, approximate form, and a wrong "safe to skip" guess produces a
- * silently stuck wrong colour that nothing afterward self-corrects — a worse failure mode than today's
- * always-eventually-correct Worker pass. Debouncing the *dispatch* instead needs none of that: the approximate,
- * instant stand-in above already makes every keystroke feel immediate regardless of when the exact pass actually
- * runs, so delaying *only* the Worker call — reset on every further keystroke, fired once typing actually pauses
- * for `EXACT_DISPATCH_DEBOUNCE_MS` — cuts how often the whole dispatch → Worker → reply → reparse cycle runs
- * during a sustained burst, with no new correctness surface: a person who never pauses simply keeps seeing the
- * approximate colouring (already correct for the overwhelmingly common case of typing inside the same token) until
- * they do, the same guarantee the scheduler's own coalescing already relies on elsewhere.
+ * exact reply also means diffing a large result into the DOM (`RunPatchController.applyExact`), which is real,
+ * repeated work for a big file even though each individual pass is "only" off the main thread. On a phone this
+ * is also squarely a battery question, which is what was actually asked about — a heuristic that decides, per
+ * keystroke, whether a re-scan is even *needed* (the first idea floated) was turned down: that would mean
+ * mirroring every highlighter's own keyword/escape/boundary rules in a second, approximate form, and a wrong
+ * "safe to skip" guess produces a silently stuck wrong colour that nothing afterward self-corrects — a worse
+ * failure mode than today's always-eventually-correct Worker pass. Debouncing the *dispatch* instead needs none
+ * of that: `RunPatchController`'s own instant, approximate patch (`applyApproximate`, keyed off `value` directly,
+ * not off anything this hook returns) already makes every keystroke feel immediate regardless of when the exact
+ * pass actually runs, so delaying *only* the Worker call — reset on every further keystroke, fired once typing
+ * actually pauses for `EXACT_DISPATCH_DEBOUNCE_MS` — cuts how often the whole dispatch → Worker → reply → reparse
+ * cycle runs during a sustained burst, with no new correctness surface: a person who never pauses simply keeps
+ * seeing the approximate colouring (already correct for the overwhelmingly common case of typing inside the same
+ * token) until they do, the same guarantee the scheduler's own coalescing already relies on elsewhere.
  *
- * **The debounce above wasn't the whole story on the same real file, found live while verifying it**: toggling
- * the experimental editor on and off made almost no measurable difference on a real 190 KB markdown transcript,
- * which shouldn't have been true — `RunPatchController.applyApproximate` is specifically the *cheaper*,
- * localised approximate pass. Timing each keystroke directly (`performance.now()` around a real
- * `document.execCommand('insertText', …)`, not a synthetic event) showed why: this hook's own approximate branch
- * — `tokenClassAtOffset` scanning up to the caret, then `escapeHtml`/`markWhitespace` scanning the *entire*
- * value — ran **unconditionally on every keystroke, in both modes**, costing over 100ms by itself on that file,
- * even though in experimental mode its result (`html`) is never actually rendered (`CodeEditor`'s own JSX gives
- * the experimental `<pre>` no `dangerouslySetInnerHTML`) — pure waste sitting in front of the patcher's own,
- * already-cheaper work. **Fixed** by skipping that computation entirely while `experimental` is on, setting
- * `html` to a cheap, merely-identity-changing placeholder instead (a counter) — all it still needs to provide,
- * since nothing reads its *content* in that mode, only the scroll-to-bottom effect below reacting to it having
- * changed at all. The default editor's own cost here is unchanged (and unavoidable without replacing its
- * rendering with the same token-diff approach, which wasn't asked for): it actually renders this string, so
- * nothing here was wasted work for it.
+ * **`html` itself is a cheap, merely-identity-changing placeholder, never the actual highlighted markup** — a
+ * real, un-abbreviated version of this hook used to also maintain a second, *approximate* html string for a
+ * `dangerouslySetInnerHTML`-based rendering path; once that path was removed (`CodeEditor` renders exclusively
+ * through `RunPatchController` now, see this file's own module doc), computing it was pure waste — found live,
+ * costing upward of 100ms per keystroke on a real 190 KB file, for a result nothing ever read. `html` is kept
+ * only because the scroll-to-bottom effect below needs to know *that* an approximate or exact pass just landed,
+ * never *what* it contains.
  *
- * **The very first render is still computed synchronously**, on the main thread, exactly as before this change —
- * there's no previous *exact* highlight yet to approximate a caret colour from, and a freshly opened file should
- * show correctly coloured from its first paint, not a flash of plain text while the Worker starts up. Every
- * change after that goes through the Worker.
+ * **The very first render is still computed synchronously**, on the main thread — there's no previous *exact*
+ * highlight yet to diff against, and a freshly opened file should show correctly coloured from its first paint,
+ * not a flash of plain text while the Worker starts up. Every change after that goes through the Worker.
  *
- * **Also returns `exact`** — the same `{value, language, html}` snapshot kept internally for the caret-colour
- * lookup above, but as reactive state rather than a plain ref, updated *only* when a genuinely new exact result
- * lands (the very first synchronous one, or a Worker reply) — never on an approximate step. The experimental
- * editor's own DOM patcher (`lib/runPatchController.ts`, wired up in `CodeEditor` below) reacts to this
- * separately from `html` itself: it needs to know precisely when a *real* tokenisation is ready to diff
- * against, which `html` alone (updated on both approximate and exact steps) can't tell it. */
-function useBackgroundHighlighted(
-  value: string,
-  language: Language,
-  caretOffset: () => number,
-  experimental: boolean,
-): { html: string; exact: ExactResult } {
+ * **Also returns `exact`** — the same `{value, language, html}` snapshot, but as reactive state rather than a
+ * plain ref, updated *only* when a genuinely new exact result lands (the very first synchronous one, or a Worker
+ * reply) — never on an approximate step. `RunPatchController` reacts to this separately from `html` itself: it
+ * needs to know precisely when a *real* tokenisation is ready to diff against, which `html` alone (an identity
+ * change on every step, approximate or exact) can't tell it. */
+function useBackgroundHighlighted(value: string, language: Language): { html: string; exact: ExactResult } {
   const trailer = (text: string) => (text.endsWith('\n') ? ' ' : '')
   const schedulerRef = useRef<HighlightScheduler<{ text: string; language: Language }, string> | null>(null)
-  /** A cheap, ever-changing stand-in for `html` used only while `experimental` is on — see the `useLayoutEffect`
-   * below for why the real approximate computation is skipped entirely in that mode. */
+  /** A cheap, ever-changing stand-in for `html` — see the module doc above for why the real markup is never
+   * computed here at all. */
   const placeholderTick = useRef(0)
   /** The last *exact* (Worker-computed, or the very first synchronous) highlight — what the real `value`/`language`
    * it was computed for were, and the html itself (both to tell "is this still current" and to read a caret colour
@@ -205,33 +179,18 @@ function useBackgroundHighlighted(
   useLayoutEffect(() => {
     const last = lastExact.current
     if (last && last.value === value && last.language === language) return // already exact and current
-    // The experimental editor's own DOM patcher (`RunPatchController.applyApproximate`) does its own, already
-    // cheaper, localised approximate colouring directly against the managed `<pre>` — this hook's `html` state
-    // is never rendered in that mode at all (`CodeEditor`'s own JSX gives the experimental `<pre>` no
-    // `dangerouslySetInnerHTML`), so recomputing the exact same full-document escape-and-whitespace-mark here,
-    // every keystroke, just to throw the result away was pure, unconditional waste — confirmed live against a
-    // real 190 KB file: this one computation alone (`tokenClassAtOffset` scanning up to the caret, `escapeHtml`
-    // and `markWhitespace` both scanning the *entire* value) cost upward of 100ms per keystroke, present on
-    // *every* keystroke regardless of the exact-dispatch debounce above (which only ever touched the Worker
-    // side of this, not this synchronous one) — exactly the "typing is harder on a big file" symptom this was
-    // asked about, and the reason the experimental editor measured no faster than the default one on that file
-    // before this fix, despite its own patcher being the cheaper design. A placeholder that merely changes
-    // identity every time is all `html` still needs to provide here: the scroll-to-bottom effect below keys off
-    // it to know an approximate *or* exact pass just landed, never its actual content.
-    if (experimental) {
-      placeholderTick.current++
-      setHtml(String(placeholderTick.current))
-    } else {
-      const cls = last ? tokenClassAtOffset(last.html, caretOffset()) : null
-      const approximate = markWhitespace(cls ? `<span class="${cls}">${escapeHtml(value)}</span>` : escapeHtml(value))
-      setHtml(approximate + trailer(value))
-    }
+    // `RunPatchController.applyApproximate` does the real, cheap, localised approximate colouring directly
+    // against the managed `<pre>` — nothing here ever reads `html`'s own content, only that it changed, so a
+    // bare incrementing placeholder is all this needs to provide (see the module doc above for why computing a
+    // real approximate string here was pure, measured waste once that was true).
+    placeholderTick.current++
+    setHtml(String(placeholderTick.current))
     if (dispatchTimer.current !== null) clearTimeout(dispatchTimer.current)
     dispatchTimer.current = setTimeout(() => {
       dispatchTimer.current = null
       schedulerRef.current?.request({ text: value, language })
     }, EXACT_DISPATCH_DEBOUNCE_MS)
-  }, [value, language, experimental])
+  }, [value, language])
 
   return { html, exact }
 }
@@ -242,6 +201,31 @@ function useBackgroundHighlighted(
  * The highlighted copy of the text sits under the box, which has the same font, padding and wrapping and a transparent
  * text; the box is as tall as its text and the frame around both scrolls, so nothing has to be kept in step but the
  * height. (The layer is a picture: it can't be selected or focused, and screen readers skip it.)
+ *
+ * **The highlighted copy is drawn by patching only the changed run of the DOM on each edit**
+ * (`lib/runPatchController.ts`), never by replacing the whole thing with a fresh `dangerouslySetInnerHTML` write —
+ * this used to be a second, opt-in rendering mode ("Experimental code editor," off by default) living alongside
+ * the simpler full-replace one; once it had proven itself (no flicker, no measured regression), the simpler mode
+ * was deleted outright rather than kept as a second, now-pointless code path to maintain — see
+ * `useBackgroundHighlighted`'s and `RunPatchController`'s own doc comments for how the two halves (the Worker's
+ * exact re-tokenising pass, and the patcher that applies it to the DOM) fit together.
+ *
+ * **Only a *window* of lines — what's visible plus `WINDOW_BUFFER_SCREENS` screens above and below — is ever
+ * real DOM**, for both the highlighted overlay and the line-number gutter: a huge file used to mean one DOM
+ * node per token (and one more per whitespace character) for the *entire* file, alive at once, rebuilt in full
+ * on the first open and on any width change — a real, previously-documented, unaddressed cost. The real
+ * `<textarea>` underneath is **not** windowed — it always holds the whole file (native text rendering has
+ * never been the measured bottleneck, and virtualizing it would mean rebuilding native selection/IME/undo
+ * continuity from scratch for no measured benefit) — so it alone is what gives the editor its correct, exact
+ * overall scroll range; the window just decides how much of *that* range gets a real, colored, numbered copy
+ * drawn behind it at any moment. `windowRange` (state, `[startLine, endLine)`) is recomputed from the frame's
+ * own scroll position (`handleScroll`, below, with hysteresis so a one-pixel scroll doesn't thrash a rebuild)
+ * and, whenever the caret moves outside it (typing, undo/redo, "Insert a path…"), recentred around the caret
+ * during render itself (the official React "adjust state during render" pattern — settles before paint, no
+ * extra visible frame). The one accepted trade-off, confirmed directly before building this: a wrapped file's
+ * own total/scroll height is *approximate* for a stretch never yet scrolled through (lines there are assumed
+ * to be one row each until measured for real — `wrapMeasure`'s own doc comment below), self-correcting as it's
+ * visited — the same estimate-then-correct trade every virtualized variable-height list makes.
  *
  * **Undo and redo** — two buttons above the text (and Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z) — go through the editor's own history
  * (`lib/undoHistory.ts`), which covers everything that changes the text through `onChange`, the clipboard menu's paste
@@ -280,38 +264,29 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   const caretOffset = () => inputRef.current?.selectionEnd ?? value.length
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
-  const experimental = settings?.experimentalEditor ?? false
-  const { html, exact } = useBackgroundHighlighted(value, effectiveLanguage, caretOffset, experimental)
+  const { html, exact } = useBackgroundHighlighted(value, effectiveLanguage)
+  /** The full exact result, parsed into runs *once* per exact update (not per keystroke) — what both
+   * `applyApproximate`'s own caret-colour lookup and `applyExact`'s own window-slicing (below) are built from.
+   * Memoized on `exact`'s own identity, exactly the caching benefit `RunPatchController`'s own internal cache
+   * used to provide before it was removed (see its own doc comment). */
+  const fullExactRuns = useMemo(() => tokensOf(exact.html), [exact])
 
-  /** The experimental editor's own DOM half (`lib/runPatchController.ts`) — one controller per mounted editor,
-   * reused across every patch; its own module doc explains why it owns this state independently of React
-   * rather than ever re-reading the real DOM. Two effects, not one, each attaching the container itself first
-   * (a cheap no-op when it hasn't actually changed): the approximate patch reacts to exactly what the default
-   * path's own approximation does (`[value, effectiveLanguage]`), the exact patch only to a genuinely *new*
-   * exact result landing (`exact`'s own identity, not `value`) — reading the current `value` inside it, at the
-   * moment it runs, is deliberate (see `RunPatchController.applyExact`'s own doc comment on why a reply for an
-   * older value must be told apart from one for the current value, not just applied). */
-  const runPatchController = useRef<RunPatchController | null>(null)
-  if (!runPatchController.current) runPatchController.current = new RunPatchController()
-  useLayoutEffect(() => {
-    const controller = runPatchController.current!
-    controller.attachContainer(experimental ? highlightRef.current : null)
-    if (!experimental) return
-    controller.applyApproximate(value, exact.html, caretOffset())
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, effectiveLanguage, experimental])
-  useLayoutEffect(() => {
-    const controller = runPatchController.current!
-    controller.attachContainer(experimental ? highlightRef.current : null)
-    if (!experimental) return
-    controller.applyExact(exact.html, exact.value, value)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [exact, experimental])
+  // `lineStartOffsets` once per render, reused everywhere a line/character conversion is needed below — cheap
+  // (a single pass counting `\n`s, no substring allocated for a single line) but there's no reason to pay for
+  // it more than once per `value`.
+  const lineStarts = useMemo(() => lineStartOffsets(value), [value])
+  const lineCount = lineStarts.length
 
   /** How many visual rows each source line actually occupies once wrapped, and the pixel `line-height` it was
    * measured against — `null` until the first measurement lands (the gutter falls back to one row per line until
    * then, the same thing it always showed before this existed). See `lib/wrappedLineRows.ts`'s own doc comment
    * for why this can't be a character-count calculation and has to measure the real, already-wrapped DOM.
+   *
+   * **`rows` is a lazily-filled, best-known array, length `lineCount`, defaulting to `1`** — not "fully measured
+   * or nothing," since virtualization means only the *current window*'s own lines ever have real DOM to measure
+   * against; a line outside it simply hasn't been visited yet. `measureWrappedRows` (below) is what fills it in,
+   * a window's worth at a time, carrying the rest forward across an edit via `carryForwardRows` (which correctly
+   * *shifts* the off-window portion when lines are inserted or deleted, without needing any DOM at all for that).
    *
    * **Tagged with the exact `value` it was measured against** — reported live ("line numbers show as if there
    * was no wrapped line... the first line spans hundreds of actual lines"), not reproduced in several live
@@ -326,74 +301,193 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * current `value` closes the gap: during that one render it falls back to the same honest "not measured yet"
    * flat spacing a fresh measurement always starts from, never a mismatched one. */
   const [wrapMeasure, setWrapMeasure] = useState<{ value: string; rows: number[]; lineHeightPx: number } | null>(null)
-  /** `full`: skip the incremental reuse below and measure every line from scratch — only ever passed `true` by
-   * the frame's own width-change handler, since a width change can move where *every* line wraps, unchanged
-   * text included, which the incremental path's own reuse is specifically not safe against (see
-   * `computeRowsPerLineIncremental`'s own doc comment). An ordinary content edit never needs it. */
+
+  /** One line-number per source line, each individually positioned at the pixel row its line actually starts on
+   * (`wrapMeasure`) — so a line long enough to wrap (when "wrap long lines" is on) still gets exactly one number,
+   * beside its *first* visual row, and the next line's number appears where that next line's text actually is,
+   * not immediately after the wrapped one. Reported live: numbering used to assume one row per line always,
+   * which is only true while nothing wraps. Falls back to that same one-row-per-line assumption — the base pixel
+   * offset is just `index * lineHeightPx` — until the first real measurement lands, or above
+   * `MAX_LINES_FOR_WRAP_MEASUREMENT`, or while "wrap long lines" is off (every line is trivially one row then, so
+   * there's nothing to measure) — or, for one render right after an edit, while `wrapMeasure` is still the
+   * *previous* text's measurement (the `wrapMeasure.value === value` check below; see `wrapMeasure`'s own doc
+   * comment for why trusting it regardless of `value` was the real bug).
+   *
+   * **`settings?.wrapLines === false` always wins, regardless of what `wrapMeasure` holds** — asked for
+   * directly: a wrap-based measurement must never leak into the nowrap gutter. `measureWrappedRows` itself
+   * already skips measuring while wrap is off, but that alone isn't enough to guarantee this: `settings` starts
+   * out `undefined` (not yet loaded), and `undefined !== false`, so a measurement taken in that brief window —
+   * genuinely reflecting wrap-like CSS, since the nowrap class also hasn't applied yet — can land in
+   * `wrapMeasure` just before `settings` resolves to `wrapLines: false`; nothing afterwards ever clears it (the
+   * now-skipped `measureWrappedRows` just leaves it as is), and the plain `wrapMeasure.value === value` check
+   * alone would keep trusting it, tagged with a `value` that still matches. Checking the setting here too closes
+   * that gap outright, rather than relying on the measurement effect's own early return to happen to starve
+   * `wrapMeasure` of ever being asked to update. */
+  const rowsForCurrentValue = settings?.wrapLines === false ? null : wrapMeasure?.value === value ? wrapMeasure.rows : null
+  const gutterRowStarts = useMemo(() => {
+    const lineHeightPx = wrapMeasure?.lineHeightPx ?? FALLBACK_LINE_HEIGHT_PX
+    const starts: number[] = []
+    let row = 0
+    for (let i = 0; i < lineCount; i++) {
+      starts.push(row)
+      row += rowsForCurrentValue?.[i] ?? 1
+    }
+    return { starts, lineHeightPx }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rowsForCurrentValue, wrapMeasure?.lineHeightPx, lineCount])
+
+  /** The line range currently given real DOM — see the component's own module doc for the full design. Starts
+   * covering a *reasonable estimate* of one screen's worth (guessing at the viewport's own size, since the real
+   * frame isn't mounted yet at this point) rather than the whole document: the very first render already goes
+   * through the same windowed path as every later one, so a huge file's first paint never builds the full,
+   * unbounded DOM tree this feature exists to avoid. The mount-time layout effect below corrects this estimate
+   * to the frame's own real size immediately, before paint. */
+  const [windowRange, setWindowRange] = useState<WindowRange>(() => {
+    const estimatedClientHeight = typeof window !== 'undefined' ? window.innerHeight : 800
+    return computeWindowRange(0, estimatedClientHeight, FALLBACK_LINE_HEIGHT_PX, lineStarts, WINDOW_BUFFER_SCREENS)
+  })
+
+  /** Recentres the window around the caret, during render, whenever `value` changed since the last render and
+   * the caret ended up outside the current window — typing, undo/redo, "Insert a path…", anything. The
+   * official React "adjust state during render" pattern: React discards this render's own output and
+   * immediately re-renders with the corrected `windowRange`, before committing anything or running a single
+   * effect, so there's no extra visible frame. Prefers `restoreCaret.current` (the *intended* caret for a
+   * programmatic edit still mid-flight) over the real DOM's own `selectionEnd`, which for a programmatic edit
+   * hasn't been written yet at this point in the render (that happens in the DOM-sync layout effect, below) and
+   * would otherwise still read the *previous* step's caret. */
+  const lastRecenterValueRef = useRef(value)
+  if (lastRecenterValueRef.current !== value) {
+    lastRecenterValueRef.current = value
+    const pendingCaret = restoreCaret.current
+    const effectiveCaret = pendingCaret ? pendingCaret.start : caretOffset()
+    const caretLine = lineAtOffset(lineStarts, effectiveCaret)
+    if (caretLine < windowRange.startLine || caretLine >= windowRange.endLine) {
+      const clientHeight = frameRef.current?.clientHeight ?? 0
+      const lineHeightPx = gutterRowStarts.lineHeightPx
+      const caretRow = gutterRowStarts.starts[caretLine] ?? 0
+      const synthScrollTop = Math.max(0, caretRow * lineHeightPx - clientHeight / 2)
+      setWindowRange(computeWindowRange(synthScrollTop, clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS))
+    }
+  }
+  const windowStartChar = lineStarts[windowRange.startLine] ?? 0
+  const windowEndChar = windowRange.endLine < lineStarts.length ? lineStarts[windowRange.endLine] : value.length
+
+  /** The editor's own DOM half (`lib/runPatchController.ts`) — one controller per mounted editor, reused across
+   * every patch; its own module doc explains why it owns this state independently of React rather than ever
+   * re-reading the real DOM. Two effects, not one, each attaching the container itself first (a cheap no-op when
+   * it hasn't actually changed): the approximate patch reacts to `[value, effectiveLanguage, windowRange]`, the
+   * exact patch only to a genuinely *new* exact result landing, or the window shifting (`[exact, windowRange]`) —
+   * reading the current `value` inside the approximate one, at the moment it runs, is deliberate (see
+   * `RunPatchController.applyExact`'s own doc comment on why a reply for an older value must be told apart from
+   * one for the current value, not just applied).
+   *
+   * **`lastAppliedWindowRef` resets the controller's own live state the moment `windowRange` itself has changed
+   * since the last apply** — diffing the old window's slice against a differently-positioned new one would find
+   * almost nothing in common anyway (the two are offset, not merely appended-to), so there's no reason to try:
+   * the next apply degrades straight to a full rebuild of just the (bounded) window, exactly as `RunPatchController`
+   * already does for a brand new container. Shared between both effects, checked and updated by whichever runs
+   * first in a given commit, so the reset never happens twice for the same window change. */
+  const runPatchController = useRef<RunPatchController | null>(null)
+  if (!runPatchController.current) runPatchController.current = new RunPatchController()
+  const lastAppliedWindowRef = useRef<WindowRange | null>(null)
+  function resetPatcherIfWindowMoved(controller: RunPatchController) {
+    const last = lastAppliedWindowRef.current
+    if (!last || last.startLine !== windowRange.startLine || last.endLine !== windowRange.endLine) {
+      controller.resetLiveState()
+      lastAppliedWindowRef.current = windowRange
+    }
+  }
+  useLayoutEffect(() => {
+    const controller = runPatchController.current!
+    controller.attachContainer(highlightRef.current)
+    resetPatcherIfWindowMoved(controller)
+    const windowValue = value.slice(windowStartChar, windowEndChar)
+    // `fullExactRuns`/`caretOffset()` are deliberately left on the *whole document's* own basis here, not
+    // sliced to the window — see `RunPatchController.applyApproximate`'s own doc comment for why slicing them
+    // on every keystroke would reintroduce the exact `O(whole file)`-per-keystroke cost this session already
+    // found and removed once, for a different function.
+    controller.applyApproximate(windowValue, fullExactRuns, caretOffset())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, effectiveLanguage, windowRange])
+  useLayoutEffect(() => {
+    const controller = runPatchController.current!
+    controller.attachContainer(highlightRef.current)
+    resetPatcherIfWindowMoved(controller)
+    const windowValue = value.slice(windowStartChar, windowEndChar)
+    const [, afterWindowStart] = splitRunsAt(fullExactRuns, windowStartChar)
+    const [windowExactRuns] = splitRunsAt(afterWindowStart, windowEndChar - windowStartChar)
+    controller.applyExact(windowValue, windowExactRuns, exact.value, value)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exact, windowRange])
+
+  /** `full`: discard *every* line's known row count (not just the window's), not only skip reusing it — only
+   * ever passed `true` by the frame's own width-change handler (or a line-height mismatch, below), since either
+   * can move where *every* line wraps, unchanged text included. An ordinary content edit never needs it. */
   const measureWrappedRows = (full = false) => {
     const highlightEl = highlightRef.current
     if (!highlightEl || settings?.wrapLines === false) return
     // **Nothing ever reads this measurement while the gutter itself isn't shown** — `rowsForCurrentValue`/
-    // `gutterRowStarts` (below) are the only consumers of `wrapMeasure`, and both are inside the gutter's own
+    // `gutterRowStarts` (above) are the only consumers of `wrapMeasure`, and both are inside the gutter's own
     // `settings?.lineNumbers !== false` render branch. This check was simply missing until reported live
     // ("it's slower when I disable line numbers altogether too"): every edit still paid for a full wrapped-row
-    // measurement pass — the prefix/suffix scan, `findTextPositions`, `getClientRects()`, all of it — for a
-    // gutter that was never going to be drawn with the result. Checking `wrapLines` alone (above) was never enough,
-    // since the two settings are independent: wrapping can stay on while only the *numbers* are turned off.
+    // measurement pass for a gutter that was never going to be drawn with the result. Checking `wrapLines`
+    // alone (above) was never enough, since the two settings are independent: wrapping can stay on while only
+    // the *numbers* are turned off.
     if (settings?.lineNumbers === false) return
-    // A file this long would mean tens of thousands of Range measurements, a real pause rather than the brief
-    // background pass this is meant to be — the same kind of size-based safety net `useBackgroundHighlighted`
-    // already has for a different reason. Falls back to one row per line, same as before this feature existed.
-    if (value.split('\n').length > MAX_LINES_FOR_WRAP_MEASUREMENT) return
+    // A file this long would mean tens of thousands of Range measurements even for one window's worth, a real
+    // pause rather than the brief background pass this is meant to be — the same kind of size-based safety net
+    // `useBackgroundHighlighted` already has for a different reason. Falls back to one row per line, same as
+    // before this feature existed.
+    if (lineCount > MAX_LINES_FOR_WRAP_MEASUREMENT) return
     const lineHeightPx = parseFloat(getComputedStyle(highlightEl).lineHeight) || 0
+    if (!lineHeightPx) return
     const previous = wrapMeasure
-    // **Reuses the row count of every line found unchanged since the last measurement, instead of re-measuring
-    // the whole file on every edit** — asked for directly, reported live on a big file: "every time
-    // a new line is added, all line numbers disappear for a few seconds then show again correctly." The debounce
-    // above (`WRAP_MEASURE_DEBOUNCE_MS`) already cuts *how often* a measurement runs during a sustained burst,
-    // but each individual run was still `computeRowsPerLine`'s own cost — one `Range.getClientRects()` call *per
-    // source line* — which, on a file with many thousands of lines, is itself a real, multi-second synchronous
-    // block regardless of how rarely it runs: the main thread freezes for that whole stretch, during which the
-    // *real* textarea (an ordinary keystroke's own native DOM insertion needs no React render to show) already
-    // displays the new text while the gutter — a plain React-rendered list — stays frozen on whatever it showed
-    // before the edit, visibly out of step with it ("disappear" is this mismatch, not a literal empty gutter).
-    // `computeRowsPerLineIncremental` turns that per-edit cost from the whole file down to just the handful of
-    // lines that actually changed — typically one, on an ordinary edit, however long the file around them is —
-    // by reusing a line's own last-known row count whenever it's found untouched (a line's row count
-    // depends only on its own text and the box's width, never on its position in the document, so this is exactly
-    // as correct as measuring it again, never an approximation). Guarded on the line-height still matching
-    // `previous`'s own (confirming nothing about the font/zoom has changed since) — a mismatch there falls back to
-    // a full remeasure, the same as having no previous measurement at all.
-    const rows =
-      !full && previous && previous.lineHeightPx === lineHeightPx
-        ? computeRowsPerLineIncremental(highlightEl, value, lineHeightPx, previous.value, previous.rows)
-        : computeRowsPerLine(highlightEl, value, lineHeightPx)
-    if (rows) setWrapMeasure({ value, rows, lineHeightPx })
+    const lineHeightChanged = previous !== null && previous.lineHeightPx !== lineHeightPx
+    // **The off-window portion is carried forward, never remeasured — only the current window ever gets a
+    // fresh `computeRowsPerLine` call, below, and that's *always* a full (not incremental) measurement of
+    // whatever's currently in `highlightEl`.** A window is bounded in size by construction, so there's no
+    // longer a reason to reuse a *previous* measurement of the same window the way the whole-document version
+    // of this function once had to (`carryForwardRows`'s own doc comment has the fuller story, including why
+    // this module no longer has an incremental, DOM-measuring variant at all). `carryForwardRows` itself is
+    // still essential here, though, for a completely different reason: it's what correctly *shifts* the
+    // off-window rows when an edit inserts or deletes lines, using nothing but character comparisons — no DOM,
+    // so it works unconditionally, regardless of what is or isn't currently rendered.
+    const baseRows =
+      full || lineHeightChanged || previous === null
+        ? new Array<number>(lineCount).fill(1)
+        : previous.value === value
+          ? previous.rows
+          : carryForwardRows(previous.value, previous.rows, value) ?? new Array<number>(lineCount).fill(1)
+    const windowText = value.slice(windowStartChar, windowEndChar)
+    const windowRows = computeRowsPerLine(highlightEl, windowText, lineHeightPx)
+    if (!windowRows) return
+    const rows = baseRows.slice()
+    for (let j = 0; j < windowRows.length; j++) rows[windowRange.startLine + j] = windowRows[j]
+    setWrapMeasure({ value, rows, lineHeightPx })
   }
-  // Deferred (not a `useLayoutEffect`) and off `value`/`settings?.wrapLines` only — not `html`, which also changes
-  // for the *approximate* and then the *exact* highlight pass of the very same edit (`useBackgroundHighlighted`):
-  // wrapping only depends on the text itself, never on which colour a span is drawn in, so measuring twice for
-  // one edit would be pure waste. Measuring is real DOM work (`getBoundingClientRect` forces layout), exactly the
-  // kind of thing this file already keeps off a keystroke's own critical path.
+  // Deferred (not a `useLayoutEffect`) and off `value`/`settings?.wrapLines`/`windowRange` — not `html`, which
+  // also changes for the *approximate* and then the *exact* highlight pass of the very same edit
+  // (`useBackgroundHighlighted`): wrapping only depends on the text itself, never on which colour a span is
+  // drawn in, so measuring twice for one edit would be pure waste. Measuring is real DOM work
+  // (`getBoundingClientRect` forces layout), exactly the kind of thing this file already keeps off a
+  // keystroke's own critical path.
   //
   // **Debounced by `WRAP_MEASURE_DEBOUNCE_MS`, not just deferred by one tick** — found live, by CPU-profiling a
   // real 190 KB file while typing a short burst: `getClientRects` (called once per source line by
-  // `computeRowsPerLine`, below) was by far the single hottest thing in the whole profile — roughly 80ms per
-  // keystroke on that file, dwarfing the cost of highlighting itself (the actual thing item #8's own debounce,
-  // `EXACT_DISPATCH_DEBOUNCE_MS` above, was built for) and present identically whether the experimental editor
-  // was on or off, since the gutter is unrelated to which one is rendering the text. A plain `setTimeout(fn, 0)`
-  // still measures on every settled keystroke during continuous typing (each one gets its own macrotask to run
-  // in before the next keystroke's own effect replaces it) — resetting the timer on every further keystroke,
-  // the same lever as the Worker dispatch above, means a sustained burst pays this cost once, after it actually
-  // stops, not once per keystroke.
+  // `computeRowsPerLine`) was by far the single hottest thing in the whole profile, dwarfing the cost of
+  // highlighting itself (the actual thing item #8's own debounce, `EXACT_DISPATCH_DEBOUNCE_MS` above, was built
+  // for) and unrelated to how the text itself gets rendered — the gutter's own cost is entirely independent of
+  // that. A plain `setTimeout(fn, 0)` still measures on every settled keystroke during continuous typing (each
+  // one gets its own macrotask to run in before the next keystroke's own effect replaces it) — resetting the
+  // timer on every further keystroke, the same lever as the Worker dispatch above, means a sustained burst pays
+  // this cost once, after it actually stops, not once per keystroke. `windowRange` is in the dependency list so
+  // a scroll that shifts the window also schedules a (still debounced — a fast, sustained scroll shouldn't pay
+  // this on every tick either) measurement of whatever just came into view.
   useEffect(() => {
     const id = setTimeout(measureWrappedRows, WRAP_MEASURE_DEBOUNCE_MS)
     return () => clearTimeout(id)
-    // `settings?.lineNumbers` added alongside `wrapLines` so turning the gutter back *on* mid-session schedules a
-    // real measurement at once, rather than leaving `wrapMeasure` stuck on whatever (possibly long-stale) value it
-    // held from before it was turned off.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [value, settings?.wrapLines, settings?.lineNumbers])
+  }, [value, settings?.wrapLines, settings?.lineNumbers, windowRange])
 
   // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
   // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the
@@ -449,6 +543,18 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   }
   useLayoutEffect(fit, [value])
 
+  /** Corrects the window's own initial estimate (above) to the frame's real, just-mounted size — runs once,
+   * immediately after the first commit, before paint, so the person never sees the estimate's own window, only
+   * the corrected one. Reads `gutterRowStarts` directly from this render's own closure rather than through a
+   * ref: nothing could have changed `value`/`settings` between the first render and this effect running (it's
+   * mount-only), so there's no staleness to guard against here the way a *later*-firing effect would need to. */
+  useLayoutEffect(() => {
+    const frame = frameRef.current
+    if (!frame) return
+    setWindowRange(computeWindowRange(frame.scrollTop, frame.clientHeight, gutterRowStarts.lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   /** Keeps the frame scrolled to its own bottom through a highlight update — approximate or exact — when the
    * caret is at (or within a few characters of) the very end of the text and that end is no longer visible.
    * Reported live: appending new lines at the end of a file could leave the view short of them once the
@@ -473,7 +579,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * otherwise get yanked down to that end on every keystroke, which isn't what was asked for. Runs after
    * `fit`'s own effect above (declared earlier, so it always resizes first) and keys off `html`, not `value` —
    * `html` changes for *both* the approximate and the exact pass of the same edit, which is exactly the second
-   * update this needs to catch that a plain `[value]` effect wouldn't fire for again. */
+   * update this needs to catch that a plain `[value]` effect wouldn't fire for again. Still correct under
+   * windowing: the caret is always within the current window by construction, so when it's at the document's
+   * own end, the window's own rendered content ends there too, and `highlightEl`'s bottom genuinely reflects
+   * it. */
   useLayoutEffect(() => {
     const frame = frameRef.current
     const highlightEl = highlightRef.current
@@ -495,6 +604,20 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     redraw()
   }
   const lastFrameWidth = useRef<number | null>(null)
+  /** The pre-existing `ResizeObserver` effect below is mount-only (`[]` deps, so the observer itself isn't
+   * endlessly resubscribed on every render) — which means its callback's own closure over `measureWrappedRows`
+   * is frozen at mount. Before virtualization this was already a known, narrow, pre-existing bug (a resize
+   * after an edit would remeasure against the *original* `value`, documented and deliberately left alone as
+   * out of scope for this feature). Virtualization makes the same stale closure substantially worse: it also
+   * freezes `windowRange`/`windowStartChar`/`windowEndChar`/`wrapMeasure` at mount, so a resize *after the
+   * window has ever moved* writes its freshly-measured rows at the wrong absolute line indices (or slices a
+   * `windowText` that no longer matches what's actually rendered in `highlightEl`, which can make
+   * `computeRowsPerLine` return `null` and silently do nothing) — found live: scrolling a huge file away from
+   * its mount-time window, then narrowing the frame, left the gutter showing flat one-row-per-line spacing
+   * even though the content was visibly wrapping into several rows. A ref holding the *latest* function avoids
+   * this without touching the observer's own subscribe/unsubscribe lifecycle (still mount-only, still cheap). */
+  const measureWrappedRowsRef = useRef(measureWrappedRows)
+  measureWrappedRowsRef.current = measureWrappedRows
   useEffect(() => {
     const frame = frameRef.current
     if (!frame || typeof ResizeObserver === 'undefined') return
@@ -503,13 +626,12 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       // A width change (the window resized, a split pane dragged) can change where every wrapped line now
       // breaks — a height-only change (typing, which `fit()` above already reacts to) can't, and happens far
       // more often, so this is narrowed to width specifically rather than re-measuring on every resize tick.
-      // `full`: unlike an ordinary content edit, a width change can move where *every* line wraps, unchanged
-      // text included, so the incremental reuse `measureWrappedRows` otherwise prefers would be wrong here —
-      // every line's own row count has to be measured fresh against the new width.
+      // `full`: a width change can move where *every* line wraps, unchanged text included, so every line's
+      // known row count — not just the current window's — has to be treated as stale.
       const width = entries[0]?.contentRect.width
       if (width !== undefined && width !== lastFrameWidth.current) {
         lastFrameWidth.current = width
-        measureWrappedRows(true)
+        measureWrappedRowsRef.current(true)
       }
     })
     observer.observe(frame)
@@ -521,14 +643,36 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     if (visibleLineRaf.current !== null) cancelAnimationFrame(visibleLineRaf.current)
   }, [])
 
-  /** The scroll frame's own `scroll` event, throttled to at most once per animation frame — mirror-scroll's
-   * "the editor scrolled" half. `lineHeight` comes from the box itself (`getComputedStyle` always resolves it to
-   * an absolute px value, however it was authored), matching the gutter's own font/line-height exactly. */
+  /** The scroll frame's own `scroll` event. Two independent things happen here, both reading the frame's own
+   * current `scrollTop`/`clientHeight` directly (never throttled for the first, since it's cheap arithmetic —
+   * no DOM measurement, no layout, just comparisons against numbers already in hand):
+   *
+   * 1. **The virtualized window's own hysteresis check**: once the *unbuffered* visible range gets within one
+   *    screen of the current window's own edge (the buffer `WINDOW_BUFFER_SCREENS` built in is being eaten
+   *    into), recompute a fresh, fully-buffered window from the current scroll position and adopt it. Checking
+   *    the remaining margin — not comparing the newly-*desired* window against the current one directly — is
+   *    what keeps a one-pixel scroll from thrashing a rebuild of a many-hundred-line window on every tick: right
+   *    after adopting a fresh window the margin on both sides is a full `WINDOW_BUFFER_SCREENS` again, so the
+   *    next shift only fires after genuinely scrolling most of that buffer away.
+   * 2. **Mirror-scroll's own "the editor scrolled" half** (rAF-throttled, unchanged) — `lineHeight` comes from
+   *    the box itself (`getComputedStyle` always resolves it to an absolute px value, however it was authored),
+   *    matching the gutter's own font/line-height exactly. */
   function handleScroll() {
+    const frame = frameRef.current
+    if (frame) {
+      const lineHeightPx = gutterRowStarts.lineHeightPx
+      const windowStartRow = windowRange.startLine <= 0 ? -Infinity : gutterRowStarts.starts[windowRange.startLine]
+      const windowEndRow = windowRange.endLine >= lineCount ? Infinity : gutterRowStarts.starts[windowRange.endLine]
+      const screenRows = Math.max(1, frame.clientHeight / lineHeightPx)
+      const visibleStartRow = frame.scrollTop / lineHeightPx
+      const visibleEndRow = visibleStartRow + screenRows
+      if (visibleStartRow - windowStartRow < screenRows || windowEndRow - visibleEndRow < screenRows) {
+        setWindowRange(computeWindowRange(frame.scrollTop, frame.clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS))
+      }
+    }
     if (!onVisibleLineChange || visibleLineRaf.current !== null) return
     visibleLineRaf.current = requestAnimationFrame(() => {
       visibleLineRaf.current = null
-      const frame = frameRef.current
       const input = inputRef.current
       if (!frame || !input) return
       const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || 20
@@ -593,41 +737,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   )
 
   const h = history.current!
-  const lineCount = value.split('\n').length
   const gutterDigits = Math.max(2, String(lineCount).length)
-  /** One line-number per source line, each individually positioned at the pixel row its line actually starts on
-   * (`wrapMeasure`) — so a line long enough to wrap (when "wrap long lines" is on) still gets exactly one number,
-   * beside its *first* visual row, and the next line's number appears where that next line's text actually is,
-   * not immediately after the wrapped one. Reported live: numbering used to assume one row per line always,
-   * which is only true while nothing wraps. Falls back to that same one-row-per-line assumption — the base pixel
-   * offset is just `index * lineHeightPx` — until the first real measurement lands, or above
-   * `MAX_LINES_FOR_WRAP_MEASUREMENT`, or while "wrap long lines" is off (every line is trivially one row then, so
-   * there's nothing to measure) — or, for one render right after an edit, while `wrapMeasure` is still the
-   * *previous* text's measurement (the `wrapMeasure.value === value` check below; see `wrapMeasure`'s own doc
-   * comment for why trusting it regardless of `value` was the real bug).
-   *
-   * **`settings?.wrapLines === false` always wins, regardless of what `wrapMeasure` holds** — asked for
-   * directly: a wrap-based measurement must never leak into the nowrap gutter. `measureWrappedRows` itself
-   * already skips measuring while wrap is off, but that alone isn't enough to guarantee this: `settings` starts
-   * out `undefined` (not yet loaded), and `undefined !== false`, so a measurement taken in that brief window —
-   * genuinely reflecting wrap-like CSS, since the nowrap class also hasn't applied yet — can land in
-   * `wrapMeasure` just before `settings` resolves to `wrapLines: false`; nothing afterwards ever clears it (the
-   * now-skipped `measureWrappedRows` just leaves it as is), and the plain `wrapMeasure.value === value` check
-   * alone would keep trusting it, tagged with a `value` that still matches. Checking the setting here too closes
-   * that gap outright, rather than relying on the measurement effect's own early return to happen to starve
-   * `wrapMeasure` of ever being asked to update. */
-  const rowsForCurrentValue = settings?.wrapLines === false ? null : wrapMeasure?.value === value ? wrapMeasure.rows : null
-  const gutterRowStarts = useMemo(() => {
-    const lineHeightPx = wrapMeasure?.lineHeightPx ?? FALLBACK_LINE_HEIGHT_PX
-    const starts: number[] = []
-    let row = 0
-    for (let i = 0; i < lineCount; i++) {
-      starts.push(row)
-      row += rowsForCurrentValue?.[i] ?? 1
-    }
-    return { starts, lineHeightPx }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowsForCurrentValue, wrapMeasure?.lineHeightPx, lineCount])
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -645,39 +755,36 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
         <div className="code-editor-rows">
           {settings?.lineNumbers !== false && (
             <div className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `calc(${gutterDigits}ch + 16px)` }}>
-              {Array.from({ length: lineCount }, (_, i) => (
-                // A position:absolute child is placed relative to its containing block's *padding* edge, ignoring
-                // that padding for its own offset — so the 8px top offset (matching `.code-editor-highlight`'s
-                // own top padding, App.css) has to be added back here explicitly; `.code-editor-gutter` itself no
-                // longer has any padding of its own left to do this for free.
-                <span key={i} className="code-editor-gutter-number" style={{ top: `${8 + gutterRowStarts.starts[i] * gutterRowStarts.lineHeightPx}px` }}>
-                  {i + 1}
-                </span>
-              ))}
+              {/* Only the current window's own lines get a real `<span>` — see the component's own module doc for
+                  why this is safe (each one's `top` already comes from the *full* `gutterRowStarts.starts`, so
+                  removing some simply leaves the gaps between them blank, never misplacing the ones that remain). */}
+              {Array.from({ length: windowRange.endLine - windowRange.startLine }, (_, j) => {
+                const i = windowRange.startLine + j
+                return (
+                  // A position:absolute child is placed relative to its containing block's *padding* edge, ignoring
+                  // that padding for its own offset — so the 8px top offset (matching `.code-editor-highlight`'s
+                  // own top padding, App.css) has to be added back here explicitly; `.code-editor-gutter` itself no
+                  // longer has any padding of its own left to do this for free.
+                  <span key={i} className="code-editor-gutter-number" style={{ top: `${8 + gutterRowStarts.starts[i] * gutterRowStarts.lineHeightPx}px` }}>
+                    {i + 1}
+                  </span>
+                )
+              })}
             </div>
           )}
           <div className="code-editor-content">
-            {/* Two genuinely different elements, not one re-purposed — `key` forces a clean remount rather than
-                React trying to reconcile "has dangerouslySetInnerHTML" into "has none" (or back) on the same
-                node across a mode switch. The experimental one is given no children/`dangerouslySetInnerHTML`
-                prop at all: only `RunPatchController` (above) ever touches what's inside it — see its own
-                module doc for why that's what makes mixing imperative DOM management with React safe here. */}
-            {experimental ? (
-              <pre
-                key="experimental"
-                ref={highlightRef}
-                className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
-                aria-hidden="true"
-              />
-            ) : (
-              <pre
-                key="default"
-                ref={highlightRef}
-                className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
-                aria-hidden="true"
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
-            )}
+            {/* No children/`dangerouslySetInnerHTML` prop at all: only `RunPatchController` (above) ever touches
+                what's inside this element — see its own module doc for why that's what makes mixing imperative
+                DOM management with React safe here. `paddingTop` re-anchors the window's own rendered content to
+                the Y position it would actually have in the full, unvirtualized document — the existing fixed
+                8px (App.css) plus the pixel height of every line *before* the window, read from the same
+                `gutterRowStarts` the gutter's own numbers use, so the two always agree. */}
+            <pre
+              ref={highlightRef}
+              className={`code-editor-highlight ${settings?.showWhitespace ? 'code-editor-show-whitespace' : ''}`}
+              aria-hidden="true"
+              style={{ paddingTop: 8 + (gutterRowStarts.starts[windowRange.startLine] ?? 0) * gutterRowStarts.lineHeightPx }}
+            />
             <textarea
               ref={inputRef}
               className="code-editor-input"

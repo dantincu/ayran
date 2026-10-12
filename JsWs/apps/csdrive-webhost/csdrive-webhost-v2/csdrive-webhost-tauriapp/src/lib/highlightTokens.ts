@@ -1,4 +1,4 @@
-/** A `highlight()` result (`lib/highlight.ts`), broken into **runs** — the data the experimental editor's own DOM
+/** A `highlight()` result (`lib/highlight.ts`), broken into **runs** — the data the editor's own DOM
  * patcher (`lib/runPatchController.ts`) diffs and applies, instead of replacing the whole highlighted copy's
  * `innerHTML` on every change (`components/CodeEditor.tsx`'s own module doc, "Editor performance" in CLAUDE.md).
  *

@@ -760,6 +760,199 @@ Node-tested (`diffLines`, pure, no DOM — an ad-hoc script matching this projec
 
 Verified live (isolated data folder, desktop): `npx tsc --noEmit` clean after both fixes. The Node stress test (ad-hoc, matching this project's own pattern for a module with no committed test file yet) is the load-bearing verification for the three correctness gaps — a live CDP re-profile of the original 22.3ms-vs-141.3ms comparison wasn't repeated for this follow-up, since nothing about the *measurement cost itself* changed (only correctness and the unrelated `lineNumbers` gate did); the stress test's own 100,000+ cases (plus 50,000 end-to-end row-array reconstructions) are what give confidence the replacement is both safe and, for the realistic localized-edit case, allocation-free where `diffLines` wasn't.
 
+## The experimental editor is no longer experimental — it's the only one
+
+**"Make the experimental editor the only editor for our app (so remove that checkbox from the settings page)."**
+Once the token-patching renderer (`lib/runPatchController.ts`) had been live for a while with no measured
+regression and the flicker it was built to remove gone, keeping the older, simpler full-`dangerouslySetInnerHTML`
+path around — reachable only through an opt-in Settings checkbox, off by default — had nothing left to earn its
+own continued existence as a second code path to keep correct. Removed outright rather than left as dead code
+behind a setting nobody could reach any more:
+
+- **`editorSettings.ts`**: `experimentalEditor` dropped from `EditorSettings`, `DEFAULTS` and `KEYS` entirely — a
+  stored `editor.experimentalEditor` value from before this change is simply never read again (the generic
+  `global_settings` table needs no migration for an orphaned key).
+- **`SettingsTab.tsx`**: the checkbox and its row removed; `setEditorFlag`'s own key union no longer names it.
+- **`CodeEditor.tsx`**: `useBackgroundHighlighted` lost its `experimental` parameter and the `caretOffset` one it
+  only needed for the removed branch — it now unconditionally does what the experimental path always did (a
+  cheap, identity-only placeholder for `html`, since nothing has rendered that string directly since
+  `RunPatchController` took over); the two `RunPatchController` effects lost their `if (!experimental) return`
+  guards and the `experimental ? highlightRef.current : null` ternary, always attaching and always patching now;
+  the render itself lost the `experimental ? (...) : (...)` branch — one `<pre>`, with no
+  `dangerouslySetInnerHTML` prop, replaces the two differently-keyed elements that used to let React remount
+  cleanly across a mode switch that can no longer happen.
+- **`runPatchController.ts`**/**`highlightTokens.ts`**: doc comments that described "the experimental path's
+  counterpart to the default path's…" rewritten to describe the one mechanism directly, with a short historical
+  pointer back to `CodeEditor.tsx`'s own module doc rather than repeating the whole story in each place.
+
+Verified live (isolated data folder, desktop): `npx tsc --noEmit` and `npm run build` both clean. **Not
+re-exercised live in this pass** — the change is purely subtractive (deleting the now-unreachable branch and
+its guard conditions, not introducing new logic), and the one remaining path is exactly the experimental
+renderer this file's own history already live-verified extensively (undo/redo, Tab, Page Up/Down, the
+dropped-keystroke fix, the gutter's wrapped-row measurement, all of it) before this change ever touched it.
+
+## Virtualizing the editor: only the visible window (plus buffer) is ever real DOM
+
+**"Only generate the markup that is currently visible (plus 3 or so screens before and after the current
+screen) and only generate additional markup when needed (the user scrolls, or navigates with the keyboard
+in the editor). This should affect both the code itself and the line numbers."** The prior architecture
+(above) already made the DOM *patching* cheap and localised — but every full rebuild (a freshly opened
+file, a width change, a window-shift) still built the overlay's and the gutter's DOM for the **whole file**,
+and a file's own node count (one per token, one more per whitespace character) was flagged as a known,
+unaddressed cost on a very large file ("The experimental, token-patching code editor" above: "this bookkeeping
+cost scales with file size"). Discussed with the person first, since this changes the architecture, not a
+bug: two forks were settled before any code — **unvisited regions of a wrapped file use an estimate (one row
+per line) until actually scrolled into view and measured, self-correcting from there** (the same trade-off
+every virtualized variable-height list makes), and **it applies unconditionally, to every file size, with no
+line-count threshold** — a small file's own window simply ends up covering the whole thing, which doubles as
+this feature's own built-in regression check.
+
+**Tokenisation stays whole-document; only *materialising* it into DOM is windowed.** `highlight()`, the
+Worker (`highlightWorker.ts`) and `HighlightScheduler` are untouched — investigated directly before deciding
+this: the Markdown and HTML scanners carry state across lines (an open fence, an open `<!--` comment, a raw
+`<script>`/`<style>` body found by a forward search), so re-tokenising only a visible slice would mean first
+reconstructing that state from everything before it — re-deriving most of the cost windowing exists to
+remove, for a cost that was never the measured bottleneck anyway (it already runs off the main thread).
+`lib/highlightTokens.ts`'s `tokensOf` still parses the **whole** exact html into one `Run[]` list — cheap, a
+plain string scan, not DOM — and `CodeEditor.tsx` memoises it once per exact update
+(`fullExactRuns = useMemo(() => tokensOf(exact.html), [exact])`). Only a **slice** of that list, cut with the
+already-existing `splitRunsAt`, is ever turned into real nodes.
+
+**`windowRange` (`{startLine, endLine}`, end-exclusive)** is state, recomputed by a new, pure,
+binary-search-based `computeWindowRange(scrollTop, clientHeight, lineHeightPx, starts, bufferScreens)`
+(`lib/wrappedLineRows.ts`) — `WINDOW_BUFFER_SCREENS = 3`, per the ask. Three things move it:
+- **The initial estimate, corrected once mounted.** The very first render can't know the frame's real size
+  yet, so it guesses one screen's worth from `window.innerHeight` — a huge file's first paint still goes
+  through the same windowed path as every later one, never the whole, unbounded tree this feature exists to
+  avoid — and a dedicated **mount-only** `useLayoutEffect` corrects it to the frame's own real `clientHeight`
+  immediately, before paint. Deliberately its *own* effect, not folded into the existing `ResizeObserver`
+  callback below — see why, two paragraphs down.
+- **Scrolling**, via `handleScroll`'s own hysteresis check (cheap arithmetic, no DOM, run unthrottled): only
+  once the *unbuffered* visible range gets within one screen of the window's own edge — the buffer being
+  eaten into — is a fresh, fully-rebuffered window computed and adopted. This is what keeps a one-pixel
+  scroll from rebuilding a many-hundred-line window on every tick; right after adopting one, the margin on
+  both sides is a full `WINDOW_BUFFER_SCREENS` again.
+- **The caret moving outside the current window** (typing, undo/redo, "Insert a path…", anything) —
+  recentred **during render itself**, the official React "adjust state during render" pattern: a ref tracks
+  the last `value` seen, and the moment it's changed, the caret's line is checked against `windowRange`; if
+  outside, `setWindowRange(...)` is called synchronously inside the render, which makes React discard this
+  render's output and immediately re-render with the corrected window, before anything commits or an effect
+  runs — no extra visible frame. Reads `restoreCaret.current` (the *intended* caret of a still-in-flight
+  programmatic edit) in preference to the DOM's own `selectionEnd`, which for a programmatic edit hasn't been
+  written yet at this point in the render.
+
+**A window move forces a clean rebuild; an edit *within* a stable window still uses the existing minimal-diff
+patching.** `RunPatchController` gained one new public method, `resetLiveState()` (the three lines
+`attachContainer` already had, factored out so they're callable without the container element itself
+changing) — called whenever `windowRange` has changed since the controller's own last apply (tracked via a
+shared `lastAppliedWindowRef`, checked and updated by whichever of the two patcher effects runs first in a
+commit, so the reset never happens twice for one window change). Diffing the old window's slice against a
+*differently-positioned* new one would find almost nothing in common anyway (the two are offset, not merely
+appended-to) — there's no reason to try, and rebuilding is cheap precisely because a window is bounded.
+
+**`applyApproximate`'s own basis is deliberately asymmetric** — `windowValue` (what to render) is sliced to
+the window, but `exactRuns`/`caretOffset` are kept **document-absolute, unsliced**. This was caught before
+it shipped, not after: the first draft sliced both: `splitRunsAt` is itself an `O(whole document)` walk, and
+slicing it on *every keystroke* (the approximate path runs on every one) would have reintroduced the exact
+class of per-keystroke, whole-file cost this same session already found and fixed once, for a different
+function (`diffLines`'s own O(file) allocation, in "Debouncing the per-keystroke cost..." above). Keeping
+them unsliced is safe because `classAtOffset(exactRuns, caretOffset)` only needs internal consistency
+between the two (both already share the document's own basis), never a comparison against the window-relative
+`newValue` directly — slicing is only genuinely unavoidable in `applyExact`, which runs on the *debounced*
+exact reply, not every keystroke.
+
+**The wrapped-row array (`wrapMeasure.rows`) became "best known so far," not "fully measured or nothing."**
+`computeRowsPerLineIncremental` — the whole-document incremental measurer built for the earlier gutter-perf
+fix — was **deleted outright**, not adapted: its entire premise (that `highlightEl` holds the *whole*
+document, so any changed line, anywhere, can be found and remeasured in place) is incompatible with a
+windowed `highlightEl`, which now only ever contains the current window's own text. Its DOM-free
+prefix/suffix logic — all three correctness-gap fixes from that earlier investigation, preserved verbatim —
+was extracted into a new, pure, exported `carryForwardRows(previousValue, previousRows, value)`
+(`lib/wrappedLineRows.ts`): given the *old*, best-known row-count array and the old/new text, it returns a
+full-length array where the proven-unchanged prefix/suffix lines keep their old counts and the changed middle
+defaults to `1` — no DOM, no incremental *measurement* at all, just correctly *shifting* indices across an
+edit that inserts or deletes lines. `measureWrappedRows` (`CodeEditor.tsx`) now: calls `carryForwardRows` (or
+starts an all-`1` array, on a width change or a brand-new file) to get the full-length baseline, then always
+runs a **fresh, full** `computeRowsPerLine` (unchanged — it was never the whole-document version that had an
+incremental cost, only the *measurement* did) on just the current window's own text, and splices that
+result in at the window's absolute line offsets. A window is small and bounded by construction, so there's
+no longer a reason for an incremental-*within-the-window* variant — a fresh measurement of a few hundred
+lines costs nothing like a fresh measurement of fifty thousand did.
+
+**A real bug was found live, not by inspection, in the pre-existing (not newly written) `ResizeObserver`
+effect** — mount-only (`[]` deps, so the observer itself isn't endlessly resubscribed), its callback's own
+closure over `measureWrappedRows` was already known to be frozen at mount, a narrow, acknowledged, deliberately-
+left-alone gap *before* this session (a resize after an edit would remeasure against the original `value`).
+Virtualization made the exact same staleness substantially worse without anyone having to introduce a new
+bug: the frozen closure also freezes `windowRange`/`windowStartChar`/`windowEndChar`/`wrapMeasure` at mount,
+so a resize **after the window has ever moved** writes freshly-measured rows at the *wrong* absolute line
+indices, or slices a `windowText` against content `highlightEl` no longer holds. Caught live on a 5,000-line
+file: scrolled far from its mount-time window, then narrowed the editor frame — the content visibly wrapped
+(confirmed directly with a hand-built `Range.getClientRects()` check across the wrapped line's own text
+nodes, independent of the gutter's own math) while the gutter kept showing flat, unwrapped one-row-per-line
+spacing, silently stale. **Fixed with a ref, not by touching the observer's own subscribe/unsubscribe
+lifecycle** (deliberately left mount-only, exactly as the pre-existing design already had it, to avoid
+resubscribing a `ResizeObserver` on every render for no reason): `measureWrappedRowsRef.current =
+measureWrappedRows` is set in the render body on every render (a plain, synchronous mutation, not an effect —
+safe since refs don't trigger re-renders), and the `ResizeObserver` callback calls
+`measureWrappedRowsRef.current(true)` instead of the function it closed over at mount. This is a genuine,
+in-scope fix — it's a correctness regression this very feature introduced into existing code being actively
+touched, not the same narrow pre-existing gap being left alone a second time.
+
+**One deliberately-chosen test-methodology trap, recorded so it isn't walked into again**: dispatching many
+synthetic `PageDown` `keydown` events back-to-back, in one synchronous script loop with no `await` between
+them, does **not** replicate a real, rapid keypress burst — `CodeEditor.tsx`'s own Page Up/Down handler reads
+`e.currentTarget.selectionStart`/`selectionEnd` *synchronously* at dispatch time but applies the move inside a
+deferred `setTimeout(..., 0)` (the same "defer the handling, not the shortcut detection" pattern this file's
+own "Editor performance" section already documents). Firing all of them before any deferred callback runs
+means every one reads the *same*, stale starting selection, so the caret ends up moved by only one page
+while the frame's own `scrollTop` (read live, inside each deferred callback) advances by the full count —
+a real, observed divergence between the caret and the window it should be inside, caused entirely by the
+test harness's own unrealistic pacing, not a bug in the editor. Spacing each dispatch with a short real delay
+(`await new Promise(r => setTimeout(r, 15))` between presses) reproduces the real, sequential behaviour
+correctly.
+
+**The real `<textarea>` is never virtualized** — it still holds the whole file's text, confirmed live: a
+20,000-line, 1.3 MB file's real `<textarea>.value.length` measured exactly `1300000` throughout, while the
+rendered overlay (`.code-editor-highlight`) held only a few hundred run nodes and the gutter only the current
+window's own `<span>`s — at the very top of a fresh file, 117 gutter numbers for a 20,001-"line" file (the
+file's own trailing newline adds one degenerate final line, correctly counted); scrolling to the middle
+(`scrollTop` set to roughly half of `scrollHeight`) correctly shifted the window to lines 9913–10117, with
+the overlay's own `textContent` matching those exact lines byte-for-byte, not a placeholder; a jump straight
+to a **never-before-visited** region at the very end of a different, never-touched 5,000-line file (no
+intermediate scroll positions visited at all) landed the window at lines 4886–5001 with correct, byte-exact
+content and no error — the "estimate, self-correct" trade-off settles instantly for a `nowrap` region since
+every line is already known to be exactly one row; a wrapped file's own scrollbar proportions would be the
+part that visibly settles, per the accepted design, though this specific test file's lines didn't wrap at
+its default width. An in-window edit (a real `execCommand('insertText', ...)` three characters into the
+middle of the file, at the caret) landed correctly in both the textarea and the overlay, confirmed via
+`internal_clipboard`-free direct DOM reads, with the window only shifting afterward because of the browser's
+own native "keep the caret visible" scroll nudge on an edit near the viewport's edge — not a spurious full
+rebuild. **Undo across a window boundary**: with the window scrolled back to the very top (lines 1–117) and
+the single edit still in the undo history, clicking **Undo** correctly reverted the text (confirmed via the
+real `taLen`) and recentred the window all the way to lines 19899–20001 — because `UndoHistory`'s own
+bootstrap snapshot (pre-existing, unrelated to this feature) puts the caret at the *end* of the file for the
+very first history entry, and the window correctly followed it there, exactly as the render-time recenter
+logic is supposed to. **Redo** brought the edit — and the window — back to lines 9984–10214, following the
+restored caret once more. Real, correctly-paced `PageDown`/`PageUp` sequences (see the methodology note
+above) moved the caret and kept the window following it at every step, including clamping cleanly at both
+ends with no overshoot or error. The small-file regression check: a 5-"line" (6, counting the trailing empty
+line) file rendered with the gutter and the overlay covering it exactly, byte-identical to the real
+`<textarea>.value` — the window simply covers the whole file when it's smaller than the buffer, with no
+virtualization artifact visible. The width-change/resize path (both narrowing and widening back) is covered
+by the `ResizeObserver` bug and its fix above.
+
+**Not separately exercised live in this pass**: `NoteEditPage.tsx`'s mirror-scroll (`onVisibleLineChange`)
+and keyboard scroll-nudge (`onScrollNudge`) — both read only `frame.scrollTop`/`getComputedStyle(...).lineHeight`
+directly, never anything about what's currently rendered in the DOM, so nothing about windowing the overlay or
+gutter changes what they compute; the code paths themselves are unchanged from before this feature. A CPU
+profile specifically isolating the keystroke cost on a huge file (as opposed to the DOM-node-count and
+correctness checks above) wasn't separately captured this pass — the node-count reduction itself (a few
+hundred run nodes and gutter spans instead of tens of thousands) is the direct, structural reason a keystroke
+can no longer cost `O(file)` on this path, the same reasoning the earlier, now-superseded whole-document
+incremental-measurement work already relied on for its own CPU-profile comparisons. `npx tsc --noEmit` and
+`npm run build` both clean throughout; no Rust change, so `cargo test --lib` doesn't apply.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.

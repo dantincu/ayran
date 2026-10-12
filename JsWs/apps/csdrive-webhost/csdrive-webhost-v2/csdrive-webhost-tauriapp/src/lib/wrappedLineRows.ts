@@ -65,6 +65,14 @@ export function findTextPositions(root: Node, offsets: number[]): { node: Text; 
  * scroll already reads). Returns `null` when there's nothing to measure against yet (`highlightEl` not mounted),
  * leaving the caller to fall back to "one row per line" until the next render provides it.
  *
+ * **`value` doesn't have to be the whole file.** `CodeEditor.tsx`'s own virtualized rendering only ever keeps a
+ * bounded *window* of lines as real DOM, and calls this with that window's own text whenever the window itself
+ * changes or its content is edited — correct for exactly the same reason it's always been correct for a whole
+ * small file: nothing here assumes anything about what, if anything, exists outside `highlightEl`'s own
+ * content. A window is small enough that measuring it fresh, in full, on every change needs no incremental
+ * reuse at all (see `carryForwardRows`'s own doc comment for the fuller story, and why a *previous* version of
+ * this module had one specifically for this function, before windowing made it unnecessary).
+ *
  * **Measures each line's own *span* (`[lineStart, lineEnd)`, including its own terminating `\n`), never a
  * *collapsed* (zero-width) `Range` sitting at the bare offset** — found live, reported as a line's number
  * landing dozens of rows away from where its content actually begins: a collapsed `Range`'s own
@@ -156,41 +164,37 @@ export function countTrailingUnchangedLines(starts: number[], suffixStart: numbe
   return count
 }
 
-/** Like `computeRowsPerLine`, but reuses the row *count* of every line that's provably unchanged between
- * `previousValue` and `value` instead of asking the browser to measure it again — a line's own row count depends
- * only on its own text and the box's own width, never on where it sits in the document, so a line that's
- * genuinely identical in both texts keeps exactly the count it already had. Only the genuinely changed run in the
- * middle (almost always just the one or few lines actually being typed in, on an ordinary edit) is measured at
- * all.
+/** The pure, DOM-free half of reusing a line's own row count across an edit: which lines at the start and end
+ * of `value` are provably unchanged from `previousValue`, carrying their known row counts forward from
+ * `previousRows` at their new (possibly shifted, if lines were inserted or deleted) indices. Every line in
+ * between — the "changed" range — is left at `1`, the same "not yet known" default `computeRowsPerLine`'s own
+ * fallback already uses before any real measurement exists; this function never touches the DOM at all, so it
+ * cannot be the one to replace that default with a real count.
  *
- * **Why this matters**: `computeRowsPerLine`'s own cost is one `Range.getClientRects()` call *per source line* —
- * fine for a short file, measurably slow for a big one (reported live, on a file with many thousands of lines:
- * "every time a new line is added, all line numbers disappear for a few seconds then show again correctly," the
- * synchronous measurement blocking the main thread for however long thousands of individual layout-forcing calls
- * take, well past the debounce that already protects the *dispatch* of this work — see `CodeEditor.tsx`'s own
- * `WRAP_MEASURE_DEBOUNCE_MS` doc comment for that separate, already-fixed cost). Reusing almost every line's
- * already-known count turns that per-edit cost from *O(the whole file)* into *O(the few lines that actually
- * changed)* — typically one — regardless of how long the file around them is.
+ * **Why a *separate*, DOM-free function, where an earlier version of this module measured the changed range
+ * directly (`computeRowsPerLineIncremental`, since removed).** That version assumed `highlightEl` always held
+ * the *entire* document, so it could resolve a changed line's own position by walking straight into the live
+ * DOM. Once the editor's own rendering became virtualized (`CodeEditor.tsx` — only a window of lines around
+ * what's visible is ever real DOM), that assumption stopped holding: `highlightEl` now holds only a bounded
+ * window's worth of text, so a changed line *outside* that window has nothing in the DOM to measure at all —
+ * and a window's own content is small enough that measuring it fresh, in full, costs nothing worth optimizing
+ * further (see `computeRowsPerLine`'s own doc comment for why windowing removed the need for *any* incremental
+ * reuse within one window). What's left genuinely DOM-free — figuring out *which* row counts can simply be
+ * carried over by position, regardless of whether anything is currently rendered to measure the rest — is
+ * exactly this function, kept because `CodeEditor.tsx` still needs it to correctly shift the *off-window*
+ * portion of its own lazily-measured row array across an edit that inserts or deletes lines; the row-count data
+ * for the current window itself is simply overwritten with a fresh `computeRowsPerLine` call afterward.
  *
  * **Finds the unchanged run by the longest common prefix/suffix of the two raw *strings*, never by splitting
- * either one into an array of line strings first.** A first version of this function did exactly that —
- * `oldLines = previousValue.split('\n')`, `newLines = value.split('\n')`, then a per-line `===` comparison
- * (`diffLines`, since removed) — which was correct, but paid for two full `String.split('\n')` allocations, *and*
- * then the line-by-line comparison itself, proportional to the *whole file*, on every single debounced
- * remeasure, whatever the edit's own position. Reported live, after shipping, as "slower now... just as slow as
- * the default editor" on a real file — profiled and confirmed: those two splits (each allocating one substring
- * per line) were real, measurable, whole-file-sized overhead paid back on *every* remeasure, eating most of what
- * the incremental approach was meant to save, and (together with the missing `lineNumbers` gate above, in
- * `CodeEditor.tsx`) could leave this function no faster than simply remeasuring everything. Comparing the raw
- * strings character by character from each end, with **no allocation at all**, finds the exact same boundary at
- * the same (or better) cost for the common, localized-edit case — a handful of characters near one spot — while
- * removing the always-paid, whole-file-sized splitting cost entirely. A line only counts as unchanged once its
- * *entire* span — including its own trailing `\n` — falls inside the matched prefix/suffix
- * (`countLeadingUnchangedLines`/`countTrailingUnchangedLines`, each a binary search over `lineStartOffsets`, not
- * a scan): a half-matched line, where the common prefix ends partway through it, must still be remeasured, the
- * same rule the line-array version already enforced.
+ * either one into an array of line strings first** (a still-earlier version did exactly that — `diffLines`,
+ * also since removed — paying for two whole-file `String.split('\n')` allocations on every call; reported live
+ * as a real, measured regression before being replaced with the character-level scan below, which needs none).
+ * A line only counts as unchanged once its *entire* span — including its own trailing `\n` — falls inside the
+ * matched prefix/suffix (`countLeadingUnchangedLines`/`countTrailingUnchangedLines`, each a binary search over
+ * `lineStartOffsets`, not a scan): a half-matched line, where the common prefix ends partway through it, must
+ * still be treated as changed.
  *
- * **Three further correctness gaps were caught by a dedicated Node stress test before this ever reached a
+ * **Three correctness gaps were caught by a dedicated Node stress test before any of this ever reached a
  * browser** — comparing, over tens of thousands of randomized edits, how many leading/trailing lines this
  * approach trusts against what the old, slower line-array `diffLines` would have trusted, flagging any case
  * where *this* function trusted *more* (the only unsafe direction — trusting fewer is just a missed, harmless
@@ -220,26 +224,14 @@ export function countTrailingUnchangedLines(starts: number[], suffixStart: numbe
  *    the way gap 1 is; it has to be subtracted unconditionally whenever `value`'s last line is degenerate,
  *    before the edge check above even runs.
  *
- * **Only valid when nothing *else* that could change a reused line's own row count has changed since
- * `previousValue` was measured** — the box's own width, in particular (a width change can move where *every*
- * line wraps, unchanged text included), which is why the caller (`CodeEditor.tsx`) only takes this path for an
- * ordinary content edit and forces a full `computeRowsPerLine` instead whenever the frame itself was resized.
- * Falls back to a full `computeRowsPerLine` itself whenever there's nothing of `previousValue`'s own to diff
- * against productively (`previousRows` not matching its own line count — shouldn't happen, but a concurrent
- * edit mid-measurement could race one, the same defensive shape `findTextPositions` already takes for this
- * exact reason elsewhere in this module). */
-export function computeRowsPerLineIncremental(
-  highlightEl: HTMLElement,
-  value: string,
-  lineHeightPx: number,
-  previousValue: string,
-  previousRows: number[],
-): number[] | null {
-  if (!lineHeightPx || lineHeightPx <= 0) return null
+ * Returns `null` when there's nothing of `previousValue`'s own to carry forward productively (`previousRows`
+ * not matching its own line count — shouldn't happen, but a concurrent edit mid-measurement could race one) —
+ * the caller then has nothing to do but start a fresh, all-`1` array instead. */
+export function carryForwardRows(previousValue: string, previousRows: number[], value: string): number[] | null {
   // `lineStartOffsets(previousValue).length` is the same count `previousValue.split('\n').length` would give, at
   // a fraction of the cost: a single pass counting `\n`s, no substring allocated for a single one of its lines.
   const previousLineCount = lineStartOffsets(previousValue).length
-  if (previousLineCount !== previousRows.length) return computeRowsPerLine(highlightEl, value, lineHeightPx)
+  if (previousLineCount !== previousRows.length) return null
   const starts = lineStartOffsets(value)
 
   const maxCommonChars = Math.min(previousValue.length, value.length)
@@ -280,55 +272,69 @@ export function computeRowsPerLineIncremental(
   const maxLines = Math.min(starts.length, previousLineCount)
   if (prefixLines + suffixLines > maxLines) suffixLines = Math.max(0, maxLines - prefixLines)
 
-  const rows = new Array<number>(starts.length)
+  const rows = new Array<number>(starts.length).fill(1)
   for (let i = 0; i < prefixLines; i++) rows[i] = previousRows[i]
   for (let i = 0; i < suffixLines; i++) rows[starts.length - 1 - i] = previousRows[previousRows.length - 1 - i]
-  const changedStart = prefixLines
-  const changedEndExclusive = starts.length - suffixLines // one past the last changed line
-  if (changedStart >= changedEndExclusive) return rows // the prefix/suffix trim covered everything — nothing left to measure
-  // One extra position, right after the changed run: either the first *unchanged* suffix line's own start (so the
-  // changed run's own last line gets a correct "next row" boundary to measure its row *count* against — the row
-  // immediately after it, exactly as `computeRowsPerLine`'s own `rowStarts[i+1]` does for an interior line), or
-  // the true end of the document when the changed run reaches it (`totalRows`, below, is what that boundary
-  // means then — the same convention `computeRowsPerLine` itself uses for its own true last line).
-  const hasTrailingSuffix = changedEndExclusive < starts.length
-  const changedLineStarts = starts.slice(changedStart, changedEndExclusive)
-  const allOffsets = hasTrailingSuffix ? [...changedLineStarts, starts[changedEndExclusive]] : [...changedLineStarts, value.length]
-  const positions = findTextPositions(highlightEl, allOffsets)
-  if (positions.length !== allOffsets.length) return null
-  const containerTop = highlightEl.getBoundingClientRect().top
-  const range = document.createRange()
-  const rowOf = (px: number) => Math.round((px - containerTop) / lineHeightPx)
-  const totalRows = Math.max(1, rowOf(containerTop + highlightEl.scrollHeight))
-  const rowStarts: number[] = []
-  // The row *right after* the changed run's own last line — `rowStarts[i+1]` already gives this for every
-  // *interior* changed line, but the last one has nothing of its own kind to compare against. When there's a
-  // trailing suffix, that boundary is simply the last changed line's own final visual row plus one: a `\n` is
-  // always a hard line break in a `<pre>`-rendered box, whatever wraps around it, so the row right after the
-  // last character this line's own range covers (its own trailing `\n`) is, by construction, exactly the row
-  // the next source line starts on — reusing the very same `getClientRects()` the loop below already calls for
-  // that line's own row-*start*, rather than a second, separate measurement (which, at the exact position a new
-  // line begins, risks the identical collapsed-range failure mode `computeRowsPerLine`'s own doc comment already
-  // covers for a line's start — avoided here simply by never taking it).
-  let sentinelRow = totalRows
-  changedLineStarts.forEach((_, i) => {
-    if (allOffsets[i] === allOffsets[i + 1]) {
-      rowStarts.push(totalRows - 1) // the empty trailing line only — see `computeRowsPerLine`'s own doc comment
-      return
-    }
-    const start = positions[i]
-    const end = positions[i + 1]
-    range.setStart(start.node, start.offset)
-    range.setEnd(end.node, end.offset)
-    const rects = range.getClientRects()
-    rowStarts.push(rowOf(rects.length > 0 ? rects[0].top : range.getBoundingClientRect().top))
-    if (hasTrailingSuffix && i === changedLineStarts.length - 1) {
-      sentinelRow = rects.length > 0 ? rowOf(rects[rects.length - 1].top) + 1 : totalRows
-    }
-  })
-  for (let i = 0; i < rowStarts.length; i++) {
-    const next = i + 1 < rowStarts.length ? rowStarts[i + 1] : sentinelRow
-    rows[changedStart + i] = Math.max(1, next - rowStarts[i])
-  }
   return rows
+}
+
+/** The largest `i` with `starts[i] <= target` (clamped to `0` for a target before the first entry) — a plain
+ * binary search over any ascending array, the shared shape both `lineAtOffset` and `computeWindowRange`'s own
+ * row-to-line lookup need, just against two different kinds of `starts` array (character offsets, or pixel
+ * rows). */
+function lastIndexAtMost(starts: number[], target: number): number {
+  let lo = 0
+  let hi = starts.length - 1
+  let result = 0
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (starts[mid] <= target) {
+      result = mid
+      lo = mid + 1
+    } else {
+      hi = mid - 1
+    }
+  }
+  return result
+}
+
+/** The line (0-based) that character offset `offset` falls inside, against `starts` (`lineStartOffsets`'s own
+ * output — sorted ascending, one entry per line, the character position it starts at). */
+export function lineAtOffset(starts: number[], offset: number): number {
+  return lastIndexAtMost(starts, offset)
+}
+
+/** A 0-based, end-*exclusive* line range: `[startLine, endLine)`. */
+export interface WindowRange {
+  startLine: number
+  endLine: number
+}
+
+/** The line range `CodeEditor.tsx`'s virtualized rendering should materialize real DOM for right now — the
+ * lines visible in `[scrollTop, scrollTop + clientHeight)`, padded by `bufferScreens` worth of *screens* on
+ * each side (a "screen" being however many rows fit in `clientHeight`), clamped to the document's own bounds.
+ * Pure arithmetic plus two binary searches over the already-computed `starts` array — no DOM, nothing to
+ * measure here, which is deliberate: *deciding* which lines to render must never itself cost what rendering
+ * them would have. Doesn't decide *whether* to actually adopt the result over whatever's currently
+ * rendered — that's the caller's own hysteresis check (`CodeEditor.tsx`), so a one-pixel scroll doesn't thrash
+ * a rebuild of a many-hundred-line window every tick; this function only ever answers "what would the ideal
+ * window be, right now." A zero-line document, or a `lineHeightPx` that hasn't resolved yet (`<= 0`), answers
+ * with the whole (empty, or not-yet-measurable) range — the same "nothing to window yet" fallback the rest of
+ * this module already uses before a real measurement exists. */
+export function computeWindowRange(
+  scrollTop: number,
+  clientHeight: number,
+  lineHeightPx: number,
+  starts: number[],
+  bufferScreens: number,
+): WindowRange {
+  const lineCount = starts.length
+  if (lineCount === 0) return { startLine: 0, endLine: 0 }
+  if (!lineHeightPx || lineHeightPx <= 0) return { startLine: 0, endLine: lineCount }
+  const visibleRows = Math.max(1, clientHeight / lineHeightPx)
+  const bufferRows = Math.max(0, bufferScreens) * visibleRows
+  const topRow = scrollTop / lineHeightPx
+  const startLine = lastIndexAtMost(starts, Math.max(0, topRow - bufferRows))
+  const endLine = Math.min(lineCount, lastIndexAtMost(starts, topRow + visibleRows + bufferRows) + 1)
+  return { startLine, endLine: Math.max(startLine + 1, endLine) }
 }

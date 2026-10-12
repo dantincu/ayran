@@ -38,7 +38,7 @@ export default function SettingsTab() {
   useEffect(() => {
     if (editorSettings) setTabSpaceCountText(String(editorSettings.tabSpaceCount))
   }, [editorSettings?.tabSpaceCount])
-  function setEditorFlag<K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces' | 'experimentalEditor'>(key: K, value: boolean) {
+  function setEditorFlag<K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces'>(key: K, value: boolean) {
     setEditorSetting(key, value).catch((e) => setError(String(e)))
   }
   function commitTabSpaceCount() {
@@ -274,16 +274,6 @@ export default function SettingsTab() {
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
         />{' '}
         spaces instead of a tab character
-      </label>
-      <label className="checkbox-row">
-        <input
-          type="checkbox"
-          checked={editorSettings?.experimentalEditor ?? false}
-          onChange={(e) => setEditorFlag('experimentalEditor', e.target.checked)}
-        />
-        Experimental code editor (patches only the changed text on each edit, instead of redrawing the whole
-        highlighted copy — meant to remove typing flicker; a different rendering mechanism underneath, off by
-        default)
       </label>
 
       <div className="toolbar" style={{ marginTop: 24 }}>
