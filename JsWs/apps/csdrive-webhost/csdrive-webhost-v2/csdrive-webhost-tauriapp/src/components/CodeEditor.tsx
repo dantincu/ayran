@@ -8,7 +8,7 @@ import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
-import { computeRowsPerLine } from '../lib/wrappedLineRows'
+import { computeRowsPerLine, computeRowsPerLineIncremental } from '../lib/wrappedLineRows'
 import { RunPatchController } from '../lib/runPatchController'
 
 /** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
@@ -326,7 +326,11 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * current `value` closes the gap: during that one render it falls back to the same honest "not measured yet"
    * flat spacing a fresh measurement always starts from, never a mismatched one. */
   const [wrapMeasure, setWrapMeasure] = useState<{ value: string; rows: number[]; lineHeightPx: number } | null>(null)
-  const measureWrappedRows = () => {
+  /** `full`: skip the incremental reuse below and measure every line from scratch — only ever passed `true` by
+   * the frame's own width-change handler, since a width change can move where *every* line wraps, unchanged
+   * text included, which the incremental path's own reuse is specifically not safe against (see
+   * `computeRowsPerLineIncremental`'s own doc comment). An ordinary content edit never needs it. */
+  const measureWrappedRows = (full = false) => {
     const highlightEl = highlightRef.current
     if (!highlightEl || settings?.wrapLines === false) return
     // A file this long would mean tens of thousands of Range measurements, a real pause rather than the brief
@@ -334,7 +338,28 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     // already has for a different reason. Falls back to one row per line, same as before this feature existed.
     if (value.split('\n').length > MAX_LINES_FOR_WRAP_MEASUREMENT) return
     const lineHeightPx = parseFloat(getComputedStyle(highlightEl).lineHeight) || 0
-    const rows = computeRowsPerLine(highlightEl, value, lineHeightPx)
+    const previous = wrapMeasure
+    // **Reuses the row count of every line `diffLines` finds unchanged since the last measurement, instead of
+    // re-measuring the whole file on every edit** — asked for directly, reported live on a big file: "every time
+    // a new line is added, all line numbers disappear for a few seconds then show again correctly." The debounce
+    // above (`WRAP_MEASURE_DEBOUNCE_MS`) already cuts *how often* a measurement runs during a sustained burst,
+    // but each individual run was still `computeRowsPerLine`'s own cost — one `Range.getClientRects()` call *per
+    // source line* — which, on a file with many thousands of lines, is itself a real, multi-second synchronous
+    // block regardless of how rarely it runs: the main thread freezes for that whole stretch, during which the
+    // *real* textarea (an ordinary keystroke's own native DOM insertion needs no React render to show) already
+    // displays the new text while the gutter — a plain React-rendered list — stays frozen on whatever it showed
+    // before the edit, visibly out of step with it ("disappear" is this mismatch, not a literal empty gutter).
+    // `computeRowsPerLineIncremental` turns that per-edit cost from the whole file down to just the handful of
+    // lines that actually changed — typically one, on an ordinary edit, however long the file around them is —
+    // by reusing a line's own last-known row count whenever `diffLines` finds it untouched (a line's row count
+    // depends only on its own text and the box's width, never on its position in the document, so this is exactly
+    // as correct as measuring it again, never an approximation). Guarded on the line-height still matching
+    // `previous`'s own (confirming nothing about the font/zoom has changed since) — a mismatch there falls back to
+    // a full remeasure, the same as having no previous measurement at all.
+    const rows =
+      !full && previous && previous.lineHeightPx === lineHeightPx
+        ? computeRowsPerLineIncremental(highlightEl, value, lineHeightPx, previous.value, previous.rows)
+        : computeRowsPerLine(highlightEl, value, lineHeightPx)
     if (rows) setWrapMeasure({ value, rows, lineHeightPx })
   }
   // Deferred (not a `useLayoutEffect`) and off `value`/`settings?.wrapLines` only — not `html`, which also changes
@@ -359,7 +384,51 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, settings?.wrapLines])
 
+  // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
+  // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the
+  // reason `value` changed — in both cases the DOM's own native text needs to be forced to match, since nothing
+  // else will have put it there (an ordinary keystroke's own native insertion needs no such push: see the
+  // textarea's own `defaultValue`, below). After that, an undo or redo puts the caret back where the text it
+  // brought back had it.
+  //
+  // **Declared before `fit`'s own effect below, deliberately — `fit()` reads `input.scrollHeight`, the real
+  // DOM textarea's own current content height, so it must run *after* this effect has written the new text
+  // into that same DOM element, never before.** React runs a component's `useLayoutEffect`s in the order
+  // they're declared, so moving this one ahead of `fit`'s is what makes that true. A real, reported bug came
+  // from the opposite order (this effect used to be declared *after* `fit`'s): go to the end of a file, type
+  // a few lines, Undo, then Redo — the restored lines came back in the `value` state and were visible in the
+  // read-only highlighted overlay, but the caret couldn't be moved past where they began. Root cause: for an
+  // *ordinary keystroke* the browser already writes the new character into the real, uncontrolled `textarea`
+  // natively, synchronously, before any of this ever runs — by the time a deferred `onChange` lands and
+  // triggers a render, `input.value` already agrees with `value`, so `fit()` reading `scrollHeight` first was
+  // always reading the *correct*, already-current content and the bug stayed invisible. A *programmatic* edit
+  // (this is exactly what undo/redo is) has no such prior native write: `value` changes purely in React state,
+  // so when `fit()` used to run first, it measured `scrollHeight` against the *stale* DOM text — the box was
+  // sized for the content from one step ago, not the one just restored — and only afterward did this effect
+  // finally write the real text in, leaving the real `<textarea>` genuinely too short for its own content (a
+  // single-line Tab/Insert-a-path edit never changes line count enough for the stale measurement to matter,
+  // which is why those were tested extensively elsewhere in this file with no sign of this).
+  useLayoutEffect(() => {
+    const h = history.current!
+    const externalReset = h.current.value !== value
+    if (externalReset) {
+      h.reset(value)
+      redraw()
+    }
+    const input = inputRef.current
+    if (input && (externalReset || programmaticEditPending.current) && input.value !== value) {
+      input.value = value
+    }
+    programmaticEditPending.current = false
+    const caret = restoreCaret.current
+    if (caret && input && input.value === value) {
+      input.setSelectionRange(caret.start, caret.end)
+      restoreCaret.current = null
+    }
+  }, [value])
+
   // The box is as tall as its text (or the frame, when the text is shorter, so a press anywhere in the frame is in the box).
+  // Declared after the DOM-sync effect above — see its own comment for why that order matters.
   const fit = () => {
     const input = inputRef.current
     const frame = frameRef.current
@@ -404,31 +473,6 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [html])
-
-  // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
-  // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the
-  // reason `value` changed — in both cases the DOM's own native text needs to be forced to match, since nothing
-  // else will have put it there (an ordinary keystroke's own native insertion needs no such push: see the
-  // textarea's own `defaultValue`, below). After that, an undo or redo puts the caret back where the text it
-  // brought back had it.
-  useLayoutEffect(() => {
-    const h = history.current!
-    const externalReset = h.current.value !== value
-    if (externalReset) {
-      h.reset(value)
-      redraw()
-    }
-    const input = inputRef.current
-    if (input && (externalReset || programmaticEditPending.current) && input.value !== value) {
-      input.value = value
-    }
-    programmaticEditPending.current = false
-    const caret = restoreCaret.current
-    if (caret && input && input.value === value) {
-      input.setSelectionRange(caret.start, caret.end)
-      restoreCaret.current = null
-    }
-  }, [value])
   const step = (direction: 'undo' | 'redo') => {
     const h = history.current!
     const snapshot = direction === 'undo' ? h.undo() : h.redo()
@@ -448,10 +492,13 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       // A width change (the window resized, a split pane dragged) can change where every wrapped line now
       // breaks — a height-only change (typing, which `fit()` above already reacts to) can't, and happens far
       // more often, so this is narrowed to width specifically rather than re-measuring on every resize tick.
+      // `full`: unlike an ordinary content edit, a width change can move where *every* line wraps, unchanged
+      // text included, so the incremental reuse `measureWrappedRows` otherwise prefers would be wrong here —
+      // every line's own row count has to be measured fresh against the new width.
       const width = entries[0]?.contentRect.width
       if (width !== undefined && width !== lastFrameWidth.current) {
         lastFrameWidth.current = width
-        measureWrappedRows()
+        measureWrappedRows(true)
       }
     })
     observer.observe(frame)

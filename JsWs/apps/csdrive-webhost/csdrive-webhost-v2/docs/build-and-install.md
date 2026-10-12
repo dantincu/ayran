@@ -136,6 +136,19 @@ this file automatically (by a path relative to the Android Gradle project, or `C
 it somewhere else) and signs the **release** build type with it; if the file is missing, the release build still succeeds but
 produces an **unsigned** APK/AAB (Gradle prints a warning saying so) rather than silently using the debug key.
 
+**Back up the keystore to a second location.** Losing `docs/private/android-release.keystore` means every future
+update of an already-installed app has to be a brand new listing (Android refuses to accept an update signed with a
+*different* key than the one already installed) — worth a real backup, not just relying on this one machine's disk.
+`tools/backup-keystore.ps1` copies it, under its own file name, into the folder named in
+`docs/private/keystore-backup-location.txt` (copy `docs/private-template/keystore-backup-location.txt` and put the
+real folder on its one real line — gitignored like everything else under `docs/private`, so where the backup goes
+is never committed either). It compares by content hash, not by date, so it only actually copies when the keystore
+has genuinely changed, and does nothing (saying so) otherwise — safe to run as often as you like, by hand
+(`.\tools\backup-keystore.ps1`) or from a scheduled task, on this machine or by asking Claude to run it. (Checked on
+this app's *own* keystore specifically, by the way — each app on this machine turned out to have its own separate
+keystore file, not one shared across all of them, so this tool is scoped to this project's own, not a machine-wide
+one.)
+
 ### Building
 
 For installing on a real phone, restrict the Rust compile to just the architecture it needs (much faster than compiling for
