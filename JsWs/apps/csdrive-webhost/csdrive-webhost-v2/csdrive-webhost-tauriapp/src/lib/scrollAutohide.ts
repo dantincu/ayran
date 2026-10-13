@@ -87,11 +87,75 @@ const AT_BOTTOM_SLACK_PX = 2
  * work (`handleScroll`) can defer *its* read of `clientHeight` until the header's own `max-height` transition
  * has actually finished moving it, rather than reading a value mid-animation and computing a window that gets
  * silently superseded a moment later when the transition settles.
- */
+ *
+ * **Reported live, specifically on Monaco (the desktop default editor since this app started offering a
+ * third-party one): "the top header and editor header no longer hide when scrolling down."** Confirmed live,
+ * not assumed: a diagnostic capture-phase listener installed directly on `document`, scrolling Monaco's own
+ * content a real, confirmed amount (the first visible line changed), recorded **zero** native `scroll`
+ * events anywhere in the page. Monaco doesn't scroll its content the way every other scrollable region in
+ * this app does — no real element has its `scrollTop` changed and `overflow: auto`; it renders at a fixed
+ * position and translates the *content* itself, managing its own virtual scroll position entirely in JS
+ * (`editor.getScrollTop()`/`onDidScrollChange`), which is exactly why it never had to reimplement Page Up/
+ * Down the way this app's own editor once did, and exactly why this delegation-based hook — built around
+ * "any element's native `scroll` event bubbles to a capture-phase listener on `document`, so nothing has to
+ * wire a scrolling widget to whichever header happens to be above it" — never sees it. **CodeMirror (the
+ * mobile default) is unaffected**: its own `.cm-scroller` is a real, native `overflow: auto` element,
+ * confirmed still firing ordinary `scroll` events.
+ *
+ * **Fixed by giving Monaco a second way in, not by abandoning the delegation design**: `reportVirtualScroll`
+ * (exported below) dispatches a plain `CustomEvent` on `document` — the hook listens for it exactly the way
+ * it already listens for a real `scroll` event, so `MonacoCodeEditor.tsx`'s own `onDidScrollChange` needs no
+ * prop, no context and no direct reference to whichever header happens to be mounted above it (there can be
+ * more than one — `NotesTopBar` and an editor page's own header both react independently): it just calls a
+ * plain exported function with the numbers Monaco already computes (`getScrollTop`/`getScrollHeight`/
+ * `getLayoutInfo().height`), the same way a real element firing a native `scroll` event would, keeping the
+ * "nothing has to be wired to anything" property this whole module exists for. The editor's own host element
+ * is used as the stable identity key (`WeakMap`) a real DOM scroll event's `target` would be, so a Monaco
+ * instance's own scroll history runs through the exact same `decideScroll` as any other element's — the
+ * "pinned at the bottom" and "content height changed, this is typing" guards included, with no second copy
+ * of either to keep in sync. */
+const VIRTUAL_SCROLL_EVENT = 'csdrive-virtual-scroll'
+interface VirtualScrollDetail {
+  key: object
+  top: number
+  height: number
+  clientHeight: number
+}
+
+/** Reports a scroll that never fires a real DOM `scroll` event — Monaco, see the module doc's own "reported
+ * live" paragraph above. `key` is any stable per-instance identity (the editor's own host element is a
+ * natural choice); `top`/`height`/`clientHeight` are the same three numbers a native `scroll` event's
+ * `target` would otherwise be read from. */
+export function reportVirtualScroll(key: object, top: number, height: number, clientHeight: number): void {
+  document.dispatchEvent(new CustomEvent<VirtualScrollDetail>(VIRTUAL_SCROLL_EVENT, { detail: { key, top, height, clientHeight } }))
+}
+
+function decideScroll(
+  target: object,
+  top: number,
+  height: number,
+  clientHeight: number,
+  lastTop: WeakMap<object, number>,
+  lastHeight: WeakMap<object, number>,
+  setHidden: (value: boolean) => void,
+): void {
+  const last = lastTop.get(target) ?? 0
+  const lastH = lastHeight.get(target) ?? height
+  if (height === lastH) {
+    const delta = top - last
+    const pinnedAtBottom = top + clientHeight >= height - AT_BOTTOM_SLACK_PX
+    if (top <= HIDE_AFTER_PX) setHidden(false)
+    else if (delta > DIRECTION_THRESHOLD_PX) setHidden(true)
+    else if (delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom) setHidden(false)
+  }
+  lastTop.set(target, top)
+  lastHeight.set(target, height)
+}
+
 export function useScrollAutohide(): [boolean, () => void, () => void] {
   const [hidden, setHiddenState] = useState(false)
-  const lastTop = useRef(new WeakMap<Element, number>())
-  const lastHeight = useRef(new WeakMap<Element, number>())
+  const lastTop = useRef(new WeakMap<object, number>())
+  const lastHeight = useRef(new WeakMap<object, number>())
   const observer = useRef<ResizeObserver | null>(null)
   // A flip gated behind `runAfterHighlightRerender` is deferred, not dropped — but by the time it's finally
   // applied the *next* scroll/resize tick may have already made a different decision moot or stale, so each
@@ -124,31 +188,29 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
     function onScroll(e: Event) {
       const target = e.target
       if (!(target instanceof Element)) return
+      // A target seen for the first time defaults to 0, not its current position: every scrollable region in
+      // this app starts at the top when it mounts, so this gives the very *first* scroll event a real delta
+      // too — the same thing the original, single-target implementation got for free by reading `scrollTop`
+      // once at mount, before any scrolling had happened (defaulting to `top` itself instead left the first
+      // event's delta always 0, silently swallowing the first scroll gesture on any newly-seen element —
+      // found live). Only a *real* `Element` gets the "auto show again once it stops overflowing" fallback —
+      // a virtual-scroll report (below) skips it: Monaco's own host element's `scrollHeight`/`clientHeight`
+      // never actually differ (it renders its content via its own internal transform, not native overflow),
+      // so observing it would misfire the fallback on every layout change.
       if (!lastTop.current.has(target)) observer.current?.observe(target)
-      const top = target.scrollTop
-      const height = target.scrollHeight
-      // A target seen for the first time defaults to 0, not its current position: every scrollable region in this
-      // app starts at the top when it mounts, so this gives the very *first* scroll event a real delta too — the
-      // same thing the original, single-target implementation got for free by reading `scrollTop` once at mount,
-      // before any scrolling had happened (defaulting to `top` itself instead left the first event's delta always
-      // 0, silently swallowing the first scroll gesture on any newly-seen element — found live).
-      const last = lastTop.current.get(target) ?? 0
-      // The *height* default is the opposite: the current height, not 0 — the first event for a newly-seen
-      // element must never read as "the content just changed" (see the module doc's own "typing itself" note).
-      const lastH = lastHeight.current.get(target) ?? height
-      if (height === lastH) {
-        const delta = top - last
-        const pinnedAtBottom = top + target.clientHeight >= target.scrollHeight - AT_BOTTOM_SLACK_PX
-        if (top <= HIDE_AFTER_PX) setHidden(false)
-        else if (delta > DIRECTION_THRESHOLD_PX) setHidden(true)
-        else if (delta < -DIRECTION_THRESHOLD_PX && !pinnedAtBottom) setHidden(false)
-      }
-      lastTop.current.set(target, top)
-      lastHeight.current.set(target, height)
+      decideScroll(target, target.scrollTop, target.scrollHeight, target.clientHeight, lastTop.current, lastHeight.current, setHidden)
+    }
+    // The same decision, for a scroll that never fires a native DOM event at all (`reportVirtualScroll`,
+    // above) — dispatched on `document` directly, so no capture phase is needed to see it.
+    function onVirtualScroll(e: Event) {
+      const { key, top, height, clientHeight } = (e as CustomEvent<VirtualScrollDetail>).detail
+      decideScroll(key, top, height, clientHeight, lastTop.current, lastHeight.current, setHidden)
     }
     document.addEventListener('scroll', onScroll, { capture: true, passive: true })
+    document.addEventListener(VIRTUAL_SCROLL_EVENT, onVirtualScroll)
     return () => {
       document.removeEventListener('scroll', onScroll, true)
+      document.removeEventListener(VIRTUAL_SCROLL_EVENT, onVirtualScroll)
       observer.current?.disconnect()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

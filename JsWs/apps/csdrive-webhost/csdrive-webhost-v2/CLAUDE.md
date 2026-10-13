@@ -1383,6 +1383,202 @@ effect, not a live capture.
 `npx tsc --noEmit` and `npm run build` both clean throughout; no Rust change, so `cargo test --lib` doesn't
 apply to any of the three fixes/features in this section.
 
+## A plain textarea for "disable all code highlighting," and a third-party editor by default (Monaco / CodeMirror)
+
+**"I tested the editor without code highlighting. It's indeed faster, but still unusable on very large
+documents. So let's make an even more dramatic change for when the user disables the code highlighting: we
+should go back to using a plain html textarea with no virtualization."** The `highlightDisabled` setting above
+had already dropped the colouring work, but kept this app's own windowed-DOM architecture (the gutter, the
+`RunPatchController` overlay management, the scroll-window recentring) running underneath a plain-looking
+textarea — real wins for a *coloured* huge file, but pure overhead once there's no overlay left to patch and
+no gutter measurement worth window-scoping. `CodeEditor.tsx` split into two genuinely separate components:
+**`HighlightedEditor`** (the file's original export, renamed, unchanged in substance — every virtualization/
+highlighting mechanic this file's own history documents stays exactly as it was) and a new, deliberately
+minimal **`PlainTextEditor`** — a bare, **native-scrolling** `<textarea>` with no overlay, no gutter, no
+windowing of any kind: `UndoHistory` (unchanged — the editor's own undo stack is independent of rendering),
+Tab/Shift+Tab via the existing `applyTab`, the clipboard-menu anchor (`data-text-menu-anchor`) moved directly
+onto the textarea's own wrapper since there's no separate highlighted layer to anchor it beside, and the
+browser's own native Page Up/Down (nothing to intercept — a plain textarea already pages itself correctly,
+unlike `HighlightedEditor`'s virtualized one, which has to simulate it). **Line numbers can't be shown in this
+mode** — asked for directly, and structurally true regardless: the gutter's own positioning has always been
+computed from the wrapped-row measurement of the highlighted overlay, which doesn't exist here, so
+`SettingsTab.tsx`'s "Show line numbers" checkbox is `disabled` while "Disable all code highlighting" is
+checked, with a note explaining why, rather than silently drawing a gutter line numbers can't actually be
+kept in step with.
+
+**The far bigger change in the same conversation, from a follow-up todo file**: *"Let's use a third party
+code editor: I would go for Monaco for desktop and you choose an appropriate one for mobile. This third party
+editor will be used by default, while using our editor we developed so far would be done by checking an
+appropriate option in the settings (and keep the disable code highlight option we added)."* **Monaco** for
+desktop (what VS Code itself is built on — real, mature virtualization, a worker-based tokenizer, all the
+editing conveniences this app's own editor was never trying to reinvent); **CodeMirror 6** for mobile, chosen
+specifically for being touch-first and genuinely lightweight next to Monaco's multi-megabyte footprint, with
+its own virtualized `.cm-scroller`. `CodeEditor.tsx` is now a three-way picker (`editor.useBuiltInEditor`, off
+by default, `lib/editorSettings.ts`): off mounts `ThirdPartyEditor` — `lazy(() => import('./MonacoCodeEditor'))`
+on desktop, `lazy(() => import('./MobileCodeMirrorEditor'))` on mobile, decided once from `isMobile`'s static
+user-agent read, so Monaco's bundle is never fetched on Android and CodeMirror's is never fetched on desktop;
+on, it mounts `HighlightedEditor` or (if `highlightDisabled` is also on) the new `PlainTextEditor` above —
+this app's own editor, exactly as it already was. **`highlightDisabled` means something different for the
+third-party editors**: Monaco/CodeMirror never get the dramatic drop to a bare textarea (both already
+virtualize their own rendering, so there's no equivalent win from doing so) — it switches their language mode
+to plain text instead (`monacoLanguageId(language, highlightDisabled)` returns `'plaintext'`; CodeMirror's own
+language compartment is reconfigured to no language extension).
+
+**Monaco's integration is ESM-only, deliberately, for CSP reasons.** This app's CSP has no `'unsafe-eval'`
+(see "No network access for any window (CSP)"), and Monaco's classic AMD loader (`vs/loader.js`) uses `eval`/
+`new Function` to load its modules — a flat violation. `monaco-editor/editor/editor.api` (note: *not*
+`monaco-editor/esm/vs/editor/editor.api` — the package's own `exports` map already prepends `esm/vs/`, so the
+correct import omits it; the wrong path surfaced as a plain `Cannot find module` and, confusingly, a second
+error that `self.MonacoEnvironment` didn't exist, both symptoms of the same failed resolution) is the package's
+ESM entry, with no loader of its own. Workers (`editor.worker.js`, plus `json`/`css`/`html` language workers)
+are created lazily, each with a literal `new Worker(new URL('monaco-editor/<path>', import.meta.url), { type:
+'module' })` inside `self.MonacoEnvironment.getWorker(moduleId, label)` — the literal string per branch is what
+lets Vite statically discover and code-split each worker; a computed path would defeat that. **Monaco's own
+scrolling is not native `overflow:auto`** — it renders at a fixed position and manages its own virtual scroll
+in JS (`editor.getScrollTop()`, `onDidScrollChange`), so it never fires a DOM `scroll` event at all (confirmed
+live with a diagnostic capture-phase listener: zero events despite real, visually-confirmed scrolling) — see
+"Bug: the top/editor header no longer autohides under Monaco" below for what that broke and how it's bridged.
+
+**Three real bugs, found live, not by inspection**, while first building these two files: (1) the import-path
+bug above; (2) both `MonacoCodeEditor.tsx` and `MobileCodeMirrorEditor.tsx` initially used
+`markdownLinkAt(...) ?? linkAt(...)` for "Open link" — wrong: `markdownLinkAt` (`lib/textLinks.ts`) is only
+for "Edit link"/"Insert a link" elsewhere in this app (`TextFieldMenu.tsx`), never for "Open link," which has
+always used plain `linkAt` alone; fixed by dropping the `markdownLinkAt` half in both files; (3) a first draft
+had dead, superseded code in `MonacoCodeEditor.tsx` (a redundant disposables map alongside the real
+`nudgeActions` array, a stray unused debug binding, two separate `onDidChangeModelContent` listeners that
+should have been one) — cleaned up before it shipped.
+
+**What's deliberately not reproduced in the third-party editors**: neither Monaco's real editing surface nor
+CodeMirror's is a plain `HTMLTextAreaElement`/`HTMLInputElement`, so `TextFieldMenu`'s floating clipboard menu
+(the "…" trigger that attaches to any recognized text field elsewhere in the app) doesn't attach to either.
+Each gets its own small toolbar instead — Undo/Redo (mirroring their own internal undo stacks, so this app's
+buttons and a real Ctrl+Z agree), **Copy the selection to the app's clipboard** / **Paste from the app's
+clipboard** (`internalClipboard.push`/`.peek`, `lib/clipboard.ts` — the one piece of `TextFieldMenu`'s
+functionality duplicated here, since it's the one most worth having) and **Open link at the caret** (same
+`editorLinkHandlers`/`linkAt` dispatch every other editor's "Open link" already uses). "Select paragraphs" and
+the full clipboard-manager popup are not reproduced — a real, disclosed gap, not an oversight.
+
+**Bundle size, disclosed, not hidden**: Monaco adds roughly 2.7 MB minified (~708 KB gzipped) to the desktop
+build; CodeMirror adds roughly 613 KB minified (~210 KB gzipped) to the Android build. Both are lazy, code-split
+chunks — neither ships to the platform that will never mount it — but each is a real, permanent increase to its
+own installer, accepted as the cost of a genuinely more capable default editor.
+
+Verified live (isolated debug data folder, desktop and the Android emulator): `PlainTextEditor` with
+highlighting disabled — a huge file opened with no overlay/gutter DOM at all, native scrolling, Tab/Shift+Tab
+and Ctrl+Z/Y all working, "Show line numbers" greyed out with its note visible; Monaco mounted by default on
+desktop (real syntax colours, Undo/Redo, both clipboard buttons round-tripping through `internal_clipboard_*`,
+"Open link" on a real markdown link, the worker files loading with no CSP violation in the console); CodeMirror
+mounted by default on the emulator (the same checks, plus real touch-scroll); switching `useBuiltInEditor` on
+and off live remounted the correct component each time with no console error. `npx tsc --noEmit` and
+`npm run build` both clean; no Rust change.
+
+## The two bug reports from the next todo file: header buttons overlapped by a wrapped title, and Monaco's header never autohiding
+
+Two bugs, reported together after the Monaco/CodeMirror work above shipped: *"Layout bug (noticed it on
+mobile): when opening the note editor (and I think it applies to all editor pages) and the title of the
+document/note wraps on multiple lines, the next lines are overlapped by the editor (this is good so far).
+What is not good [is] that in this case the action buttons are vertically aligned on the center and they too
+are partially (or totally...) overlapped by the editor. So the action buttons should be vertically aligned to
+top."* And: *"The top header and editor header no longer hide when scrolling down - tried on monaco editor."*
+
+### Bug 1: the editor-page header's own buttons, pushed below the wrapped title
+
+**`.notes-page-header`** (`Back`/title/`Save`/etc. — the row shared, by name and by this project's own stated
+intent, across `NoteEditPage.tsx`, `NotesApp.tsx`'s File Manager/Note Files Explorer editor, and
+`FilesTab.tsx`'s own editor) had two compounding problems, found live in that order:
+
+1. **`align-items: center`**, the original rule (in `notes.css`): once a long title (`h2`, `flex: 1`) wraps to
+   several lines, the row's own height grows to fit it, and centering every child within that taller row pushes
+   the fixed-size action buttons down toward the middle — overlapped by whatever follows once the header's own
+   `max-height: 60px; overflow: hidden` clip (`.editor-top-bar`/`.notes-top-bar`) cuts off anything past it.
+   Switching to **`align-items: flex-start`** keeps every button flush with the title's first line instead.
+
+2. **That fix alone was not enough — found live, measuring a real wrapped title at a 390px mobile width,
+   before trusting it.** `flex-wrap: wrap` on the same row doesn't just let the title's own *text* wrap within
+   its column; it lets the whole **flex row** break onto separate flex lines once the content can't fit beside
+   the buttons on one. A real measurement (CDP, a deliberately long file name) showed exactly this: "Back" alone
+   on the first flex line (`top: 70, bottom: 104`), the title — now with the *entire* row's width to itself — on
+   a second, and the three trailing action buttons pushed onto a *third* flex line at `top: 207.8`, nowhere near
+   the header's own 60px clip: invisible, indistinguishable from "overlapped by the editor," and *worse* than
+   the plain `align-items` bug alone, since now every one of the trailing buttons was affected, not just the
+   ones a taller single row would merely have pushed down a little. Fixed with **`flex-wrap: nowrap`**, so the
+   row never breaks into separate flex lines at all — the title (`flex: 1`, plus a new `min-width: 0`, so it can
+   genuinely shrink narrower than its own longest unbroken segment rather than forcing the row to overflow) wraps
+   its *own* text across as many lines as it needs in whatever width is left once every `flex-shrink: 0` icon
+   button (`.icon-button`, already `flex-shrink: 0` — never itself at risk of being squeezed) has taken its own
+   fixed 34px.
+
+**A separate, pre-existing gap was found getting to this fix, not caused by it**: the very first live test — in
+the admin-app's own Files tab — showed *no* effect from either CSS change at all, measuring `display: block`
+on the header, not `flex`. `.notes-page-header`'s actual layout rule lived only in `notes.css`, which
+`system/notes/main.tsx` imports alongside `App.css` — but the admin-app's own `App.tsx` imports only `App.css`,
+and `FilesTab.tsx` uses the identical class name (confirmed by `App.css`'s own, pre-existing comment naming it
+as shared across all three hosts) with no rule behind it there at all: the Files tab's editor header had always
+rendered as bare, unstyled block flow. **Fixed by moving the rule itself — `.notes-page-header`'s own
+`display`/`align-items`/`flex-wrap` and its `h2`'s `flex`/`min-width` — from `notes.css` into `App.css`**,
+right beside the pre-existing comment that already documented the class as shared; `notes.css` keeps only a
+pointer comment at the old location. This is what actually made the fix take effect in the Files tab at all,
+not just in Notes' own two hosts.
+
+Verified live (isolated debug data folder, desktop, real CDP, a 390px emulated mobile viewport): a file with a
+genuinely very long name, opened in the Files tab — `display: flex`, `align-items: flex-start`,
+`flex-wrap: nowrap` all confirmed computed (not just specified), the title wrapped to 192px tall, and every one
+of its four action buttons (Back, Insert a path…, Discard, Save) measured at `top: 0, bottom: 34` — flush with
+the title's first line, fully inside the visible 60px window, none clipped. The same file opened in a real
+Notes window's File Manager editor (`NotesApp.tsx`) showed the identical result across its five buttons (the
+extra one being "New branch…"), title wrapped to 264px. **The ordinary single-line case was re-checked for a
+regression**: a short file name's title (24px tall) and its buttons all measured `top: 0, bottom: 34` too — no
+visible difference from the centered behaviour for equal-height content, as intended. Finally, verified against
+the literal subject of the bug report — a real note created in a real notebook, opened in the actual
+**`NoteEditPage.tsx`** (not a generic file editor) with a genuinely long title (wrapped to 624px, ten header
+buttons including the User Action pair) — every button still `top: 0, bottom: 34`; the editor's own internal
+toolbar (`.code-editor-toolbar`, Undo/Redo/clipboard/Open-link — a different header again, this one belonging
+to the editor widget itself rather than the page, with no title in it to wrap and no `align-items` issue of its
+own) was checked alongside it and found unaffected, as expected: all five of its buttons likewise `top: 0,
+bottom: 34`.
+
+### Bug 2: Monaco's own scroll never autohides the header above it
+
+**`useScrollAutohide`** (`lib/scrollAutohide.ts` — the shared mechanism behind the Help tab's header, Notes'
+top bar, and every `.editor-top-bar`) was built entirely around a single `document`-level, capture-phase
+native `scroll` listener: delegation, so any scrollable element anywhere in the page is picked up automatically
+with no explicit wiring per host. **Monaco breaks that assumption at the root** — as noted above, it never
+fires a native `scroll` event at all, confirmed with a diagnostic listener recording zero events across real,
+visually-confirmed scrolling — so the header above a Monaco editor never saw anything to react to and simply
+never autohid, exactly as reported ("tried on Monaco editor").
+
+**Fixed by giving `useScrollAutohide` a second input that doesn't depend on a native event, rather than
+teaching Monaco to fire one it structurally can't.** A new module-level `reportVirtualScroll(key, top, height,
+clientHeight)` dispatches a `CustomEvent('csdrive-virtual-scroll', { detail: { key, top, height, clientHeight
+} })` on `document` — `key` is any stable object identity (Monaco's own host `<div>` works fine, even though it
+isn't the element that's "really" scrolling); the hook's existing effect now installs a *second* listener, for
+this event, feeding the exact same decision logic (`decideScroll`, extracted verbatim from the old inline
+`onScroll` body — the hide/show thresholds, the near-the-top special case, the pinned-at-bottom-ignore-upward-
+echo guard, all unchanged) that the native listener already used, keyed by `key` instead of `e.target`.
+`MonacoCodeEditor.tsx`'s own `onDidScrollChange` handler — Monaco's one *real*, if non-native, scroll
+notification — now also calls `reportVirtualScroll(hostElement, editor.getScrollTop(), editor.getScrollHeight(),
+editor.getLayoutInfo().height)` on every change. **Deliberately not a fourth return value from the hook itself**
+(prop-drilling a reporter function down through `CodeEditor` → `MonacoCodeEditor` was the first draft, discarded
+once the module-level-function-plus-`CustomEvent` shape above made that unnecessary): the hook's own call sites
+(the Help tab, `NotesTopBar`, every `.editor-top-bar` host) don't change at all, and any future non-native
+scroller (another third-party widget, say) only ever needs to call the one exported function, no new prop
+threading required anywhere.
+
+CodeMirror needed no equivalent fix — its `.cm-scroller` is a genuine native `overflow: auto` element, so the
+existing capture-phase listener already sees it directly, the same as this app's own `HighlightedEditor`/
+`PlainTextEditor`.
+
+Verified live (isolated debug data folder, desktop, real CDP wheel events — `Input.dispatchMouseEvent` with
+`type: 'mouseWheel'`, not a synthetic `scroll` dispatch, since the whole point is whether Monaco's *own* real
+scroll handling reaches the hook correctly): opened the Files tab's own Monaco editor on a real 300-line file,
+confirmed the header shown (`height: 60`, no hidden class); a real wheel-scroll down correctly collapsed it
+(`hidden: true, height: 0`); scrolling back up correctly restored it (`hidden: false, height: 60`). Re-verified
+in a real Notes window's own Monaco editor (not just the Files tab) on the same file: before scrolling,
+`hidden: false, height: 48`; after a real downward wheel-scroll burst, `hidden: true, height: 0`; after scrolling
+back up, `hidden: false, height: 34` (the editor-page header's own, slightly shorter resting height there) — the
+bridge works identically in both hosts that mount Monaco. `npx tsc --noEmit` and `npm run build` both clean
+throughout; no Rust change, so `cargo test --lib` doesn't apply to either bug in this section.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.

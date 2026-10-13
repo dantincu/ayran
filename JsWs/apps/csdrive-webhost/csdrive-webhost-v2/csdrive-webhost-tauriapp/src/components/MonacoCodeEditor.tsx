@@ -11,6 +11,7 @@ import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, type LinkHandler } from '../lib/textLinks'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
+import { reportVirtualScroll } from '../lib/scrollAutohide'
 import type { CodeEditorHandle } from './CodeEditor'
 
 /** `getWorker` is called lazily, once per label Monaco actually needs a worker for — each branch's own
@@ -104,6 +105,11 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       setCanRedo(false)
     })
     const scrollSub = editor.onDidScrollChange(() => {
+      // Monaco never fires a real DOM `scroll` event (it renders via its own internal transform, not native
+      // overflow) — this is the one and only place that's true, so it's reported here unconditionally, not
+      // folded into the `onVisibleLineChange`-only branch below (see `lib/scrollAutohide.ts`'s own doc
+      // comment for the live-confirmed root cause and why a plain exported function, not a prop, is correct).
+      reportVirtualScroll(host, editor.getScrollTop(), editor.getScrollHeight(), editor.getLayoutInfo().height)
       if (!onVisibleLineChange) return
       const visible = editor.getVisibleRanges()[0]
       if (!visible) return

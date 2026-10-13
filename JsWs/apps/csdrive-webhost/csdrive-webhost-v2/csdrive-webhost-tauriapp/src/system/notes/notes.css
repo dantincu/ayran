@@ -152,18 +152,10 @@
   gap: 10px;
 }
 
-.notes-page-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.notes-page-header h2 {
-  margin: 0;
-  font-size: 18px;
-  flex: 1;
-}
+/* `.notes-page-header`'s own layout (display/align-items/flex-wrap, and its `h2`'s flex/min-width) moved to
+   `App.css` — the class is shared by the Files tab's editor too, which never loads this file (see `App.css`'s
+   own comment at the rule's new home for the full story of why, and of the overlap bug this same move fixes
+   for all three hosts, not just the two this file ever reached). */
 
 /* A notebook's buttons stay on one line — the title and where it is wrap instead. */
 .notes-page .file-table td.row-actions {

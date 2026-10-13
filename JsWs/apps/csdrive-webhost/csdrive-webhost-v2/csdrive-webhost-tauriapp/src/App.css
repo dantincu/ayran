@@ -2058,6 +2058,40 @@ select {
   margin-bottom: -12px;
 }
 
+/* The layout itself, for every one of the three `.notes-page-header` hosts named in the comment above — moved
+   here from `notes.css` (which only the Notes system app ever loads: `system/notes/main.tsx` imports both this
+   file and that one, but the admin-app's own `App.tsx` imports only this one) after live-testing the Files
+   tab's own editor with a deliberately long, wrapping file name and finding its header rendered as bare,
+   unstyled block flow — the class name was applied, as this file's own comment above already documented, but
+   nothing in the admin-app's loaded stylesheet actually gave it `display: flex`, so it never got the flex
+   layout (or the bug, or the fix) `notes.css`'s copy gave the other two hosts. `align-items: flex-start`, not
+   `center` — reported live (in Notes, where the rule *did* apply): when the title (`h2`, `flex: 1`, below)
+   wraps to several lines, the row's own height grows to fit it, and centering every child within that taller
+   row pushed the action buttons down into the middle, overlapped by the editor content below once the header's
+   fixed-height clip is sticky above it. Top-aligning keeps every button flush with the title's first line.
+   `flex-wrap: nowrap` — found live, measuring a real wrapped title under the `flex-start` fix alone at a
+   mobile width: `wrap` lets the whole flex *row* break onto several lines once the title can't fit beside the
+   buttons on one, not just the title's own text wrap within its column — "Back" ended up alone on one flex
+   line, the title (now with the entire row's width to itself) on a second, and the trailing action buttons
+   pushed onto a *third* flex line, far past the header's own 60px `max-height: hidden` clip — invisible, and
+   indistinguishable from "overlapped by the editor". `nowrap` keeps every child on the one row the header was
+   always meant to show as; the title (`flex: 1`, `min-width: 0` so it can genuinely shrink past its own longest
+   word) wraps its own text across as many lines as it needs in whatever width is left once every
+   `flex-shrink: 0` icon button has taken its own fixed 34px. */
+.notes-page-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.notes-page-header h2 {
+  margin: 0;
+  font-size: 18px;
+  flex: 1;
+  min-width: 0;
+}
+
 .help-tab .toolbar {
   scroll-margin-top: 60px;
 }
