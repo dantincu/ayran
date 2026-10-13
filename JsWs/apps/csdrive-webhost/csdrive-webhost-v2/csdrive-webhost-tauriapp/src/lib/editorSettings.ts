@@ -33,6 +33,14 @@ export interface EditorSettings {
    * per-line measurement left to position a gutter against — and why Settings' own "Show line numbers"
    * checkbox is disabled while this is on. */
   highlightDisabled: boolean
+  /** On: `CodeEditor.tsx` mounts this app's own editor (`HighlightedEditor`/`PlainTextEditor`, picked by
+   * `highlightDisabled` exactly as before this setting existed). **Off (the default) mounts a third-party
+   * editor instead** — Monaco on desktop, CodeMirror 6 on mobile (`lib/platform.ts`'s `isMobile`) — asked for
+   * directly: "use a third party code editor... this will be used by default, while using our editor... would
+   * be done by checking an appropriate option in the settings." `highlightDisabled` still applies either way:
+   * for the third-party editors it selects a plain-text language mode (no tokenizer) rather than switching
+   * components, since both already handle a huge file through their own, unrelated virtualization. */
+  useBuiltInEditor: boolean
 }
 
 const DEFAULTS: EditorSettings = {
@@ -42,6 +50,7 @@ const DEFAULTS: EditorSettings = {
   tabInsertsSpaces: false,
   tabSpaceCount: 4,
   highlightDisabled: false,
+  useBuiltInEditor: false,
 }
 
 const KEYS = {
@@ -51,6 +60,7 @@ const KEYS = {
   tabInsertsSpaces: 'editor.tabInsertsSpaces',
   tabSpaceCount: 'editor.tabSpaceCount',
   highlightDisabled: 'editor.highlightDisabled',
+  useBuiltInEditor: 'editor.useBuiltInEditor',
 } as const satisfies Record<keyof EditorSettings, string>
 
 async function getBool(key: string, fallback: boolean): Promise<boolean> {
@@ -63,17 +73,18 @@ async function setBool(key: string, value: boolean): Promise<void> {
 }
 
 export async function getEditorSettings(): Promise<EditorSettings> {
-  const [wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCountRaw, highlightDisabled] = await Promise.all([
+  const [wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCountRaw, highlightDisabled, useBuiltInEditor] = await Promise.all([
     getBool(KEYS.wrapLines, DEFAULTS.wrapLines),
     getBool(KEYS.showWhitespace, DEFAULTS.showWhitespace),
     getBool(KEYS.lineNumbers, DEFAULTS.lineNumbers),
     getBool(KEYS.tabInsertsSpaces, DEFAULTS.tabInsertsSpaces),
     invoke<string | null>('get_global_setting', { key: KEYS.tabSpaceCount }),
     getBool(KEYS.highlightDisabled, DEFAULTS.highlightDisabled),
+    getBool(KEYS.useBuiltInEditor, DEFAULTS.useBuiltInEditor),
   ])
   const parsedCount = Number(tabSpaceCountRaw)
   const tabSpaceCount = Number.isInteger(parsedCount) && parsedCount > 0 && parsedCount <= 16 ? parsedCount : DEFAULTS.tabSpaceCount
-  return { wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCount, highlightDisabled }
+  return { wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCount, highlightDisabled, useBuiltInEditor }
 }
 
 let current: EditorSettings | null = null

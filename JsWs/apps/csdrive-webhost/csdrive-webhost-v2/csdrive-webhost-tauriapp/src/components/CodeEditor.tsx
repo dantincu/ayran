@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { Redo2, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import { UndoHistory } from '../lib/undoHistory'
@@ -20,6 +20,7 @@ import {
 import { RunPatchController } from '../lib/runPatchController'
 import { splitRunsAt, tokensOf } from '../lib/highlightTokens'
 import { beginHighlightRerender, endHighlightRerender, runAfterHeaderTransition } from '../lib/editorHeaderSync'
+import { isMobile } from '../lib/platform'
 
 /** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
  * wrapped-row measurement existed) rather than measuring — tens of thousands of `Range` queries would be a real
@@ -1472,19 +1473,45 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
   )
 })
 
-/** The one text editor of the app's file views — a thin wrapper that reads `editor.highlightDisabled`
- * (`lib/editorSettings.ts`) and mounts `HighlightedEditor` or `PlainTextEditor`, above, accordingly. While
- * settings are still loading (`settings === null`, the mount-time race every subscriber of
- * `subscribeEditorSettings` has), it mounts `HighlightedEditor` — the same default-to-enabled behaviour the
- * setting's own stored value falls back to everywhere else. Switching the setting while an editor is already
- * open unmounts whichever one was showing and mounts the other fresh (a new, empty undo history and a reset
- * scroll position) — an accepted trade for a setting nobody would toggle mid-edit, the same tolerance this
- * app already has for "Delete app data"-adjacent settings changes elsewhere. */
+/** Lazy, platform-picked once — `isMobile` is a static user-agent read, never changes at runtime, so there's
+ * no reason to defer *which* of these two gets imported; only *when* (on first actual use) is deferred, via
+ * `React.lazy`. This is what keeps Monaco's own multi-megabyte bundle out of the Android build entirely, and
+ * CodeMirror's out of the desktop one — neither is fetched, let alone evaluated, on the platform that will
+ * never mount it. */
+const ThirdPartyEditor = isMobile
+  ? lazy(() => import('./MobileCodeMirrorEditor'))
+  : lazy(() => import('./MonacoCodeEditor'))
+
+/** The one text editor of the app's file views — a thin wrapper that reads `editor.useBuiltInEditor` and
+ * `editor.highlightDisabled` (`lib/editorSettings.ts`) and mounts one of three implementations: this app's
+ * own `HighlightedEditor`/`PlainTextEditor` (opt-in, `useBuiltInEditor` on) or `ThirdPartyEditor` (the
+ * default — Monaco on desktop, CodeMirror 6 on mobile, above) — asked for directly: "use a third party code
+ * editor... this will be used by default, while using our editor we developed so far would be done by
+ * checking an appropriate option in the settings (and keep the disable code highlight option)."
+ * `highlightDisabled` keeps working for the third-party editors too, just differently: `HighlightedEditor`/
+ * `PlainTextEditor` are two different *components* picked by it, where Monaco/CodeMirror each stay the one
+ * mounted component and switch to a plain-text language mode instead — neither needed the dramatic drop to a
+ * bare textarea `PlainTextEditor` is for *this app's own* editor, since both already virtualize their
+ * rendering on their own.
+ *
+ * While settings are still loading (`settings === null`, the mount-time race every subscriber of
+ * `subscribeEditorSettings` has), it mounts the third-party editor — the same default-to-off behaviour
+ * `useBuiltInEditor`'s own stored value falls back to everywhere else. Switching `useBuiltInEditor` while an
+ * editor is already open unmounts whichever one was showing and mounts the other fresh (a new, empty undo
+ * history and a reset scroll position) — an accepted trade for a setting nobody would toggle mid-edit, the
+ * same tolerance this app already has for "Delete app data"-adjacent settings changes elsewhere. */
 const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(props, ref) {
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
-  if (settings?.highlightDisabled) return <PlainTextEditor ref={ref} {...props} />
-  return <HighlightedEditor ref={ref} {...props} />
+  if (settings?.useBuiltInEditor) {
+    if (settings.highlightDisabled) return <PlainTextEditor ref={ref} {...props} />
+    return <HighlightedEditor ref={ref} {...props} />
+  }
+  return (
+    <Suspense fallback={<div className="code-editor-wrap" />}>
+      <ThirdPartyEditor ref={ref} {...props} />
+    </Suspense>
+  )
 })
 
 export default CodeEditor

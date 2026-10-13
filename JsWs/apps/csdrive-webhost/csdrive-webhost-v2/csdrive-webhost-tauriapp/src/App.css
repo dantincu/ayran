@@ -1674,6 +1674,20 @@ select {
   border-color: var(--accent);
 }
 
+/* Monaco (desktop) and CodeMirror (mobile) size and scroll themselves internally — the host div just needs to
+   fill `.code-editor`'s own already-determinate flex height, same reasoning as every other full-size child
+   of this frame. */
+.monaco-editor-host,
+.codemirror-editor-host {
+  width: 100%;
+  height: 100%;
+}
+
+.codemirror-editor-host .cm-editor {
+  height: 100%;
+  font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+}
+
 /* One flex row: the line-number gutter (when shown) beside the content column — the highlighted copy and the box,
    which still share everything that decides where a character goes. `align-items: stretch` (the default) is what
    makes the gutter's own height follow the textarea's — `fit()` in `CodeEditor.tsx` is what actually sets that

@@ -38,7 +38,9 @@ export default function SettingsTab() {
   useEffect(() => {
     if (editorSettings) setTabSpaceCountText(String(editorSettings.tabSpaceCount))
   }, [editorSettings?.tabSpaceCount])
-  function setEditorFlag<K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces' | 'highlightDisabled'>(key: K, value: boolean) {
+  function setEditorFlag<
+    K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces' | 'highlightDisabled' | 'useBuiltInEditor',
+  >(key: K, value: boolean) {
     setEditorSetting(key, value).catch((e) => setError(String(e)))
   }
   function commitTabSpaceCount() {
@@ -230,6 +232,15 @@ export default function SettingsTab() {
       <p className="muted">
         Every text editor in the app — the Files tab's and Notes' alike — shares these settings.
       </p>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={editorSettings?.useBuiltInEditor ?? false}
+          onChange={(e) => setEditorFlag('useBuiltInEditor', e.target.checked)}
+        />
+        Use this app's own editor instead of the built-in third-party one (Monaco on desktop, CodeMirror on
+        mobile)
+      </label>
       <label className="checkbox-row">
         <input
           type="checkbox"
