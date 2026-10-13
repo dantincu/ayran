@@ -33,6 +33,7 @@ import {
   Lock,
   Pencil,
   RefreshCw,
+  RotateCcw,
   Save,
   Scissors,
   Search,
@@ -897,6 +898,20 @@ export default function NotesApp({
     }
   }
 
+  /** "Discard unsaved changes" — a direct toolbar button, asked for separately from "Discard changes" above
+   * (CLAUDE.md's "Typing after a fast scroll, and a blank editor after one": the person asked for a way to
+   * discard persisted drafts, having just been testing the large-file editor). Unlike the conflict dialog's own
+   * "Discard changes" (one of three choices there, the choice itself already serving as confirmation), this one
+   * is reachable at any moment the editor has unsaved changes, so it asks first — the same destructive-action
+   * confirmation every other direct "lose your edits" button in this app already gets (closing the editor with
+   * unsaved changes, below, is the existing precedent). Once confirmed it's exactly `discardEdits()` — the same
+   * re-read-from-source, draft-clearing logic, not a second implementation that could drift from it. */
+  async function discardUnsavedChanges() {
+    if (!editing?.dirty) return
+    if (!(await confirm('Discard your unsaved changes? This cannot be undone.'))) return
+    await discardEdits()
+  }
+
   /** "Discard changes": the edits are dropped and the file is read again — Filen's version, or in a
    * branch that already holds the file, the branch's. */
   async function discardEdits() {
@@ -1627,6 +1642,7 @@ export default function NotesApp({
               )}
               <CacheMenu source={editing.source} path={editing.path} isDirectory={false} editing={editing.dirty ? 'dirty' : 'open'} onDone={refreshEditor} onError={setError} onNotice={setNotice} />
               <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
+              <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!editing.dirty} />
               <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
             </div>
             {error && <div className="error-banner">{error}</div>}

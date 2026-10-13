@@ -57,6 +57,16 @@ export class RunPatchController {
     this.liveNodes = []
   }
 
+  /** Seeds the controller with an already-tokenized window's worth of content — a full rebuild, exactly like
+   * the one `resetLiveState()` followed by `applyApproximate`'s own fallback would do for a fresh window, except
+   * with **real, locally-highlighted colours** instead of one flat caret-colour guess. The caller
+   * (`CodeEditor.tsx`) is the one place that knows a window just moved and has the means to compute this
+   * (synchronously highlighting the window's own, bounded text) before the ordinary approximate/exact machinery
+   * ever runs for it — see `CodeEditor.tsx`'s own call site for the full story of why this exists. */
+  rebuildWindow(value: string, runs: Run[]): void {
+    this.rebuild(value, runs)
+  }
+
   private rebuild(value: string, runs: Run[]): void {
     const container = this.container
     if (!container) return

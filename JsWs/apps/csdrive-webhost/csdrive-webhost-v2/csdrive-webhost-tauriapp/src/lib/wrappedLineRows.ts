@@ -360,3 +360,39 @@ export function computeWindowRange(
   const endLine = Math.min(lineCount, lastIndexAtMost(starts, topRow + visibleRows + bufferRows) + 1)
   return { startLine, endLine: Math.max(startLine + 1, endLine) }
 }
+
+/** Widens `range` backward (decreasing `startLine`, never touching `endLine`) until its *character* span —
+ * not just its line-index span, which `computeWindowRange` already guarantees is non-empty — covers at least
+ * one real character, clamped at `0`. Call this on every `computeWindowRange` result before adopting it.
+ *
+ * **Why this is needed at all**: `computeWindowRange`'s own row-to-line lookup is only as good as `starts`
+ * itself — and `starts` is built from *estimated* row counts for any line not yet actually measured (the
+ * accepted "assume 1 row until visited, self-correct" trade-off — see `CodeEditor.tsx`'s own module doc). A
+ * fast scroll through a long, heavily-wrapping, largely unmeasured stretch of a file can leave the *real*
+ * `scrollTop` (driven by the always-accurate, unvirtualized `<textarea>`) corresponding to a `topRow` far
+ * past what the *estimated* `starts` array accounts for — `lastIndexAtMost` then has nothing left to find
+ * past the array's own last entry and correctly, faithfully returns the very last line, clamped. **Found
+ * live, not by inspection**: reported as "if I scroll very fast and then stop, I start seeing a blank editor…
+ * if I then scroll just a little, I again see what I should" — reproduced with a real, fast CDP wheel-event
+ * burst (never a synthetic `scrollTop` assignment, which doesn't exercise the same under-measured-estimate
+ * path a genuine fast scroll does) on a large file whose last line is the common, unremarkable "document ends
+ * with a trailing newline" shape: the clamped last line *is* that trailing, zero-length line, so the window
+ * `computeWindowRange` picked was **exactly one line long and that line has no characters at all** —
+ * `windowStartChar === windowEndChar`, an empty slice, so `RunPatchController` has nothing to render and the
+ * overlay sits genuinely blank — confirmed directly (not inferred): `pre.textContent.length === 0` immediately
+ * after a real fast burst, and **still `0` a full 1.3 seconds later with no further input**, ruling out a
+ * transient render-lag race that would have self-corrected on its own — matching "stays blank until I scroll a
+ * little" precisely, since nothing *else* re-triggers `computeWindowRange` until the next `scroll` event does.
+ *
+ * Widening backward is the direct, minimal fix for the *symptom* (never show literally nothing) without
+ * touching the underlying estimate/measurement machinery at all: the widened window still shows whichever
+ * *real*, already-known lines sit just before the degenerate tail, which is far closer to "you can see
+ * something, and scrolling resolves the rest" than a blank screen — the same spirit as the already-accepted
+ * scrollbar-proportion trade-off, just extended to guarantee *some* real content rather than *correctly
+ * positioned* content, until the next real measurement (or scroll) corrects the position too. */
+export function widenIfCharsEmpty(range: WindowRange, lineStarts: number[], totalChars: number): WindowRange {
+  let { startLine, endLine } = range
+  const endChar = endLine < lineStarts.length ? lineStarts[endLine] : totalChars
+  while (startLine > 0 && (lineStarts[startLine] ?? totalChars) >= endChar) startLine--
+  return { startLine, endLine }
+}

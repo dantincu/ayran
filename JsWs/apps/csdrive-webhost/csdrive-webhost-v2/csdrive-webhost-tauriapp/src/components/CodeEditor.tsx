@@ -8,7 +8,15 @@ import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
-import { carryForwardRows, computeRowsPerLine, computeWindowRange, lineAtOffset, lineStartOffsets, type WindowRange } from '../lib/wrappedLineRows'
+import {
+  carryForwardRows,
+  computeRowsPerLine,
+  computeWindowRange,
+  lineAtOffset,
+  lineStartOffsets,
+  widenIfCharsEmpty,
+  type WindowRange,
+} from '../lib/wrappedLineRows'
 import { RunPatchController } from '../lib/runPatchController'
 import { splitRunsAt, tokensOf } from '../lib/highlightTokens'
 
@@ -247,6 +255,15 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   const frameRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const highlightRef = useRef<HTMLPreElement>(null)
+  /** A hidden, out-of-flow `<pre>` sharing the real overlay's own CSS class (so font/width/wrapping behave
+   * identically) used purely to measure *gap* text that `measureWrappedRows` (below) decides to bridge —
+   * never shown, never part of the visible layout. See `measureWrappedRows`'s own doc comment for why this
+   * exists at all. */
+  const measureScratchRef = useRef<HTMLPreElement>(null)
+  /** The single, ever-growing `[min, max)` line range that has had a *genuine* DOM-based wrapped-row
+   * measurement, across a run of pure scrolling (no edits) — `null` the moment anything else happens. See
+   * `measureWrappedRows`'s own doc comment for the full story of why this exists and what it fixes. */
+  const measuredExtentRef = useRef<{ min: number; max: number } | null>(null)
   const visibleLineRaf = useRef<number | null>(null)
   const lastVisibleLine = useRef<number | null>(null)
   const history = useRef<UndoHistory | null>(null)
@@ -359,6 +376,20 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * hasn't been written yet at this point in the render (that happens in the DOM-sync layout effect, below) and
    * would otherwise still read the *previous* step's caret. */
   const lastRecenterValueRef = useRef(value)
+  /** Set the instant this recentre actually moves the window (consumed, and always reset, by the approximate
+   * effect below) — tells that effect apart "the window moved because an *edit* carried the caret outside it"
+   * from "the window moved because the person scrolled": only the former gets the extra, synchronous local-
+   * highlight seeding (below), since that seeding's own cost (one bounded `highlight()` call) would otherwise
+   * run on *every* scroll-driven window shift too — exactly the kind of extra main-thread work a *fast,
+   * continuous* scroll can least afford, and that shift already has its own, separately accepted "flat colour
+   * until the Worker catches up" trade-off, which nothing about this fix needs to change. */
+  const windowMovedByEditRef = useRef(false)
+  /** `synthScrollTop`, carried from the render-time recentre below to the approximate effect, which is the one
+   * place that actually writes it to `frameRef.current.scrollTop` — see that effect's own doc comment for why
+   * this is load-bearing, not cosmetic: found live, this recentre used to compute where the viewport *should*
+   * be (purely to pick a window via `computeWindowRange`) without ever actually moving the real, visible
+   * scroll position there. */
+  const pendingRecenterScrollTopRef = useRef<number | null>(null)
   if (lastRecenterValueRef.current !== value) {
     lastRecenterValueRef.current = value
     const pendingCaret = restoreCaret.current
@@ -369,7 +400,10 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       const lineHeightPx = gutterRowStarts.lineHeightPx
       const caretRow = gutterRowStarts.starts[caretLine] ?? 0
       const synthScrollTop = Math.max(0, caretRow * lineHeightPx - clientHeight / 2)
-      setWindowRange(computeWindowRange(synthScrollTop, clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS))
+      windowMovedByEditRef.current = true
+      pendingRecenterScrollTopRef.current = synthScrollTop
+      const proposed = computeWindowRange(synthScrollTop, clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS)
+      setWindowRange(widenIfCharsEmpty(proposed, lineStarts, value.length))
     }
   }
   const windowStartChar = lineStarts[windowRange.startLine] ?? 0
@@ -418,18 +452,86 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   const runPatchController = useRef<RunPatchController | null>(null)
   if (!runPatchController.current) runPatchController.current = new RunPatchController()
   const lastAppliedWindowRef = useRef<WindowRange | null>(null)
-  function resetPatcherIfWindowMoved(controller: RunPatchController) {
+  /** Returns whether the window just moved (and, if so, has already reset the controller's live state) — the
+   * approximate effect below uses this to tell "the window just moved, seed it with real colours" apart from
+   * "same window as last time, patch it as usual." */
+  function resetPatcherIfWindowMoved(controller: RunPatchController): boolean {
     const last = lastAppliedWindowRef.current
     if (!last || last.startLine !== windowRange.startLine || last.endLine !== windowRange.endLine) {
       controller.resetLiveState()
       lastAppliedWindowRef.current = windowRange
+      return true
     }
+    return false
   }
   useLayoutEffect(() => {
     const controller = runPatchController.current!
     controller.attachContainer(highlightRef.current)
-    resetPatcherIfWindowMoved(controller)
+    const windowMoved = resetPatcherIfWindowMoved(controller)
     const windowValue = value.slice(windowStartChar, windowEndChar)
+    /** A window that just moved gets seeded with a **real, locally-highlighted** tokenization of its own text
+     * before `applyApproximate` (below) ever runs for it — not left to that function's own flat
+     * single-colour fallback, which is what a freshly reset controller (`liveValue === null`) would otherwise
+     * produce for *every* character of the newly-revealed window, however large.
+     *
+     * **Reported live**: typing one letter after scrolling away (so the caret's own line sat outside the
+     * window, triggering the render-time recentre above) made "all the coding highlight regenerate" and
+     * showed "a totally different part of the document" — confirmed live (real CDP, a genuine scroll to the
+     * file's middle followed by a real keystroke at the untouched caret, still at offset 0) that this is the
+     * recentre firing exactly as designed — the window jumps to show the caret, which is correct, standard
+     * editor behaviour (every mainstream editor reveals the cursor when you type away from it) — but the
+     * *landing* was a jarring, flat-coloured flash: with the controller just reset, `applyApproximate`'s own
+     * `oldValue` is empty, so its prefix/suffix diff against the brand-new window's text finds nothing in
+     * common, and the *entire* window becomes the flat, caret-coloured "middle" — staying that way until the
+     * Worker's own debounced exact pass catches up, `EXACT_DISPATCH_DEBOUNCE_MS` plus a re-tokenization later
+     * (over 200ms on an ordinary keystroke), which is exactly the "brief pause... then a totally different
+     * part of the document" the report described (the flat flash *is* "not seeing" real content; the delayed
+     * real colours landing then read as a second, separate change).
+     *
+     * **The fix**: `highlight()` is already cheap enough to run synchronously for one bounded window's worth
+     * of text (the same call `useBackgroundHighlighted`'s own very first, synchronous render already makes for
+     * a whole *small* file) — so run it here, on just the window's own slice, and seed the controller with the
+     * result via `rebuildWindow` *before* `applyApproximate` runs. `applyApproximate` then sees `oldValue`
+     * already equal to `newValue` (the seed *is* the window's current text) and does nothing further this
+     * commit — the seed stands as the visible result, correctly syntax-highlighted from the very first paint,
+     * not a flat guess. Not guaranteed byte-perfect at the window's own edges (a multi-line construct that
+     * started before the window — an open fence, an unterminated comment — has no context here to know about),
+     * but this is the same "estimate, then self-correct" trade this whole feature already makes elsewhere:
+     * the next real exact pass (debounced, whole-document, correct) patches over it the moment it lands.
+     *
+     * **Scoped to `windowMovedByEditRef` specifically — an *edit* carrying the caret outside the window, not
+     * an ordinary scroll-driven shift** (consumed and always reset below, whichever way this branch goes): a
+     * fast, continuous scroll already triggers a window shift on nearly every qualifying `scroll` event, and
+     * paying for one more synchronous `highlight()` call on *every* one of those would add exactly the kind
+     * of main-thread work a fast scroll can least afford — a plausible contributor to a separately reported
+     * "blank editor after scrolling fast" symptom, not something this fix should risk making worse for a case
+     * it was never asked to improve (an ordinary scroll-driven shift already has its own accepted "flat colour
+     * until the Worker catches up" trade-off, unchanged).
+     *
+     * **A second, independent bug shared the same trigger, found live while verifying the above**: the
+     * render-time recentre (above) computes `synthScrollTop` — the pixel position that would actually show the
+     * caret — purely to *pick* a window via `computeWindowRange`, but never once writes it to the real,
+     * visible `frameRef.current.scrollTop`. Confirmed live (real CDP: scroll to a file's middle, type a letter
+     * at the untouched caret, offset 0): the overlay's own content correctly jumped to line 0
+     * (`paddingTop: 8px`, `paddingBottom` covering everything after the window's own few screens), but
+     * `frame.scrollTop` stayed exactly where the person had scrolled it — meaning the *viewport* kept looking
+     * at a pixel position that, relative to the newly-repositioned content, now fell squarely inside the
+     * window's own trailing `paddingBottom` — blank, rendered space with nothing in it. This is the direct
+     * mechanism behind "I start seeing a blank editor" after a fast scroll, wherever else that same shape
+     * (window moves, viewport doesn't follow) can arise — not a paint/compositor issue (CDP's own DOM
+     * inspection sees it plainly: real content exists, just not at the scroll position the frame is sitting
+     * at). Fixed by writing `pendingRecenterScrollTopRef.current` to `frameRef.current.scrollTop` the moment
+     * this effect applies an edit-triggered window move — in the same `useLayoutEffect` that already seeds the
+     * window's colours, so both land in the same commit, before the browser ever paints the mismatched state. */
+    if (windowMoved && windowMovedByEditRef.current) {
+      const windowHtml = highlight(windowValue, effectiveLanguage)
+      controller.rebuildWindow(windowValue, tokensOf(windowHtml))
+      const frame = frameRef.current
+      const pendingScrollTop = pendingRecenterScrollTopRef.current
+      if (frame && pendingScrollTop !== null) frame.scrollTop = pendingScrollTop
+    }
+    windowMovedByEditRef.current = false
+    pendingRecenterScrollTopRef.current = null
     // `fullExactRuns`/`caretOffset()` are deliberately left on the *whole document's* own basis here, not
     // sliced to the window — see `RunPatchController.applyApproximate`'s own doc comment for why slicing them
     // on every keystroke would reintroduce the exact `O(whole file)`-per-keystroke cost this session already
@@ -450,7 +552,37 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
 
   /** `full`: discard *every* line's known row count (not just the window's), not only skip reusing it — only
    * ever passed `true` by the frame's own width-change handler (or a line-height mismatch, below), since either
-   * can move where *every* line wraps, unchanged text included. An ordinary content edit never needs it. */
+   * can move where *every* line wraps, unchanged text included. An ordinary content edit never needs it.
+   *
+   * **Bridges a scroll-only gap between the window just measured and whatever was already known**, using the
+   * hidden `measureScratchRef` element — load-bearing, not an optimization, found live: a line left at its
+   * default "1 row" guess (the accepted "estimate, self-correct" trade-off, confirmed with the person before
+   * building any of this) doesn't just mean a slightly-off *scrollbar proportion* while it's unvisited, which
+   * is all that trade-off was ever meant to cost — it directly feeds `gutterRowStarts.starts`, the running sum
+   * `windowBottomPaddingPx`'s sibling `paddingTop` is built from (above), so an under-counted line *before* the
+   * window makes the overlay's own content render at the *wrong* pixel position relative to the real, always-
+   * correctly-laid-out `<textarea>` underneath it — and since the two are supposed to sit exactly on top of each
+   * other (that's what makes a click land in the right place), a wrong `paddingTop` means a **click lands on the
+   * wrong character**: the browser maps the click's screen position to whatever the *textarea's own* unrelated,
+   * correct layout has there, not to what the person is actually looking at in the (wrongly-positioned) overlay.
+   * Reported live, reproduced with a real fast, sustained CDP wheel-scroll burst through a genuinely wrapping
+   * file (scroll fast enough that some regions are passed through without ever settling into a window, so their
+   * row counts never get measured) followed by a real click: the caret landed dozens of lines away from where
+   * the click visibly was. Confirmed **not** reproducible on content that never wraps (every line is trivially
+   * one row regardless of whether it was "measured" or still at its default, so there's nothing to get wrong) —
+   * this is specifically a wrapping-content, fast-scroll interaction. The one-island-of-a-document design below
+   * is what fixes it: `measuredExtentRef` tracks a single, ever-growing `[min, max)` of lines that have had a
+   * *genuine* DOM measurement (reset to `null` the moment anything isn't a pure, same-text scroll — an edit, a
+   * width change, a line-height change — since those already have their own, separately-correct handling via
+   * `carryForwardRows`/the `full` reset, and bridging across an *edit* would mean the gap's own line indices
+   * have shifted, which this simple min/max pair doesn't track). On a pure scroll, if the new window doesn't
+   * already touch the known extent, the gap between them is measured too — in the *hidden* scratch element, so
+   * nothing about the visible overlay or gutter ever shows the bridge happening — and the extent grows to cover
+   * both, so the "island" of known-correct rows only ever gets bigger, never fragmented, as long as scrolling
+   * keeps happening (an edit still resets it, deliberately, rather than trying to shift a stale extent across
+   * an insertion/deletion it has no way to track). A gap bigger than `MAX_LINES_FOR_WRAP_MEASUREMENT` is **not**
+   * bridged (the same ceiling the whole feature already has for "not worth it" sizes) — the extent is simply
+   * restarted at just the new window, the same honest fallback a too-big file already gets everywhere else. */
   const measureWrappedRows = (full = false) => {
     const highlightEl = highlightRef.current
     if (!highlightEl || settings?.wrapLines === false) return
@@ -471,6 +603,8 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     if (!lineHeightPx) return
     const previous = wrapMeasure
     const lineHeightChanged = previous !== null && previous.lineHeightPx !== lineHeightPx
+    const pureScrollContinuation = !full && !lineHeightChanged && previous !== null && previous.value === value
+    if (!pureScrollContinuation) measuredExtentRef.current = null
     // **The off-window portion is carried forward, never remeasured — only the current window ever gets a
     // fresh `computeRowsPerLine` call, below, and that's *always* a full (not incremental) measurement of
     // whatever's currently in `highlightEl`.** A window is bounded in size by construction, so there's no
@@ -486,11 +620,66 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
         : previous.value === value
           ? previous.rows
           : carryForwardRows(previous.value, previous.rows, value) ?? new Array<number>(lineCount).fill(1)
-    const windowText = value.slice(windowStartChar, windowEndChar)
+    // **Excludes the window's own trailing `\n` from what's handed to `computeRowsPerLine`, unless the window
+    // genuinely reaches the document's own end.** Found live, the same class of bug the bridge's own doc
+    // comment already covers in detail, but here in the *pre-existing* main-window measurement itself (present
+    // since virtualization began, not introduced by the bridge): `windowText` almost always ends in `\n` (the
+    // one separating the window's own last line from whatever comes after it, off-window) — and a direct, live
+    // measurement (`scratch.textContent = 'aaaa\nbbbb\n'` vs `'aaaa\nbbbb'`, identical `scrollHeight` either
+    // way) confirmed this engine's `white-space: pre-wrap` gives a trailing `\n` **no row of its own** — so
+    // `computeRowsPerLine`'s own degenerate-trailing-line rule (`totalRows - 1`, written for the *genuine*
+    // whole-file trailing empty line, where it's correct and already tested) silently undercounts the window's
+    // own *last real* line by exactly one row whenever it's applied to an artificial, window-slicing `\n`
+    // instead: `rows[last] = (totalRows-1) - rowStarts[last]` comes out one short of the true
+    // `totalRows - rowStarts[last]`. Invisible before virtualization (there was only ever one window — the
+    // whole file — so this only ever touched the file's own genuinely-empty trailing line, where `totalRows-1`
+    // *is* correct); invisible even after it, on content that never wraps (every line is `1` row regardless).
+    // Reported live as "typing one letter changes the entire gutter numbering before the cursor" — chased
+    // through the bridge's own, separate off-by-one (fixed first, also found live) down to this shared root:
+    // every window's own last line was quietly short by one row, baked into `gutterRowStarts`'s running sum
+    // for everything after it. `computeRowsPerLine` itself is left alone — its own degenerate-line rule is
+    // correct for what it was built and tested for — only the *slice* handed to it changes.
+    const windowEndsAtDocument = windowEndChar >= value.length
+    const windowText = value.slice(windowStartChar, windowEndsAtDocument ? windowEndChar : windowEndChar - 1)
     const windowRows = computeRowsPerLine(highlightEl, windowText, lineHeightPx)
     if (!windowRows) return
     const rows = baseRows.slice()
     for (let j = 0; j < windowRows.length; j++) rows[windowRange.startLine + j] = windowRows[j]
+
+    const extent = measuredExtentRef.current
+    const scratchEl = measureScratchRef.current
+    if (pureScrollContinuation && extent && scratchEl) {
+      // Exactly one of these can hold at a time: the window and the known extent are two points on the same
+      // number line, and a pure scroll (above) never lets them end up interleaved — only "window moved forward
+      // past the extent" or "window moved backward before it" (or neither, if they already touch/overlap).
+      const gap = windowRange.startLine > extent.max ? [extent.max, windowRange.startLine] : windowRange.endLine < extent.min ? [windowRange.endLine, extent.min] : null
+      if (gap && gap[1] - gap[0] <= MAX_LINES_FOR_WRAP_MEASUREMENT) {
+        const gapStartChar = lineStarts[gap[0]] ?? 0
+        // `lineStarts[gap[1]]` is where the *next* real line (gap[1] itself — always a real line, either the
+        // window's own first line or the old extent's) begins, i.e. right after the gap's own last `\n`.
+        // Excluding that one trailing character is what keeps the slice from ending in a newline of its own —
+        // without it, `computeRowsPerLine` reads the slice as ending with a degenerate, zero-length trailing
+        // "line" (its own documented rule for a text that ends in `\n`) and reports *that* fake line's row
+        // count (always `1`) as `gapRows`'s own last entry — landing, one loop iteration below, at exactly
+        // `rows[gap[1]]`: the window's own real first line, silently overwriting whatever `computeRowsPerLine`
+        // just correctly measured for it with a wrong, un-wrapped `1`. Found live, not by inspection: the
+        // bridge fix above visibly *reduced* a reported click-misalignment but didn't eliminate it — a
+        // remaining offset of almost exactly one line's own wrap-row-count, every time, pointed straight at an
+        // off-by-one at the gap's own boundary rather than the bridging idea itself being wrong.
+        const gapEndChar = Math.max(gapStartChar, (lineStarts[gap[1]] ?? value.length) - 1)
+        scratchEl.textContent = value.slice(gapStartChar, gapEndChar)
+        const gapRows = computeRowsPerLine(scratchEl, scratchEl.textContent, lineHeightPx)
+        if (gapRows) for (let j = 0; j < gapRows.length; j++) rows[gap[0] + j] = gapRows[j]
+        scratchEl.textContent = ''
+      }
+      measuredExtentRef.current =
+        gap && gap[1] - gap[0] > MAX_LINES_FOR_WRAP_MEASUREMENT
+          ? { min: windowRange.startLine, max: windowRange.endLine } // too big to bridge: abandon the old island
+          : { min: Math.min(extent.min, windowRange.startLine), max: Math.max(extent.max, windowRange.endLine) }
+    } else {
+      measuredExtentRef.current = { min: windowRange.startLine, max: windowRange.endLine }
+    }
+
     setWrapMeasure({ value, rows, lineHeightPx })
   }
   // Deferred (not a `useLayoutEffect`) and off `value`/`settings?.wrapLines`/`windowRange` — not `html`, which
@@ -579,7 +768,8 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
   useLayoutEffect(() => {
     const frame = frameRef.current
     if (!frame) return
-    setWindowRange(computeWindowRange(frame.scrollTop, frame.clientHeight, gutterRowStarts.lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS))
+    const proposed = computeWindowRange(frame.scrollTop, frame.clientHeight, gutterRowStarts.lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS)
+    setWindowRange(widenIfCharsEmpty(proposed, lineStarts, value.length))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -695,7 +885,14 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       const visibleStartRow = frame.scrollTop / lineHeightPx
       const visibleEndRow = visibleStartRow + screenRows
       if (visibleStartRow - windowStartRow < screenRows || windowEndRow - visibleEndRow < screenRows) {
-        setWindowRange(computeWindowRange(frame.scrollTop, frame.clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS))
+        const proposed = computeWindowRange(frame.scrollTop, frame.clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS)
+        // `widenIfCharsEmpty`: a fast scroll through a long, largely-unmeasured, heavily-wrapping stretch can
+        // leave `frame.scrollTop` (always accurate — driven by the real, unvirtualized `<textarea>`)
+        // corresponding to a row position the *estimated* `gutterRowStarts.starts` array doesn't yet account
+        // for, clamping the proposed window to the document's very last line — genuinely blank whenever that
+        // line is the common "ends with a trailing newline" empty one. See that function's own doc comment for
+        // the full story (found live, confirmed to stay blank — not self-heal — until a further scroll).
+        setWindowRange(widenIfCharsEmpty(proposed, lineStarts, value.length))
       }
     }
     if (!onVisibleLineChange || visibleLineRaf.current !== null) return
@@ -818,6 +1015,11 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
                 paddingBottom: windowBottomPaddingPx,
               }}
             />
+            {/* Never shown — purely a measuring stick for `measureWrappedRows`'s own gap-bridging (see its doc
+                comment). Shares the real overlay's class so font/width/wrapping match exactly, but gets no
+                `paddingTop`/`paddingBottom` override: it measures whatever text is dropped into it starting
+                fresh from row 0, independent of any window. */}
+            <pre ref={measureScratchRef} className="code-editor-highlight code-editor-measure-scratch" aria-hidden="true" />
             <textarea
               ref={inputRef}
               className="code-editor-input"

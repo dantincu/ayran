@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { confirm } from '../../lib/dialogs'
-import { AppWindow, ArrowLeft, Link2, Paperclip, PanelTop, RefreshCw, Save } from 'lucide-react'
+import { AppWindow, ArrowLeft, Link2, Paperclip, PanelTop, RefreshCw, RotateCcw, Save } from 'lucide-react'
 import CodeEditor, { type CodeEditorHandle } from '../../components/CodeEditor'
 import IconButton from '../../components/IconButton'
 import PathStyleModal from '../../components/PathStyleModal'
@@ -115,6 +115,22 @@ export default function NoteEditPage({
     return () => window.clearTimeout(draftTimer.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, saved, loaded, path])
+
+  /** "Discard unsaved changes" — asked for directly (CLAUDE.md's "Typing after a fast scroll, and a blank
+   * editor after one": a way to discard a persisted draft, not just save or leave it unresolved). `saved`
+   * already holds the last-known-good content (the file as it is on disk, or as it was last written by this
+   * same editor) — there's nothing to re-fetch, unlike `NotesApp.tsx`'s own equivalent, which has no such value
+   * kept in memory and so re-reads from source instead. Confirmed first, the same destructive-action
+   * convention `NotesApp.tsx`'s own "Discard changes" dialog option and this app's other direct "lose your
+   * edits" actions already follow. */
+  async function discardUnsavedChanges() {
+    if (!dirty || !path) return
+    if (!(await confirm('Discard your unsaved changes? This cannot be undone.'))) return
+    await writeDraft(path, null)
+    setText(saved)
+    setError(null)
+    setNotice('Your unsaved changes were discarded.')
+  }
 
   async function save(): Promise<boolean> {
     if (!source || !path || !note) return false
@@ -273,6 +289,7 @@ export default function NoteEditPage({
             <h2>{note?.title ?? 'Note'}</h2>
             {dirty && <span className="muted">unsaved changes</span>}
             <CacheMenu source={source} path={path ?? folder} isDirectory={false} editing={dirty ? 'dirty' : 'open'} onDone={(kind) => (kind === 'soft' ? load() : undefined)} onError={setError} onNotice={setNotice} />
+            <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!dirty || saving} />
             <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
             <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
             <IconButton icon={RefreshCw} label="Refresh the web app — starts it over, without keeping its scroll position" onClick={refreshWebApp} disabled={!path} />

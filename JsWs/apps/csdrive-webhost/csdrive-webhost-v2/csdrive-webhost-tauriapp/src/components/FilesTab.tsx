@@ -19,6 +19,7 @@ import {
   Pencil,
   RefreshCw,
   Rocket,
+  RotateCcw,
   Save,
   Scissors,
   Trash2,
@@ -208,7 +209,9 @@ export default function FilesTab() {
   const [sizes, setSizes] = useState<Record<string, number>>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState<{ path: string; content: string; dirty: boolean } | null>(null)
+  // `saved`: the content as it is on disk (or as this editor last wrote it) — kept apart from `content` (what's
+  // currently in the box) so "Discard your unsaved changes" has something to revert to without a re-read.
+  const [editing, setEditing] = useState<{ path: string; content: string; saved: string; dirty: boolean } | null>(null)
   const editorRef = useRef<CodeEditorHandle>(null)
   const [inserting, setInserting] = useState(false)
   const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string } | null>(null)
@@ -406,7 +409,7 @@ export default function FilesTab() {
         setError(`"${entry.name}" isn't a text file this small — export it instead.`)
         return
       }
-      setEditing({ path: rel, content, dirty: false })
+      setEditing({ path: rel, content, saved: content, dirty: false })
     } catch (e) {
       setError(String(e))
     }
@@ -418,11 +421,22 @@ export default function FilesTab() {
       await writeRootTextFile(activeRoot, editing.path, editing.content)
       // Web apps that show the file reload.
       notifyFileSaved({ storage: activeRoot.id === USER_ROOT_ID ? 'UserFolder' : 'DeviceFolder', root: activeRoot.id, path: editing.path }).catch(() => {})
-      setEditing({ ...editing, dirty: false })
+      setEditing({ ...editing, saved: editing.content, dirty: false })
       await refresh()
     } catch (e) {
       setError(String(e))
     }
+  }
+
+  /** "Discard your unsaved changes" — asked for directly (CLAUDE.md's "Typing after a fast scroll, and a blank
+   * editor after one"). This editor keeps no draft of its own (CLAUDE.md's "Text editors are now dedicated
+   * pages, not popups": "The Files tab's own editor has no equivalent place-persistence") — `saved` is simply
+   * the content as it was last loaded or last written, kept in memory for exactly this. Confirmed first, the
+   * same destructive-action convention this app's other direct "lose your edits" actions already follow. */
+  async function discardEditing() {
+    if (!editing?.dirty) return
+    if (!(await confirm('Discard your unsaved changes? This cannot be undone.'))) return
+    setEditing({ ...editing, content: editing.saved, dirty: false })
   }
 
   /** "Insert a path…" picked one: the relative form (from the edited file's own folder) and the absolute one —
@@ -457,7 +471,7 @@ export default function FilesTab() {
       }
       await writeRootTextFile(activeRoot, rel, '')
       await refresh()
-      setEditing({ path: rel, content: '', dirty: false })
+      setEditing({ path: rel, content: '', saved: '', dirty: false })
     } catch (e) {
       setError(String(e))
     }
@@ -850,6 +864,7 @@ export default function FilesTab() {
             <h2>{editing.path}</h2>
             {editing.dirty && <span className="muted">unsaved changes</span>}
             <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
+            <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardEditing} disabled={!editing.dirty} />
             <IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />
           </div>
           {error && <div className="error-banner">{error}</div>}

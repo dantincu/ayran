@@ -1751,6 +1751,15 @@ select {
   user-select: none;
 }
 
+/* The hidden gap-measuring stick (`CodeEditor.tsx`'s `measureScratchRef`) — layers `position:absolute` on top
+   of `.code-editor-highlight`'s own (same `left`/`right`, so its width always matches exactly), then takes it
+   fully out of sight: `visibility: hidden` still lays its content out for real (so `getClientRects`/
+   `scrollHeight` measure it correctly), it just never paints and never affects anything else's height, since an
+   absolutely-positioned element already can't influence its own container's size. */
+.code-editor-measure-scratch {
+  visibility: hidden;
+}
+
 .code-editor .code-editor-input {
   display: block;
   position: relative;

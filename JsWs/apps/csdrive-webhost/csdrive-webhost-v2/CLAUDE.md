@@ -1008,6 +1008,260 @@ small-file case (a fresh 5-line file, window covering it entirely) was re-checke
 to the textarea's own value, with both paddings correctly `0px`. `npx tsc --noEmit` and `npm run build` both
 clean throughout; no Rust change.
 
+**Reported live again, after that fix had already been deployed: "it seems to work perfectly only as long as I
+don't very scroll fast."** Asked directly what "doesn't work" actually looked like, since several rounds of
+synthetic fast-scroll reproduction (large and small jumps, real CDP wheel bursts at various speeds, rapid
+direction reversals, a CPU profile of a sustained fast scroll) all came back **correct** — the symptom turned
+out to be nothing like a visual glitch during the scroll itself: **"the position where the caret lands when I
+click on text is misaligned from the actual text... stays broken until the file is reopened."** That precise
+description was what made it reproducible at all — clicking a specific, known character and comparing the
+real caret position it landed at against the real textarea's own offset for that character, after a real, fast,
+sustained wheel-scroll burst through a genuinely **wrapping** file (never reproducible on content that doesn't
+wrap, since every line is trivially one row regardless of whether it was ever "measured" — confirmed directly).
+Two distinct, compounding bugs, both pre-existing structural gaps the "estimate, self-correct" design's own
+scope never actually covered, found and fixed in sequence:
+
+1. **The accepted "estimate, self-correct" trade-off was scoped to the *scrollbar's* own proportions — never to
+   where the overlay actually renders relative to the real `<textarea>`.** A line scrolled past quickly enough
+   that its own window was never measured (the measurement is debounced 250ms after the *last* scroll event, so
+   a sustained fast scroll can skip whole regions without ever settling into them) stays at its default "1 row"
+   guess **forever**, until it happens to become a window's own content again — which a fast scroll specifically
+   tends to skip. That default feeds directly into `gutterRowStarts.starts`, the running sum `paddingTop` is
+   built from (above) — so an under-counted region *before* the window renders the overlay at the *wrong* pixel
+   position relative to the real textarea underneath it, and since the two are supposed to sit exactly on top of
+   each other (that's what makes a click land on the right character), a wrong `paddingTop` means **the browser
+   maps the click to whatever the textarea's own, unrelated, correct layout has there — not to what the person
+   is actually looking at**. **Fixed** with a new, hidden, out-of-flow `<pre>` (`measureScratchRef`, sharing the
+   real overlay's own CSS class so font/width/wrapping match exactly, never shown, never part of the visible
+   layout) used purely as a measuring stick: `measuredExtentRef` tracks one, single, ever-growing `[min, max)`
+   line range that has had a *genuine* DOM measurement across a run of pure scrolling (reset the instant
+   anything isn't a pure, same-text scroll — an edit, a width change, a line-height change — since those already
+   have their own, separately-correct handling, and bridging across an *edit* would mean the gap's own line
+   indices have shifted, which this simple min/max pair has no way to track). Whenever a new window doesn't
+   already touch the known extent, the gap between them is measured too, in the hidden scratch element (nothing
+   about the visible overlay or gutter ever shows the bridge happening), and the extent grows to cover both — a
+   single island of known-correct rows that only ever gets bigger as scrolling continues, never fragmented. A
+   gap bigger than `MAX_LINES_FOR_WRAP_MEASUREMENT` is **not** bridged (the same ceiling the whole feature
+   already has for "not worth it" sizes) — the extent simply restarts at the new window, the same honest
+   fallback a too-big file already gets everywhere else.
+2. **The bridge fix above visibly *reduced* the misalignment but didn't eliminate it** — confirmed live, not
+   assumed: a caret that used to land 16 lines away from the click landed less than one line away, consistently.
+   Chased down to **two separate instances of the exact same class of bug**, both pre-existing in code this
+   session's own earlier work had already touched (and, in one case, written) without ever noticing, because
+   neither manifested visibly until a *wrapping* file was scrolled fast enough to expose them:
+   - **The bridge's own gap slice** ended at `lineStarts[gap[1]]` — the character offset where the *next* real
+     line (the window's own first line, or the old extent's) begins — which is exactly one character past the
+     gap's own trailing `\n`. `computeRowsPerLine` reads a slice ending in `\n` as having one more, degenerate,
+     zero-length trailing "line" of its own (its own documented, correct rule for the file's genuine trailing
+     empty line) — and that fake entry's row count (always `1`) landed, one loop iteration later, at exactly
+     `rows[gap[1]]`: the window's own real first line, silently overwriting whatever had just been correctly
+     measured for it. **Fixed** by excluding that one trailing character from the slice handed to
+     `computeRowsPerLine` — `gap[1]` is always a real, existing line (either the window's own start or the old
+     extent's), so there's always a real "next line" to exclude the `\n` in front of, safely.
+   - **The *pre-existing* main-window measurement had the identical gap, just never noticed**: `windowText =
+     value.slice(windowStartChar, windowEndChar)` almost always ends in the `\n` separating the window's own
+     last line from whatever comes after it, off-window — the *exact* same shape as the bridge's own bug above,
+     just in code that predates the bridge (and predates even the `paddingBottom` fix) and had simply never been
+     exercised enough to show it: before virtualization, `computeRowsPerLine` was only ever called on the *whole
+     file*, where this only ever touched the file's own genuinely-empty trailing line — the one case the
+     degenerate-line rule is actually correct and tested for. Confirmed directly, live, before touching the
+     shared function: a hidden scratch `<pre>` given `"aaaa\nbbbb\n"` versus `"aaaa\nbbbb"` measured the
+     *identical* `scrollHeight` either way — a trailing `\n`, in this engine's own `white-space: pre-wrap`
+     rendering, adds **no row of its own** — so `computeRowsPerLine`'s existing, tested assumption that a
+     degenerate trailing line sits at `totalRows - 1` (implying it occupies a separate row after the real
+     content) silently undercounts the window's own *last real* line by exactly one row, every single time a
+     window is measured, whenever that trailing `\n` is an artifact of *where the window happens to end* rather
+     than the file's own genuine last line. Invisible before virtualization (there was only ever one window —
+     the whole file); invisible even after it, on content that never wraps (every line is `1` row regardless of
+     a one-row miscount). **Fixed without touching `computeRowsPerLine` itself** — its own degenerate-line rule
+     is correct for what it was built and tested for — by having its *caller* (`measureWrappedRows`) exclude the
+     window's own trailing `\n` from the slice it hands over, the identical fix as the bridge's, unless the
+     window genuinely reaches the document's own end (in which case the existing, already-tested whole-file
+     behavior is left completely alone).
+
+Verified live (isolated **debug** data folder, desktop, real CDP, a real, genuinely wrapping markdown test file,
+real `Input.dispatchMouseEvent`/`Input.dispatchMouseWheel` bursts — not synthetic DOM events, since the whole
+point is whether a real click's own browser-native hit-testing agrees with where the overlay visibly puts the
+text): the precise reproduction (fast-scroll down, fast-scroll back up, click immediately after a specific,
+known line's own text) — before either fix, the caret landed on a *different line's own text, 16 lines away*
+(3728 characters off); after the gap-slice fix alone, within one line (118 characters off, consistently); after
+both fixes, the real caret offset matched the expected textarea offset **exactly**, byte for byte, confirmed
+across three independent fast-scroll sequences landing on three different target lines. Re-verified as pure
+regressions, with both fixes in place: the non-wrapping file (click-to-caret exact, as before), the small-file
+case (byte-identical overlay/textarea, both paddings `0px`), and the width-change/resize path in both directions
+(gutter spacing correctly proportional to the new wrap width, absolute position of the line before the window
+unchanged by the resize). `npx tsc --noEmit` and `npm run build` both clean throughout; no Rust change.
+
+## Typing after a fast scroll, and a blank editor after one
+
+**Reported live, after the click-misalignment fixes above: "It works better. Although if I scroll very fast and
+then stop, I start seeing a blank editor, If I then scroll just a little, I again see what I should... What is
+still not acceptable is that when typing a letter (after scrolling very fast) all the coding highlight is
+regenerated and I lose the scroll position — I see a totally different part of the document after I type a
+letter (after a brief pause of not seeing anything)."** Two genuinely separate bugs, both living in the window's
+own "jump to show something outside it" paths, plus a third, unrelated feature request handled in its own
+section below.
+
+**1. Typing after scrolling away flat-coloured the whole newly-revealed window, with a visible pause before the
+real colours landed.** Confirmed live exactly as described: scroll a large file to its middle (the caret, never
+moved, stays at offset 0 — nothing moves a textarea's own caret just by scrolling it), type one letter there —
+`scrollTop` snaps from the middle straight to `0` (the render-time recentre, above, correctly revealing the
+caret: this *jump* is standard, expected editor behaviour, every mainstream editor does it). The *landing* was
+the problem: `resetPatcherIfWindowMoved`'s `controller.resetLiveState()` blanks `RunPatchController`'s own
+`liveValue` to `null`, so the very next `applyApproximate` call sees an **empty** `oldValue` — its prefix/suffix
+diff against the brand-new window's text finds nothing in common with nothing, so the *entire* window becomes
+one flat, caret-coloured span, staying that way until the Worker's own debounced exact pass catches up
+(`EXACT_DISPATCH_DEBOUNCE_MS` plus a whole-document re-tokenization — well over 200ms on an ordinary keystroke).
+That flat flash *is* "not seeing" real content; the real colours landing a moment later then read as a second,
+unrelated change — exactly "all the highlight regenerated... a totally different part of the document."
+
+**Fixed by seeding the freshly-reset controller with a real, locally-highlighted tokenization of just the
+window's own text, before `applyApproximate` ever runs for it** (`RunPatchController.rebuildWindow`, a thin
+public wrapper around the existing private `rebuild`; `CodeEditor.tsx`'s approximate effect calls
+`highlight(windowValue, effectiveLanguage)` — the exact same synchronous call `useBackgroundHighlighted`'s own
+very first render already makes for a whole small file, now bounded to one window's worth of text instead —
+then seeds the controller with `tokensOf()` of the result). `applyApproximate` then sees `oldValue` already
+equal to `newValue` and does nothing further that commit: the seed *is* the visible result, correctly
+syntax-highlighted from the very first paint. Not guaranteed byte-perfect at the window's own edges (a
+multi-line construct that started before the window — an open fence, an unterminated comment — has no context
+here to know about), but this is the same "estimate, then self-correct" trade this whole feature already makes
+elsewhere: the next real exact pass patches over it the moment it lands.
+
+**Deliberately scoped to an *edit* carrying the caret outside the window, not an ordinary scroll-driven shift**
+(a new `windowMovedByEditRef`, set only by the render-time recentre, consumed and always reset by the
+approximate effect): a fast, continuous scroll already triggers a window shift on nearly every qualifying
+`scroll` event, and paying for one more synchronous `highlight()` call on *every one of those* would add exactly
+the kind of main-thread work a fast scroll can least afford — a real risk of making bug 2 below worse, for a
+case (plain scrolling) this fix was never asked to improve. An ordinary scroll-driven shift keeps its existing,
+separately-accepted "flat colour until the Worker catches up" behaviour, unchanged.
+
+**A second, independent bug shared the same trigger, found live while verifying the fix above, before trusting
+it**: the render-time recentre computes `synthScrollTop` — the exact pixel position that would show the caret
+— purely to *pick* a window via `computeWindowRange`, but **never once writes it to the real, visible
+`frameRef.current.scrollTop`**. Confirmed directly: after the jump, the overlay's own content correctly
+repositioned to line 0 (`paddingTop: 8px`, a `paddingBottom` covering everything past the window's own few
+screens) — but `frame.scrollTop` stayed exactly where the person had scrolled it, meaning the *viewport* kept
+looking at a pixel position that, relative to the newly-repositioned content, now fell squarely inside the
+window's own trailing `paddingBottom`: real content exists, genuinely nothing is rendered at the position the
+frame is actually scrolled to. Fixed by carrying the already-computed `synthScrollTop` from the recentre to the
+same approximate effect (`pendingRecenterScrollTopRef`) and writing it to `frame.scrollTop` there, in the same
+commit as the colour-seeding fix above, before the browser ever paints the mismatched state.
+
+**2. "If I scroll very fast and then stop, I start seeing a blank editor… if I then scroll just a little, I
+again see what I should" — a separate bug, with no typing involved at all, in `computeWindowRange`'s own
+row-to-line lookup.** `computeWindowRange` picks a window by binary-searching `gutterRowStarts.starts` — the
+per-line row-*start* array, built from each line's own row count, which for any line never yet scrolled into
+view is the accepted "assume 1 row until measured" estimate (the module doc's own, confirmed trade-off). A fast
+scroll through a long, heavily-wrapping, largely unmeasured stretch of a file can leave the *real* `scrollTop`
+(always accurate — driven by the real, unvirtualized `<textarea>`, which lays out every line for real) far past
+what the *estimated* `starts` array accounts for; `lastIndexAtMost` then has nothing left to find past the
+array's own last entry and, correctly and faithfully, clamps to the very last line. **The common, unremarkable
+shape of a text file — ending with a trailing newline — makes that last line a genuinely *empty* one**: the
+clamped window ends up exactly one line long, and that one line has zero characters, so
+`windowStartChar === windowEndChar` — an empty slice, nothing for `RunPatchController` to render, a genuinely
+blank overlay.
+
+**Confirmed live, not assumed**: a real, fast `Input.dispatchMouseEvent` wheel burst (`mouseWheel`, many ticks
+with no inter-tick delay — a synthetic `scrollTop` assignment doesn't exercise the same under-measured-estimate
+path a genuine fast scroll does) on a large, heavily-wrapping markdown file, checked immediately after the last
+event: `pre.textContent.length === 0`, and **still `0` a full 1.3 seconds later with no further input** —
+ruling out a transient render-lag race (which would have self-corrected within a frame or two) and matching
+"stays blank until I scroll a little" precisely: nothing *else* re-triggers `computeWindowRange` until the next
+`scroll` event does.
+
+**Fixed with `widenIfCharsEmpty(range, lineStarts, totalChars)`** (`lib/wrappedLineRows.ts`, pure, Node-testable
+like its siblings): widens a proposed window backward (decreasing `startLine`, clamped at `0`) until its
+*character* span — not just its already-guaranteed-non-empty line-index span — covers at least one real
+character. Applied at every `setWindowRange` call site (the render-time recentre, `handleScroll`'s own
+hysteresis shift, and the mount-time correction effect) immediately after `computeWindowRange`'s own result,
+before it's adopted. A pure, minimal fix for the *symptom* — never show literally nothing — without touching the
+estimate/measurement machinery itself: the widened window shows whichever real, already-known lines sit just
+before the degenerate tail, the same spirit as the already-accepted scrollbar-proportion trade-off, just
+extended to guarantee *some* real content rather than *correctly positioned* content.
+
+**A welcome side effect, confirmed live, not assumed from the code alone**: widening the window also hands the
+*existing* gap-bridging mechanism (`measuredExtentRef`/`measureScratchRef`, from the click-misalignment fixes
+above) something real to bridge *to* — a genuinely empty window gave it nothing productive to measure against,
+but a widened one (even if still mispositioned relative to the real `scrollTop`) lets it measure the skipped
+gap and correct `gutterRowStarts.starts` for the lines before it, which automatically repositions the *same*
+window's `paddingTop` without needing the window's own line range to be re-chosen. Verified with a timed poll
+(no further scroll input at all): a worst-case cold-file reproduction (first-ever fast scroll on a never-before-
+measured, heavily-wrapping file) showed real but *badly mispositioned* content for roughly 400–500ms, then
+self-corrected to exactly overlapping the viewport by the very next 100ms-spaced poll, and stayed correct for
+every poll afterward — a short, bounded, self-healing window, not a permanent stuck state, and strictly better
+than the un-widened case's indefinite, confirmed-still-blank-at-1.3s result.
+
+Verified live (isolated **debug** data folder, desktop, real CDP throughout — real wheel bursts and real
+`setTimeout`-deferred keystrokes, not synthetic events dispatched in a tight loop, which this project's own
+history already warns reads nothing like real sequential input): the scroll-then-type reproduction, repeated
+after each fix, landing with real syntax colours (`tok-keyword`/`tok-comment`/`tok-string`/`tok-function`) and a
+correctly-synced `scrollTop` immediately, with the overlay's text byte-exact against the corresponding slice of
+the textarea once the debounced exact pass settled; the fast-burst-to-near-end reproduction, repeated several
+times from a fresh reload each time, never showing zero content again; a small file that fits entirely within
+one window (byte-identical overlay/textarea, real colours, unaffected by any of this); and ordinary, in-window
+typing at the end of an already-small, already-visible file (no window move triggered, `scrollTop` and content
+both unchanged by the fix, confirming the edit-scoped gating doesn't fire where it shouldn't). `npx tsc --noEmit`
+and `npm run build` both clean throughout; no Rust change, so `cargo test --lib` doesn't apply.
+
+## Discarding unsaved changes
+
+**Asked for in the same conversation as the two fixes above, as a third, separate item**: "regarding the
+persisted unsaved changes: let's add a way to discard those unsaved changes." Every one of this app's three
+text editors — the Files tab's own, Notes' File Manager/Note Files Explorer editor (`NotesApp.tsx`'s
+`editing`), and the note editor (`NoteEditPage.tsx`) — already has **Save** and already shows "unsaved changes"
+while dirty, but none had a direct way to throw the edits away and keep editing from a clean slate; the only
+existing escape was leaving the editor (asked to confirm first) or, for a Filen file specifically, the
+version-conflict dialog's own "Discard changes" choice. A plain **"Discard your unsaved changes"** button
+(`RotateCcw`, beside Save) was added to all three, each asking first — the same destructive-action confirmation
+this app's other direct "lose your edits" actions already use (closing an editor with unsaved changes is the
+existing precedent in two of the three).
+
+**`NotesApp.tsx` already had the right machinery, just not a direct way to reach it**: `discardEdits()` — drop
+the edits and re-read the file from its source (Filen's own version, or in a branch, the branch's) — already
+existed, but was only ever called from inside the version-conflict dialog, where choosing "Discard changes" is
+itself the confirmation. `discardUnsavedChanges()` is a thin new wrapper: confirm, then call the exact same
+function, so there's no second implementation of "throw the edits away" that could drift from the one the
+conflict dialog already relies on.
+
+**`NoteEditPage.tsx`** needed nothing re-fetched: `saved` already holds the last-known-good content (the file
+as loaded, or as this same editor last wrote it) in memory the whole time `text` is being edited — `discard()`
+is simply `setText(saved)` plus clearing the draft (`writeDraft(path, null)`), after confirming.
+
+**`FilesTab.tsx` had no equivalent value to revert to at all** — its `editing` state was `{ path, content,
+dirty }`, with no original kept once `content` was first edited (CLAUDE.md's own earlier "Text editors are now
+dedicated pages, not popups" already noted this editor has no draft persistence either, unlike the other two).
+Added a fourth field, `saved: string`, set alongside `content` at every point that represents a fresh load or a
+successful save (opening a file, finishing a save, creating a new empty file) and left untouched by the
+dirty-marking `onChange` path — the same role `NoteEditPage.tsx`'s own `saved` state already plays, just newly
+introduced here rather than already present. `discardEditing()` confirms, then reverts `content` to `saved`.
+
+Verified live (isolated **debug** data folder, desktop, real CDP, real native dialog interaction for each of
+the two different confirmation mechanisms involved — not a DOM `.click()` alone, since the point is whether the
+*real* dialog's own buttons do what's expected): in the **Files tab** (the admin-app, so its confirm is the
+dialog plugin's own native box — `@tauri-apps/plugin-dialog`), a real `#32770` dialog's child buttons were
+enumerated by handle and clicked with `BM_CLICK`: choosing **OK** reverted the editor's content to the
+originally-loaded text byte-for-byte and correctly disabled the button again (`dirty` cleared); a second edit
+followed by choosing **Cancel** left the edit completely untouched, confirming the destructive action only
+fires on an actual confirmation.
+
+**`NotesApp.tsx`'s own confirm (a *system app*'s, routed through `lib/dialogs` → the backend's
+`confirm_dialog`) turned out to be a *different* native mechanism than first assumed** — not the webview-based
+`system/prompt` window a page's own `alert`/`confirm`/`prompt` goes through (CLAUDE.md's "Prompts and
+windows"), but its own plain native dialog (titled `"Notes" (or a page it shows) asks`, also a real `#32770`
+window) with no CDP target of its own at all — confirmed by finding it had none even for the pre-existing,
+completely untouched "Close without saving your changes?" confirm the same file already relies on, ruling out
+anything specific to this new code. Found and clicked the same way as the Files tab's own dialog, once located
+by Win32 window title instead of a CDP page list: choosing **OK** on a fresh edit correctly reverted the File
+Manager editor's content to the original byte-for-byte and disabled the button; a second edit followed by
+**Cancel** left it completely untouched — the identical round trip, through the real backend command, not
+assumed from the shared code path.
+
+`npx tsc --noEmit` and `npm run build` both clean for all three editors. **`NoteEditPage.tsx`'s own button was
+not separately click-verified through its own native dialog** — its `discard()` is the same `setText(saved)` +
+`writeDraft(path, null)` shape already proven correct in the Files tab, gated by the identical `confirm()` call
+from `lib/dialogs` just proven correct against `NotesApp.tsx`'s own dialog above, so this rests on those two
+already-verified halves rather than a third live click-through of the same mechanism.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.
