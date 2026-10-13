@@ -1,4 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  beginHeaderTransition,
+  endHeaderTransition,
+  HEADER_TRANSITION_MS,
+  runAfterHighlightRerender,
+} from './editorHeaderSync'
 
 const HIDE_AFTER_PX = 40
 const DIRECTION_THRESHOLD_PX = 4
@@ -71,14 +77,42 @@ const AT_BOTTOM_SLACK_PX = 2
  * **The one case this must still catch — asked for in the same breath — is already a different mechanism**: the
  * `ResizeObserver` above fires independently of any `scroll` event at all, the moment typing shrinks the content
  * below the viewport's own height (nothing left to be hidden *from*), and is untouched by this guard.
+ *
+ * **Coordinated with the editor's own highlight re-render, asked for directly** (`lib/editorHeaderSync.ts`):
+ * every actual flip of `hidden` — never a call that would leave it unchanged — first asks
+ * `runAfterHighlightRerender` to hold off if `CodeEditor`'s own `RunPatchController` work is mid-flight (almost
+ * never true in practice, since those DOM patches are synchronous and fast, but asked for as the "vice versa"
+ * half), then, once the state genuinely changes, brackets the CSS transition it's about to trigger with
+ * `beginHeaderTransition`/a timed `endHeaderTransition` — so `CodeEditor`'s own scroll-driven window-range
+ * work (`handleScroll`) can defer *its* read of `clientHeight` until the header's own `max-height` transition
+ * has actually finished moving it, rather than reading a value mid-animation and computing a window that gets
+ * silently superseded a moment later when the transition settles.
  */
 export function useScrollAutohide(): [boolean, () => void, () => void] {
-  const [hidden, setHidden] = useState(false)
+  const [hidden, setHiddenState] = useState(false)
   const lastTop = useRef(new WeakMap<Element, number>())
   const lastHeight = useRef(new WeakMap<Element, number>())
   const observer = useRef<ResizeObserver | null>(null)
-  const show = useCallback(() => setHidden(false), [])
-  const hide = useCallback(() => setHidden(true), [])
+  // A flip gated behind `runAfterHighlightRerender` is deferred, not dropped — but by the time it's finally
+  // applied the *next* scroll/resize tick may have already made a different decision moot or stale, so each
+  // deferred call is tagged with the generation it was requested in and silently skipped if a newer one has
+  // since been requested — the same "only the latest matters" shape `HighlightScheduler` already uses for an
+  // unrelated reason.
+  const generation = useRef(0)
+  const setHidden = useCallback((value: boolean) => {
+    const myGeneration = ++generation.current
+    runAfterHighlightRerender(() => {
+      if (generation.current !== myGeneration) return
+      setHiddenState((prev) => {
+        if (prev === value) return prev
+        beginHeaderTransition()
+        window.setTimeout(endHeaderTransition, HEADER_TRANSITION_MS)
+        return value
+      })
+    })
+  }, [])
+  const show = useCallback(() => setHidden(false), [setHidden])
+  const hide = useCallback(() => setHidden(true), [setHidden])
 
   useEffect(() => {
     observer.current = new ResizeObserver((entries) => {
@@ -117,6 +151,7 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
       document.removeEventListener('scroll', onScroll, true)
       observer.current?.disconnect()
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return [hidden, show, hide]

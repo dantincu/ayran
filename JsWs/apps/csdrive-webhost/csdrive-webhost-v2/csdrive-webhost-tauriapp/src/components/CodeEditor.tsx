@@ -19,6 +19,7 @@ import {
 } from '../lib/wrappedLineRows'
 import { RunPatchController } from '../lib/runPatchController'
 import { splitRunsAt, tokensOf } from '../lib/highlightTokens'
+import { beginHighlightRerender, endHighlightRerender, runAfterHeaderTransition } from '../lib/editorHeaderSync'
 
 /** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
  * wrapped-row measurement existed) rather than measuring — tens of thousands of `Range` queries would be a real
@@ -203,8 +204,14 @@ function useBackgroundHighlighted(value: string, language: Language): { html: st
   return { html, exact }
 }
 
-/** The one text editor of the app's file views: a `textarea` — so everything a text box does (selection, the clipboard
- * menu, the on-screen keyboard, drafts) stays as it is — with **syntax highlighting** drawn behind it (`lib/highlight.ts`).
+/** The editor shown whenever "Disable all code highlighting" (`editor.highlightDisabled`) is off — the default.
+ * `CodeEditor`, the component this module actually exports (bottom of the file), is a thin wrapper that reads
+ * that one setting and mounts either this component or `PlainTextEditor` (below `CodeEditor` itself) — the two
+ * are deliberately separate components, not one component with internal branches, specifically so that
+ * mounting `PlainTextEditor` never runs any of *this* component's own hooks at all (React can't conditionally
+ * skip a hook from inside one component, but it can simply not mount a different one). A `textarea` — so
+ * everything a text box does (selection, the clipboard menu, the on-screen keyboard, drafts) stays as it is —
+ * with **syntax highlighting** drawn behind it (`lib/highlight.ts`).
  *
  * The highlighted copy of the text sits under the box, which has the same font, padding and wrapping and a transparent
  * text; the box is as tall as its text and the frame around both scrolls, so nothing has to be kept in step but the
@@ -248,7 +255,7 @@ function useBackgroundHighlighted(value: string, language: Language): { html: st
  *
  * **A ref gives a caller `insertAtCursor`** (`CodeEditorHandle`, above) — "Insert a path…" (`NoteEditPage.tsx`,
  * `NotesApp.tsx`'s file editor, `FilesTab.tsx`'s) is the one user of it today. */
-const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
+const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function HighlightedEditor(
   { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge },
   ref,
 ) {
@@ -390,6 +397,15 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * be (purely to pick a window via `computeWindowRange`) without ever actually moving the real, visible
    * scroll position there. */
   const pendingRecenterScrollTopRef = useRef<number | null>(null)
+  /** The caret's own line, carried from this recentre to the `wrapMeasure`-watching effect further down —
+   * *not* cleared once the first `frame.scrollTop` write lands, unlike `pendingRecenterScrollTopRef` (which is
+   * only ever read once, in the very same commit). See that effect's own doc comment for the real bug this
+   * exists to fix: `gutterRowStarts.starts[caretLine]`, read *here*, can still be built from stale or purely
+   * estimated row counts for the region the jump just skipped over (nothing bridges that gap for an edit-
+   * triggered move — only a pure scroll continuation does, see `measureWrappedRows`'s own doc comment) — the
+   * real, measured row count for the jump's own target window only lands later, once the debounced
+   * `measureWrappedRows` pass actually runs for it. */
+  const pendingRecenterCaretLineRef = useRef<number | null>(null)
   if (lastRecenterValueRef.current !== value) {
     lastRecenterValueRef.current = value
     const pendingCaret = restoreCaret.current
@@ -402,6 +418,7 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       const synthScrollTop = Math.max(0, caretRow * lineHeightPx - clientHeight / 2)
       windowMovedByEditRef.current = true
       pendingRecenterScrollTopRef.current = synthScrollTop
+      pendingRecenterCaretLineRef.current = caretLine
       const proposed = computeWindowRange(synthScrollTop, clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS)
       setWindowRange(widenIfCharsEmpty(proposed, lineStarts, value.length))
     }
@@ -523,30 +540,42 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
      * at). Fixed by writing `pendingRecenterScrollTopRef.current` to `frameRef.current.scrollTop` the moment
      * this effect applies an edit-triggered window move — in the same `useLayoutEffect` that already seeds the
      * window's colours, so both land in the same commit, before the browser ever paints the mismatched state. */
-    if (windowMoved && windowMovedByEditRef.current) {
-      const windowHtml = highlight(windowValue, effectiveLanguage)
-      controller.rebuildWindow(windowValue, tokensOf(windowHtml))
+    const windowJustMovedByEdit = windowMoved && windowMovedByEditRef.current
+    if (windowJustMovedByEdit) {
       const frame = frameRef.current
       const pendingScrollTop = pendingRecenterScrollTopRef.current
       if (frame && pendingScrollTop !== null) frame.scrollTop = pendingScrollTop
     }
     windowMovedByEditRef.current = false
     pendingRecenterScrollTopRef.current = null
+    // Bracketed with `beginHighlightRerender`/`endHighlightRerender` (`lib/editorHeaderSync.ts`, asked for
+    // directly — the "vice versa" half of keeping this and the header's own show/hide transition from acting
+    // at the same instant): `RunPatchController`'s own DOM patches below are synchronous and fast, so this
+    // window of "busy" is normally over before anything else gets a chance to check it, but it's bracketed
+    // regardless so a header's own scroll handler that *does* happen to land inside it correctly defers.
+    beginHighlightRerender()
+    if (windowJustMovedByEdit) {
+      const windowHtml = highlight(windowValue, effectiveLanguage)
+      controller.rebuildWindow(windowValue, tokensOf(windowHtml))
+    }
     // `fullExactRuns`/`caretOffset()` are deliberately left on the *whole document's* own basis here, not
     // sliced to the window — see `RunPatchController.applyApproximate`'s own doc comment for why slicing them
     // on every keystroke would reintroduce the exact `O(whole file)`-per-keystroke cost this session already
     // found and removed once, for a different function.
     controller.applyApproximate(windowValue, fullExactRuns, caretOffset())
+    endHighlightRerender()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, effectiveLanguage, windowRange])
   useLayoutEffect(() => {
     const controller = runPatchController.current!
     controller.attachContainer(highlightRef.current)
+    beginHighlightRerender()
     resetPatcherIfWindowMoved(controller)
     const windowValue = value.slice(windowStartChar, windowEndChar)
     const [, afterWindowStart] = splitRunsAt(fullExactRuns, windowStartChar)
     const [windowExactRuns] = splitRunsAt(afterWindowStart, windowEndChar - windowStartChar)
     controller.applyExact(windowValue, windowExactRuns, exact.value, value)
+    endHighlightRerender()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exact, windowRange])
 
@@ -705,6 +734,37 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
     return () => clearTimeout(id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value, settings?.wrapLines, settings?.lineNumbers, windowRange])
+
+  /** Re-syncs `frame.scrollTop` a second time, once a fresh wrap measurement actually lands, if an edit-
+   * triggered jump (above) is still waiting on one. **Reported live: "if I scroll more than a few screens and
+   * then type, the view jumps all over the place."** The first `frame.scrollTop` write (in the approximate
+   * effect, below) runs in the very same commit as the jump, using whatever `gutterRowStarts.starts[caretLine]`
+   * already said at that instant — and for a line the person just jumped to across a long, previously
+   * unmeasured, heavily-wrapping stretch (nothing bridges that gap for an edit — only a pure scroll
+   * continuation does, see `measureWrappedRows`'s own doc comment on `measuredExtentRef`), that can still be
+   * the plain "1 row" estimate, not a real measurement. Confirmed directly, live: after the jump,
+   * `frame.scrollTop` itself never moved a second time, but the window's own `paddingTop` (computed fresh
+   * every render from `gutterRowStarts.starts[windowRange.startLine]`) jumped by well over 100,000px a few
+   * hundred milliseconds later, once the debounced `measureWrappedRows` pass above actually measured the
+   * jump's own target window for real — moving the *visible content* dramatically while the scrollbar's own
+   * position sat frozen at the stale value: exactly "jumping all over the place" from the person's side of the
+   * screen, with no further typing or scrolling involved at all.
+   *
+   * **Only ever applies one correction**: `pendingRecenterCaretLineRef` is cleared the instant this runs, so a
+   * *later*, unrelated `wrapMeasure` update (the person scrolling on, or typing again) never finds anything
+   * left to "fix" — and the render-time recentre and `handleScroll` both already clear the same ref themselves
+   * the moment either of *those* happens first, so this never fights a scroll or a later jump it has no
+   * business overriding. */
+  useLayoutEffect(() => {
+    const caretLine = pendingRecenterCaretLineRef.current
+    const frame = frameRef.current
+    if (caretLine === null || !frame) return
+    const lineHeightPx = gutterRowStarts.lineHeightPx
+    const caretRow = gutterRowStarts.starts[caretLine] ?? 0
+    frame.scrollTop = Math.max(0, caretRow * lineHeightPx - frame.clientHeight / 2)
+    pendingRecenterCaretLineRef.current = null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wrapMeasure])
 
   // A text that isn't the one the history stands at came from outside (a file re-read, a Filen version check):
   // it starts a new history. Either that, or a *programmatic* edit (Tab, undo/redo, "Insert a path…") is the
@@ -875,6 +935,30 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
    * 2. **Mirror-scroll's own "the editor scrolled" half** (rAF-throttled, unchanged) — `lineHeight` comes from
    *    the box itself (`getComputedStyle` always resolves it to an absolute px value, however it was authored),
    *    matching the gutter's own font/line-height exactly. */
+  /** The actual window-range recompute `handleScroll` below defers to `runAfterHeaderTransition` — kept in a
+   * ref, refreshed every render, so the version that eventually runs (possibly several renders after the
+   * `scroll` event that asked for it, if a header above this frame is mid-transition at that moment) always
+   * reads `gutterRowStarts`/`lineStarts`/`value`/`frame.scrollTop`/`frame.clientHeight` as they stand *then* —
+   * the same stale-closure concern `measureWrappedRowsRef` already exists for, just across a timed deferral
+   * here rather than a mount-only `ResizeObserver`. */
+  const recomputeWindowFromScrollRef = useRef<() => void>(() => {})
+  recomputeWindowFromScrollRef.current = () => {
+    const frame = frameRef.current
+    if (!frame) return
+    const lineHeightPx = gutterRowStarts.lineHeightPx
+    const proposed = computeWindowRange(frame.scrollTop, frame.clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS)
+    // `widenIfCharsEmpty`: a fast scroll through a long, largely-unmeasured, heavily-wrapping stretch can
+    // leave `frame.scrollTop` (always accurate — driven by the real, unvirtualized `<textarea>`) corresponding
+    // to a row position the *estimated* `gutterRowStarts.starts` array doesn't yet account for, clamping the
+    // proposed window to the document's very last line — genuinely blank whenever that line is the common
+    // "ends with a trailing newline" empty one. See that function's own doc comment for the full story (found
+    // live, confirmed to stay blank — not self-heal — until a further scroll).
+    setWindowRange(widenIfCharsEmpty(proposed, lineStarts, value.length))
+    // A real, user-driven scroll takes priority over any still-pending edit-triggered recentre correction
+    // below — without this, a correction that lands *after* the person has already scrolled elsewhere would
+    // yank them back to wherever they typed, fighting a scroll they never asked to be fought.
+    pendingRecenterCaretLineRef.current = null
+  }
   function handleScroll() {
     const frame = frameRef.current
     if (frame) {
@@ -885,14 +969,15 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       const visibleStartRow = frame.scrollTop / lineHeightPx
       const visibleEndRow = visibleStartRow + screenRows
       if (visibleStartRow - windowStartRow < screenRows || windowEndRow - visibleEndRow < screenRows) {
-        const proposed = computeWindowRange(frame.scrollTop, frame.clientHeight, lineHeightPx, gutterRowStarts.starts, WINDOW_BUFFER_SCREENS)
-        // `widenIfCharsEmpty`: a fast scroll through a long, largely-unmeasured, heavily-wrapping stretch can
-        // leave `frame.scrollTop` (always accurate — driven by the real, unvirtualized `<textarea>`)
-        // corresponding to a row position the *estimated* `gutterRowStarts.starts` array doesn't yet account
-        // for, clamping the proposed window to the document's very last line — genuinely blank whenever that
-        // line is the common "ends with a trailing newline" empty one. See that function's own doc comment for
-        // the full story (found live, confirmed to stay blank — not self-heal — until a further scroll).
-        setWindowRange(widenIfCharsEmpty(proposed, lineStarts, value.length))
+        // **Deferred until the header isn't mid-transition** (`lib/editorHeaderSync.ts`, asked for directly):
+        // an autohiding header sitting above this frame changes its own `clientHeight` by exactly the header's
+        // height while its CSS transition is running — reading `clientHeight` (via the ref below, so this
+        // always uses whatever's current *when it actually runs*, not whatever it was when the hysteresis
+        // check above happened to fire) mid-transition would compute a window for a viewport size that's
+        // about to change again, getting silently superseded the instant the transition settles. Not gated
+        // itself on whether a header even exists on this page — `isHeaderTransitioning()` is simply always
+        // `false` when none does, so this is a plain, immediate call in that case.
+        runAfterHeaderTransition(() => recomputeWindowFromScrollRef.current())
       }
     }
     if (!onVisibleLineChange || visibleLineRaf.current !== null) return
@@ -1160,6 +1245,246 @@ const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(
       </div>
     </div>
   )
+})
+
+/** The editor shown while "Disable all code highlighting" (`editor.highlightDisabled`) is on — a deliberately
+ * dramatic step down from `HighlightedEditor`'s own virtualized, measured architecture, asked for directly
+ * after testing showed the first version of this mode (which kept all of `HighlightedEditor`'s own hooks and
+ * merely skipped the highlighting-specific work inside them) was faster but "still unusable on very large
+ * documents." Reading `HighlightedEditor` with that report in mind found why: `lineStartOffsets(value)` and
+ * `gutterRowStarts` are both `O(file)` scans that ran on *every* render *regardless* of `highlightDisabled` —
+ * the old disabled mode skipped the Worker and the DOM patching, but never touched either of those — and
+ * `fit()` forces the browser to lay out the *entire* document on every single edit just to answer "how tall
+ * is this box now," since the box is sized to fit all of its content. None of that exists here: a single,
+ * ordinary `<textarea>` with its own **native** internal scrolling (a fixed height, `overflow-y: auto`) — no
+ * window, no wrapped-row measurement, no line-start scanning, no `fit()`-to-content sizing, no Worker, no
+ * `RunPatchController`. The browser already handles a plain, large textarea efficiently on its own; everything
+ * this mode removes was *this app's own* bookkeeping around it, not the textarea itself.
+ *
+ * **No line-number gutter, ever, regardless of the separate `lineNumbers` setting's own stored value** — asked
+ * for directly: there is no virtualized, per-line row measurement left to position one against correctly, so
+ * Settings' own "Show line numbers" checkbox is disabled while this mode is on (`SettingsTab.tsx`) rather than
+ * silently doing nothing if left checked.
+ *
+ * **Plain Page Up/Down need no custom handling here, unlike `HighlightedEditor`'s own** — that component's
+ * box is sized to fit all of its content (so the *frame* around it scrolls, not the box), which is exactly why
+ * the browser's native Page Up/Down — which pages a textarea's own *internal* scroll — has nothing to act on
+ * there and had to be reimplemented by hand. This textarea has real internal overflow of its own, so native
+ * paging already moves the caret and the scroll together correctly, the same as any ordinary `<textarea>` on
+ * any ordinary web page.
+ *
+ * **Still has undo/redo, Tab/Shift+Tab indenting, Ctrl+K 2/4, and the clipboard menu's "Open link"** — none of
+ * those are tied to highlighting or virtualization, so there's no reason to lose them in this mode; the
+ * implementations below are the same logic `HighlightedEditor` uses, just without anything downstream that
+ * depends on a window or a measured line. */
+const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEditor(
+  { value, onChange, onOpenLink, readOnly, onVisibleLineChange, onScrollNudge },
+  ref,
+) {
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const history = useRef<UndoHistory | null>(null)
+  if (history.current === null) history.current = new UndoHistory(value)
+  const [, redraw] = useReducer((n: number) => n + 1, 0)
+  const restoreCaret = useRef<{ start: number; end: number } | null>(null)
+  // Same reasoning as `HighlightedEditor`'s own (see its module doc and the `[value]` effect below): the
+  // textarea is deliberately uncontrolled, so only a *programmatic* edit (Tab, undo/redo, "Insert a path…")
+  // or an external reset needs the real DOM text forced to match — an ordinary keystroke's own native
+  // insertion is already there by the time anything here runs.
+  const programmaticEditPending = useRef(false)
+  const [settings, setSettings] = useState<EditorSettings | null>(null)
+  useEffect(() => subscribeEditorSettings(setSettings), [])
+  const visibleLineRaf = useRef<number | null>(null)
+  const lastVisibleLine = useRef<number | null>(null)
+
+  useLayoutEffect(() => {
+    const h = history.current!
+    const externalReset = h.current.value !== value
+    if (externalReset) {
+      h.reset(value)
+      redraw()
+    }
+    const input = inputRef.current
+    if (input && (externalReset || programmaticEditPending.current) && input.value !== value) {
+      input.value = value
+    }
+    programmaticEditPending.current = false
+    const caret = restoreCaret.current
+    if (caret && input && input.value === value) {
+      input.setSelectionRange(caret.start, caret.end)
+      restoreCaret.current = null
+    }
+  }, [value])
+
+  // The clipboard menu offers "Open link" for a box that has a handler — same as `HighlightedEditor`'s own.
+  useEffect(() => {
+    const input = inputRef.current
+    if (!input || !onOpenLink) return
+    editorLinkHandlers.set(input, onOpenLink)
+    return () => {
+      editorLinkHandlers.delete(input)
+    }
+  }, [onOpenLink])
+
+  useEffect(
+    () => () => {
+      if (visibleLineRaf.current !== null) cancelAnimationFrame(visibleLineRaf.current)
+    },
+    [],
+  )
+
+  function applyEdit(edit: { value: string; start: number; end: number }) {
+    programmaticEditPending.current = true
+    history.current!.record(edit.value, edit.start, edit.end, Date.now())
+    restoreCaret.current = { start: edit.start, end: edit.end }
+    onChange(edit.value)
+    redraw()
+  }
+
+  useImperativeHandle(ref, () => ({
+    insertAtCursor(text) {
+      const input = inputRef.current
+      const start = input?.selectionStart ?? value.length
+      const end = input?.selectionEnd ?? value.length
+      applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: start + text.length, end: start + text.length })
+      input?.focus()
+    },
+  }))
+
+  const step = (direction: 'undo' | 'redo') => {
+    const h = history.current!
+    const snapshot = direction === 'undo' ? h.undo() : h.redo()
+    if (!snapshot) return
+    programmaticEditPending.current = true
+    restoreCaret.current = { start: snapshot.start, end: snapshot.end }
+    inputRef.current?.focus()
+    onChange(snapshot.value)
+    redraw()
+  }
+
+  const focused = () => document.activeElement === inputRef.current
+  useChord(
+    '2',
+    "Insert 2 tabs' indentation at the caret (or indent the lines selected)",
+    () => {
+      const input = inputRef.current
+      const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+      if (input) applyEdit(applyTab(value, input.selectionStart, input.selectionEnd, unit.repeat(2), false))
+    },
+    focused,
+  )
+  useChord(
+    '4',
+    "Insert 4 tabs' indentation at the caret (or indent the lines selected)",
+    () => {
+      const input = inputRef.current
+      const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+      if (input) applyEdit(applyTab(value, input.selectionStart, input.selectionEnd, unit.repeat(4), false))
+    },
+    focused,
+  )
+
+  // Mirror-scroll's own "the editor scrolled" half (`NoteEditPage.tsx`) — the textarea itself is the scrolling
+  // element here (no outer frame to read from), otherwise identical to `HighlightedEditor`'s own version.
+  function handleScroll() {
+    if (!onVisibleLineChange || visibleLineRaf.current !== null) return
+    visibleLineRaf.current = requestAnimationFrame(() => {
+      visibleLineRaf.current = null
+      const input = inputRef.current
+      if (!input) return
+      const lineHeight = parseFloat(getComputedStyle(input).lineHeight) || FALLBACK_LINE_HEIGHT_PX
+      const line = Math.max(1, Math.floor(input.scrollTop / lineHeight) + 1)
+      if (line !== lastVisibleLine.current) {
+        lastVisibleLine.current = line
+        onVisibleLineChange(line)
+      }
+    })
+  }
+
+  const h = history.current!
+  return (
+    <div className="code-editor-wrap">
+      {!readOnly && (
+        <div className="code-editor-toolbar">
+          <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
+          <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
+          <span className="code-editor-menu-slot" data-text-menu-target />
+        </div>
+      )}
+      <div className="code-editor" data-text-menu-anchor>
+        <textarea
+          ref={inputRef}
+          className={`code-editor-plain-textarea ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`}
+          defaultValue={value}
+          readOnly={readOnly}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          onScroll={handleScroll}
+          onChange={(e) => {
+            const newValue = e.target.value
+            const selStart = e.target.selectionStart
+            const selEnd = e.target.selectionEnd
+            setTimeout(() => {
+              history.current!.record(newValue, selStart, selEnd, Date.now())
+              onChange(newValue)
+              redraw()
+            }, 0)
+          }}
+          onKeyDown={(e) => {
+            if (readOnly) return
+            if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              e.preventDefault()
+              const shiftKey = e.shiftKey
+              const selStart = e.currentTarget.selectionStart
+              const selEnd = e.currentTarget.selectionEnd
+              setTimeout(() => {
+                const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+                applyEdit(applyTab(value, selStart, selEnd, unit, shiftKey))
+              }, 0)
+              return
+            }
+            if (onScrollNudge && e.ctrlKey && e.altKey && !e.metaKey && !e.shiftKey) {
+              const direction = { ArrowUp: 'up', ArrowDown: 'down', PageUp: 'pageUp', PageDown: 'pageDown' }[e.key] as
+                | 'up'
+                | 'down'
+                | 'pageUp'
+                | 'pageDown'
+                | undefined
+              if (direction) {
+                e.preventDefault()
+                setTimeout(() => onScrollNudge(direction), 0)
+                return
+              }
+            }
+            if (!(e.ctrlKey || e.metaKey) || e.altKey) return
+            const key = e.key.toLowerCase()
+            let action: 'undo' | 'redo' | null = null
+            if (key === 'z' && !e.shiftKey) action = 'undo'
+            else if (key === 'y' || (key === 'z' && e.shiftKey)) action = 'redo'
+            if (action === null) return
+            e.preventDefault()
+            const theAction = action
+            setTimeout(() => step(theAction), 0)
+          }}
+        />
+      </div>
+    </div>
+  )
+})
+
+/** The one text editor of the app's file views — a thin wrapper that reads `editor.highlightDisabled`
+ * (`lib/editorSettings.ts`) and mounts `HighlightedEditor` or `PlainTextEditor`, above, accordingly. While
+ * settings are still loading (`settings === null`, the mount-time race every subscriber of
+ * `subscribeEditorSettings` has), it mounts `HighlightedEditor` — the same default-to-enabled behaviour the
+ * setting's own stored value falls back to everywhere else. Switching the setting while an editor is already
+ * open unmounts whichever one was showing and mounts the other fresh (a new, empty undo history and a reset
+ * scroll position) — an accepted trade for a setting nobody would toggle mid-edit, the same tolerance this
+ * app already has for "Delete app data"-adjacent settings changes elsewhere. */
+const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(props, ref) {
+  const [settings, setSettings] = useState<EditorSettings | null>(null)
+  useEffect(() => subscribeEditorSettings(setSettings), [])
+  if (settings?.highlightDisabled) return <PlainTextEditor ref={ref} {...props} />
+  return <HighlightedEditor ref={ref} {...props} />
 })
 
 export default CodeEditor

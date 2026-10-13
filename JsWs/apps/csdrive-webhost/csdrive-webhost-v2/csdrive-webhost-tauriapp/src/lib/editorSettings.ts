@@ -20,6 +20,19 @@ export interface EditorSettings {
   /** How many spaces `tabInsertsSpaces` inserts, or how many columns a literal tab is treated as wide for Shift+Tab
    * outdenting either way. */
   tabSpaceCount: number
+  /** Switches `CodeEditor.tsx` from `HighlightedEditor` (syntax highlighting, the line-number gutter,
+   * windowed/virtualized rendering) to `PlainTextEditor` — a single, ordinary `<textarea>` with its own
+   * native internal scrolling: no Worker, no DOM patching, no wrapped-row measurement, no line-start
+   * scanning, no `fit()`-to-content sizing. Off by default. Asked for directly as a safety valve for a huge
+   * file — a first version kept `HighlightedEditor`'s own architecture and just skipped the highlighting work
+   * within it, but testing showed it "still unusable on very large documents": `lineStartOffsets(value)` and
+   * `gutterRowStarts` are both `O(file)` scans that ran on *every* render regardless of whether highlighting
+   * itself was on, and `fit()` forces the browser to lay out the *entire* document on every edit just to learn
+   * its height. None of that exists in `PlainTextEditor`, which is why **line numbers are never shown in this
+   * mode, regardless of the separate `lineNumbers` setting's own stored value** — there is no virtualized,
+   * per-line measurement left to position a gutter against — and why Settings' own "Show line numbers"
+   * checkbox is disabled while this is on. */
+  highlightDisabled: boolean
 }
 
 const DEFAULTS: EditorSettings = {
@@ -28,6 +41,7 @@ const DEFAULTS: EditorSettings = {
   lineNumbers: true,
   tabInsertsSpaces: false,
   tabSpaceCount: 4,
+  highlightDisabled: false,
 }
 
 const KEYS = {
@@ -36,6 +50,7 @@ const KEYS = {
   lineNumbers: 'editor.lineNumbers',
   tabInsertsSpaces: 'editor.tabInsertsSpaces',
   tabSpaceCount: 'editor.tabSpaceCount',
+  highlightDisabled: 'editor.highlightDisabled',
 } as const satisfies Record<keyof EditorSettings, string>
 
 async function getBool(key: string, fallback: boolean): Promise<boolean> {
@@ -48,16 +63,17 @@ async function setBool(key: string, value: boolean): Promise<void> {
 }
 
 export async function getEditorSettings(): Promise<EditorSettings> {
-  const [wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCountRaw] = await Promise.all([
+  const [wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCountRaw, highlightDisabled] = await Promise.all([
     getBool(KEYS.wrapLines, DEFAULTS.wrapLines),
     getBool(KEYS.showWhitespace, DEFAULTS.showWhitespace),
     getBool(KEYS.lineNumbers, DEFAULTS.lineNumbers),
     getBool(KEYS.tabInsertsSpaces, DEFAULTS.tabInsertsSpaces),
     invoke<string | null>('get_global_setting', { key: KEYS.tabSpaceCount }),
+    getBool(KEYS.highlightDisabled, DEFAULTS.highlightDisabled),
   ])
   const parsedCount = Number(tabSpaceCountRaw)
   const tabSpaceCount = Number.isInteger(parsedCount) && parsedCount > 0 && parsedCount <= 16 ? parsedCount : DEFAULTS.tabSpaceCount
-  return { wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCount }
+  return { wrapLines, showWhitespace, lineNumbers, tabInsertsSpaces, tabSpaceCount, highlightDisabled }
 }
 
 let current: EditorSettings | null = null

@@ -38,7 +38,7 @@ export default function SettingsTab() {
   useEffect(() => {
     if (editorSettings) setTabSpaceCountText(String(editorSettings.tabSpaceCount))
   }, [editorSettings?.tabSpaceCount])
-  function setEditorFlag<K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces'>(key: K, value: boolean) {
+  function setEditorFlag<K extends 'wrapLines' | 'showWhitespace' | 'lineNumbers' | 'tabInsertsSpaces' | 'highlightDisabled'>(key: K, value: boolean) {
     setEditorSetting(key, value).catch((e) => setError(String(e)))
   }
   function commitTabSpaceCount() {
@@ -242,9 +242,11 @@ export default function SettingsTab() {
         <input
           type="checkbox"
           checked={editorSettings?.lineNumbers ?? true}
+          disabled={editorSettings?.highlightDisabled}
           onChange={(e) => setEditorFlag('lineNumbers', e.target.checked)}
         />
         Show line numbers
+        {editorSettings?.highlightDisabled && ' (unavailable while code highlighting is disabled)'}
       </label>
       <label className="checkbox-row">
         <input
@@ -274,6 +276,15 @@ export default function SettingsTab() {
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
         />{' '}
         spaces instead of a tab character
+      </label>
+      <label className="checkbox-row">
+        <input
+          type="checkbox"
+          checked={editorSettings?.highlightDisabled ?? false}
+          onChange={(e) => setEditorFlag('highlightDisabled', e.target.checked)}
+        />
+        Disable all code highlighting (a plain textarea with no line numbers — for a document too large for
+        the ordinary editor to stay fast on)
       </label>
 
       <div className="toolbar" style={{ marginTop: 24 }}>

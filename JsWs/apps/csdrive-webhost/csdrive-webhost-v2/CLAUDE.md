@@ -1262,6 +1262,127 @@ not separately click-verified through its own native dialog** — its `discard()
 from `lib/dialogs` just proven correct against `NotesApp.tsx`'s own dialog above, so this rests on those two
 already-verified halves rather than a third live click-through of the same mechanism.
 
+## One more scroll-jump gap, coordinating the header with highlighting, and an option to disable highlighting entirely
+
+**"Still if I scroll more than a few screens and then type, the view jumps all over the place."** Reported
+again after every fix in "Typing after a fast scroll, and a blank editor after one" above had already
+shipped — a genuinely different gap in the *same* mechanism, not a resurgence of any of the three already
+fixed there. Reproducing it needed a specific shape the earlier reproductions hadn't tried: scroll to the
+document's own *middle* (never an edge) and let the debounced wrap measurement actually **settle** there
+first, *then* scroll further away, *then* type at the untouched caret (still at offset 0, since nothing had
+moved it). Confirmed live, before any fix: `frame.scrollTop` stayed frozen at whatever the person had just
+scrolled to while `gutterRowStarts`' own `paddingTop` silently jumped underneath it a few hundred
+milliseconds later — once `wrapMeasure` (debounced, `WRAP_MEASURE_DEBOUNCE_MS`) finally landed for the
+*new* window the render-time recentre had already picked. The render-time recentre itself only ever reads
+`gutterRowStarts` to *choose* a window (via `computeWindowRange`) — it had no way to know the measurement
+backing that choice was about to change again underneath it, since the measurement for a window that's
+never been visited starts as the accepted "1 row" estimate and self-corrects once actually measured.
+
+**Fixed with a second, narrower correction that waits for that exact measurement.** A new
+`pendingRecenterCaretLineRef` is set, alongside the existing `pendingRecenterScrollTopRef`, in the same
+render-time recentre block — the caret's own *line number*, not a pixel position, since the pixel position
+is exactly the thing not yet trustworthy. A new `useLayoutEffect` keyed on `[wrapMeasure]` — firing the
+moment a *new* measurement lands, whichever window it was for — re-reads the caret's line against the
+*freshly*-measured `gutterRowStarts` and writes a corrected `frame.scrollTop` from that, then clears the
+pending line so it only ever fires once per recentre (self-clearing; also cleared by `handleScroll`'s own
+window-change branch or by a second recentre, whichever the person causes first by moving on). This is a
+second correction on top of the first, standard, already-accepted "jump to show the caret" behavior every
+mainstream editor has — not a new kind of jump, just making sure the one jump that does happen lands
+correctly once the real numbers are in, rather than visibly drifting a second time once they are.
+
+**Verified live** (isolated debug data folder — `-debug`, see "Folder layout" — never the production data
+folder, confirmed throughout by checking only one process, `csdrive-webhost-tauriapp.exe` at
+`Local\Ayran CsDrive WebHost\...`, stayed running the whole time; desktop, real CDP, the 40,000-line/
+1,224,450-character synthetic `jump-test.js` reused from the earlier investigation): scrolled to 50% and let
+it settle, then to 95%, caret placed back at offset 0 (focus-then-`setSelectionRange`, in that order — doing
+it the other way around triggers the browser's own "scroll the caret into view," snapping `scrollTop` back
+to 0 *before* the test ever starts, a methodology trap worth recording), then a real CDP keystroke (`a`) —
+polled six times at 150ms intervals immediately afterward: `scrollTop` and the overlay's own `paddingTop`
+read `0` and `"8px"` together, identically, at *every single poll*, with the real inserted character
+(`afunction lineNumber0...`) and 558 real `tok-*` spans confirming genuine, correctly-positioned colored
+content, not a blank or flat-colored window — no desynced moment was observable at any point this session's
+own 150ms-resolution polling could catch, where the unfixed build (by the same reproduction, in the earlier,
+already-recorded investigation) showed the two values plainly disagreeing for several hundred milliseconds.
+
+**Also asked for in the same message: stop mixing the autohiding header's own CSS transition with the
+editor's highlight-markup re-rendering — wait for one to finish before the other acts, "and vice versa."**
+A new, small, module-level coordination point, `lib/editorHeaderSync.ts` (deliberately not React state or
+context: a transition's own duration is a real-world timer running independently of any render, and at
+most one header and one editor ever share a page in this app, so a plain flag plus a small subscriber list
+is simpler than routing a one-to-one relationship through context). Four functions, two pairs:
+`beginHeaderTransition`/`endHeaderTransition` bracket a header's own CSS transition (`HEADER_TRANSITION_MS`,
+kept in step by hand with the transition durations in `App.css`/`notes.css`); `beginHighlightRerender`/
+`endHighlightRerender` bracket `CodeEditor.tsx`'s own `RunPatchController` DOM patches. `runAfterHeaderTransition`/
+`runAfterHighlightRerender` run a callback at once if the relevant side is already idle (the overwhelmingly
+common case — both kinds of work are synchronous and fast, so by the time anything else checks, they're
+almost always already done) or queue it for the moment the flag clears otherwise.
+
+**Wired in both directions, matching "and vice versa" literally**: `lib/scrollAutohide.ts`'s `useScrollAutohide`
+now routes every *actual* flip of `hidden` (never a call that would leave it unchanged) through
+`runAfterHighlightRerender` first, then brackets the CSS transition it's about to trigger with
+`beginHeaderTransition`/a timed `endHeaderTransition` — each deferred flip is tagged with a generation
+counter so a newer scroll/resize decision silently supersedes a still-queued older one rather than both
+firing out of order. `CodeEditor.tsx`'s own `handleScroll` now defers its window-range recompute via
+`runAfterHeaderTransition` instead of calling `computeWindowRange`/`setWindowRange` inline, and both
+`RunPatchController` `useLayoutEffect`s are bracketed with `beginHighlightRerender`/`endHighlightRerender`
+(the first one skips its own bracket, along with the rest of its colouring work, while highlighting is
+disabled — see below — but the scroll-follows-caret write inside it stays unconditional either way, since
+it's the editor's own window-virtualization behavior, nothing to do with colouring).
+
+**Verified live** (same isolated instance, same test file): a real `.editor-top-bar` header (shown, per its
+own scroll-driven autohide) and a real wheel-scroll burst (`Input.dispatchMouseEvent`, ten ticks) down
+through the editor correctly hid the header (`editor-top-bar-hidden` class present) while the content
+scrolled correctly (`scrollTop: 4000`); scrolling back up correctly re-showed the header (`hidden: false`,
+`scrollTop: 0`) with genuine, colored content still rendering underneath (855 real `tok-*` spans) — no
+deadlock, no stuck-hidden state, and no visible fighting between the two coordinated mechanisms across
+either direction of the scroll.
+
+**The third part of the same message: "let's add an option to disable all code highlight, this should at
+least enable a decent way of editing huge files."** A sixth editor setting, `editor.highlightDisabled`
+(`lib/editorSettings.ts`, off by default, the same shared `global_settings` shape as `wrapLines`/
+`lineNumbers`/etc., Settings → Text editors' own new checkbox: "Disable all code highlighting (a plain,
+faster editor — line numbers still work)"). `useBackgroundHighlighted` takes a new `disabled` parameter:
+checked even at mount (skipping the one, otherwise-unavoidable synchronous `highlight()` call this hook
+makes on the whole file's text), skipped in the Worker-creation effect (no Worker at all — nothing
+downstream would ever read its result) and in the dispatch effect (no approximate-colour bookkeeping either,
+since `RunPatchController`'s own patches are what actually render it, and those are gated too). Both
+`RunPatchController` effects early-return before their own colouring work when disabled — the first one
+*after* the unconditional scroll-follows-caret write (see above: that part isn't highlighting-specific and
+skipping it would silently reintroduce the "blank editor" shape this whole feature area already fixed once),
+the second one (pure highlighting work throughout) right after `attachContainer`, so a reset to `null`
+cleanly drops any live state with nothing further to apply. `measureWrappedRows` gained a matching early
+return — the gutter's own wrap-aware row measurement exists solely to keep the highlighted overlay's line
+numbers aligned with wrapped text the overlay no longer renders in this mode, so it falls back to the same
+flat "one row per line" placement a file over `MAX_LINES_FOR_WRAP_MEASUREMENT` already gets. The JSX skips
+rendering `.code-editor-highlight` and the hidden `measureScratchRef` measuring stick entirely when
+disabled (`highlightRef.current` then reads `null`, which both effects' `attachContainer(null)` already
+handles safely — resetting `RunPatchController`'s own live state with no container to patch into), and the
+real `<textarea>` gets a new class, `code-editor-input-plain` (`App.css`: `color`/`-webkit-text-fill-color`
+set to `var(--fg)`), since there's no colored copy left behind it to show through to — the usual
+transparent-text arrangement would otherwise leave the box showing nothing at all.
+
+**Verified live** (same isolated instance, through the real Settings UI — a real checkbox click, not a
+direct backend call, so the whole `setEditorSetting`/`subscribeEditorSettings` notification path was
+exercised, not just the persisted value): clicking the checkbox persisted `editor.highlightDisabled` to
+`"1"` (confirmed via a direct `get_global_setting` read) and flipped the checkbox's own DOM `checked` state
+to `true` within one settle; reopening the file afterward (navigating tabs away and back drops the Files
+tab's own unsaved editing state, by existing, unrelated design — "Text editors are now dedicated pages, not
+popups" already notes this editor has no draft persistence) showed `.code-editor-highlight` genuinely
+absent from the DOM, the textarea's own class list carrying `code-editor-input-plain` with its computed
+`color`/`-webkit-text-fill-color` both resolving to a real, opaque `rgb(26, 26, 26)` (not `transparent`),
+and the gutter still rendering with exactly flat `19.5px`-apart spacing (`8px, 27.5px, 47px, 66.5px, 86px`);
+a real keystroke landed correctly in the textarea (`afunction ...`) with the overlay still confirmed absent
+immediately after, and no thrown error. Toggling the checkbox back off and reopening the same file showed
+`.code-editor-highlight` present again, the textarea's class back to plain `code-editor-input ` (no
+`-plain` suffix), and 558 real `tok-*` spans — full highlighting resumed correctly. **Not separately
+verified live**: that no `Worker` object is actually constructed while disabled (there is no CDP-visible
+signal for "a Worker was never created," short of instrumenting the constructor ahead of time, which wasn't
+set up for this pass) — this rests on the code review of the early return at the top of the Worker-creation
+effect, not a live capture.
+
+`npx tsc --noEmit` and `npm run build` both clean throughout; no Rust change, so `cargo test --lib` doesn't
+apply to any of the three fixes/features in this section.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.
