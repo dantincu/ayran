@@ -1759,21 +1759,72 @@ a real CDP keystroke landed `defaultPrevented: false` at a bubble-phase `documen
 of `.native-edit-context` — nothing in this app's own code (`useListKeyboard`, `useButtonRowKeyboard`,
 `ChordHost`'s capture-phase Ctrl+K handler — each ruled out by reading its own early-return guards, none of
 which match a plain, non-chord Ctrl+Arrow) ever touches the event; the gap is inside Monaco's own input handling.
-**Root cause**: Monaco 0.57's default input surface is a `<div class="native-edit-context">`, built on the
-browser's EditContext API, not the classic hidden `<textarea class="inputarea">` — a real, newer-than-expected
-default, and this platform/WebView2 combination's own EditContext-mode word-navigation keybinding wiring has a
-gap for exactly these four shortcuts (word deletion, on the same input surface, works correctly — so this isn't
-every keybinding failing, just these four). **Fixed** with `editContext: false` on `MonacoCodeEditor.tsx`'s
-`monaco.editor.create()` call — a real, documented `IEditorOptions` field ("Sets whether the new experimental
-edit context should be used instead of the text area") that falls back to the classic, long-proven hidden-
-textarea input path, where Ctrl+Left/Right/Shift+Left/Right are Monaco's own ordinary, always-correct default
-keybindings. Verified live (isolated debug data folder, desktop, real CDP `Input.dispatchKeyEvent` keystrokes,
-measuring the real textarea's own `selectionStart`/`selectionEnd`, not assumed from a visual check): confirmed
-the input surface switched (`hasEditContext: false, hasTextarea: true`); from the end of `"alpha beta gamma
-delta epsilon"` (offset 30), a real Ctrl+Left landed at 23 (the start of "epsilon"), a second Ctrl+Left at 17
-(the start of "delta "), and a real Ctrl+Shift+Right from there extended the selection back to `[17, 23]` —
-exactly "delta " selected; a regression check (Ctrl+Backspace from the end) still correctly deleted "epsilon"
-and left the caret at 23. `npx tsc --noEmit` and `npm run build` both clean; no Rust change.
+
+**First "fixed" with `editContext: false`** — Monaco 0.57's default input surface is a `<div
+class="native-edit-context">`, built on the browser's EditContext API, not the classic hidden `<textarea
+class="inputarea">`, and `editContext: false` falls back to the classic path, where the fix *appeared* to work.
+**That fix was reverted** — asked for directly ("using a legacy mode for the monaco editor is not ideal") after
+it was found to have its own, separate and worse bug: reported live, "Ctrl+Shift+arrow keys only work well for
+1 press… for consecutive presses… the selection is reset after each press… it happened after I press PgDn or
+Ctrl+End or scroll down more than a few screens… if I return to the beginning of the document it's ok again."
+Confirmed live, repeatedly, on a 2000-line file: jump to the end (`Ctrl+End`), hold Shift, repeat Ctrl+Left —
+the real selection collapses to nothing for one keystroke right at the moment the legacy textarea's own content
+window has to grow/re-centre, then resumes, matching "scrolled far from the start" exactly (near the start, the
+window already reaches position 0, so there's no edge to cross). The legacy textarea controller never mirrors
+the *whole* document into the real textarea, only a bounded window of text around the cursor, and Monaco's own
+internal selection state visibly desyncs from the browser's native textarea selection exactly at that window's
+edge — confirmed with Monaco's own `editor.getSelection()` (via a temporary debug global) showing the *model's*
+selection frozen at one character while the textarea's own, merely-cosmetic native selection kept drifting
+independently underneath it.
+
+**Root cause of the *original* gap, found by reading Monaco's own source (`wordOperations.js`) rather than
+guessing a second time**: the default Ctrl+Left/Right/Shift+Left/Right keybindings carry `kbExpr: ...
+ContextKeyExpr.and(CONTEXT_ACCESSIBILITY_MODE_ENABLED, IsWindowsContext)?.negate()` — on Windows, whenever
+Monaco's own "accessibility mode" context key reads true, the *default* keybinding is deliberately disabled in
+favour of a separate, NVDA-tuned "Accessibility" word-navigation command instead ("Accessibility navigation
+commands should only be enabled on windows since they are tuned to what NVDA expects" — Monaco's own comment).
+Confirmed live that this is exactly what happens here: calling *any* built-in word-navigation command —
+`cursorWordLeft`, `cursorWordLeftSelect`, the `Start`/`End` variants, and the Windows-only "Accessibility" ones
+— via `editor.trigger()` does nothing at all on this platform/Monaco build, while the identical call for a
+plain, non-word command (`cursorLeft`) works correctly; real Ctrl+Backspace (`deleteWordLeft`, a *different*
+command family) still working, as originally reported, is consistent with the gap being specific to the
+word-*navigation* commands, not a blanket EditContext-mode failure.
+
+**Fixed for real**: `editContext` is back at Monaco's own default (`true`); `MonacoCodeEditor.tsx` registers
+four of its own `editor.addAction`s on the exact same four key combinations, each computing the target position
+itself rather than delegating to any built-in command id (there wasn't a working one left to delegate to, by
+any means — not just real keyboard dispatch, a bare `editor.trigger()` call fails identically). `wordBoundaryLeft`/
+`wordBoundaryRight` (module-level) use the model's own public `getWordAtPosition` for Monaco's actual
+word-boundary definition — not a hand-rolled regex guessing at word shape — and only hand-roll the *walk* across
+whitespace/line boundaries between one word and the next, which `getWordAtPosition` alone doesn't do; `moveWord`
+applies the result with the always-reliable `setPosition`/`setSelection` (keeping the selection anchor fixed for
+the `Select` variants, exactly how Monaco's own command would). **A real edge-case bug was caught live, not by
+inspection, before trusting this**: `getWordAtPosition` queried exactly at a word's own boundary can match that
+word even when the character actually being asked about sits just *outside* it (its own "under or besides"
+contract, not a bug in Monaco itself) — found live on a line ending `…lineNumber0() {`: querying right at the
+boundary between `lineNumber0` and the `(` after it returned `lineNumber0` itself, whose own end exactly matched
+the query column, so the word's reported start was already behind the caret and nothing moved. Fixed by checking
+the returned word's own range genuinely contains the character being asked about before trusting it, in both
+directions. Deliberately modest in scope — this does not try to replicate every one of Monaco's own corner
+cases (camelCase sub-word stops, the NVDA-specific "Accessibility" word shape) — just the ordinary "jump to the
+start of the previous/next word" shape Ctrl+Arrow has always meant here, which is what was reported broken.
+
+Verified live (isolated debug data folder, desktop, real CDP `Input.dispatchKeyEvent` keystrokes, via a
+temporary debug global exposing `editor.getSelection()`/`getPosition()` directly, removed before finalizing):
+confirmed the input surface is back to `hasEditContext: true, hasTextarea: false`; on a small file, Ctrl+Left/
+Right move the caret correctly and three held-Shift Ctrl+Left presses grow the selection word by word
+(`[1,41,1,46]` → `[1,37,1,46]` → `[1,32,1,46]`); on the 2000-line file, jumping to the very end and holding
+Shift through **40 consecutive real Ctrl+Left presses produced zero collapses**, with the selected text visibly
+growing correctly the whole way (`"}"` → `"; }"` → `"epsilon; }"` → …); the line-boundary-crossing case (Ctrl+Left
+from column 1) and the document-start clamp (no error, no movement past position 1,1) both behave correctly;
+Ctrl+Shift+Right from the very start caught the exact `getWordAtPosition`-boundary bug above (stuck at
+`"function lineNumber0"` for two presses in a row before the fix; correctly reached `"function lineNumber0("`
+on the third press after it) and a regression check (real Ctrl+Backspace) still correctly deletes a whole word.
+A final pass with the debug global removed confirmed the same 20-press stress test through nothing but real,
+rendered DOM (`.native-edit-context` present, `textarea.inputarea` absent, a real multi-block `.selected-text`
+highlight visible on screen afterward) — not just the debug API. `npx tsc --noEmit` and `npm run build` both
+clean; no Rust change, and `cargo test --lib` (282 tests) passes unchanged, confirming this is a pure
+frontend-only fix.
 
 **"On the listing pages on thin viewports (like mobile), the title is overlapped by the top action buttons…
 the listing pages don't have their own top sticky header, like the editor does. Instead, the top action buttons

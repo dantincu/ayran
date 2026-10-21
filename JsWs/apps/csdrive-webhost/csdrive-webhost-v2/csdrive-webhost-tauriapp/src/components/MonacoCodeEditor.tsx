@@ -42,6 +42,81 @@ function monacoLanguageId(language: Language, highlightDisabled: boolean): strin
   return language
 }
 
+/** Our own replacement for Monaco's built-in `cursorWordLeft`/`cursorWordRight` (and their `Select`
+ * variants) — see the long comment where these are wired up, in the mount effect, for why: every one of
+ * Monaco's own word-navigation commands (including the Windows/NVDA-tuned "Accessibility" variants its own
+ * default keybinding falls back to) turned out to be unreachable through `editor.trigger()` on this
+ * platform/Monaco build, confirmed live with a plain non-word command (`cursorLeft`) working fine the same
+ * way. With no command id left to delegate to, this computes the target position itself — using the
+ * model's own public `getWordAtPosition` (Monaco's own word-definition logic, respecting `wordSeparators`,
+ * not a hand-rolled regex guessing at word boundaries) for the actual "where is the nearest word" question,
+ * and only hand-rolling the *walk* across whitespace/line boundaries between one word and the next, which
+ * `getWordAtPosition` alone doesn't do. Deliberately modest in scope — it does not try to replicate every
+ * one of Monaco's own corner cases (camelCase sub-word stops, `WordNavigationType.WordAccessibility`'s own
+ * NVDA-specific behavior) — just the ordinary "jump to the start of the previous/next word" shape Ctrl+Arrow
+ * has always meant here, which is what was reported broken. */
+function wordBoundaryLeft(model: monaco.editor.ITextModel, position: monaco.Position): monaco.Position {
+  if (position.column === 1) {
+    if (position.lineNumber === 1) return position
+    const line = position.lineNumber - 1
+    return new monaco.Position(line, model.getLineMaxColumn(line))
+  }
+  const lineContent = model.getLineContent(position.lineNumber)
+  let idx = position.column - 2 // 0-based index of the character immediately before the caret
+  while (idx >= 0 && /\s/.test(lineContent[idx])) idx--
+  if (idx < 0) return new monaco.Position(position.lineNumber, 1)
+  const word = model.getWordAtPosition(new monaco.Position(position.lineNumber, idx + 2))
+  // `getWordAtPosition` queried exactly at a word's own boundary can match that word even when the
+  // character actually being asked about (here, `idx`) sits just *outside* it — found live, landing on a
+  // line ending in `…lineNumber0() {`: querying right at the boundary between "lineNumber0" and the "("
+  // right after it returned "lineNumber0" itself (its own `endColumn` exactly matching the query column),
+  // silently producing "no movement at all" since that word's own start was already behind the caret.
+  // Checking the word's own range genuinely contains `idx` is what `getWordAtPosition`'s own "under or
+  // *besides*" contract doesn't guarantee on its own.
+  if (word && word.startColumn <= idx + 1 && idx + 1 < word.endColumn) return new monaco.Position(position.lineNumber, word.startColumn)
+  // `idx`'s own character isn't part of a "word" by Monaco's own definition (e.g. a lone punctuation run) —
+  // land just before it; a further press walks over it the same way one more whitespace-skip would.
+  return new monaco.Position(position.lineNumber, idx + 1)
+}
+
+function wordBoundaryRight(model: monaco.editor.ITextModel, position: monaco.Position): monaco.Position {
+  const lastLine = model.getLineCount()
+  const maxCol = model.getLineMaxColumn(position.lineNumber)
+  if (position.column === maxCol) {
+    if (position.lineNumber === lastLine) return position
+    return new monaco.Position(position.lineNumber + 1, 1)
+  }
+  const lineContent = model.getLineContent(position.lineNumber)
+  let idx = position.column - 1 // 0-based index of the character right at/after the caret
+  while (idx < lineContent.length && /\s/.test(lineContent[idx])) idx++
+  if (idx >= lineContent.length) return new monaco.Position(position.lineNumber, maxCol)
+  const word = model.getWordAtPosition(new monaco.Position(position.lineNumber, idx + 1))
+  // Same boundary check as `wordBoundaryLeft`'s own, mirrored: confirm the word actually contains `idx`
+  // before trusting it, rather than one that merely touches the query column from the far side.
+  if (word && word.startColumn <= idx + 1 && idx + 1 < word.endColumn) return new monaco.Position(position.lineNumber, word.endColumn)
+  return new monaco.Position(position.lineNumber, idx + 2)
+}
+
+/** Moves the caret (collapsing any selection) or, with `select`, extends the current selection — the
+ * anchor (`getSelectionStart()`) stays put and only the active end moves — exactly how Monaco's own
+ * `cursorWordLeft`/`cursorWordLeftSelect` already behave for every *other* editor in this app that still
+ * reaches them through a real keybinding; this is purely a same-behavior stand-in for the one platform
+ * where that reach is broken. */
+function moveWord(editor: monaco.editor.IStandaloneCodeEditor, direction: 'left' | 'right', select: boolean): void {
+  const model = editor.getModel()
+  const selection = editor.getSelection()
+  if (!model || !selection) return
+  const from = selection.getPosition()
+  const to = direction === 'left' ? wordBoundaryLeft(model, from) : wordBoundaryRight(model, from)
+  if (select) {
+    const anchor = selection.getSelectionStart()
+    editor.setSelection(new monaco.Selection(anchor.lineNumber, anchor.column, to.lineNumber, to.column))
+  } else {
+    editor.setPosition(to)
+  }
+  editor.revealPosition(to)
+}
+
 interface Props {
   value: string
   onChange: (value: string) => void
@@ -95,21 +170,71 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       readOnly,
       automaticLayout: true,
       minimap: { enabled: false },
-      // Monaco 0.57's default input surface is a `<div class="native-edit-context">` built on the browser's
-      // EditContext API, not the classic hidden `<textarea class="inputarea">` — reported live: "Ctrl+LeftArrow
-      // and Ctrl+RightArrow (along Ctrl+Shift+LeftArrow and Ctrl+Shift+RightArrow) don't work... they do
-      // nothing," while Ctrl+Backspace/Ctrl+Delete (word deletion) work correctly. Confirmed live with a real
-      // CDP keystroke and a diagnostic bubble-phase `keydown` listener on `document`: the event reaches
-      // `document` with `defaultPrevented: false` (nothing in this app's own code ever touches it) and its
-      // `target` is the `.native-edit-context` div — the cursor simply never moves, a gap in Monaco's own
-      // EditContext-mode word-navigation wiring on this platform/WebView2 combination, not anything this app
-      // controls. `editContext: false` (a real, documented `IEditorOptions` field: "Sets whether the new
-      // experimental edit context should be used instead of the text area") falls back to the long-standing,
-      // thoroughly-proven hidden-textarea input path, where Ctrl+Left/Right/Shift+Left/Right are plain,
-      // always-correct default keybindings.
-      editContext: false,
     })
     editorRef.current = editor
+    // Monaco 0.57's default input surface is a `<div class="native-edit-context">` built on the browser's
+    // EditContext API, not the classic hidden `<textarea class="inputarea">` — reported live: "Ctrl+LeftArrow
+    // and Ctrl+RightArrow (along Ctrl+Shift+LeftArrow and Ctrl+Shift+RightArrow) don't work... they do
+    // nothing," while Ctrl+Backspace/Ctrl+Delete (word deletion) work correctly. First fixed with
+    // `editContext: false`, falling back to the classic hidden-textarea input path — but that path turned
+    // out to have its *own*, worse bug: reported live again, "Ctrl+Shift+arrow keys only work well for 1
+    // press... the selection is reset after each press" once scrolled far from the start of a large file.
+    // Root cause, confirmed live with Monaco's own debug API: the legacy textarea controller never mirrors
+    // the *whole* document into the real textarea, only a bounded window of text around the cursor, and a
+    // growing Ctrl+Shift+Arrow selection that crosses that window's edge makes Monaco's own internal
+    // selection freeze while the browser's native textarea selection keeps drifting on its own — a second,
+    // separate Monaco bug in that same legacy path, and the legacy path itself isn't a mode to keep leaning
+    // on regardless (asked for directly: "using a legacy mode for the monaco editor is not ideal").
+    //
+    // **`editContext` is back at Monaco's own default (`true`, the modern surface); the original, narrower
+    // gap is fixed directly instead of by changing modes at all.** Reading Monaco's own source
+    // (`wordOperations.js`) explains the original gap precisely: the default Ctrl+Left/Right/Shift+Left/
+    // Right keybindings carry `kbExpr: ... ContextKeyExpr.and(CONTEXT_ACCESSIBILITY_MODE_ENABLED,
+    // IsWindowsContext)?.negate()` — on Windows, whenever Monaco's own "accessibility mode" context key
+    // reads true, those keybindings are *deliberately disabled* in favour of a separate, NVDA-tuned
+    // "Accessibility" word-navigation variant instead ("Accessibility navigation commands should only be
+    // enabled on windows since they are tuned to what NVDA expects" — Monaco's own comment). Confirmed live
+    // that this matters here: calling *any* of the built-in word-navigation commands — `cursorWordLeft`,
+    // `cursorWordLeftSelect`, the `Start`/`End` variants, and the "Accessibility" ones Windows falls back
+    // to — via `editor.trigger()` does nothing at all, while the exact same call for a plain, non-word
+    // command (`cursorLeft`) works correctly; real Ctrl+Backspace (`deleteWordLeft`, a *different* command
+    // family) still working, as originally reported, is consistent with this being specific to the
+    // word-*navigation* commands, not a blanket EditContext-mode failure. With no working command id to
+    // delegate to by any means (not just real keyboard dispatch — a bare JS call fails identically), this
+    // computes the target position itself: `wordBoundaryLeft`/`wordBoundaryRight` (module-level, above) use
+    // the model's own public `getWordAtPosition` for Monaco's actual word-boundary definition (so this isn't
+    // a hand-rolled regex guessing at word shape — only the walk across whitespace/line boundaries between
+    // one word and the next, which `getWordAtPosition` alone doesn't do, is this file's own), and `moveWord`
+    // applies the result with the always-reliable `setPosition`/`setSelection` — confirmed live to work
+    // correctly, repeatedly, including far from the start of a large file, with no equivalent of either
+    // bug above (there is no textarea-content window to cross in EditContext mode, and no reliance on any
+    // of the broken command ids at all).
+    const wordNavActions = [
+      editor.addAction({
+        id: 'csdrive.cursorWordLeft',
+        label: 'Move left one word',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.LeftArrow],
+        run: () => moveWord(editor, 'left', false),
+      }),
+      editor.addAction({
+        id: 'csdrive.cursorWordRight',
+        label: 'Move right one word',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.RightArrow],
+        run: () => moveWord(editor, 'right', false),
+      }),
+      editor.addAction({
+        id: 'csdrive.cursorWordLeftSelect',
+        label: 'Select left one word',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.LeftArrow],
+        run: () => moveWord(editor, 'left', true),
+      }),
+      editor.addAction({
+        id: 'csdrive.cursorWordRightSelect',
+        label: 'Select right one word',
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.RightArrow],
+        run: () => moveWord(editor, 'right', true),
+      }),
+    ]
     const changeSub = editor.onDidChangeModelContent(() => {
       onChangeRef.current(editor.getValue())
       // Monaco keeps no public "can undo/redo" flag — `trigger('', 'undo'/'redo')` is a no-op when there's
@@ -210,6 +335,7 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       openLinkAction?.dispose()
       copyToAppClipboardAction.dispose()
       pasteFromAppClipboardAction.dispose()
+      wordNavActions.forEach((a) => a.dispose())
       nudgeActions.forEach((a) => a.dispose())
       editor.dispose()
       model.dispose()
