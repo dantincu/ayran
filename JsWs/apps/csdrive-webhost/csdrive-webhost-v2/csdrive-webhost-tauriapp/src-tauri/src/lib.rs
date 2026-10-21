@@ -4,6 +4,7 @@ mod android_jni;
 mod android_windows;
 mod app_state;
 mod appearance;
+mod audio_transcode;
 mod ayran_tags;
 mod html_to_markdown;
 mod pdf_convert;
@@ -338,6 +339,11 @@ pub fn run() {
             video_transcode::video_transcode_delete,
             video_transcode::video_transcode_export,
             video_transcode::video_playability,
+            audio_transcode::audio_transcode_begin,
+            audio_transcode::audio_transcode_progress,
+            audio_transcode::audio_transcode_status,
+            audio_transcode::audio_transcode_delete,
+            audio_transcode::audio_transcode_export,
             secondary_windows::list_tags,
             secondary_windows::add_window_tag,
             secondary_windows::update_window_tag,
@@ -403,6 +409,7 @@ pub fn run() {
             local_branch_commands::local_branches,
             local_branch_commands::local_branch_create,
             local_branch_commands::local_branch_discard,
+            local_branch_commands::local_branch_clear_cache,
             local_branch_commands::local_branch_changes,
             local_branch_commands::local_branch_commit,
             local_branch_commands::local_branch_list,
@@ -481,6 +488,7 @@ pub fn run() {
             filen_cache::filen_cache_branch_changes,
             filen_cache::filen_cache_commit_branch,
             filen_cache::filen_cache_discard_branch,
+            filen_cache::filen_cache_clear_branch_cache,
             filen_cache::filen_cache_version,
             filen_cache::filen_cache_download_progress,
             filen_cache::filen_cache_download_error,
@@ -622,6 +630,7 @@ pub fn run() {
             app.manage(filen_cache::SeedSessions::default());
             app.manage(fs_upload::LocalUploads::new(layout::files_dir(&app_data_dir).join(layout::FILES_LOCAL_UPLOADS_FOLDER)));
             app.manage(video_transcode::TranscodeJobs::default());
+            app.manage(audio_transcode::AudioTranscodeJobs::default());
             // The Notes app's cache of Filen accounts and branches: the `files` folder and its database.
             app.manage(tauri::async_runtime::block_on(files_cache::Cache::open(&layout::files_dir(&app_data_dir)))?);
 

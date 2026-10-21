@@ -67,6 +67,10 @@ export interface BranchApi {
   changes(branch: number): Promise<BranchChange[]>
   commit(branch: number, force: boolean): Promise<CommitReport>
   discard(branch: number): Promise<void>
+  /** Delete all cache for this branch: its own thumbnail cache, and (Filen) the account's cached content
+   * and folder listings recursively from the root — never the branch's own pending changes, and the
+   * branch itself still exists afterward, with its edits intact. */
+  clearCache(branch: number): Promise<void>
   source(branch: number | null): FileSource
 }
 
@@ -204,6 +208,7 @@ export function localBranchApi(root: FileRoot): BranchApi {
     changes: (branch) => invoke<BranchChange[]>('local_branch_changes', { root: root.id, branch }),
     commit: (branch, force) => invoke<CommitReport>('local_branch_commit', { root: root.id, branch, force }),
     discard: (branch) => invoke<void>('local_branch_discard', { root: root.id, branch }),
+    clearCache: (branch) => invoke<void>('local_branch_clear_cache', { root: root.id, branch }),
     source: (branch) => localSource(root, branch),
   }
 }
@@ -382,6 +387,7 @@ export const filenCache = {
   commitBranch: (userId: number, branch: number, force: boolean) =>
     invoke<CommitReport>('filen_cache_commit_branch', { userId, branch, force }),
   discardBranch: (userId: number, branch: number) => invoke<void>('filen_cache_discard_branch', { userId, branch }),
+  clearBranchCache: (userId: number, branch: number) => invoke<void>('filen_cache_clear_branch_cache', { userId, branch }),
 }
 
 /** How big a piece of a file is read and sent at a time when it goes up to Filen (or into a branch). */
@@ -397,6 +403,7 @@ export function filenBranchApi(account: FilenAccountInfo): BranchApi {
     changes: (branch) => filenCache.branchChanges(userId, branch),
     commit: (branch, force) => filenCache.commitBranch(userId, branch, force),
     discard: (branch) => filenCache.discardBranch(userId, branch),
+    clearCache: (branch) => filenCache.clearBranchCache(userId, branch),
     source: (branch) => filenSource(account, branch),
   }
 }

@@ -319,6 +319,51 @@ export async function videoPlayability(root: string, path: string): Promise<Vide
   return invoke('video_playability', { root, path })
 }
 
+/** What `audioTranscodeProgress` reports for one compression (`audio_transcode.rs`) — the exact mirror of
+ * `VideoTranscodeStatus`, `done`/`error`/`url` meaning the same things, for an MP3 instead of an MP4. */
+export interface AudioTranscodeStatus {
+  percent: number
+  done: boolean
+  error: string | null
+  url: string | null
+}
+
+/** Starts compressing a local audio file to MP3 (`audio_transcode.rs`'s own doc comment for why — this
+ * module has no "does this already play here" question to answer, unlike the video one). Resolves to a
+ * job id at once — poll `audioTranscodeProgress` for how far along it is; a file already compressed
+ * (unchanged since) resolves `done: true` immediately. */
+export async function audioTranscodeBegin(root: string, path: string): Promise<string> {
+  return invoke('audio_transcode_begin', { root, path })
+}
+
+export async function audioTranscodeProgress(jobId: string): Promise<AudioTranscodeStatus> {
+  return invoke('audio_transcode_progress', { jobId })
+}
+
+/** Whether a compressed copy of a local audio file's *current* version is already cached — a plain,
+ * read-only check: unlike `audioTranscodeBegin`, nothing is started and no job id is made. */
+export interface AudioTranscodeAvailability {
+  cached: boolean
+  url: string | null
+}
+
+export async function audioTranscodeStatus(root: string, path: string): Promise<AudioTranscodeAvailability> {
+  return invoke('audio_transcode_status', { root, path })
+}
+
+/** Deletes the cached compressed copy of a local audio file's *current* version, if one exists — the
+ * person's own "delete the compressed file" action. The source file is never touched. */
+export async function audioTranscodeDelete(root: string, path: string): Promise<void> {
+  return invoke('audio_transcode_delete', { root, path })
+}
+
+/** Exports the cached compressed copy of a local audio file to a device location — "Compress and save a
+ * copy…" for audio, the exact mirror of `videoTranscodeExport`. Refuses if nothing is cached yet — run
+ * `audioTranscodeBegin`/`audioTranscodeProgress` to completion first. */
+export async function audioTranscodeExport(root: string, path: string, name: string, token: string | null): Promise<string> {
+  return invoke('audio_transcode_export', { root, path, name, token })
+}
+
 export function onSecondaryWindowsChanged(callback: () => void): Promise<UnlistenFn> {
   return listen(EVENT_CHANGED, () => callback())
 }

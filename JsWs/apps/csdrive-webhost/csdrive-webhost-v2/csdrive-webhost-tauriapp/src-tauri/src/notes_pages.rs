@@ -44,6 +44,9 @@ pub enum Special {
     /// A converted video (`video_transcode.rs`) — `root`/`path` exactly as `/@device/` has them (the same
     /// file, re-resolved and re-looked-up in the cache fresh on every request, never a cache-internal name).
     VideoTranscode { root: String, path: String },
+    /// A compressed audio file (`audio_transcode.rs`) — the identical shape as `VideoTranscode`, a sibling
+    /// cache ("n" instead of "m", an MP3 instead of an MP4).
+    AudioTranscode { root: String, path: String },
 }
 
 /// A root as an address names it: the root id, and the branch when it reads `<id>~<branch>`.
@@ -81,6 +84,10 @@ pub fn parse_special(path: &str) -> Option<Result<Special, ()>> {
         }
         "video-transcode" => match tail.split_once('/') {
             Some((root, path)) if !root.is_empty() && !path.is_empty() => Ok(Special::VideoTranscode { root: root.to_string(), path: path.to_string() }),
+            _ => Err(()),
+        },
+        "audio-transcode" => match tail.split_once('/') {
+            Some((root, path)) if !root.is_empty() && !path.is_empty() => Ok(Special::AudioTranscode { root: root.to_string(), path: path.to_string() }),
             _ => Err(()),
         },
         _ => Err(()),
@@ -121,6 +128,14 @@ pub async fn serve(app: &AppHandle, special: Special, meta: &crate::file_serving
         Special::VideoTranscode { root, path } => {
             let scope = app.state::<FsScope>();
             match crate::video_transcode::lookup(app, &scope, &root, &path).await {
+                Ok(Some(real)) => crate::file_serving::respond_file_blocking(real, meta, csp).await,
+                Ok(None) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
+                Err(_) => forbidden(),
+            }
+        }
+        Special::AudioTranscode { root, path } => {
+            let scope = app.state::<FsScope>();
+            match crate::audio_transcode::lookup(app, &scope, &root, &path).await {
                 Ok(Some(real)) => crate::file_serving::respond_file_blocking(real, meta, csp).await,
                 Ok(None) => crate::respond_text(StatusCode::NOT_FOUND, "File not found", csp),
                 Err(_) => forbidden(),
@@ -296,9 +311,10 @@ fn file_of(url: &tauri::Url) -> Option<String> {
     match parse_special(&path) {
         None => Some(path.trim_start_matches('/').to_string()),
         Some(Ok(Special::Device { path, .. })) | Some(Ok(Special::Filen { path, .. })) => Some(path.trim_start_matches('/').to_string()),
-        // A converted video has no "folder" of its own to resolve a relative link against — it's a raw media
-        // file, never a page with links in it — so, like an address that doesn't parse, this names nothing.
-        Some(Ok(Special::VideoTranscode { .. })) => None,
+        // A converted video (or compressed audio file) has no "folder" of its own to resolve a relative
+        // link against — it's a raw media file, never a page with links in it — so, like an address that
+        // doesn't parse, this names nothing.
+        Some(Ok(Special::VideoTranscode { .. })) | Some(Ok(Special::AudioTranscode { .. })) => None,
         Some(Err(())) => None,
     }
 }
@@ -671,6 +687,11 @@ mod tests {
             Some(Ok(Special::VideoTranscode { root: "ab12cd".into(), path: "docs/a b.mkv".into() })),
             "the same root/path shape as /@device/"
         );
+        assert_eq!(
+            parse_special("/@audio-transcode/ab12cd/docs/a b.flac"),
+            Some(Ok(Special::AudioTranscode { root: "ab12cd".into(), path: "docs/a b.flac".into() })),
+            "the same root/path shape as /@device/ and /@video-transcode/"
+        );
         for bad in [
             "/@device/",
             "/@device/root",
@@ -681,6 +702,9 @@ mod tests {
             "/@video-transcode/",
             "/@video-transcode/root",
             "/@video-transcode//x",
+            "/@audio-transcode/",
+            "/@audio-transcode/root",
+            "/@audio-transcode//x",
             "/@other/x",
             "/@",
         ] {

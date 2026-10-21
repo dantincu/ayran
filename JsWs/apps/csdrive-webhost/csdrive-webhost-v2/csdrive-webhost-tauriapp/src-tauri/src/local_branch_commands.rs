@@ -47,6 +47,14 @@ pub async fn local_branch_discard(db: State<'_, AppDbState>, cache: State<'_, Ca
     cache.local_discard_branch(&guid_of(&db, &root).await?, branch).await
 }
 
+/// Delete all cache for a branch: its own thumbnail cache (a local root has no cached content of
+/// unchanged files to begin with — it always reads the real folder). Never the branch's own pending
+/// changes; the branch still exists afterward, with its edits intact.
+#[tauri::command]
+pub async fn local_branch_clear_cache(db: State<'_, AppDbState>, cache: State<'_, Cache>, root: String, branch: i64) -> Result<(), String> {
+    cache.local_clear_branch_cache(&guid_of(&db, &root).await?, branch).await
+}
+
 #[tauri::command]
 pub async fn local_branch_changes(db: State<'_, AppDbState>, cache: State<'_, Cache>, root: String, branch: i64) -> Result<Vec<BranchChange>, String> {
     cache.local_branch_changes(&guid_of(&db, &root).await?, branch).await

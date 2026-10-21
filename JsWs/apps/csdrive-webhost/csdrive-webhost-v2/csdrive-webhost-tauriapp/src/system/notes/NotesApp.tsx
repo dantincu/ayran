@@ -71,7 +71,17 @@ import { formatBytesExact } from '../../lib/format'
 import { pathForInput } from '../../lib/pathInput'
 import { forgetRoot, getUserRoot, loadSavedRoots, pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
-import { onShowTopBar, openExternalSite, openPdfViewerWindow, videoTranscodeBegin, videoTranscodeExport, videoTranscodeProgress } from '../../lib/secondaryWindows'
+import {
+  audioTranscodeBegin,
+  audioTranscodeExport,
+  audioTranscodeProgress,
+  onShowTopBar,
+  openExternalSite,
+  openPdfViewerWindow,
+  videoTranscodeBegin,
+  videoTranscodeExport,
+  videoTranscodeProgress,
+} from '../../lib/secondaryWindows'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
 import { findMarkdown, readNote } from './noteModel'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
@@ -1085,13 +1095,28 @@ export default function NotesApp({
     return null
   }
 
-  /** "Compress and save a copy…" (CLAUDE.md's "item 9": a raw phone-camera or screen-recording file) —
-   * the exact same conversion/bitrate `videoTranscodeBegin` already does for in-app playback compatibility
-   * (the person's own choice, over a second, separately tuned target), with an export step once it's done
-   * instead of caching it purely for the media viewer. Compresses *before* asking where to save, not after:
-   * the result is cached regardless (useful again later, or for in-app playback), so there's nothing wasted
-   * by not knowing the destination up front, and the person isn't left staring at a native "save as" dialog
-   * for however long the conversion actually takes.
+  /** A local audio file only, and not one that's already MP3 (compressing MP3 to MP3 has nothing to gain —
+   * CLAUDE.md's audio-compression ask was specifically about a *lossless or otherwise large* source) —
+   * `audioTranscodeBegin`'s own limit (Windows desktop, local roots only) mirrors `localVideoRoot`'s. */
+  function localAudioRoot(entry: Entry): { root: string; path: string } | null {
+    if (entry.name.toLowerCase().endsWith('.mp3')) return null
+    const ref = source?.fileRef?.(joinRelative(path, entry.name))
+    if (!ref) return null
+    if (ref.storage === 'UserFolder') return { root: 'user', path: ref.path }
+    if (ref.storage === 'DeviceFolder' && ref.root) return { root: ref.root, path: ref.path }
+    return null
+  }
+
+  /** "Compress and save a copy…" (CLAUDE.md's "item 9": a raw phone-camera or screen-recording file; the
+   * audio counterpart — "convert lossless (or other large) audio files… to mp3" — reuses this exact
+   * function, dispatching to `audioTranscode*` instead of `videoTranscode*` by the entry's own media kind,
+   * since the flow — begin, poll, export — is otherwise identical) — the exact same conversion/bitrate
+   * `videoTranscodeBegin`/`audioTranscodeBegin` already does for its own kind (the person's own choice, over
+   * a second, separately tuned target), with an export step once it's done instead of caching it purely for
+   * the media viewer. Compresses *before* asking where to save, not after: the result is cached regardless
+   * (useful again later, or for in-app playback), so there's nothing wasted by not knowing the destination
+   * up front, and the person isn't left staring at a native "save as" dialog for however long the conversion
+   * actually takes.
    *
    * **Dismissing the progress dialog only stops *showing* it, not the job itself** (the backend job isn't
    * cancellable, same as the media viewer's own "Convert for compatible playback") — `compressDismissed`
@@ -1099,14 +1124,18 @@ export default function NotesApp({
    * the dialog back open the instant it has new progress to report; the save-location dialog still opens
    * once the job finishes either way, since getting a saved copy is the whole point of having asked. */
   async function compressAndExport(entry: Entry) {
-    const target = localVideoRoot(entry)
+    const audio = mediaKindOf(entry.name) === 'audio'
+    const target = audio ? localAudioRoot(entry) : localVideoRoot(entry)
     if (!target) return
+    const begin = audio ? audioTranscodeBegin : videoTranscodeBegin
+    const poll = audio ? audioTranscodeProgress : videoTranscodeProgress
+    const doExport = audio ? audioTranscodeExport : videoTranscodeExport
     compressDismissed.current = false
     setCompressing({ entry, percent: 0, error: null })
     try {
-      const jobId = await videoTranscodeBegin(target.root, target.path)
+      const jobId = await begin(target.root, target.path)
       for (;;) {
-        const status = await videoTranscodeProgress(jobId)
+        const status = await poll(jobId)
         if (status.error) {
           if (compressDismissed.current) setError(status.error)
           else setCompressing({ entry, percent: status.percent, error: status.error })
@@ -1123,7 +1152,7 @@ export default function NotesApp({
     }
     setCompressing(null)
     try {
-      const saved = await exportPathToDevice(entry.name, (token) => videoTranscodeExport(target.root, target.path, entry.name, token))
+      const saved = await exportPathToDevice(entry.name, (token) => doExport(target.root, target.path, entry.name, token))
       if (saved && isMobile) setNotice(`Saved to ${saved}`)
     } catch (e) {
       setError(String(e))
@@ -1334,6 +1363,27 @@ export default function NotesApp({
     }
   }
 
+  /** "Delete all cache for a branch" (asked for directly) — the thumbnail cache and, for a Filen branch, the
+   * account's own cached files and folder listings too (an unchanged file the branch reads through falls back
+   * to that shared cache, so it's part of what clearing "this branch's cache" means in practice) — never the
+   * branch's own pending changes, and never the branch itself: unlike Discard, the branch still exists
+   * afterward, with its edits intact. A local branch has no account-wide cache to speak of (a local source
+   * always reads the real folder directly), so there this comes down to just its own thumbnails. */
+  async function clearBranchCache() {
+    if (!branchApi || branch === null) return
+    const name = currentBranch?.name ?? 'this branch'
+    const question = account
+      ? `Delete all cache for "${name}"? Every file's cached content and folder listings for the whole account, and this branch's own thumbnails, are cleared and fetched again when needed. The branch's own changes, and files you locked against caching, are kept.`
+      : `Delete all cache for "${name}"? Its own thumbnails are cleared and made again when needed. The branch's own changes are kept.`
+    if (!(await confirm(question))) return
+    try {
+      await branchApi.clearCache(branch)
+      await load(false)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
   async function discardBranch() {
     if (!branchApi || branch === null) return
     if (!(await changeBranchAllowed(null))) return
@@ -1492,6 +1542,8 @@ export default function NotesApp({
     items.push({ label: 'Details', icon: Info, onSelect: () => showDetails(entry), separated: true })
     if (!entry.isDirectory) items.push({ label: 'Export', icon: Download, onSelect: () => exportEntry(entry) })
     if (!account && mediaKindOf(entry.name) === 'video' && localVideoRoot(entry))
+      items.push({ label: 'Compress and save a copy…', icon: FileArchive, onSelect: () => compressAndExport(entry) })
+    if (!account && mediaKindOf(entry.name) === 'audio' && localAudioRoot(entry))
       items.push({ label: 'Compress and save a copy…', icon: FileArchive, onSelect: () => compressAndExport(entry) })
     items.push({ label: selected.has(entry.name) ? 'Deselect' : 'Select', icon: selected.has(entry.name) ? Square : CheckSquare, onSelect: () => toggleSelected(entry.name) })
     items.push({ label: 'Copy', icon: Copy, onSelect: () => clip(entry, 'copy') })
@@ -1759,6 +1811,7 @@ export default function NotesApp({
                   <>
                     <IconButton icon={ListChecks} label="Show the branch's changes" onClick={showChanges} />
                     <IconButton icon={GitMerge} label={`Commit the branch to the ${account ? 'account' : 'folder'}`} onClick={commitBranch} />
+                    <IconButton icon={Eraser} label="Delete all cache for this branch — its changes are kept" onClick={clearBranchCache} />
                     <IconButton icon={Trash2} label="Discard the branch" variant="danger" onClick={discardBranch} />
                   </>
                 )}
@@ -1978,6 +2031,9 @@ export default function NotesApp({
                               : []),
                             ...(!entry.isDirectory ? [{ icon: Download, label: 'Export', onClick: () => exportEntry(entry) }] : []),
                             ...(!account && !entry.isDirectory && mediaKindOf(entry.name) === 'video' && localVideoRoot(entry)
+                              ? [{ icon: FileArchive, label: 'Compress and save a copy…', onClick: () => compressAndExport(entry) }]
+                              : []),
+                            ...(!account && !entry.isDirectory && mediaKindOf(entry.name) === 'audio' && localAudioRoot(entry)
                               ? [{ icon: FileArchive, label: 'Compress and save a copy…', onClick: () => compressAndExport(entry) }]
                               : []),
                             ...(account && !entry.isDirectory

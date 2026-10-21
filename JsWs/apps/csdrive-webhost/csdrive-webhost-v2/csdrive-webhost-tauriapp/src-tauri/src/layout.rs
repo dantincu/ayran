@@ -108,6 +108,12 @@ pub const FILES_CONTENT_FOLDER: &str = "c";
 /// disconnecting a Filen account drops its whole `NNN`, this folder included).
 pub const FILES_VIDEO_TRANSCODES_FOLDER: &str = "m";
 
+/// Inside an account's or a root's own `NNN` (beside `c`/`b`/`t`/`tb`/`m`): compressed MP3 copies of its
+/// lossless or otherwise large audio files (`audio_transcode.rs`) — the exact same folder-pairs shape `m`
+/// already is for video, laid out and named the identical way, kept across restarts and going with its
+/// owner the same way `m` does.
+pub const FILES_AUDIO_TRANSCODES_FOLDER: &str = "n";
+
 /// The cache's own database: listings, metadata, settings and branch changes, inside `files`.
 pub const FILES_DB: &str = "data.db";
 

@@ -235,6 +235,22 @@ impl Cache {
         self.delete_local_branch(guid, branch, &name).await
     }
 
+    /// **Delete all cache for a branch** — the Filen `clear_branch_cache`'s own local counterpart, except a
+    /// local root has nothing cached of unchanged content to begin with ("There is no cache: the real
+    /// folder is always the base and is read as it is" — the module's own doc comment above), so this comes
+    /// down to exactly one thing: the branch's own thumbnail cache (`tb/MMM`), removed as the matched
+    /// folder-pair `delete_local_branch`'s own `tb` handling already uses (`NUMBERING.delete`), not a raw
+    /// `remove_dir_all`. The branch's own pending changes (`b`) are left completely untouched.
+    pub async fn local_clear_branch_cache(&self, guid: &str, branch: i64) -> Result<(), String> {
+        self.local_branch_exists(guid, branch).await?;
+        let name = self.local_branch_name(guid, branch).await?;
+        if let Some(root) = self.root_dir(guid, false)? {
+            let tb = root.join(crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER);
+            let _ = NUMBERING.delete(&tb, &name);
+        }
+        Ok(())
+    }
+
     /// A root that is forgotten loses its thumbnails (they are made again if it is picked again); its branches stay, with their
     /// pending changes, for the same reason.
     /// Drops the root's own thumbnails and converted videos — both cheap to make again if the folder is
@@ -243,6 +259,7 @@ impl Cache {
         if let Ok(Some(root)) = self.root_dir(guid, false) {
             let _ = std::fs::remove_dir_all(root.join(crate::layout::FILES_THUMBNAILS_FOLDER));
             let _ = std::fs::remove_dir_all(root.join(crate::layout::FILES_VIDEO_TRANSCODES_FOLDER));
+            let _ = std::fs::remove_dir_all(root.join(crate::layout::FILES_AUDIO_TRANSCODES_FOLDER));
         }
         self.drop_root_dir_if_empty(guid);
     }
@@ -852,6 +869,67 @@ impl Cache {
         }
         Ok(())
     }
+
+    // ── Compressed audio (mirrors the converted-video group above, "n" instead of "m", extension "mp3") ───
+
+    fn local_n_root(&self, guid: &str, make: bool) -> Result<Option<PathBuf>, String> {
+        let Some(root) = self.root_dir(guid, make)? else { return Ok(None) };
+        let parent = root.join(crate::layout::FILES_AUDIO_TRANSCODES_FOLDER);
+        if make {
+            std::fs::create_dir_all(&parent).map_err(io)?;
+        } else if !parent.is_dir() {
+            return Ok(None);
+        }
+        Ok(Some(parent))
+    }
+
+    /// Where a compressed copy of this version of the root's `path` is (or would be) kept — see the Filen
+    /// `n_path`'s own doc comment for why older cached copies are *not* removed here (only once a new one is
+    /// confirmed in place, by `local_n_done`).
+    pub fn local_n_path(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<PathBuf, String> {
+        let path = norm_path(path)?;
+        let root = self.local_n_root(guid, true)?.ok_or("The folder of the root couldn't be made.")?;
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        if let Some(folder) = target.parent() {
+            std::fs::create_dir_all(folder).map_err(io)?;
+        }
+        Ok(target)
+    }
+
+    /// Called once a new compressed copy has been renamed into place: removes every *other* cached
+    /// compression of the same source file.
+    pub fn local_n_done(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.local_n_root(guid, false)? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        if let Some(folder) = target.parent() {
+            remove_older_versioned_cache_files(folder, &thumb_prefix(&path), "mp3", target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    /// The compressed copy of this exact version of the root's `path`, if one is already cached — a plain,
+    /// read-only lookup (no folder created, no older version touched): see the Filen `n_lookup`'s own doc
+    /// comment for the two call sites this serves.
+    pub fn local_n_lookup(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<Option<PathBuf>, String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.local_n_root(guid, false)? else { return Ok(None) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        Ok(target.is_file().then_some(target))
+    }
+
+    /// Removes the compressed copy of this exact version of the root's `path`, if one exists — the person's
+    /// own "delete the compressed file" action (`audio_transcode_delete`). Leaves the source file and
+    /// everything else in `n` untouched; a version that isn't cached is not an error, simply nothing to do.
+    pub fn local_n_delete(&self, guid: &str, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.local_n_root(guid, false)? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        if target.is_file() {
+            std::fs::remove_file(&target).map_err(io)?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1070,6 +1148,29 @@ mod tests {
     }
 
     #[test]
+    fn clear_branch_cache_clears_the_branchs_own_thumbnail_but_never_its_pending_change() {
+        run(async {
+        let s = setup("clear_branch_cache_cl").await;
+        let b = s.cache.local_create_branch(G, "work").await.unwrap().index;
+        s.cache.local_write(&base(&s), G, b, "/a.txt", b"changed").await.unwrap();
+        s.cache.local_thumb_put(G, Some(b), "/a.txt", 9, 7, b"branch-thumb").await.unwrap();
+        let root = NUMBERING.find(&s.cache.a_dir(), &root_part(G)).unwrap().unwrap().short_dir;
+        assert!(root.join("tb").join("001").is_dir(), "the branch's own thumbnail folder exists before the test begins");
+
+        s.cache.local_clear_branch_cache(G, b).await.unwrap();
+
+        assert!(!root.join("tb").join("001").exists(), "the branch's own thumbnail is cleared");
+        assert!(s.cache.local_thumb_get(G, Some(b), "/a.txt", 9, 7).await.unwrap().is_none());
+        // The branch's pending change (the content itself) is untouched, and the branch still exists.
+        assert_eq!(s.cache.local_read(&base(&s), G, b, "/a.txt").await.unwrap(), b"changed", "the branch's own pending change is untouched");
+        assert!(s.cache.local_branches(G).await.unwrap().iter().any(|branch| branch.index == b), "the branch itself still exists afterward");
+
+        // Clearing the cache of a branch that doesn't exist is refused, not a silent no-op.
+        assert!(s.cache.local_clear_branch_cache(G, 999).await.is_err());
+        });
+    }
+
+    #[test]
     fn converted_videos_are_cached_like_thumbnails_and_go_with_the_root() {
         run(async {
         let s = setup("converted_videos_are_c").await;
@@ -1099,6 +1200,43 @@ mod tests {
         s.cache.local_m_done(G, "/a.txt", 200, 1000).unwrap();
         s.cache.local_drop_thumbnails(G);
         assert!(s.cache.local_m_lookup(G, "/a.txt", 200, 1000).unwrap().is_none());
+        });
+    }
+
+    /// The `local_n_*` mirror of the test above — "n" instead of "m", a compressed MP3 instead of a
+    /// converted MP4, confirming it's the identical shape (cache, replace-on-new-version, delete,
+    /// forget-the-root) and that `local_drop_thumbnails` drops it alongside `m` and `t`, not just one of them.
+    #[test]
+    fn compressed_audio_is_cached_like_converted_video_and_goes_with_the_root() {
+        run(async {
+        let s = setup("compressed_audio_is_ca").await;
+        assert!(s.cache.local_n_lookup(G, "/a.flac", 100, 1000).unwrap().is_none(), "nothing compressed yet");
+        let target = s.cache.local_n_path(G, "/a.flac", 100, 1000).unwrap();
+        std::fs::write(&target, b"compressed").unwrap();
+        s.cache.local_n_done(G, "/a.flac", 100, 1000).unwrap();
+        assert_eq!(s.cache.local_n_lookup(G, "/a.flac", 100, 1000).unwrap().as_deref(), Some(target.as_path()));
+        // A changed version of the same file has no compressed copy until one is made for it.
+        assert!(s.cache.local_n_lookup(G, "/a.flac", 200, 1000).unwrap().is_none());
+        let newer = s.cache.local_n_path(G, "/a.flac", 200, 1000).unwrap();
+        assert_ne!(newer, target, "a different version gets its own cache entry");
+        std::fs::write(&newer, b"compressed again").unwrap();
+        s.cache.local_n_done(G, "/a.flac", 200, 1000).unwrap();
+        assert!(!target.exists(), "the older compression is removed only once the new one is confirmed in place");
+        assert_eq!(s.cache.local_n_lookup(G, "/a.flac", 200, 1000).unwrap().as_deref(), Some(newer.as_path()));
+        // Deleting it (the person's own "delete the compressed file" action) removes just that one entry.
+        s.cache.local_n_delete(G, "/a.flac", 200, 1000).unwrap();
+        assert!(!newer.exists());
+        assert!(s.cache.local_n_lookup(G, "/a.flac", 200, 1000).unwrap().is_none());
+        // Deleting a version that isn't cached is not an error.
+        s.cache.local_n_delete(G, "/a.flac", 200, 1000).unwrap();
+        s.cache.local_n_delete(G, "/never-compressed.flac", 1, 1).unwrap();
+        // Forgetting the root drops any remaining compressions too, the same as its thumbnails and its
+        // converted videos.
+        s.cache.local_n_path(G, "/a.flac", 200, 1000).unwrap();
+        std::fs::write(&newer, b"compressed once more").unwrap();
+        s.cache.local_n_done(G, "/a.flac", 200, 1000).unwrap();
+        s.cache.local_drop_thumbnails(G);
+        assert!(s.cache.local_n_lookup(G, "/a.flac", 200, 1000).unwrap().is_none());
         });
     }
 }

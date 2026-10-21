@@ -244,6 +244,14 @@ pub async fn filen_cache_discard_branch(cache: State<'_, Cache>, user_id: u64, b
     cache.discard_branch(user_id as i64, branch).await
 }
 
+/// Delete all cache for a branch: its own thumbnail cache, and the account's cached content and folder
+/// listings recursively from the root — never the branch's own pending changes (unaffected; the branch
+/// still exists afterward, with its edits intact).
+#[tauri::command]
+pub async fn filen_cache_clear_branch_cache(cache: State<'_, Cache>, user_id: u64, branch: i64) -> Result<(), String> {
+    cache.clear_branch_cache(user_id as i64, branch).await
+}
+
 // ── Versions, locks and checkouts ──────────────────────────────────────────────
 
 /// The version of a file as the cache knows it — what a window that has just opened it is working

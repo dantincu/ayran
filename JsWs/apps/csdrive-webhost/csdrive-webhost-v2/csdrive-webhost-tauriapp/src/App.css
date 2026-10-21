@@ -2067,28 +2067,75 @@ select {
    layout (or the bug, or the fix) `notes.css`'s copy gave the other two hosts. `align-items: flex-start`, not
    `center` — reported live (in Notes, where the rule *did* apply): when the title (`h2`, `flex: 1`, below)
    wraps to several lines, the row's own height grows to fit it, and centering every child within that taller
-   row pushed the action buttons down into the middle, overlapped by the editor content below once the header's
-   fixed-height clip is sticky above it. Top-aligning keeps every button flush with the title's first line.
-   `flex-wrap: nowrap` — found live, measuring a real wrapped title under the `flex-start` fix alone at a
-   mobile width: `wrap` lets the whole flex *row* break onto several lines once the title can't fit beside the
-   buttons on one, not just the title's own text wrap within its column — "Back" ended up alone on one flex
-   line, the title (now with the entire row's width to itself) on a second, and the trailing action buttons
-   pushed onto a *third* flex line, far past the header's own 60px `max-height: hidden` clip — invisible, and
-   indistinguishable from "overlapped by the editor". `nowrap` keeps every child on the one row the header was
-   always meant to show as; the title (`flex: 1`, `min-width: 0` so it can genuinely shrink past its own longest
-   word) wraps its own text across as many lines as it needs in whatever width is left once every
-   `flex-shrink: 0` icon button has taken its own fixed 34px. */
+   row pushed the action buttons down into the middle — shared by every host, listing pages included, since a
+   taller row visually centering its buttons partway down the title's own wrapped lines is wrong regardless of
+   what's below the header. */
 .notes-page-header {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 .notes-page-header h2 {
   margin: 0;
   font-size: 18px;
   flex: 1;
+}
+
+/* `flex-wrap: nowrap`, and the title's own `min-width: 0` — **only** for the editor-page variant of this
+   header (`.editor-top-bar`, `NoteEditPage`/`NotesApp`'s file editor/`FilesTab`'s file editor — every host
+   that is also `position: sticky` with a `max-height: 60px; overflow: hidden` clip above its content), never
+   the plain listing-page variant (`NotebooksPage`/`NotePage`/`NotesHome`/`NotesSettingsPage` — no sticky clip
+   at all, the header simply takes whatever height its content needs). Found live, measuring a real wrapped
+   title under the `flex-start` fix alone at a mobile width, on an *editor* page: plain `flex-wrap: wrap` lets
+   the whole flex *row* break onto several lines once the title can't fit beside the buttons on one, not just
+   the title's own text wrapping within its column — "Back" ended up alone on one flex line, the title (now
+   with the entire row's width to itself) on a second, and the trailing action buttons pushed onto a *third*
+   flex line, far past the header's own 60px clip — invisible, and indistinguishable from "overlapped by the
+   editor". `nowrap` keeps every child on the one row this header is meant to show as; the title (already
+   `flex: 1` above, plus `min-width: 0` here so it can genuinely shrink past its own longest word) wraps its
+   own text across as many lines as it needs in whatever width is left once every `flex-shrink: 0` icon
+   button has taken its own fixed 34px.
+   **Reported live again, on a *listing* page this time, after the `nowrap` fix above shipped**: "the title
+   is overlapped by the top action buttons [on listing pages]... the listing pages don't have their own top
+   sticky header, like the editor does... the action buttons should still fall below the title, as it will
+   never be obscured by the rest of the page." `nowrap` had been written directly on the shared
+   `.notes-page-header` rule above, so every host inherited it — including the four listing pages, which have
+   no clip at all above their content to hide a button pushed onto a trailing flex line *within*, the exact
+   shape `nowrap` exists to prevent on an editor page; on a listing page a row that keeps growing simply pushes
+   the rest of the page down, never hiding anything, so there was never a reason to deny the title its own
+   full-width line there. Scoped here, to `.editor-top-bar` specifically, so a listing page's header reverts to
+   the plain `wrap` above: the title (or whichever fixed-size child doesn't fit the current line) drops to a
+   new flex line of its own, below whatever came before it — including the trailing action buttons, which is
+   exactly "the action buttons... fall below the title." */
+.notes-page-header.editor-top-bar {
+  flex-wrap: nowrap;
+}
+
+/* The plain `wrap` fix above stops a button from being pushed onto a hidden trailing flex line on a listing
+   page, but on its own it doesn't actually deliver "the action buttons... fall below the title" the way the
+   report asked: with the title (`h2`, `flex: 1`, no `min-width: 0` here — that's `.editor-top-bar`'s own,
+   above) left free to *shrink*, `flex-wrap: wrap` lets the browser squeeze it down to its own narrowest
+   unbreakable word (its automatic `min-width: auto` content minimum) and still fit a handful of buttons
+   beside that narrowed column on the same flex line — found live, at a real 360px width, measuring a real
+   wrapped notebook title: the title wrapped into a cramped ~118px-wide column of seven short lines with five
+   of the seven action buttons squeezed in beside it (no pixel overlap, since the two don't share the same
+   x-range, but not "buttons fall below the title" either — only the two buttons that didn't fit landed on a
+   genuinely later line). Below the same 600px breakpoint `.window-item` already uses for its own "give the
+   text the whole line, push the buttons to one below" layout (just above in this file), the title is forced
+   to claim an entire flex line by itself (`flex: 1 0 100%` — a 100% flex-basis in a wrapping row leaves no
+   room for anything else beside it, so every button is pushed onto the next line, or lines, where they still
+   wrap among themselves exactly as `flex-wrap: wrap` already does for any ordinary row of icon buttons) —
+   leaving the wide-viewport, title-and-buttons-share-one-line layout completely untouched above 600px, where
+   there was never a reason to change it. */
+@media (max-width: 600px) {
+  .notes-page-header:not(.editor-top-bar) h2 {
+    flex: 1 0 100%;
+  }
+}
+
+.notes-page-header.editor-top-bar h2 {
   min-width: 0;
 }
 

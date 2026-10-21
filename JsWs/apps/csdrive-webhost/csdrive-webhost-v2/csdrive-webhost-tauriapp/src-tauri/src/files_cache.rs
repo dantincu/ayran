@@ -765,6 +765,75 @@ impl Cache {
         Ok(())
     }
 
+    // ── Compressed audio ─────────────────────────────────────────────────────
+
+    /// `files/a/NNN/n` — where the account's own audio files, compressed to MP3 (`audio_transcode.rs`), are
+    /// kept. The exact mirror of `m_root` for audio, not branch-aware for the same reason: a compression is
+    /// never attempted against a branch's own changed copy, only the account's real file.
+    #[allow(dead_code)] // for a Filen source's own audio compression (to come): the architecture is ready, nothing calls it yet — audio_transcode.rs converts local files only so far
+    async fn n_root(&self, user_id: i64, make: bool) -> Result<Option<PathBuf>, String> {
+        let parent = self.account_dir(user_id).await?.join(crate::layout::FILES_AUDIO_TRANSCODES_FOLDER);
+        if make {
+            std::fs::create_dir_all(&parent).map_err(io)?;
+        } else if !parent.is_dir() {
+            return Ok(None);
+        }
+        Ok(Some(parent))
+    }
+
+    /// Where a compressed copy of this version of the account's `path` is (or would be) kept — see `m_path`'s
+    /// own doc comment for why an older version's cached copy is not removed here (only once a new one is
+    /// confirmed in place, by `n_done`).
+    #[allow(dead_code)] // for a Filen source's own audio compression (to come): see `n_root`
+    pub async fn n_path(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<PathBuf, String> {
+        let path = norm_path(path)?;
+        let root = self.n_root(user_id, true).await?.ok_or("The account's folder couldn't be made.")?;
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        if let Some(folder) = target.parent() {
+            std::fs::create_dir_all(folder).map_err(io)?;
+        }
+        Ok(target)
+    }
+
+    /// Called once a new compressed copy (`n_path`'s own target) has been renamed into place: removes every
+    /// *other* cached compression of the same source file.
+    #[allow(dead_code)] // for a Filen source's own audio compression (to come): see `n_root`
+    pub async fn n_done(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.n_root(user_id, false).await? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        if let Some(folder) = target.parent() {
+            remove_older_versioned_cache_files(folder, &thumb_prefix(&path), "mp3", target.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
+        }
+        Ok(())
+    }
+
+    /// The compressed copy of this exact version of the account's `path`, if one is already cached — a
+    /// plain, read-only lookup (no folder created, no older version touched): `audio_transcode_begin`'s own
+    /// "a cached compression already exists" check, and what `notes_pages::serve` resolves a
+    /// `/@audio-transcode/` request to.
+    #[allow(dead_code)] // for a Filen source's own audio compression (to come): see `n_root`
+    pub async fn n_lookup(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<Option<PathBuf>, String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.n_root(user_id, false).await? else { return Ok(None) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        Ok(target.is_file().then_some(target))
+    }
+
+    /// Removes the compressed copy of this exact version of the account's `path`, if one exists — the
+    /// person's own "delete the compressed file" action (`audio_transcode_delete`). A version that isn't
+    /// cached is not an error, simply nothing to do.
+    #[allow(dead_code)] // for a Filen source's own audio compression (to come): see `n_root`
+    pub async fn n_delete(&self, user_id: i64, path: &str, mtime_ms: u64, size: u64) -> Result<(), String> {
+        let path = norm_path(path)?;
+        let Some(root) = self.n_root(user_id, false).await? else { return Ok(()) };
+        let target = versioned_cache_file(&root, &path, mtime_ms, size, "mp3");
+        if target.is_file() {
+            std::fs::remove_file(&target).map_err(io)?;
+        }
+        Ok(())
+    }
+
     /// Whether the branch has a change (a write, a new folder) at `path` — the file it shows is then not the account's.
     async fn changed_in_branch(&self, user_id: i64, branch: i64, path: &str) -> Result<bool, String> {
         let changed: Option<i64> = sqlx::query_scalar("SELECT 1 FROM branch_changes WHERE user_id = ?1 AND branch = ?2 AND path = ?3 AND kind = 'put'")
@@ -1824,6 +1893,31 @@ impl Cache {
         self.delete_branch_files_and_rows(user_id, branch, &name).await
     }
 
+    /// **Delete all cache for a branch** — asked for directly: the thumbnail cache *and* the cached files
+    /// and folder listings, but never the branch's own pending changes. Unlike `discard_branch` (which also
+    /// deletes the branch's `b` pair, its `branch_changes` rows and the `branches` row itself — the branch
+    /// stops existing), this leaves the branch exactly as it was, minus everything about it that is purely
+    /// re-makeable: the account's own cached content and folder listings, recursively from the root
+    /// (`clear_item("/")` — the same thing "Clear this folder's cache…" already does when run from the
+    /// root; an unchanged file the branch reads through falls back to this shared cache, so clearing it is
+    /// part of what "this branch's cache" means in practice, even though it isn't branch-exclusive on its
+    /// own), and the branch's own thumbnail cache (`tb/MMM`, the one thing that *is* branch-exclusive) —
+    /// removed as the matched folder-pair `discard_branch`'s own `tb` handling already uses
+    /// (`NUMBERING.delete`), not a raw `remove_dir_all`, so the marker goes with it rather than being left
+    /// orphaned. `clear_item` takes its own lock internally, so this doesn't take one of its own around it
+    /// (the same looseness `clear_items` already has between its own `clear_item`/`clear_branch_thumbs_below`
+    /// calls — nothing here needs a single enclosing lock across both).
+    pub async fn clear_branch_cache(&self, user_id: i64, branch: i64) -> Result<(), String> {
+        self.branch_exists(user_id, branch).await?;
+        self.clear_item(user_id, "/").await?;
+        let name = self.branch_name(user_id, branch).await?;
+        if let Ok(account) = self.account_dir(user_id).await {
+            let tb = account.join(crate::layout::FILES_BRANCH_THUMBNAILS_FOLDER);
+            let _ = NUMBERING.delete(&tb, &name);
+        }
+        Ok(())
+    }
+
     async fn branch_name(&self, user_id: i64, branch: i64) -> Result<String, String> {
         sqlx::query_scalar("SELECT name FROM branches WHERE user_id = ?1 AND pair_index = ?2")
             .bind(user_id)
@@ -2845,6 +2939,33 @@ mod tests {
             // Neither branch's own pending change (the content itself, not its thumbnail) was ever touched.
             assert_eq!(f.cache.read(&f.remote, 7, Some(one.index), "/d/a.txt").await.unwrap(), b"one's own");
             assert_eq!(f.cache.read(&f.remote, 7, Some(two.index), "/d/a.txt").await.unwrap(), b"two's own");
+        });
+    }
+
+    #[test]
+    fn clear_branch_cache_clears_account_content_and_the_branchs_own_thumbnail_but_never_its_pending_change() {
+        run(async {
+            let f = Fixture::new("clear-branch-cache").await;
+            f.remote.put("/d/a.txt", "one");
+            f.cache.read(&f.remote, 7, None, "/d/a.txt").await.unwrap();
+            f.cache.thumb_put(7, None, "/d/a.txt", 5, 3, b"account jpeg").await.unwrap();
+            assert!(f.base.join("a/001/c/d/a.txt").is_file(), "the account's content is cached before the test begins");
+
+            let one = f.cache.create_branch(7, "one").await.unwrap();
+            f.cache.write(&f.remote, 7, Some(one.index), "/d/a.txt", b"one's own").await.unwrap();
+            f.cache.thumb_put(7, Some(one.index), "/d/a.txt", 9, 9, b"one jpeg").await.unwrap();
+
+            f.cache.clear_branch_cache(7, one.index).await.unwrap();
+
+            assert!(!f.base.join("a/001/c/d/a.txt").exists(), "the account's own cached content is cleared");
+            assert_eq!(f.cache.thumb_get(7, None, "/d/a.txt", 5, 3).await.unwrap(), None, "the account's own thumbnail is cleared");
+            assert_eq!(f.cache.thumb_get(7, Some(one.index), "/d/a.txt", 9, 9).await.unwrap(), None, "the branch's own thumbnail is cleared");
+            // The branch's pending change (the content itself) is untouched, and the branch still exists.
+            assert_eq!(f.cache.read(&f.remote, 7, Some(one.index), "/d/a.txt").await.unwrap(), b"one's own", "the branch's own pending change is untouched");
+            assert!(f.cache.branches(7).await.unwrap().iter().any(|b| b.index == one.index), "the branch itself still exists afterward");
+
+            // Clearing the cache of a branch that doesn't exist is refused, not a silent no-op.
+            assert!(f.cache.clear_branch_cache(7, 999).await.is_err());
         });
     }
 

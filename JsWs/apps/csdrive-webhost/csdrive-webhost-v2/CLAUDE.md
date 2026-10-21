@@ -447,6 +447,95 @@ Verified live (isolated data folder, desktop, real CDP): the Help tab's new sect
 
 **Verified live (isolated data folder — the debug build's own `com.ayran.csdrive-webhost-tauriapp-debug` data folder, automatically separate from the production data folder per `layout.rs`'s `DEFAULT_DATA_FOLDER` — desktop, real CDP, the full command→UI stack, not a hand-called backend function):** a `fake-video.mp4` (43 bytes of plain text, not a real video — no real video file or encoder was available in this environment to produce one) and a `plain.txt` (31 bytes) were created directly in the debug instance's `user` folder; opened in a real Notes File Manager window, **the row actions correctly showed "Compress and save a copy…" for `fake-video.mp4` only** (`Details, View, Edit as text, Export, Compress and save a copy…, Copy, Cut, Rename, Delete`) **and correctly omitted it for `plain.txt`** (`Details, Export, Copy, Cut, Rename, Delete` — no View/Edit-as-text either, since a `.txt` isn't recognized as video and `isDefaultTextFile` already offers "Edit as text" separately for it); switching to the thumbnail grid and opening each card's own "More…" context menu showed the identical gating (`View, Edit as text, Details, Export, Compress and save a copy…, Copy, Cut, Rename, Delete` for the video; `Open, Details, Export, Copy, Cut, Rename, Delete` for the text file) — confirming both surfaces named in the original ask ("Notes File Manager and Note Files Explorer") share the one gating logic correctly, not two independently-maintained copies that could drift apart. **The error-handling path was exercised against a real click, not assumed**: clicking "Compress and save a copy…" on the fake (non-video) `.mp4` opened the progress modal and, within about a second, surfaced "This file can't be opened: The byte stream type of the given URL is unsupported." with a working **Close** button — Media Foundation correctly refusing content that isn't a real video stream, and the UI correctly surfacing that refusal as a clear, readable message rather than hanging, crashing, or silently doing nothing. **Not verified live: an actual successful compression round-trip** (begin → real progress → a genuinely smaller output file → a real "save as" dialog → a byte-identical exported copy) — no real video file was available in this isolated instance to produce one, and this gap is disclosed honestly rather than assumed to work from the gating/error-path checks above, though the underlying `video_transcode_begin`/`_progress`/`lookup`/`export_file` machinery each already has its own live verification elsewhere in this file (the Convert-for-compatible-playback feature immediately above, and the Filen-cache/local-file export commands `export_file` is shared with). `npx tsc --noEmit` clean, and `cargo test --lib` (276 tests, 1 ignored, run single-threaded to avoid the known pre-existing keychain-access race) all passing, both after this change.
 
+## Compressing audio to MP3 (`audio_transcode.rs`)
+
+**"Just like we did the compression feature for videos, let's do a similar compression feature for audio
+files: convert lossless (or other large) audio files (like aac, flac, etc) to mp3."** Built as a deliberate
+mirror of `video_transcode.rs`'s own "Compress and save a copy…" half — see that section above for the full
+pipeline reasoning — rather than a second design: `audio_transcode.rs` has the identical shape (a `Job`/
+`AudioTranscodeJobs` pair, `address_of`/`lookup`, `audio_transcode_begin`/`_progress`/`_status`/`_delete`/
+`_export`), a sibling cache folder (`layout.rs`'s `FILES_AUDIO_TRANSCODES_FOLDER`, `"n"`, beside `m` — the
+same `versioned_cache_file`/`files_cache.rs`'s `n_path`/`n_done`/`n_lookup`/`n_delete` and
+`local_branches.rs`'s `local_n_*` counterparts, mirroring `m_*`/`local_m_*` exactly, extension `"mp3"`
+instead of `"mp4"`), and the identical `/@audio-transcode/<root>/<path>` serving address
+(`notes_pages.rs`'s `Special::AudioTranscode`, parsed and served the same way as `VideoTranscode`).
+
+**Unlike the video module, there is no "does this already play here" question — this is purely a
+file-size tool.** Every audio format this app recognizes at all (`lib/media.ts`'s `mediaKindOf`'s `audio`
+kind: mp3/m4a/aac/wav/oga/ogg/opus/flac) already decodes in an ordinary `<audio>` element, so there's no
+`audio_playability` probe and no "convert so it plays" button — only the begin/progress/status/delete/
+export quintet, used the same way video's own compress-only flow already does. **`.mp3` files themselves
+are excluded from the gate** (`NotesApp.tsx`'s `localAudioRoot`, checked by extension before anything else):
+compressing an already-MP3 file to MP3 has nothing to gain, and the ask was specifically about a *lossless
+or otherwise large* source.
+
+**The pipeline** (`platform::convert`, Windows-only) is the audio half of `video_transcode.rs`'s own
+`convert` with the video stream and its encode side removed entirely: `MFCreateSourceReaderFromURL` opens
+the file, the first actual audio stream is found (`find_audio_stream`, the audio-only sibling of
+`find_streams`) and decoded to PCM via `SetCurrentMediaType` — the same format-agnostic decoder-side trick:
+whatever codec the stream is actually in, Media Foundation's own topology resolver finds a decoder MFT for
+it. The output type is picked from `MFTranscodeGetAudioOutputAvailableTypes(&MFAudioFormat_MP3, …)`
+(`pick_mp3_output_type`, the identical "ask the real encoder MFT what it actually supports" pattern
+`pick_aac_output_type` already uses) — Windows' own built-in **MP3 Audio Encoder** MFT
+(`CLSID_MP3ACMCodecWrapper`, present since Windows 8; a Server edition without the "Desktop Experience"
+component may lack it, the same caveat the AAC encoder already has, confirmed via Microsoft's own
+documentation before writing a line of this module). `MF_TRANSCODE_CONTAINERTYPE` is set explicitly to
+`MFTranscodeContainerType_MP3` (both constants confirmed present in the installed `windows` crate before
+using them) for the identical reason `video_transcode.rs` already sets its own container type explicitly:
+the real output path is a `.part` file first, whose extension Media Foundation can't infer a container
+from. A source with no audio track at all is refused outright (there's nothing for this module to do with
+a video-only file — compressing *its* audio would need the video re-muxed back in, which is a different,
+unasked-for feature).
+
+**`hstring_url` is duplicated, not shared** — the same extended-length-path fix `video_transcode.rs` already
+found and fixed live (`fs_scope.rs` hands back `std::fs::canonicalize`'s `\\?\`-prefixed form, which Media
+Foundation's URL parser misreads as a UNC share) is needed here too, but the original is a private function
+inside `video_transcode.rs`'s own `platform` module — duplicating four lines was simpler and more honest
+than threading a new `pub(crate)` export through a module that otherwise has nothing to do with audio.
+
+**Wired into Notes' File Manager and Note Files Explorer the same way video's own button is** — a single,
+generalized `compressAndExport(entry)` in `NotesApp.tsx` now dispatches to either `videoTranscode*` or
+`audioTranscode*` by the entry's own `mediaKindOf` kind (rather than two near-identical copies of the
+begin/poll/export loop), so the existing progress modal, the `compressDismissed` "keep running in the
+background" behavior, and the save-location flow are exactly one implementation shared by both kinds. The
+**"Compress and save a copy…"** entry appears in both the thumbnail grid's card menu and the list view's
+row actions, gated by `mediaKindOf(entry.name) === 'audio' && localAudioRoot(entry)` — the audio-specific
+sibling of `localVideoRoot`, with the same `UserFolder`/`DeviceFolder`-only (never a Filen account) limit.
+
+**No dedicated Rust test for the five commands themselves** — the same precedent `video_transcode_export`
+already established: every constituent call (`confirm_export`, `lookup`, `export_file`, the cache's own
+`n_*`/`local_n_*` functions) is independently tested elsewhere. Rust-tested (`audio_transcode.rs`): the
+served address is the same `/@device/`-shaped form, every time, never a cache-internal name
+(`the_served_address_is_the_same_shape_device_paths_already_have`); the extended-length path prefix is
+stripped correctly (`the_extended_length_prefix_is_stripped_before_building_the_url`, re-verifying the fix
+against this module's own duplicated copy). `files_cache/local_branches.rs`:
+`compressed_audio_is_cached_like_converted_video_and_goes_with_the_root` — the exact mirror of
+`converted_videos_are_cached_like_thumbnails_and_go_with_the_root` (cache, replace-on-new-version, delete,
+forget-the-root-drops-it) — and `local_drop_thumbnails` extended to also remove the `n` folder, confirmed
+by this same test. `notes_pages.rs`: `/@audio-transcode/<root>/<path>` parses the identical shape
+`/@device/`/`/@video-transcode/` already do.
+
+**Verified live (isolated debug data folder, desktop, real CDP, the full command→UI stack through a real
+Notes File Manager window — not a hand-called backend function)**: a `fake-audio.flac` (36 bytes of plain
+text, not a real audio stream — no real audio file or encoder was available in this environment to produce
+one), a `fake-audio.mp3` (35 bytes, same shape), and a `plain.txt`, created directly in the debug instance's
+`user` folder. The card menu correctly showed **"Compress and save a copy…" for the `.flac` only**
+(`View, Edit as text, Details, Export, Compress and save a copy…, Select, Copy, Cut, Rename, Delete`) and
+**correctly omitted it for both the `.mp3`** (`View, Edit as text, Details, Export, Select, Copy, Cut,
+Rename, Delete` — confirming the "already MP3" exclusion works, not just "not an audio file") **and the
+`.txt`** (`Open, Details, Export, Select, Copy, Cut, Rename, Delete`). Clicking "Compress and save a copy…"
+on the fake `.flac` opened the progress modal and, within about a second, surfaced "This file can't be
+opened: The byte stream type of the given URL is unsupported." with a working **Close** button — Media
+Foundation correctly refusing content that isn't a real audio stream, the identical error shape
+`video_transcode.rs`'s own fake-file test already found for video. **Not verified live: an actual successful
+compression round-trip** (begin → real progress → a genuinely smaller output `.mp3` → a real "save as"
+dialog → a byte-identical exported copy) — no real audio file was available in this isolated instance,
+disclosed honestly rather than assumed to work from the gating/error-path checks above; the underlying
+`local_n_path`/`local_n_done`/`local_n_lookup`/`export_file` machinery is independently Rust-tested above,
+and the identical begin/poll/export loop is the one already live-verified for video (which hit the same
+"no real source file" limitation there too). `npx tsc --noEmit`, `npm run build`, `cargo build` and
+`cargo test --lib` (280 tests, 2 ignored, run single-threaded) all clean throughout.
+
 ## The config file of the folder pairs and the notes (`config/folder-pairs-and-notes.json`)
 
 **Every constant of the folder pairs and the notes is in one file**, `csdrive-webhost-tauriapp/config/folder-pairs-and-notes.json`: the folder pairs' `.keep` file and its content (`-`), the temporary prefix (`t_`), the longest name part (100), the storage provider named in a cached account's folder (`filen`), the default numbering (what the Filen cache's accounts and branches use: no prefix, from `001` up, three digits, first free), the notes' file names (`[note].json`, `[note-children].json`, `[note-book].json`, `[user-action].json`), the markdown's prefix and suffix (`0-`, `[note].md`), **the five numberings of the note items and sections** — note items `999`→`401` (after the largest), primary sections `199`→`111`, secondary `299`→`201`, ternary `399`→`301`, and the **Note Archive Section** `109`→`101` — and the internals' pairs (`01` the note's files, `02` its internals, `03` the notebook's own; two digits, a constant each, with the name of the full folder).
@@ -535,6 +624,89 @@ Rust-tested (`files_cache::tests`): `a_failed_download_is_recorded_as_an_error_a
 Rust-tested (`files_cache::tests::clear_items_clears_the_account_for_every_path_and_the_chosen_branch_scope_of_thumbnails`): the same file changed (so it has its own thumbnail) in two different branches; `AccountOnly` clears the account's content for every given path and touches neither branch's own thumbnail; `Current(one)` clears branch one's own thumbnail for the path and leaves branch two's alone; `All` clears both; and, throughout, each branch's own pending *content* change (`cache.read(..., Some(branch), ...)`) is read back unchanged at the very end, confirming nothing here ever touches a branch's own edits. 277 tests total (276 + this one), all passing.
 
 **Verified live (isolated data folder — the debug build's own `com.ayran.csdrive-webhost-tauriapp-debug` data folder — desktop, real CDP, through the real UI)**: three plain local files created directly in the debug instance's `user` folder (a local folder has no cache at all, so this exercises the general multi-select mechanism — the part that doesn't need Filen — while the cache-clearing itself rests on the Rust test above) — the toolbar's new "Clear this folder's cache, recursively, with a branch choice…" button and the selection bar's own cache-clear button were both confirmed **correctly absent** for this local folder (`source.cache` is `undefined` there, the same gate `CacheMenu` already uses); "Select" appeared correctly in both the list view's row actions and the thumbnail grid's card menu for the same file, and pressing it opened the selection bar ("1 selected") with a checkbox now showing on every row/card; **Select all** correctly checked every entry ("4 selected"); unchecking one row's own checkbox correctly dropped the count to 3; **Clear the selection** correctly hid the bar and removed every checkbox, back to the uncluttered default. **Not verified live**: the actual cache-clearing execution and the branch-scope dialog itself — this isolated debug instance has no Filen account connected (`filen_accounts` confirmed empty by a direct query) and connecting one needs real credentials this session doesn't have — so that half rests entirely on the Rust test above, which exercises the exact `Cache::clear_items`/`clear_branch_thumbs_below` code path the command calls into, plus the frontend's type-checked, built-clean wiring through the identical `invoke`/`scopedSource` pattern already proven live for every other cache method in this file. `npx tsc --noEmit` and `npm run build` both clean throughout.
+
+## Delete all cache for a branch
+
+**"Let's also add a feature to delete all cache for a branch"** — asked for directly, and clarified in the
+same breath once the ambiguity was raised: what to delete (the thumbnail cache **and** the cached files and
+folder listings — but never the branch's own pending changes), scope (both Filen and local-device-folder
+branches), and where it's reached from (the branch bar itself, next to New branch…/Commit/Discard). **Unlike
+`discard_branch`/`local_discard_branch`, the branch itself is never touched** — it still exists afterward,
+with its edits exactly as they were; only what's purely re-makeable goes.
+
+**Filen** (`files_cache.rs`'s `clear_branch_cache(user_id, branch)`): `branch_exists` first (refused, not a
+silent no-op, for a branch that doesn't exist — the same convention every other branch-targeted method here
+already follows), then `clear_item(user_id, "/")` — the exact same recursive clear "Clear this folder's
+cache…" already does from the root, since an unchanged file the branch reads through falls back to the
+account's own shared cache, so clearing it is part of what "this branch's cache" means in practice even
+though it isn't branch-exclusive on its own — and finally the branch's own thumbnail pair (`tb/MMM`),
+removed with `NUMBERING.delete` rather than a raw `remove_dir_all` (the same convention
+`delete_branch_files_and_rows`'s own `tb` handling already uses), so the marker goes with it instead of
+being left orphaned. **No extra lock is taken around this** — `clear_item` already takes its own account
+lock internally (a `tokio::sync::Mutex`, not reentrant — wrapping a second `self.lock()` around a call that
+itself locks would deadlock, the exact class of bug this project's own clipboard `pop` once had), and
+`clear_items`'s own existing scope-handling loop already has this same looseness between its `clear_item`
+and `clear_branch_thumbs_below` calls, so there was no new atomicity guarantee to invent here either.
+
+**Local** (`files_cache/local_branches.rs`'s `local_clear_branch_cache(guid, branch)`) is narrower, because a
+local root has no cached *content* to begin with — "There is no cache: the real folder is always the base
+and is read as it is" (this file's own earlier doc comment on local branches) — so there's nothing
+equivalent to `clear_item("/")` to call: this comes down to exactly the branch's own thumbnail pair,
+removed the identical `NUMBERING.delete`-based way `delete_local_branch`'s own `tb` handling already does.
+
+**One `clearCache(branch)` method on the shared `BranchApi` interface** (`sources.ts`), not two unrelated
+commands bolted on separately — the same interface the file manager, its editors and a note's page already
+treat identically for list/create/changes/commit/discard, so a new branch-bar button written against
+`BranchApi` works for both kinds with no per-kind branching in the UI itself. `localBranchApi` wires it to
+`local_branch_clear_cache`; `filenCache.clearBranchCache` + `filenBranchApi` wire it to
+`filen_cache_clear_branch_cache`. `scopedSource` (the Note Files Explorer) already sets `branches: undefined`
+for a scoped source — "a scoped source has none of its own" — so this needed no change there: branch
+management, cache-clearing included, only ever happens from the un-scoped File Manager view.
+
+**The branch bar** (`NotesApp.tsx`, the row with the branch `<select>`, New branch…, Show the branch's
+changes, Commit and Discard — shown for both a Filen account and a folder of this device, the same as every
+button there already is) gets one more button, between Commit and Discard: **`clearBranchCache()`** asks
+first (`Eraser` icon, matching the account-level "Clear the cache" button's own icon language) — worded
+differently for the two kinds, since only the Filen case actually has an account-wide cache to mention:
+*"Delete all cache for "name"? Every file's cached content and folder listings for the whole account, and
+this branch's own thumbnails, are cleared and fetched again when needed. The branch's own changes, and
+files you locked against caching, are kept."* for Filen, *"Delete all cache for "name"? Its own thumbnails
+are cleared and made again when needed. The branch's own changes are kept."* for a local root — then calls
+`branchApi.clearCache(branch)` and `load(false)` to refresh the current listing, the same aftermath the
+account-level `clearCache()` already has. **Deliberately does *not* call `reloadBranches()`** — unlike
+discarding, the branch's own change count is never affected by this action, so there's nothing about the
+branch list itself that could have gone stale.
+
+Rust-tested: `files_cache::tests::clear_branch_cache_clears_account_content_and_the_branchs_own_thumbnail_but_never_its_pending_change`
+— a file cached at the account level, then changed and thumbnailed inside a branch; after `clear_branch_cache`,
+the account's own cached content and thumbnail are gone, the branch's own thumbnail is gone, the branch's
+pending change reads back byte-for-byte unchanged, the branch is still listed, and clearing the cache of a
+branch index that doesn't exist is refused rather than silently doing nothing.
+`files_cache::local_branches::tests::clear_branch_cache_clears_the_branchs_own_thumbnail_but_never_its_pending_change`
+— the identical shape for a local root: the branch's own thumbnail pair is gone (confirmed on disk, not just
+through the lookup command), its pending change reads back unchanged, the branch is still listed, and an
+unknown branch index is refused. 282 tests total (280 + these two), all passing together.
+
+**Verified live (isolated debug data folder, desktop, real CDP, through the real UI and a real native
+confirm dialog — not a direct backend call)**: a real file written to the user folder, a real branch created
+over it (`local_branch_create`), the file changed inside the branch and a fake thumbnail put into the
+branch's own thumbnail cache (`local_thumb_put`) — confirmed present on disk before the test (`thumbLen: 4`,
+the pending change reading back as `"changed-in-branch"`, the branch listed with `1 change`). Through the
+real Notes File Manager window: selected the branch in its own `<select>`, confirmed the new button
+**"Delete all cache for this branch — its changes are kept"** appears between Commit and Discard exactly as
+placed; clicking it raised the real native confirm box (`"Notes" (or a page it shows) asks`, enumerated by
+its own real child controls — OK / "Prevent this app from showing prompts" / Cancel, the same shape every
+other system-app confirm in this app already uses) and **OK was clicked via a real `BM_CLICK` sent to the
+dialog's own button handle**, not a synthetic DOM event. Afterward: the branch's own thumbnail was
+confirmed gone (`thumbLen: 0`), the pending change read back **byte-for-byte unchanged**
+(`"changed-in-branch"`), and the branch was still listed with its same `1 change` — the exact three-way
+outcome the feature promises, observed through the real command stack a real button click drives, not
+assumed from the Rust tests alone. **Not separately verified live: the Filen path** — no Filen account was
+connected in this isolated instance to exercise `filen_cache_clear_branch_cache` through the real UI; that
+half rests on the Rust test above (which exercises the exact `Cache::clear_branch_cache` code path the
+command calls into) plus the frontend's type-checked, built-clean wiring through the identical `BranchApi`
+interface and confirm-dialog pattern already proven live for the local case. `npx tsc --noEmit`,
+`npm run build`, `cargo build` and `cargo test --lib` (282 tests, run single-threaded) all clean throughout.
 
 ## Appearance: themes and light/dark mode
 
@@ -1578,6 +1750,66 @@ in a real Notes window's own Monaco editor (not just the Files tab) on the same 
 back up, `hidden: false, height: 34` (the editor-page header's own, slightly shorter resting height there) — the
 bridge works identically in both hosts that mount Monaco. `npx tsc --noEmit` and `npm run build` both clean
 throughout; no Rust change, so `cargo test --lib` doesn't apply to either bug in this section.
+
+## Monaco's word-navigation shortcuts, and listing pages' own header-wrap fix
+
+**"Ctrl+LeftArrow and Ctrl+RightArrow (along Ctrl+Shift+LeftArrow and Ctrl+Shift+RightArrow) don't work — they
+do nothing — although Ctrl+Backspace and Ctrl+Delete do work as expected."** Confirmed live first, not assumed:
+a real CDP keystroke landed `defaultPrevented: false` at a bubble-phase `document`-level listener and a `target`
+of `.native-edit-context` — nothing in this app's own code (`useListKeyboard`, `useButtonRowKeyboard`,
+`ChordHost`'s capture-phase Ctrl+K handler — each ruled out by reading its own early-return guards, none of
+which match a plain, non-chord Ctrl+Arrow) ever touches the event; the gap is inside Monaco's own input handling.
+**Root cause**: Monaco 0.57's default input surface is a `<div class="native-edit-context">`, built on the
+browser's EditContext API, not the classic hidden `<textarea class="inputarea">` — a real, newer-than-expected
+default, and this platform/WebView2 combination's own EditContext-mode word-navigation keybinding wiring has a
+gap for exactly these four shortcuts (word deletion, on the same input surface, works correctly — so this isn't
+every keybinding failing, just these four). **Fixed** with `editContext: false` on `MonacoCodeEditor.tsx`'s
+`monaco.editor.create()` call — a real, documented `IEditorOptions` field ("Sets whether the new experimental
+edit context should be used instead of the text area") that falls back to the classic, long-proven hidden-
+textarea input path, where Ctrl+Left/Right/Shift+Left/Right are Monaco's own ordinary, always-correct default
+keybindings. Verified live (isolated debug data folder, desktop, real CDP `Input.dispatchKeyEvent` keystrokes,
+measuring the real textarea's own `selectionStart`/`selectionEnd`, not assumed from a visual check): confirmed
+the input surface switched (`hasEditContext: false, hasTextarea: true`); from the end of `"alpha beta gamma
+delta epsilon"` (offset 30), a real Ctrl+Left landed at 23 (the start of "epsilon"), a second Ctrl+Left at 17
+(the start of "delta "), and a real Ctrl+Shift+Right from there extended the selection back to `[17, 23]` —
+exactly "delta " selected; a regression check (Ctrl+Backspace from the end) still correctly deleted "epsilon"
+and left the caret at 23. `npx tsc --noEmit` and `npm run build` both clean; no Rust change.
+
+**"On the listing pages on thin viewports (like mobile), the title is overlapped by the top action buttons…
+the listing pages don't have their own top sticky header, like the editor does. Instead, the top action buttons
+in the listings pages should still fall below the title."** A regression from the editor-page header fix two
+sections up ("Bug 1: the editor-page header's own buttons, pushed below the wrapped title") — that fix's
+`flex-wrap: nowrap` was correctly re-scoped to `.notes-page-header.editor-top-bar` alone in that same investigation
+(see this file's own account of it, just above), which already stops a listing page's header from ever hiding a
+button on an invisible trailing flex line (there's no `max-height`/`overflow: hidden` clip on a listing page to
+hide anything behind in the first place) — but confirmed live, at a real 360px width with a genuinely long
+notebook title, that plain `flex-wrap: wrap` *alone* wasn't the fix the report actually asked for either: with
+the title (`h2`, `flex: 1`, no `min-width: 0` — that's the editor variant's own) left free to shrink, the
+browser squeezed it down to its own narrowest unbreakable word (~118px) and still fit several action buttons
+beside that cramped column on the same flex line — no pixel overlap (confirmed by rect comparison), but not
+"the buttons fall below the title" either, just "the title got squeezed instead of overlapped." **Fixed** with
+a narrow-viewport rule, scoped to `:not(.editor-top-bar)` so the editor pages' own already-correct behavior is
+completely untouched: below the same 600px breakpoint `.window-item` already uses for its own "give the text
+the whole line, push the buttons to one below" layout (CLAUDE.md's "Slim windows"), the title is forced onto an
+entire flex line of its own (`flex: 1 0 100%` — a 100% flex-basis in a wrapping row leaves no room for anything
+beside it) so every button is pushed onto the next line(s), wrapping among themselves exactly as `flex-wrap:
+wrap` already does for any ordinary row of icon buttons; above 600px the rule doesn't apply at all, so the
+established, title-and-buttons-share-one-line desktop layout is unchanged. Verified live (isolated debug data
+folder, desktop, real CDP, a real notebook with a genuinely long title, `Emulation.setDeviceMetricsOverride`
+confirmed via `window.innerWidth` *within the same CDP session* — a session-scoped override that silently resets
+to the real window width on a fresh WebSocket connection was a real methodology trap hit mid-investigation, not
+a property of the app): at 360px, the title's rect spanned the header's full available width (328px) wrapped
+across several lines, and every one of the notes list's seven action buttons landed strictly below the title's
+own bottom edge (`allBelowTitle: true`) — for a page whose header has a leading icon button *before* the title
+in document order (`NotebooksPage.tsx`'s own `House` button), that one button correctly stayed on its own line
+above the title (nothing forces an item *before* a 100%-wide item onto the same line as it, which is a case
+the ask didn't speak to and isn't a regression — there was never a "leading button beside the title" guarantee
+to begin with), with the remaining buttons below the title as asked; at 1200px the same page showed the title
+and every button sharing one line exactly as before (`allBelowTitle: false`, no overlap) — the wide-viewport
+layout is bit-for-bit unaffected. A parallel check of the Files tab's own file editor (`.editor-top-bar`) at the
+identical 360px width confirmed it was untouched by this media query: still `flex-wrap: nowrap`, still clipped to
+`max-height: 60px`, title still shrinking to its own narrowest word rather than wrapping the row. `npx tsc
+--noEmit` and `npm run build` both clean; no Rust change.
 
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 

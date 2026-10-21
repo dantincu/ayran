@@ -157,6 +157,7 @@ export const API_REFERENCE: ApiCategory[] = [
       { call: "invoke('filen_cache_branch_changes', { userId, branch })", returns: 'pending changes', summary: '' },
       { call: "invoke('filen_cache_commit_branch', { userId, branch, force? })", returns: 'void, or the conflicts', summary: 'Applies the branch to Filen; refuses on conflict unless `force`.' },
       { call: "invoke('filen_cache_discard_branch', { userId, branch })", returns: 'void', summary: '' },
+      { call: "invoke('filen_cache_clear_branch_cache', { userId, branch })", returns: 'void', summary: 'Delete all cache for the branch: its own thumbnails, and the account’s cached files and folder listings — never its pending changes, and the branch still exists afterward.' },
       { call: "invoke('filen_cache_version'/'filen_cache_check_version'/'filen_cache_rebase', { … })", returns: 'version info', summary: 'Detects a file changed elsewhere before you save over it.' },
       { call: "invoke('filen_cache_download_progress', { userId, path })", returns: 'bytes so far, or null', summary: 'Non-null only while that file is actually being downloaded into the cache right now.' },
       { call: "invoke('filen_cache_download_error', { userId, path })", returns: 'an error message, or null', summary: "Non-null only if that file's most recent download failed and nothing newer has started or succeeded since." },
@@ -179,6 +180,7 @@ export const API_REFERENCE: ApiCategory[] = [
       { call: "invoke('local_branches', { root })", returns: 'branch records', summary: '' },
       { call: "invoke('local_branch_create', { root, name })", returns: 'the new branch', summary: '' },
       { call: "invoke('local_branch_discard', { root, branch })", returns: 'void', summary: '' },
+      { call: "invoke('local_branch_clear_cache', { root, branch })", returns: 'void', summary: 'Delete all cache for the branch: just its own thumbnails (a local folder has no other cache) — never its pending changes.' },
       { call: "invoke('local_branch_changes', { root, branch })", returns: 'pending changes', summary: '' },
       { call: "invoke('local_branch_commit', { root, branch, force? })", returns: 'void, or the conflicts', summary: '' },
       { call: "invoke('local_branch_list'/'_read'/'_write'/'_mkdir'/'_rm'/'_rename', { root, branch, … })", returns: 'varies', summary: 'Read/write through the branch’s view of the folder.' },
@@ -254,6 +256,14 @@ export const API_REFERENCE: ApiCategory[] = [
     entries: [
       { call: "invoke('video_transcode_begin', { root, path })", returns: 'a job id', summary: 'Starts converting, or resolves at once if a cached conversion of the file as it is right now already exists.' },
       { call: "invoke('video_transcode_progress', { jobId })", returns: '{ percent, done, error, url }', summary: 'Poll every ~500ms. `percent` is a rough estimate (the output file’s own growing size against the input’s), capped at 99 until `done`. `url` is set once `done` and `error` is null — point a `<video src>` at it.' },
+    ],
+  },
+  {
+    title: 'Compressing audio to MP3 (Windows desktop only)',
+    intro: 'For a local, lossless or otherwise large audio file (the user folder or a picked folder — not a Filen file; FLAC, WAV, AAC/M4A, OGG/Vorbis, Opus): decodes with whatever Windows itself has a decoder for and re-encodes to MP3, cached so asking again for the same, unchanged file is instant. Not a playback-compatibility fix (every audio format this app recognizes already plays in an `<audio>` element) — purely for file size. Not available on Android/iOS yet (refused with a plain error).',
+    entries: [
+      { call: "invoke('audio_transcode_begin', { root, path })", returns: 'a job id', summary: 'Starts compressing, or resolves at once if a cached compression of the file as it is right now already exists.' },
+      { call: "invoke('audio_transcode_progress', { jobId })", returns: '{ percent, done, error, url }', summary: 'Poll every ~500ms. `percent` is a rough estimate (the output file’s own growing size against the input’s), capped at 99 until `done`. `url` is set once `done` and `error` is null — point an `<audio src>` at it.' },
     ],
   },
   {

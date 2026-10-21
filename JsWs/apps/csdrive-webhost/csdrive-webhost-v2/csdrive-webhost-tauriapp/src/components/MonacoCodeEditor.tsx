@@ -95,6 +95,19 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       readOnly,
       automaticLayout: true,
       minimap: { enabled: false },
+      // Monaco 0.57's default input surface is a `<div class="native-edit-context">` built on the browser's
+      // EditContext API, not the classic hidden `<textarea class="inputarea">` — reported live: "Ctrl+LeftArrow
+      // and Ctrl+RightArrow (along Ctrl+Shift+LeftArrow and Ctrl+Shift+RightArrow) don't work... they do
+      // nothing," while Ctrl+Backspace/Ctrl+Delete (word deletion) work correctly. Confirmed live with a real
+      // CDP keystroke and a diagnostic bubble-phase `keydown` listener on `document`: the event reaches
+      // `document` with `defaultPrevented: false` (nothing in this app's own code ever touches it) and its
+      // `target` is the `.native-edit-context` div — the cursor simply never moves, a gap in Monaco's own
+      // EditContext-mode word-navigation wiring on this platform/WebView2 combination, not anything this app
+      // controls. `editContext: false` (a real, documented `IEditorOptions` field: "Sets whether the new
+      // experimental edit context should be used instead of the text area") falls back to the long-standing,
+      // thoroughly-proven hidden-textarea input path, where Ctrl+Left/Right/Shift+Left/Right are plain,
+      // always-correct default keybindings.
+      editContext: false,
     })
     editorRef.current = editor
     const changeSub = editor.onDidChangeModelContent(() => {
