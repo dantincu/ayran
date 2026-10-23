@@ -1862,6 +1862,135 @@ identical 360px width confirmed it was untouched by this media query: still `fle
 `max-height: 60px`, title still shrinking to its own narrowest word rather than wrapping the row. `npx tsc
 --noEmit` and `npm run build` both clean; no Rust change.
 
+## Text find in the editors: plain text or regex, with a checkbox
+
+**"Let's implement a text find functionality for the text editor: searches both by plain text and by regex
+(with a checkbox toggling between the two)."** Discussed first, since this app now has *three* editor
+surfaces (`CodeEditor.tsx`'s own `HighlightedEditor`/`PlainTextEditor`, the opt-in built-in editor; Monaco on
+desktop; CodeMirror on mobile — see "A plain textarea for 'disable all code highlighting'..." above) and two
+of the three are third-party widgets that already ship their own find UI, regex toggle included. The person
+chose: **native find for Monaco/CodeMirror** (enable what each already has, rather than suppressing it in
+favour of a second, thinner reimplementation) **and a new custom find bar only for the built-in editor**,
+which had nothing at all.
+
+**Monaco's own Find/Replace was completely dormant, not working — confirmed live before assuming otherwise.**
+`MonacoCodeEditor.tsx` imports `monaco-editor/editor/editor.api`, Monaco's *bare core* — real find/replace,
+folding, bracket matching and multicursor all live behind `monaco-editor/editor/editor.main.js`, which
+`editor.api.js` never pulls in; the module's own doc comment used to claim these "come from Monaco itself,"
+which was aspirational, never actually true. Confirmed directly: `editor.trigger('', 'actions.find', null)`
+silently no-ops when the command was never registered, and a real Ctrl+F does nothing. `monaco-editor/editor/
+contrib/find/browser/findController.js` is self-contained (its own imports are only base/platform services
+`editor.api.js` already sets up for any standalone editor — read, not assumed) and pulls in no other
+contribution, so importing it alone — not the whole, much heavier `editor.main.js` — registers Find/Replace
+(Ctrl+F/Ctrl+H, the regex/case/whole-word toggles, Find All) with nothing else added.
+
+**A real packaging bug in `monaco-editor` itself, found live, not by inspection.** The find widget renders its
+own icons with Monaco's `codicon` font — confirmed live as empty boxes without it — so the two codicon CSS
+files needed importing too. Importing them by `monaco-editor`'s own package specifier failed the build
+outright: `monaco-editor`'s `package.json` has exactly two `exports` wildcard patterns (`./*.js` and `./*`),
+and *both* append a literal `.js` to the resolved target — correct for every other import in this file (a
+specifier with no `.js` suffix, like `'monaco-editor/editor/editor.api'`, is assumed to have simply omitted
+one, resolving to `editor.api.js`), but wrong for a `.css` path: the bare `./*` pattern resolved `codicon.css`
+to a nonexistent `codicon.css.js`. **Vite's own CSS pipeline tolerated this** (the build's first attempt
+visibly emitted a real `codicon.ttf` and real CSS output for it), **but Rolldown's separate, stricter
+post-transform import-validation pass then failed the *identical* specifier as unresolved** — a genuine build
+failure (`npm run build`), not a lint warning, and a real inconsistency between the two tools' own resolvers
+for the same broken exports map. Fixed with a plain relative path into `node_modules`
+(`../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css`) — a filesystem
+reference, never a bare package specifier, so neither tool's `exports`-map handling is involved at all; the
+standard escape hatch for a package whose own `exports` map doesn't support what's actually needed from it.
+
+**CodeMirror's own Find was already fully working — just invisible, with no button for a touch screen to
+reach it.** `codemirror`'s `basicSetup` (used as-is by `MobileCodeMirrorEditor.tsx`) already bundles
+`@codemirror/search`'s `searchKeymap`, whose `Mod-f` entry calls `openSearchPanel` — a real keyboard shortcut
+that already worked, confirmed by reading `openSearchPanel`'s own source rather than assumed: it self-installs
+the rest of `@codemirror/search`'s state (`StateEffect.appendConfig.of(searchExtensions)`) on first use if
+`basicSetup`'s own narrower import (`searchKeymap` alone, not the full `search()` extension) hadn't already
+added it. The whole fix is one new toolbar button (`Search` icon, beside the existing clipboard/open-link
+ones) calling `openSearchPanel(view)` directly — the exact function the keymap already calls — with
+`@codemirror/search` added to `package.json` as a direct dependency (it was already physically installed,
+transitively, at the exact version needed, but this file now imports from it directly rather than only
+through `codemirror`'s own re-export, so it earns its own explicit entry).
+
+**The built-in editor's own find bar** (`FindBar.tsx`, used by both `HighlightedEditor` and `PlainTextEditor`
+in `CodeEditor.tsx`) is new from nothing: a query box, **the checkbox** (asked for directly), Previous/Next,
+a live match count or a readable regex error, and Close — no Replace, which wasn't asked for here. The
+matching logic is pure (`lib/textFind.ts`, Node-tested with an ad-hoc script, the project's own established
+pattern for a module with no committed test file yet — a case-insensitive, non-overlapping substring scan for
+plain mode; `new RegExp(query, 'g')` for regex mode, a bad pattern reported as `error` rather than thrown, and
+a zero-length match (`a*`) advanced past by hand so the scan can't loop forever on one position; both capped
+at `MAX_FIND_MATCHES` as a size-based safety net, the same shape `MAX_LINES_FOR_WRAP_MEASUREMENT` already has
+for a different cost). Opening the bar (Ctrl+F, or the toolbar's new `Search` button) captures the caret's own
+selection once, as the bar's starting anchor and its pre-filled query — the common "search for what I already
+had selected" convention every other Ctrl+F already follows — and **re-anchors to the nearest match only when
+the query or the regex checkbox itself changes**, not on every render while the document is edited elsewhere
+with the bar left open: jumping (and so moving the real selection) on an unrelated keystroke outside the box
+would fight whatever the person is actually doing there. Previous/Next simply step the current index by one,
+wrapping, independent of that re-anchor.
+
+**The current match is shown by the editor's own native text *selection*, not a second "highlight every
+match" overlay.** `RunPatchController` (`lib/runPatchController.ts`) owns every node under the highlighted
+`<pre>` exclusively, by design — not a safe target for this bar to also paint into — so `onJumpToMatch` just
+calls `setSelectionRange` on the real `<textarea>`, which already paints a visible selection highlight on top
+of the syntax-coloured layer behind it, exactly how dragging to select text already looks. Bringing the match
+into *view* needed its own handling in each of the two built-in editors, since this project's own earlier
+findings (the `fit()`-neighbouring effects, above) already ruled out any native "scroll the caret into view"
+behaviour for a programmatic selection change with no text edit: `HighlightedEditor.jumpToMatch` sets
+`frame.scrollTop` by hand (the match's line, via the already-memoized `lineStarts`/`gutterRowStarts`, centred
+in the viewport) — which fires a real `scroll` event, reusing the *exact* hysteresis mechanism that already
+recomputes `windowRange` for a Page Up/Down jump of any distance, with no new window-management code of its
+own. `PlainTextEditor.jumpToMatch` is simpler (no virtualized window, no separate frame — the textarea scrolls
+itself natively): compute the line fresh via `lineStartOffsets`/`lineAtOffset` and set `input.scrollTop`
+directly. Ctrl+F is checked *before* the `readOnly` early-return in both editors' own `onKeyDown` — searching
+a file open only for viewing should still work, the same as a browser's own Ctrl+F does on any page.
+
+The floating bar itself (`.code-editor-find-bar`, `App.css`) anchors inside `.code-editor`, which already has
+`position: relative` for unrelated reasons — an absolutely-positioned child there stays pinned at the same
+screen position while the content below it scrolls, with zero interaction with the virtualized window's own
+height math (it never changes `.code-editor`'s own `clientHeight`, so nothing about opening or closing it
+could disturb `windowRange`).
+
+Node-tested (`lib/textFind.ts`, an ad-hoc script matching this project's own pattern): plain case-insensitive
+matching and its non-overlapping rule, an empty query, three real regex digit-group matches at the right
+offsets, a zero-length-match regex terminating correctly rather than looping, a bad regex reported as `error`
+with zero matches, and `matchIndexNear`'s forward/backward/wrap-at-either-end behaviour including on an empty
+list. **Verified live** (isolated **debug** data folder — a dedicated `WEBVIEW2_USER_DATA_FOLDER`/CDP port so
+this didn't compete with any other running instance for the shared WebView2 browser host, per "Folder
+layout"'s own finding — desktop, real CDP throughout, a real six-line test file with three "hello"s and four
+digit groups written via a genuine `fs_write_file` call and opened through the real Files-tab UI, not a
+direct backend shortcut):
+- **`HighlightedEditor`**: the toolbar's `Search` button opened the bar; a real `Input.insertText` of "hello"
+  showed "1 of 3" with the real textarea's selection at the exact byte offsets of the first match (confirmed
+  against the file's own text, not assumed); **Next**, clicked as two genuinely separate events (a `.click()`
+  called twice in the same synchronous tick was tried first and read as a wraparound bug — both calls closed
+  over the same stale `currentIndex`, the identical class of React stale-closure pitfall this file's own
+  history already warns about for synthetic test scripts — re-verified correct once each click ran in its own
+  real event/render cycle) advanced through all three matches and wrapped back to the first; toggling the
+  regex checkbox and typing `\d+` showed "1 of 4" with the real selected substring reading `"42"`, the file's
+  first digit group; a deliberately malformed pattern (`(`) showed `"Invalid regular expression: /(/g:
+  Unterminated group"` with the error-styled class applied, no thrown error, zero matches; **Escape** closed
+  the bar and returned real focus to the editor's own textarea; a real Ctrl+F (genuine OS foreground focus
+  confirmed via `document.hasFocus()`, not assumed) reopened it pre-filled with the editor's then-current
+  selection.
+- **`PlainTextEditor`** (`editor.highlightDisabled` on): the same toolbar button and a plain query ("digits")
+  showed "1 of 2" with the real selected text reading `"digits"` — the simpler, non-virtualized scroll path
+  confirmed working with no error.
+- **Monaco** (`editor.useBuiltInEditor` off, the shipped default): a real Ctrl+F produced Monaco's own actual
+  `.find-widget` — `editor-widget find-widget visible` — with its real toggle row (`Match Case`, `Match Whole
+  Word`, **`Use Regular Expression (Alt+R)`**, `Find in Selection`, `Preserve Case`), none of them empty boxes
+  (confirming the codicon font fix); a plain "hello" query showed Monaco's own `"1 of 3"`; a real Alt+R toggled
+  `codicon-regex checked` and a `\d+` query showed `"1 of 4"` — Monaco's own native regex find, genuinely
+  reachable for the first time.
+- **CodeMirror, on mobile, was not separately exercised live in this pass** — no emulator was brought up for
+  it; this rests on `openSearchPanel`'s own source (read directly, not assumed) confirming it self-installs
+  whatever state it needs, which is the same mechanism the already-live-verified `Mod-f` keyboard path already
+  depends on elsewhere in this app's own Android history, plus the frontend's own clean, type-checked build.
+
+The test file and the two settings this pass flipped (`editor.useBuiltInEditor`, `editor.highlightDisabled`)
+were reset afterward, in the same isolated debug profile, back to their shipped defaults (off, off) and the
+file removed via a real `fs_remove` call — nothing was left behind for a later session to trip over. `npx tsc
+--noEmit` and `npm run build` both clean throughout; no Rust change, so `cargo test --lib` doesn't apply.
+
 ## Searching and sorting (Notes' File Manager, Note Files Explorer and lists of notes)
 
 **The panel** (*Search and sort…* in the toolbar of a file manager and in the header of a notes page; `SearchPanel.tsx`; the logic is `search.ts`, plain functions and generators, tested in Node with an in-memory source: terms, contents, intervals, sorting, the walk, the pager, notes). **Search by**: **name** (a file's or folder's name, a note's title), **contents** (a file's text, a note's markdown), **last modified** and **created** time stamps and **size** — each an *interval* whose either edge may be left empty (infinity) —, **extension** (a list such as `jpg, png`), and **type** (files / folders). **Every text term can be a regular expression**; a regular expression on the contents is applied **line by line** (`^`/`$` are a line's) or **to the whole contents** (a newline is then the expression's business). A plain term is a case-insensitive substring unless *Match case*. **Depth**: 1 (this folder only) by default, any number of levels, or *No limit* (never deeper than 100, links can make a tree endless). A bad regular expression, an interval that ends before it starts or a wrong depth is refused with a message before anything runs. Enter in a box searches.

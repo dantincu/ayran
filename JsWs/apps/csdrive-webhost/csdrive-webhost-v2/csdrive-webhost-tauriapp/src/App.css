@@ -1674,6 +1674,57 @@ select {
   border-color: var(--accent);
 }
 
+/* `FindBar.tsx` — floats over `.code-editor`'s own top-right corner, like most editors' Ctrl+F. `.code-editor`
+   already has `position: relative`, so this stays pinned at the same screen position while the content below
+   it scrolls (an absolutely-positioned child is placed relative to its containing block's own border box, not
+   its scroll offset) — no interaction with the virtualized window's own height math at all, since it never
+   changes `.code-editor`'s own `clientHeight`. */
+.code-editor-find-bar {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.code-editor-find-input {
+  width: 160px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.4 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+}
+
+.code-editor-find-regex {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.code-editor-find-count {
+  min-width: 70px;
+  font-size: 12px;
+  color: var(--tok-quiet);
+  white-space: nowrap;
+}
+
+.code-editor-find-error {
+  color: var(--error-fg);
+}
+
 /* Monaco (desktop) and CodeMirror (mobile) size and scroll themselves internally — the host div just needs to
    fill `.code-editor`'s own already-determinate flex height, same reasoning as every other full-size child
    of this frame. */

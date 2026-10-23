@@ -6,6 +6,35 @@ import 'monaco-editor/languages/definitions/css/register.js'
 import 'monaco-editor/languages/definitions/html/register.js'
 import 'monaco-editor/languages/definitions/markdown/register.js'
 import 'monaco-editor/languages/features/json/register.js'
+// `monaco-editor/editor/editor.api` is Monaco's bare core API — it registers no *contribution* at all (Find,
+// folding, bracket matching, multicursor…): those all live behind `monaco-editor/editor/editor.main.js`
+// (`esm/vs/editor/editor.main.js`), which imports *every* one of them plus every language's own definition —
+// a much bigger bundle than this file otherwise needs. Found live, not assumed: with only `editor.api`
+// imported, Ctrl+F did nothing at all (confirmed via a direct `editor.trigger('', 'actions.find', null)` call,
+// which silently no-ops when the command was never registered) — the module doc below used to claim "real
+// find/replace… come from Monaco itself," which was aspirational, not yet true, until this import landed.
+// `contrib/find/browser/findController.js` is self-contained (its own imports are only base/platform services
+// already set up by `editor.api.js` for any standalone editor, confirmed by reading its import list) and pulls
+// in no other contribution, so importing it alone — rather than the whole `editor.main.js` — registers Find/
+// Replace (`Ctrl+F`/`Ctrl+H`, the regex/case/whole-word toggles, Find All) with nothing else added. It renders
+// its own icons with Monaco's `codicon` font, which nothing before this imported either (confirmed live: the
+// toggle buttons showed as empty boxes without it).
+import 'monaco-editor/editor/contrib/find/browser/findController.js'
+// **The two codicon CSS files are imported by a literal relative path into `node_modules`, not by
+// `monaco-editor`'s own package specifier** — found live, not assumed: `monaco-editor`'s `package.json` only
+// has two wildcard `exports` patterns (`./*.js` and `./*`), and *both* append a literal `.js` to the resolved
+// target. That's exactly right for every other import in this file (`'monaco-editor/editor/editor.api'` →
+// `esm/vs/editor/editor.api.js`, the bare pattern assuming a `.js` suffix was simply omitted from the
+// specifier — true for every `.js` module this file reaches), but it's *wrong* for a `.css` path: the bare
+// `./*` pattern resolves `codicon.css` to a nonexistent `codicon.css.js`. Vite's own CSS pipeline tolerated
+// this (the build's first pass actually emitted real `codicon.ttf`/CSS output), but Rolldown's separate,
+// stricter post-transform import-validation pass then failed the *identical* specifier as unresolved —
+// a real build failure, not a lint warning, caught by `npm run build` itself. A plain relative path
+// (`../../node_modules/...`) is a plain filesystem reference, never a bare package specifier, so neither
+// tool's `exports`-map handling is involved at all — this is the standard escape hatch for a package whose
+// own `exports` map doesn't support what's actually needed from it.
+import '../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css'
+import '../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon-modifiers.css'
 import IconButton from './IconButton'
 import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, type LinkHandler } from '../lib/textLinks'
@@ -129,11 +158,15 @@ interface Props {
 }
 
 /** The desktop default editor while `editor.useBuiltInEditor` is off (`lib/editorSettings.ts`) — asked for
- * directly: "use a third party code editor... Monaco for desktop." Real find/replace, folding, multi-cursor,
- * bracket matching and (for JSON/CSS/HTML/JS) real diagnostics come from Monaco itself, not anything this
- * wrapper adds — it owns the model, wires this app's own settings onto Monaco's native options, and bridges
- * the handful of things that are specific to how this app's editors are used elsewhere (a caller's
- * `insertAtCursor`, mirror-scroll, the Ctrl+Alt+arrow scroll-nudge, "Open link").
+ * directly: "use a third party code editor... Monaco for desktop." Folding, multi-cursor, bracket matching and
+ * (for JSON/CSS/HTML/JS) real diagnostics come from Monaco itself, not anything this wrapper adds — it owns
+ * the model, wires this app's own settings onto Monaco's native options, and bridges the handful of things
+ * that are specific to how this app's editors are used elsewhere (a caller's `insertAtCursor`, mirror-scroll,
+ * the Ctrl+Alt+arrow scroll-nudge, "Open link"). **Find/Replace is Monaco's own too** (Ctrl+F/Ctrl+H, regex
+ * and case/whole-word toggles, Find All) — asked for directly, alongside a custom find bar for this app's own
+ * built-in editor (`FindBar.tsx`, used by `CodeEditor.tsx`'s `HighlightedEditor`/`PlainTextEditor`, which had
+ * no such capability of its own): see the `contrib/find/browser/findController.js` import above for why this
+ * needed an import at all, rather than already working.
  *
  * **`TextFieldMenu`'s own floating clipboard menu does not attach to this editor** — it recognises a plain
  * `HTMLTextAreaElement`/`HTMLInputElement` gaining focus, and Monaco's real editing surface is a `contenteditable`-

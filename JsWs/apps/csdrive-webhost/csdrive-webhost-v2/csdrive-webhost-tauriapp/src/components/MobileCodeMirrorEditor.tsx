@@ -1,10 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Clipboard, ClipboardPaste, ExternalLink, Redo2, Undo2 } from 'lucide-react'
+import { Clipboard, ClipboardPaste, ExternalLink, Redo2, Search, Undo2 } from 'lucide-react'
 import { basicSetup, EditorView } from 'codemirror'
 import { Compartment, EditorState } from '@codemirror/state'
 import { highlightWhitespace, keymap } from '@codemirror/view'
 import { indentUnit } from '@codemirror/language'
 import { history, historyKeymap, indentWithTab, redo, redoDepth, undo, undoDepth } from '@codemirror/commands'
+import { openSearchPanel } from '@codemirror/search'
 import { javascript } from '@codemirror/lang-javascript'
 import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
@@ -69,7 +70,16 @@ interface Props {
  * **Same `TextFieldMenu` gap as `MonacoCodeEditor`'s own doc comment describes** — CodeMirror 6's real
  * editing surface is a `contenteditable` div, never a plain `HTMLTextAreaElement`, so `TextFieldMenu`'s
  * floating clipboard menu doesn't attach here either; the same toolbar buttons (app clipboard copy/paste,
- * "Open link") stand in for the two actually-used pieces. */
+ * "Open link") stand in for the two actually-used pieces.
+ *
+ * **Find is CodeMirror's own too, and was already reachable — just invisibly.** `basicSetup` already bundles
+ * `@codemirror/search`'s `searchKeymap` (`Mod-f` → `openSearchPanel`, with the panel's own regex/case/word
+ * toggles and replace fields), but a touch screen has no keyboard shortcut to discover that with — the
+ * toolbar's `Search` button below just calls `openSearchPanel(view)` directly, the same function the keymap
+ * already calls. `openSearchPanel` installs the rest of `@codemirror/search`'s own state on first use if it
+ * isn't already present (confirmed by reading its own source — `StateEffect.appendConfig.of(searchExtensions)`
+ * — rather than assumed), so `basicSetup` not including the full `search()` extension up front is not a gap:
+ * nothing more had to be added here for this to work, the button is the whole fix. */
 const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function MobileCodeMirrorEditor(
   { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge },
   ref,
@@ -261,6 +271,7 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => viewRef.current && redo(viewRef.current)} />
           <IconButton icon={Clipboard} label="Copy the selection to the app’s clipboard" onClick={copySelectionToAppClipboard} />
           <IconButton icon={ClipboardPaste} label="Paste from the app’s clipboard" onClick={pasteFromAppClipboard} />
+          <IconButton icon={Search} label="Find" onClick={() => viewRef.current && openSearchPanel(viewRef.current)} />
           {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>

@@ -1,6 +1,8 @@
 import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
-import { Redo2, Undo2 } from 'lucide-react'
+import { Redo2, Search, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
+import FindBar from './FindBar'
+import { type FindMatch } from '../lib/textFind'
 import { UndoHistory } from '../lib/undoHistory'
 import { highlight, languageOf, type Language } from '../lib/highlight'
 import { HighlightScheduler } from '../lib/highlightScheduler'
@@ -287,6 +289,13 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
   const programmaticEditPending = useRef(false)
   const effectiveLanguage = language ?? languageOf(fileName)
   const caretOffset = () => inputRef.current?.selectionEnd ?? value.length
+  /** `null` while the find bar is closed; otherwise what it should open with — the caret's own offset and
+   * selected text (if any) at the moment it was asked for, captured once rather than kept live, and handed to
+   * `FindBar` as its own initial state (see that component's own doc comment for why). */
+  const [find, setFind] = useState<{ anchorOffset: number; initialQuery: string } | null>(null)
+  function openFind(selectionStart: number, selectionEnd: number) {
+    setFind({ anchorOffset: selectionStart, initialQuery: selectionStart === selectionEnd ? '' : value.slice(selectionStart, selectionEnd) })
+  }
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
   const { html, exact } = useBackgroundHighlighted(value, effectiveLanguage)
@@ -1015,6 +1024,25 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
     redraw()
   }
 
+  /** Moves the real selection to a find match and brings it into view — the same shape as Page Up/Down's own
+   * handling, below, for a caret-only move with no text change: set the selection directly on the real,
+   * always-whole `<textarea>`, then set `frame.scrollTop` by hand rather than relying on any native "scroll
+   * the caret into view" behaviour for a programmatic selection change (this file's own earlier findings,
+   * documented on `fit()`'s neighbouring effects, already ruled that out as unreliable here). Setting
+   * `frame.scrollTop` fires a real `scroll` event, which `handleScroll`'s own existing hysteresis check
+   * already reacts to — exactly the mechanism that already recomputes `windowRange` for a Page Up/Down jump
+   * of any distance, reused here with no new window-management code of its own. */
+  function jumpToMatch(match: FindMatch) {
+    const input = inputRef.current
+    const frame = frameRef.current
+    if (!input || !frame) return
+    input.focus()
+    input.setSelectionRange(match.start, match.end)
+    const line = lineAtOffset(lineStarts, match.start)
+    const row = gutterRowStarts.starts[line] ?? 0
+    frame.scrollTop = Math.max(0, row * gutterRowStarts.lineHeightPx - frame.clientHeight / 2)
+  }
+
   useImperativeHandle(ref, () => ({
     insertAtCursor(text) {
       const input = inputRef.current
@@ -1055,6 +1083,11 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
         <div className="code-editor-toolbar">
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
+          <IconButton
+            icon={Search}
+            label="Find (Ctrl+F)"
+            onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
+          />
           {/* Reserves room for TextFieldMenu's own clipboard button (and, in Notes, the User Action pair beside it) to sit
               in, instead of floating over the top-right corner of the text — which used to cover whatever happened to be
               rendered there (reported live). */}
@@ -1063,6 +1096,18 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
       )}
       {/* The clipboard menu's button sits at the corner of the frame, not of the (tall) box. */}
       <div className={`code-editor ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`} ref={frameRef} onScroll={handleScroll} data-text-menu-anchor>
+        {find && (
+          <FindBar
+            text={value}
+            anchorOffset={find.anchorOffset}
+            initialQuery={find.initialQuery}
+            onJumpToMatch={jumpToMatch}
+            onClose={() => {
+              setFind(null)
+              inputRef.current?.focus()
+            }}
+          />
+        )}
         <div className="code-editor-rows">
           {settings?.lineNumbers !== false && (
             <div className="code-editor-gutter" aria-hidden="true" style={{ minWidth: `calc(${gutterDigits}ch + 16px)` }}>
@@ -1148,6 +1193,13 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
               // shortcut that was hit — the actual edit, scroll or undo/redo step — is deferred, the same as
               // `onChange` above; nothing here does any real work before that deferred callback runs.
               onKeyDown={(e) => {
+                // Checked before the `readOnly` bail below, deliberately — searching a file open only for
+                // viewing should still work, the same as a browser's own Ctrl+F does on any page.
+                if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+                  e.preventDefault()
+                  openFind(e.currentTarget.selectionStart, e.currentTarget.selectionEnd)
+                  return
+                }
                 if (readOnly) return
                 if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
                   e.preventDefault()
@@ -1296,6 +1348,11 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
   useEffect(() => subscribeEditorSettings(setSettings), [])
   const visibleLineRaf = useRef<number | null>(null)
   const lastVisibleLine = useRef<number | null>(null)
+  /** Same shape as `HighlightedEditor`'s own `find` state — see its doc comment there. */
+  const [find, setFind] = useState<{ anchorOffset: number; initialQuery: string } | null>(null)
+  function openFind(selectionStart: number, selectionEnd: number) {
+    setFind({ anchorOffset: selectionStart, initialQuery: selectionStart === selectionEnd ? '' : value.slice(selectionStart, selectionEnd) })
+  }
 
   useLayoutEffect(() => {
     const h = history.current!
@@ -1339,6 +1396,21 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
     restoreCaret.current = { start: edit.start, end: edit.end }
     onChange(edit.value)
     redraw()
+  }
+
+  /** Same idea as `HighlightedEditor`'s own `jumpToMatch` — see its doc comment — simpler here since this
+   * textarea scrolls itself natively (no separate frame, and no virtualized window to let a `scroll` event
+   * recompute): compute the match's line fresh (this component keeps no memoized `lineStartOffsets` of its
+   * own, unlike `HighlightedEditor`, since nothing else here needs one) and scroll the box directly. */
+  function jumpToMatch(match: FindMatch) {
+    const input = inputRef.current
+    if (!input) return
+    input.focus()
+    input.setSelectionRange(match.start, match.end)
+    const line = lineAtOffset(lineStartOffsets(value), match.start)
+    const lineHeightPx = parseFloat(getComputedStyle(input).lineHeight) || FALLBACK_LINE_HEIGHT_PX
+    const maxScroll = Math.max(0, input.scrollHeight - input.clientHeight)
+    input.scrollTop = Math.min(maxScroll, Math.max(0, line * lineHeightPx - input.clientHeight / 2))
   }
 
   useImperativeHandle(ref, () => ({
@@ -1408,10 +1480,27 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
         <div className="code-editor-toolbar">
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
+          <IconButton
+            icon={Search}
+            label="Find (Ctrl+F)"
+            onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
+          />
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
       <div className="code-editor" data-text-menu-anchor>
+        {find && (
+          <FindBar
+            text={value}
+            anchorOffset={find.anchorOffset}
+            initialQuery={find.initialQuery}
+            onJumpToMatch={jumpToMatch}
+            onClose={() => {
+              setFind(null)
+              inputRef.current?.focus()
+            }}
+          />
+        )}
         <textarea
           ref={inputRef}
           className={`code-editor-plain-textarea ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`}
@@ -1432,6 +1521,13 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
             }, 0)
           }}
           onKeyDown={(e) => {
+            // Checked before the `readOnly` bail below, deliberately — see `HighlightedEditor`'s own
+            // identical check for why.
+            if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+              e.preventDefault()
+              openFind(e.currentTarget.selectionStart, e.currentTarget.selectionEnd)
+              return
+            }
             if (readOnly) return
             if (e.key === 'Tab' && !e.ctrlKey && !e.metaKey && !e.altKey) {
               e.preventDefault()
