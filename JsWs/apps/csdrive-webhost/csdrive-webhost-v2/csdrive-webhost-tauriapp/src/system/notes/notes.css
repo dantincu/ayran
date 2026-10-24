@@ -29,6 +29,30 @@
   max-width: 100%;
 }
 
+/* An autofocused field that is the very first thing in a modal's body (`NewNoteModal.tsx`'s and `FolderPairModal.tsx`'s own
+   Title, `NotebooksPage.tsx`'s `TitleDialog`) sits only `.modal-body`'s own 14px of padding below the header — far short of
+   the ~38px `TextFieldMenu.tsx`'s floating strip needs to float *above* the field without touching either the header's own
+   buttons or the field's own typed text. Reported live, after the header-overlap fix below made this the common case
+   instead of a rare one: fixing *that* overlap correctly pushed the strip down into the field itself instead — the strip
+   sitting on top of a line the person is about to type into is no better. The real fix is here, not in the placement
+   math: give the field enough genuine room above it that the strip can float where it always meant to, above the field,
+   clear of everything. 28px (on top of the existing 14px) comfortably clears the 38px threshold with a few px to spare. */
+.notes-field-leading {
+  margin-top: 28px;
+}
+
+/* `.notes-field` is `inline-flex` on purpose, for a single label+input *row* — but `NewNoteModal.tsx`'s and
+   `PasteNotesModal.tsx`'s own index-interval choices reuse the class on a `<fieldset>` for the opposite reason
+   (the legend/field look, not the row), wrapping a *list* of radio options that should read as a list, each on
+   its own line — asked for directly, having been laid out side by side instead. Scoped to the tag so the plain
+   `<label className="notes-field">` elsewhere (a field, not a list of them) is completely unaffected. */
+fieldset.notes-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
 .notes-cache-status {
   display: inline-flex;
   align-items: center;

@@ -1,4 +1,4 @@
-import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { Redo2, Search, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import FindBar from './FindBar'
@@ -69,6 +69,13 @@ interface Props {
    * (CodeEditor only reports the key combination; what it does with it is the caller's business), the same as
    * `onOpenLink`. */
   onScrollNudge?: (direction: 'up' | 'down' | 'pageUp' | 'pageDown') => void
+  /** More buttons in the editor's own toolbar, beside "Edit or insert a link" — Notes' own User Action launch/close
+   * pair (`NoteEditPage.tsx`, `NotesApp.tsx`'s own editor), the same two already in every page's header and at
+   * every text box (`UserActionFieldButtons`, `TextFieldMenu.tsx`'s `extra`); the Files tab's own editor passes
+   * nothing. Only `ThirdPartyEditor` (Monaco/CodeMirror) renders this — `HighlightedEditor`/`PlainTextEditor`
+   * already get the same pair for free, at every focused text field, through `TextFieldMenu`'s own floating strip,
+   * which these two third-party editors don't have (see `MonacoCodeEditor.tsx`'s own doc comment for why). */
+  extra?: ReactNode
 }
 
 /** What a ref to `CodeEditor` gives its parent: inserting text at the caret (or over the selection) from the

@@ -1705,6 +1705,7 @@ export default function NotesApp({
               fileName={editing.path}
               onChange={(content) => setEditing({ ...editing, content, dirty: true })}
               onOpenLink={openLinkFromEditor}
+              extra={<UserActionButton sourceId={editing.source.id} folder={editing.path.includes('/') ? editing.path.slice(0, editing.path.lastIndexOf('/')) : ''} />}
             />
             {inserting && (
               <InsertPathModal source={editing.source} sourceId={sourceId} initialPath={parentPath(editing.path)} onPick={pathPicked} onClose={() => setInserting(false)} />

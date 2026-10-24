@@ -455,7 +455,7 @@ function TitleDialog({
           if (valid) onSubmit(title.trim())
         }}
       >
-        <label className="notes-field notes-title-field">
+        <label className="notes-field notes-title-field notes-field-leading">
           <span>{question}</span>
           <input autoFocus data-ua-field="notes.notebook.title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
         </label>

@@ -177,10 +177,17 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
         setPlacement((current) => (current && current.top === top && current.left === left ? current : { top, left }))
       } else {
         // An editor: inside it, at its top-right corner (left of the scrollbar) — above it there is usually a dialog's
-        // header with buttons of its own. A single-line box: just above it, at its right end, or inside it at the top when
-        // it is at the top of the screen.
+        // header with buttons of its own. A single-line box: just above it, at its right end — unless the room above it
+        // is actually taken by a dialog's own header (asked for directly: an autofocused field right under a `Modal`'s
+        // header — `NewNoteModal`'s title, `GoToPathModal`'s path, and others — put the strip right on top of its
+        // Maximize/Close, found live by measuring both rects: a real, clickable overlap, not just a visual one).
+        // `ceiling` is the nearest enclosing modal's own header bottom, not the viewport's — "is there room above"
+        // is judged against what's actually there above the field, not merely how far down the screen it happens to
+        // sit (a field with no enclosing modal keeps `ceiling` at 0, the exact behaviour this had before). Otherwise,
+        // inside it at the top.
         const inside = field instanceof HTMLTextAreaElement
-        const top = inside ? Math.max(4, box.top + 4) : box.top >= TRIGGER_SIZE + 4 ? box.top - (TRIGGER_SIZE + 4) : box.top + 2
+        const ceiling = field.closest('.modal-panel')?.querySelector('.modal-header')?.getBoundingClientRect().bottom ?? 0
+        const top = inside ? Math.max(4, box.top + 4) : box.top - ceiling >= TRIGGER_SIZE + 4 ? box.top - (TRIGGER_SIZE + 4) : box.top + 2
         const left = Math.max(4, Math.min(box.right - (inside ? TRIGGER_SIZE + 22 : TRIGGER_SIZE + 4) - room, window.innerWidth - (TRIGGER_SIZE + 8) - room))
         setPlacement((current) => (current && current.top === top && current.left === left ? current : { top, left }))
       }

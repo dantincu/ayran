@@ -1,5 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Clipboard, ClipboardPaste, ExternalLink, Redo2, Undo2 } from 'lucide-react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
+import { Clipboard, ClipboardPaste, ExternalLink, Link2, Redo2, TextCursorInput, Undo2 } from 'lucide-react'
 import * as monaco from 'monaco-editor/editor/editor.api'
 import 'monaco-editor/languages/definitions/javascript/register.js'
 import 'monaco-editor/languages/definitions/css/register.js'
@@ -36,8 +36,10 @@ import 'monaco-editor/editor/contrib/find/browser/findController.js'
 import '../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css'
 import '../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon-modifiers.css'
 import IconButton from './IconButton'
+import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
-import { linkAt, type LinkHandler } from '../lib/textLinks'
+import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
+import { selectParagraphs } from '../lib/paragraphs'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { reportVirtualScroll } from '../lib/scrollAutohide'
@@ -182,6 +184,8 @@ interface Props {
   language?: Language
   onVisibleLineChange?: (line: number) => void
   onScrollNudge?: (direction: 'up' | 'down' | 'pageUp' | 'pageDown') => void
+  /** More buttons in the toolbar, beside "Edit or insert a link" — see `CodeEditor.tsx`'s own `Props.extra` doc. */
+  extra?: ReactNode
 }
 
 /** The desktop default editor while `editor.useBuiltInEditor` is off (`lib/editorSettings.ts`) — asked for
@@ -198,16 +202,46 @@ interface Props {
  * **`TextFieldMenu`'s own floating clipboard menu does not attach to this editor** — it recognises a plain
  * `HTMLTextAreaElement`/`HTMLInputElement` gaining focus, and Monaco's real editing surface is a `contenteditable`-
  * adjacent view with its own internal (off-screen) textarea used only for IME composition, never the focused
- * element a person actually clicks into. "Select paragraphs" and "Manage the app's clipboard…" are not
- * reproduced here (Monaco's own multi-cursor/expand-selection already covers much of the first; the clipboard
- * manager modal is still reachable from Settings) — what *is* kept, as toolbar buttons next to Undo/Redo
- * (`Clipboard`/`ClipboardPaste`/`ExternalLink`, matching the icons used elsewhere in the app for the same
- * actions): copying the current selection to the app's own clipboard, pasting its top entry over the
- * selection, and opening the link at the caret through the same `onOpenLink` dispatch every other editor
- * uses. The OS clipboard needs nothing special — copy/paste on any editable surface is the browser's own,
- * ordinary behaviour. */
+ * element a person actually clicks into. "Manage the app's clipboard…" is not reproduced here (still reachable
+ * from Settings) — what *is* kept, as toolbar buttons next to Undo/Redo (`TextCursorInput`/`Clipboard`/
+ * `ClipboardPaste`/`ExternalLink`, matching the icons used elsewhere in the app for the same actions): **"Select
+ * paragraphs"** (`selectParagraphs`, `lib/paragraphs.ts` — pure, character-offset based, so it works identically
+ * against `editor.getValue()`'s plain string as it already does against a textarea's `.value`; re-added after
+ * first being left out on the reasoning that "Monaco's own multi-cursor/expand-selection already covers much of
+ * it" — asked for directly once the gap was noticed, since expand-selection is a genuinely different operation,
+ * grows outward by syntax node rather than jumping to this app's own paragraph boundaries), copying the current
+ * selection to the app's own clipboard, pasting its top entry over the selection, and opening the link at the
+ * caret through the same `onOpenLink` dispatch every other editor uses. The OS clipboard needs nothing special —
+ * copy/paste on any editable surface is the browser's own, ordinary behaviour.
+ *
+ * **"Edit or insert a link" (asked for directly — found missing when the person went looking for it, since
+ * Monaco is this app's own *default* editor and `TextFieldMenu`'s "Edit link"/"Insert a link" menu items never
+ * had a Monaco counterpart at all, unlike plain "Open link," which did).** One button, not two — unlike
+ * `TextFieldMenu`'s own dropdown, where "Edit link" and "Insert a link" can be two separate, simultaneously-
+ * visible menu items, a toolbar button is a fixed icon with no room to swap labels as the caret moves; the
+ * single `Link2` button computes, fresh on each click (the same "decide at click time" shape `openLinkAction`
+ * already uses), whether the caret is in an existing markdown link (`markdownLinkAt`, text-offset based — no
+ * DOM dependency, works identically against `editor.getValue()`'s plain string) and opens the shared
+ * `MarkdownLinkModal` on it, or — when it isn't — opens the same popup empty, pre-filled from the current
+ * selection, to insert a new one. Writing the result back uses Monaco's own `executeEdits` over a `Range` built
+ * from the hit's own character offsets (`model.getPositionAt`) — the direct Monaco equivalent of what
+ * `TextFieldMenu.tsx`'s `replaceSelection`/`field.setRangeText` does for a plain textarea — so the edit lands
+ * in Monaco's own undo stack for free, Ctrl+Z included, the same as every other edit this wrapper makes.
+ * Registered as a real Monaco action (`contextMenuGroupId: 'navigation'`), so it's reachable from Monaco's own
+ * right-click menu too, alongside "Open link" — not just the toolbar button. Gated on `onOpenLink` the same
+ * way `TextFieldMenu`'s own two menu items are (a signal that this editor is for a file links make sense in,
+ * not a strict technical dependency — only "Open in external browser" inside the popup actually needs it).
+ *
+ * **`extra` (asked for directly, "we should have the launch/reset custom action buttons next to the edit link
+ * button"): a plain, caller-supplied `ReactNode` rendered right after it** — Notes' own User Action launch/close
+ * pair, for `NoteEditPage.tsx`'s and `NotesApp.tsx`'s own editor, which otherwise have no access to it at all
+ * while this toolbar is the thing on screen (`TextFieldMenu`'s floating strip, where `UserActionFieldButtons`
+ * normally lives at every text box, never attaches to Monaco — see above). Not a thunk like `TextFieldMenu`'s own
+ * `extra` (`(field) => ReactNode`): there is only ever one editing surface per `MonacoCodeEditor` instance, and
+ * `UserActionButton` doesn't need to know *which* field — just `sourceId`/`folder`, which the caller already has
+ * in scope — so a plain node is simpler and sufficient. The Files tab's own editor (not Notes) passes nothing. */
 const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCodeEditor(
-  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge },
+  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, extra },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -271,6 +305,10 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
   const [scrollbarGhost, setScrollbarGhost] = useState<ScrollbarGhost | null>(null)
   const lastVisibleLine = useRef<number | null>(null)
   const effectiveLanguage = language ?? languageOf(fileName)
+  // The "Edit or insert a link" popup's own in-flight state — character offsets into the model's plain text,
+  // not a Monaco `Range`, since `markdownLinkAt` itself is DOM-free and only ever deals in offsets; converted
+  // to a `Range` only at the point `submitLink` actually writes back (`model.getPositionAt`).
+  const [linkEdit, setLinkEdit] = useState<{ heading: string; range: { start: number; end: number }; image: boolean; text: string; address: string } | null>(null)
 
   useEffect(() => {
     const host = hostRef.current
@@ -416,6 +454,44 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
           },
         })
       : null
+    const editOrInsertLinkAction = onOpenLink
+      ? editor.addAction({
+          id: 'csdrive.editOrInsertLink',
+          label: 'Edit or insert a link',
+          contextMenuGroupId: 'navigation',
+          run: () => {
+            const model = editor.getModel()
+            const pos = editor.getPosition()
+            const sel = editor.getSelection()
+            if (!model || !pos) return
+            const text = editor.getValue()
+            const offset = model.getOffsetAt(pos)
+            const selStart = sel ? model.getOffsetAt(sel.getStartPosition()) : offset
+            const selEnd = sel ? model.getOffsetAt(sel.getEndPosition()) : offset
+            const hit = markdownLinkAt(text, selStart, selEnd)
+            if (hit) setLinkEdit({ heading: 'Edit link', range: { start: hit.start, end: hit.end }, image: hit.image, text: hit.text, address: hit.address })
+            else setLinkEdit({ heading: 'Insert a link', range: { start: selStart, end: selEnd }, image: false, text: text.slice(selStart, selEnd), address: '' })
+          },
+        })
+      : null
+    const selectParagraphsAction = editor.addAction({
+      id: 'csdrive.selectParagraphs',
+      label: 'Select paragraphs',
+      contextMenuGroupId: '9_cutcopypaste',
+      run: () => {
+        const model = editor.getModel()
+        const sel = editor.getSelection()
+        if (!model) return
+        const text = editor.getValue()
+        const selStart = sel ? model.getOffsetAt(sel.getStartPosition()) : 0
+        const selEnd = sel ? model.getOffsetAt(sel.getEndPosition()) : 0
+        const range = selectParagraphs(text, selStart, selEnd)
+        const startPos = model.getPositionAt(range.start)
+        const endPos = model.getPositionAt(range.end)
+        editor.setSelection(new monaco.Selection(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column))
+        editor.revealRange(new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column))
+      },
+    })
     const copyToAppClipboardAction = editor.addAction({
       id: 'csdrive.copyToAppClipboard',
       label: 'Copy to the app’s clipboard',
@@ -444,6 +520,8 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       changeSub.dispose()
       scrollSub.dispose()
       openLinkAction?.dispose()
+      editOrInsertLinkAction?.dispose()
+      selectParagraphsAction.dispose()
       copyToAppClipboardAction.dispose()
       pasteFromAppClipboardAction.dispose()
       wordNavActions.forEach((a) => a.dispose())
@@ -481,6 +559,26 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
     })
   }, [readOnly, settings?.wrapLines, settings?.lineNumbers, settings?.showWhitespace, settings?.tabInsertsSpaces, settings?.tabSpaceCount])
 
+  /** Writes the "Edit or insert a link" popup's result back — the Monaco equivalent of `TextFieldMenu.tsx`'s own
+   * `submitLink`/`replaceSelection`: the hit's own character offsets are converted to a `Range` only here (the
+   * model may have changed shape since the popup opened, but the offsets it captured are still the ones that
+   * mattered at click time — the same assumption `replaceSelection`'s own caller already makes), the edit goes
+   * through `executeEdits` so it's a real step of Monaco's own undo stack, and the caret lands right after the
+   * written link, matching where typing it by hand would have left it. */
+  function submitLink(text: string, address: string) {
+    const edit = linkEdit
+    setLinkEdit(null)
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (!edit || !editor || !model) return
+    const startPos = model.getPositionAt(edit.range.start)
+    const endPos = model.getPositionAt(edit.range.end)
+    const newText = `${edit.image ? '!' : ''}[${text}](${address})`
+    editor.executeEdits('csdrive.editOrInsertLink', [{ range: new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column), text: newText }])
+    editor.focus()
+    editor.setPosition(model.getPositionAt(edit.range.start + newText.length))
+  }
+
   useImperativeHandle(ref, () => ({
     insertAtCursor(text) {
       const editor = editorRef.current
@@ -498,6 +596,11 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => editorRef.current?.trigger('', 'undo', null)} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => editorRef.current?.trigger('', 'redo', null)} />
           <IconButton
+            icon={TextCursorInput}
+            label="Select paragraphs"
+            onClick={() => editorRef.current?.trigger('', 'csdrive.selectParagraphs', null)}
+          />
+          <IconButton
             icon={Clipboard}
             label="Copy the selection to the app’s clipboard"
             onClick={() => editorRef.current?.trigger('', 'csdrive.copyToAppClipboard', null)}
@@ -510,11 +613,25 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
           {onOpenLink && (
             <IconButton icon={ExternalLink} label="Open link at the caret" onClick={() => editorRef.current?.trigger('', 'csdrive.openLink', null)} />
           )}
+          {onOpenLink && (
+            <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={() => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null)} />
+          )}
+          {extra}
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
       <div className="code-editor code-editor-monaco" data-text-menu-anchor>
         <div ref={hostRef} className="monaco-editor-host" />
+        {linkEdit && (
+          <MarkdownLinkModal
+            heading={linkEdit.heading}
+            initialText={linkEdit.text}
+            initialAddress={linkEdit.address}
+            onSubmit={submitLink}
+            onCancel={() => setLinkEdit(null)}
+            onOpenExternal={onOpenLink ? (address) => void onOpenLink({ kind: 'web', target: address, start: 0, end: 0 }) : undefined}
+          />
+        )}
         {scrollbarGhost && (
           <>
             <div

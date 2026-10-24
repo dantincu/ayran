@@ -36,7 +36,7 @@ export default function NewNoteModal({ names, onCreate, onClose }: { names: stri
   return (
     <Modal title="New note…" onClose={onClose}>
       <div className="pair-modal">
-        <label className="notes-field">
+        <label className="notes-field notes-field-leading">
           <span>Title</span>
           <input autoFocus data-ua-field="notes.newNote.title" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && create()} />
         </label>

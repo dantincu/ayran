@@ -72,7 +72,7 @@ export default function FolderPairModal({
   return (
     <Modal title="Add a folders pair" onClose={onClose} wide>
       <div className="pair-modal">
-        <label className="notes-field">
+        <label className="notes-field notes-field-leading">
           <span>
             Title{' '}
             <button type="button" className="link-button pair-hint-button" aria-label="Which characters are not allowed in a folder name" title="Which characters are not allowed in a folder name" onClick={() => setHint((h) => !h)}>

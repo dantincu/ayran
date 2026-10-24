@@ -11,9 +11,14 @@ const WEB_ADDRESS = /^https?:\/\//i
 /** The "Edit link" / "Insert a link" popup of a text editor's clipboard menu (`TextFieldMenu.tsx`): two boxes —
  * the link's text and its address — for a markdown link, `[text](address)`. Used both to edit the link the caret
  * was in (both boxes start filled) and to insert a new one (both start empty, or the text pre-filled from
- * whatever was selected when the menu was opened). Enter in either box, or the button, submits; an address of
- * nothing but spaces can't be — a link needs somewhere to go — but the text may be empty (`[](address)` is a
- * married but valid, if odd, markdown link, and forcing one would lose whatever the person meant to clear).
+ * whatever was selected when the menu was opened). Enter in either box, or the button, submits. **Both boxes are
+ * optional, the same way** — asked for directly ("an empty link should also be allowed, just like the title is
+ * optional, so should the url"): `[]()` is an odd but syntactically valid markdown link, and this popup used to
+ * refuse to write it (an address of nothing but spaces couldn't be saved) for no reason stronger than "a link
+ * usually goes somewhere" — not a real constraint worth enforcing against someone who means to clear it, which is
+ * exactly the same reasoning the text box was already given. There is nothing left to validate here: both fields
+ * commit whatever they hold, trimmed, with no disabled Save and no "invalid" styling on an empty/whitespace-only
+ * address.
  *
  * **Open in external browser** (asked for directly), offered only while the address is a plain web one, calls
  * back to whichever host actually knows how to open it — `onOpenExternal`, wired by `TextFieldMenu.tsx` to the
@@ -51,12 +56,10 @@ export default function MarkdownLinkModal({
   const [text, setText] = useState(initialText)
   const [address, setAddress] = useState(initialAddress)
   const trimmedAddress = address.trim()
-  const valid = trimmedAddress !== ''
   const isWebAddress = WEB_ADDRESS.test(trimmedAddress)
   const addressWithoutScheme = trimmedAddress.replace(/^https?:\/\//i, '')
 
   function submit() {
-    if (!valid) return
     onSubmit(text, trimmedAddress)
   }
 
@@ -91,7 +94,6 @@ export default function MarkdownLinkModal({
         <div className="toolbar-actions">
           <input
             data-ua-field="textMenu.link.address"
-            className={!valid && address !== '' ? 'invalid' : ''}
             style={{ flex: 1 }}
             value={address}
             onChange={(e) => setAddress(e.target.value)}
@@ -101,7 +103,7 @@ export default function MarkdownLinkModal({
           )}
         </div>
         <div className="toolbar-actions" style={{ justifyContent: 'flex-end', marginTop: 10 }}>
-          <IconButton icon={Check} label="Save" disabled={!valid} onClick={submit} />
+          <IconButton icon={Check} label="Save" onClick={submit} />
           <IconButton icon={X} label="Cancel" onClick={onCancel} />
         </div>
       </form>

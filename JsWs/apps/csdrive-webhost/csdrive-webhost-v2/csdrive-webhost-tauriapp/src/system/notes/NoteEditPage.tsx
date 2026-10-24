@@ -309,6 +309,7 @@ export default function NoteEditPage({
               onOpenLink={openLink}
               onVisibleLineChange={visibleLineChanged}
               onScrollNudge={scrollNudged}
+              extra={<UserActionButton sourceId={sourceId} folder={folder} />}
             />
           ) : (
             !error && <div className="muted">Loading…</div>

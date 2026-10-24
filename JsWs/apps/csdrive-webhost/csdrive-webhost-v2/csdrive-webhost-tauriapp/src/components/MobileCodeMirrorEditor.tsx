@@ -1,5 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { Clipboard, ClipboardPaste, ExternalLink, Redo2, Search, Undo2 } from 'lucide-react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
+import { Clipboard, ClipboardPaste, ExternalLink, Link2, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
 import { basicSetup, EditorView } from 'codemirror'
 import { Compartment, EditorState } from '@codemirror/state'
 import { highlightWhitespace, keymap } from '@codemirror/view'
@@ -12,8 +12,10 @@ import { html } from '@codemirror/lang-html'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import IconButton from './IconButton'
+import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
-import { linkAt, type LinkHandler } from '../lib/textLinks'
+import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
+import { selectParagraphs } from '../lib/paragraphs'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import type { CodeEditorHandle } from './CodeEditor'
@@ -48,6 +50,8 @@ interface Props {
   language?: Language
   onVisibleLineChange?: (line: number) => void
   onScrollNudge?: (direction: 'up' | 'down' | 'pageUp' | 'pageDown') => void
+  /** More buttons in the toolbar, beside "Edit or insert a link" — see `CodeEditor.tsx`'s own `Props.extra` doc. */
+  extra?: ReactNode
 }
 
 /** The mobile default editor while `editor.useBuiltInEditor` is off (`lib/editorSettings.ts`) — asked for
@@ -69,8 +73,15 @@ interface Props {
  *
  * **Same `TextFieldMenu` gap as `MonacoCodeEditor`'s own doc comment describes** — CodeMirror 6's real
  * editing surface is a `contenteditable` div, never a plain `HTMLTextAreaElement`, so `TextFieldMenu`'s
- * floating clipboard menu doesn't attach here either; the same toolbar buttons (app clipboard copy/paste,
- * "Open link") stand in for the two actually-used pieces.
+ * floating clipboard menu doesn't attach here either; the same toolbar buttons stand in: "Select paragraphs"
+ * (`selectParagraphs`, `lib/paragraphs.ts`), app clipboard copy/paste, "Open link", **"Edit or insert a link"**
+ * (`markdownLinkAt` + the shared `MarkdownLinkModal`, the exact mirror of `MonacoCodeEditor.tsx`'s own — see
+ * its doc comment for the full reasoning, repeated here only where CodeMirror's own API differs: a `Range`
+ * built from `model.getPositionAt` there, a plain `{from, to}` offset pair into `view.state.doc` here, since
+ * CodeMirror addresses positions by character offset natively and has no separate `Position`/`Range` type to
+ * convert through), and `extra` (Notes' own User Action launch/close pair — asked for directly, "the
+ * launch/reset custom action buttons should be added back to editors for any text file," mirroring
+ * `MonacoCodeEditor.tsx`'s own `extra` exactly, including that the Files tab's own editor passes nothing).
  *
  * **Find is CodeMirror's own too, and was already reachable — just invisibly.** `basicSetup` already bundles
  * `@codemirror/search`'s `searchKeymap` (`Mod-f` → `openSearchPanel`, with the panel's own regex/case/word
@@ -81,7 +92,7 @@ interface Props {
  * — rather than assumed), so `basicSetup` not including the full `search()` extension up front is not a gap:
  * nothing more had to be added here for this to work, the button is the whole fix. */
 const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function MobileCodeMirrorEditor(
-  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge },
+  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, extra },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -94,6 +105,9 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
   const [canRedo, setCanRedo] = useState(false)
   const lastVisibleLine = useRef<number | null>(null)
   const effectiveLanguage = language ?? languageOf(fileName)
+  // The "Edit or insert a link" popup's own in-flight state — see `MonacoCodeEditor.tsx`'s identical field for
+  // the full reasoning; `range` is already a plain character-offset pair here, CodeMirror's own native currency.
+  const [linkEdit, setLinkEdit] = useState<{ heading: string; range: { start: number; end: number }; image: boolean; text: string; address: string } | null>(null)
 
   const languageCompartment = useRef(new Compartment()).current
   const readOnlyCompartment = useRef(new Compartment()).current
@@ -246,6 +260,43 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
     if (hit) void onOpenLink(hit)
   }
 
+  /** Computes, fresh on each tap (the same "decide at click time" shape `openLinkAtCursor` already uses), whether
+   * the caret is in an existing markdown link — opening "Edit link" on it — or not — opening "Insert a link"
+   * empty, pre-filled from the current selection. See `MonacoCodeEditor.tsx`'s own identical action for the full
+   * reasoning; this is its CodeMirror counterpart. */
+  function editOrInsertLink() {
+    const view = viewRef.current
+    if (!view) return
+    const sel = view.state.selection.main
+    const text = view.state.doc.toString()
+    const hit = markdownLinkAt(text, sel.from, sel.to)
+    if (hit) setLinkEdit({ heading: 'Edit link', range: { start: hit.start, end: hit.end }, image: hit.image, text: hit.text, address: hit.address })
+    else setLinkEdit({ heading: 'Insert a link', range: { start: sel.from, end: sel.to }, image: false, text: text.slice(sel.from, sel.to), address: '' })
+  }
+
+  /** Writes the "Edit or insert a link" popup's result back — CodeMirror's own `changes`/`selection` dispatch is
+   * the direct equivalent of `MonacoCodeEditor.tsx`'s `executeEdits`/`setPosition`: one real edit, in the view's
+   * own history (Ctrl+Z included), with the caret landing right after the written link. */
+  function submitLink(text: string, address: string) {
+    const edit = linkEdit
+    setLinkEdit(null)
+    const view = viewRef.current
+    if (!edit || !view) return
+    const newText = `${edit.image ? '!' : ''}[${text}](${address})`
+    view.dispatch({ changes: { from: edit.range.start, to: edit.range.end, insert: newText }, selection: { anchor: edit.range.start + newText.length } })
+    view.focus()
+  }
+
+  function selectParagraphsAtCursor() {
+    const view = viewRef.current
+    if (!view) return
+    const sel = view.state.selection.main
+    const text = view.state.doc.toString()
+    const range = selectParagraphs(text, sel.from, sel.to)
+    view.dispatch({ selection: { anchor: range.start, head: range.end } })
+    view.focus()
+  }
+
   async function copySelectionToAppClipboard() {
     const view = viewRef.current
     if (!view) return
@@ -269,15 +320,28 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
         <div className="code-editor-toolbar">
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => viewRef.current && undo(viewRef.current)} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => viewRef.current && redo(viewRef.current)} />
+          <IconButton icon={TextCursorInput} label="Select paragraphs" onClick={selectParagraphsAtCursor} />
           <IconButton icon={Clipboard} label="Copy the selection to the app’s clipboard" onClick={copySelectionToAppClipboard} />
           <IconButton icon={ClipboardPaste} label="Paste from the app’s clipboard" onClick={pasteFromAppClipboard} />
           <IconButton icon={Search} label="Find" onClick={() => viewRef.current && openSearchPanel(viewRef.current)} />
           {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
+          {onOpenLink && <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={editOrInsertLink} />}
+          {extra}
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
       <div className="code-editor" data-text-menu-anchor>
         <div ref={hostRef} className="codemirror-editor-host" />
+        {linkEdit && (
+          <MarkdownLinkModal
+            heading={linkEdit.heading}
+            initialText={linkEdit.text}
+            initialAddress={linkEdit.address}
+            onSubmit={submitLink}
+            onCancel={() => setLinkEdit(null)}
+            onOpenExternal={onOpenLink ? (address) => void onOpenLink({ kind: 'web', target: address, start: 0, end: 0 }) : undefined}
+          />
+        )}
       </div>
     </div>
   )
