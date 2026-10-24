@@ -34,6 +34,7 @@ import FileExplorerModal from './FileExplorerModal'
 import PathStyleModal from './PathStyleModal'
 import { absolutePathFrom, relativePathFrom } from '../lib/relativePath'
 import { useScrollAutohide } from '../lib/scrollAutohide'
+import { useEditorHeaderActionsWrap } from '../lib/editorHeaderActions'
 import DetailsModal, { type DetailField } from './DetailsModal'
 import GoToPathModal from './GoToPathModal'
 import PdfConvertModal from './PdfConvertModal'
@@ -219,6 +220,7 @@ export default function FilesTab() {
   // autohide and nested scrollable content"); the Files tab has no counterpart "global" top bar to sync with
   // (that's a Notes-only concept), so this is scroll-driven only, same as the Help tab's own header.
   const [editorHeaderHidden] = useScrollAutohide()
+  const { headerRef: editorHeaderRef, leadingRef: editorHeaderLeadingRef, actionsRef: editorHeaderActionsRef, wrap: editorHeaderActionsWrap } = useEditorHeaderActionsWrap()
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardItem | null>(null)
@@ -859,13 +861,15 @@ export default function FilesTab() {
     <div className="tab-panel files-tab">
       {editing ? (
         <>
-          <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
-            <IconButton icon={ArrowLeft} label="Back" onClick={() => setEditing(null)} />
+          <div ref={editorHeaderRef} className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
+            <IconButton ref={editorHeaderLeadingRef} icon={ArrowLeft} label="Back" onClick={() => setEditing(null)} />
             <h2>{editing.path}</h2>
-            {editing.dirty && <span className="muted">unsaved changes</span>}
-            <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
-            <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardEditing} disabled={!editing.dirty} />
-            <IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />
+            <div ref={editorHeaderActionsRef} className={`editor-header-actions ${editorHeaderActionsWrap ? 'editor-header-actions-wrap' : ''}`}>
+              {editing.dirty && <span className="muted">unsaved changes</span>}
+              <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
+              <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardEditing} disabled={!editing.dirty} />
+              <IconButton icon={Save} label="Save" onClick={saveEditing} disabled={!editing.dirty} />
+            </div>
           </div>
           {error && <div className="error-banner">{error}</div>}
           <CodeEditor

@@ -9,6 +9,7 @@ import { onShowTopBar, openExternalSite, openNoteTab, syncRefreshWithoutScroll, 
 import { resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
+import { useEditorHeaderActionsWrap } from '../../lib/editorHeaderActions'
 import { findMarkdown, readNote, renameNote, titleFromMarkdown, touchNote, type NoteRef } from './noteModel'
 import type { FileVersion } from './sources'
 import { reportNotePlace, type Place, type Tab } from './tabs'
@@ -61,6 +62,7 @@ export default function NoteEditPage({
   // autohide and nested scrollable content"), and follows the same "show it" trigger as Notes' own top bar, so
   // the admin-app's "show top bar" reveals both together.
   const [headerHidden, showHeader] = useScrollAutohide()
+  const { headerRef, leadingRef, actionsRef, wrap: actionsWrap } = useEditorHeaderActionsWrap()
   useEffect(() => {
     const stop = onShowTopBar(showHeader)
     return () => {
@@ -284,19 +286,21 @@ export default function NoteEditPage({
     <div className="app-shell">
       <main className="tab-content">
         <div className="tab-panel note-edit-page">
-          <div className={`notes-page-header editor-top-bar ${headerHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
-            <IconButton icon={ArrowLeft} label="Back to the notes" onClick={() => leave({ view: 'notes', sourceId, folder: parentOf(folder) })} />
+          <div ref={headerRef} className={`notes-page-header editor-top-bar ${headerHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
+            <IconButton ref={leadingRef} icon={ArrowLeft} label="Back to the notes" onClick={() => leave({ view: 'notes', sourceId, folder: parentOf(folder) })} />
             <h2>{note?.title ?? 'Note'}</h2>
-            {dirty && <span className="muted">unsaved changes</span>}
-            <CacheMenu source={source} path={path ?? folder} isDirectory={false} editing={dirty ? 'dirty' : 'open'} onDone={(kind) => (kind === 'soft' ? load() : undefined)} onError={setError} onNotice={setNotice} />
-            <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!dirty || saving} />
-            <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
-            <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
-            <IconButton icon={RefreshCw} label="Refresh the web app — starts it over, without keeping its scroll position" onClick={refreshWebApp} disabled={!path} />
-            <IconButton icon={PanelTop} label="Show its top bar — the web app's own window isn't listed to do this from elsewhere" onClick={showWebAppTopBar} disabled={!path} />
-            <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
-            <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} disabled={!path} />
-            <UserActionButton sourceId={sourceId} folder={folder} />
+            <div ref={actionsRef} className={`editor-header-actions ${actionsWrap ? 'editor-header-actions-wrap' : ''}`}>
+              {dirty && <span className="muted">unsaved changes</span>}
+              <CacheMenu source={source} path={path ?? folder} isDirectory={false} editing={dirty ? 'dirty' : 'open'} onDone={(kind) => (kind === 'soft' ? load() : undefined)} onError={setError} onNotice={setNotice} />
+              <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!dirty || saving} />
+              <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
+              <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
+              <IconButton icon={RefreshCw} label="Refresh the web app — starts it over, without keeping its scroll position" onClick={refreshWebApp} disabled={!path} />
+              <IconButton icon={PanelTop} label="Show its top bar — the web app's own window isn't listed to do this from elsewhere" onClick={showWebAppTopBar} disabled={!path} />
+              <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
+              <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} disabled={!path} />
+              <UserActionButton sourceId={sourceId} folder={folder} />
+            </div>
           </div>
           {error && <div className="error-banner">{error}</div>}
           {notice && <div className="status-banner">{notice}</div>}

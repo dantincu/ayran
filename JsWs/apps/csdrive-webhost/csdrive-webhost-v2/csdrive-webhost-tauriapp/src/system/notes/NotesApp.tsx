@@ -83,6 +83,7 @@ import {
   videoTranscodeProgress,
 } from '../../lib/secondaryWindows'
 import { useScrollAutohide } from '../../lib/scrollAutohide'
+import { useEditorHeaderActionsWrap } from '../../lib/editorHeaderActions'
 import { findMarkdown, readNote } from './noteModel'
 import { isNoteQuery, resolveLinkedPath, type LinkHit } from '../../lib/textLinks'
 import { getAppState, setAppState } from '../../lib/appState'
@@ -287,6 +288,7 @@ export default function NotesApp({
   // The editor's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
   // autohide and nested scrollable content"), following the same "show it" trigger as Notes' own top bar.
   const [editorHeaderHidden, showEditorHeader] = useScrollAutohide()
+  const { headerRef: editorHeaderRef, leadingRef: editorHeaderLeadingRef, actionsRef: editorHeaderActionsRef, wrap: editorHeaderActionsWrap } = useEditorHeaderActionsWrap()
   useEffect(() => {
     const stop = onShowTopBar(showEditorHeader)
     return () => {
@@ -1681,21 +1683,23 @@ export default function NotesApp({
       <main className="tab-content">
         {editing ? (
           <div className="tab-panel note-edit-page">
-            <div className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
-              <IconButton icon={ArrowLeft} label="Back" onClick={closeEditor} />
+            <div ref={editorHeaderRef} className={`notes-page-header editor-top-bar ${editorHeaderHidden ? 'editor-top-bar-hidden' : ''}`} data-primary-actions>
+              <IconButton ref={editorHeaderLeadingRef} icon={ArrowLeft} label="Back" onClick={closeEditor} />
               <h2>{editing.path}</h2>
-              {editing.dirty && <span className="muted">unsaved changes</span>}
-              {editing.source.branches && (
-                <IconButton
-                  icon={GitBranchPlus}
-                  label={`New branch… — carry on in a branch of the ${editing.source.kind === 'filen' ? 'account' : 'folder'}`}
-                  onClick={newBranchFromEditor}
-                />
-              )}
-              <CacheMenu source={editing.source} path={editing.path} isDirectory={false} editing={editing.dirty ? 'dirty' : 'open'} onDone={refreshEditor} onError={setError} onNotice={setNotice} />
-              <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
-              <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!editing.dirty} />
-              <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
+              <div ref={editorHeaderActionsRef} className={`editor-header-actions ${editorHeaderActionsWrap ? 'editor-header-actions-wrap' : ''}`}>
+                {editing.dirty && <span className="muted">unsaved changes</span>}
+                {editing.source.branches && (
+                  <IconButton
+                    icon={GitBranchPlus}
+                    label={`New branch… — carry on in a branch of the ${editing.source.kind === 'filen' ? 'account' : 'folder'}`}
+                    onClick={newBranchFromEditor}
+                  />
+                )}
+                <CacheMenu source={editing.source} path={editing.path} isDirectory={false} editing={editing.dirty ? 'dirty' : 'open'} onDone={refreshEditor} onError={setError} onNotice={setNotice} />
+                <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} />
+                <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!editing.dirty} />
+                <IconButton icon={Save} label="Save" onClick={() => save()} disabled={!editing.dirty} />
+              </div>
             </div>
             {error && <div className="error-banner">{error}</div>}
             {notice && <div className="status-banner">{notice}</div>}
