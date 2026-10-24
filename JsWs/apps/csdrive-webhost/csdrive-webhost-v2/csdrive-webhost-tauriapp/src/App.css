@@ -1712,6 +1712,22 @@ select {
   border-color: var(--accent);
 }
 
+/* Monaco owns its own scrolling entirely (`automaticLayout: true` keeps `.monaco-editor-host` matched to
+   this box's size via Monaco's own ResizeObserver) — unlike the built-in editors, which rely on this
+   element's own `overflow: auto` to scroll their full-height content, Monaco's host never legitimately
+   needs this box's own native scrollbar to engage at all. Found live, not assumed: during the autohiding
+   header's own resize transition, Monaco's internal relayout can lag the CSS height change by a frame or
+   two, leaving `.monaco-editor-host` transiently taller than this box — which, with `overflow: auto`, made
+   *this* element show its own real browser scrollbar for that one frame, stealing ~15px of width and
+   shifting everything Monaco renders (its own scrollbar included) left by that same amount, then snapping
+   back right the moment Monaco's layout caught up — a second, independent source of the reported "scrollbar
+   flicker," on top of Monaco's own internal thumb jank (see `MonacoCodeEditor.tsx`'s own doc comment).
+   `overflow: hidden` here closes it at the root: there is nothing left that could ever need this box's own
+   scrollbar to appear for Monaco's content, so it never can. */
+.code-editor-monaco {
+  overflow: hidden;
+}
+
 /* `FindBar.tsx` — floats over `.code-editor`'s own top-right corner, like most editors' Ctrl+F. `.code-editor`
    already has `position: relative`, so this stays pinned at the same screen position while the content below
    it scrolls (an absolutely-positioned child is placed relative to its containing block's own border box, not
@@ -1775,6 +1791,19 @@ select {
 .codemirror-editor-host .cm-editor {
   height: 100%;
   font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+}
+
+/* Monaco's own scrollbar-flicker decoy (`MonacoCodeEditor.tsx`'s `captureScrollbarGhost`/`scrollbarGhost`) —
+   a frozen, pixel-identical copy of Monaco's real track/thumb, shown only for the ~250ms the header above it
+   is mid-transition (see that file's own doc comment). `position: fixed` with viewport coordinates captured
+   at the same moment, since the editor's own horizontal position never moves during a vertical-only header
+   resize — no relative-offset math needed. `pointer-events: none` throughout: this is a visual mask, never a
+   real scrollbar, and must never swallow an actual drag/click on the real one underneath once it reappears. */
+.monaco-scrollbar-ghost-track,
+.monaco-scrollbar-ghost-thumb {
+  position: fixed;
+  pointer-events: none;
+  z-index: 50;
 }
 
 /* One flex row: the line-number gutter (when shown) beside the content column — the highlighted copy and the box,

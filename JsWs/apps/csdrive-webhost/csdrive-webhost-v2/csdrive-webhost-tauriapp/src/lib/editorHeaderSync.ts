@@ -24,9 +24,15 @@ let headerTransitioning = false
 let highlightRerendering = false
 const headerIdleListeners = new Set<() => void>()
 const highlightIdleListeners = new Set<() => void>()
+// `runAfterHeaderTransition` only ever fires once a transition *ends* — nothing told a caller the moment one
+// *begins*. Added for Monaco's own scrollbar-flicker mitigation (`MonacoCodeEditor.tsx`): that fix needs to
+// snapshot the real scrollbar's position the instant `hidden` flips, before the header's own resize has a
+// chance to move it, which `runAfterHeaderTransition` alone — "tell me when it's over" — can't give it.
+const headerTransitionListeners = new Set<(transitioning: boolean) => void>()
 
 export function beginHeaderTransition(): void {
   headerTransitioning = true
+  for (const fn of headerTransitionListeners) fn(true)
 }
 
 export function endHeaderTransition(): void {
@@ -35,10 +41,20 @@ export function endHeaderTransition(): void {
   const listeners = [...headerIdleListeners]
   headerIdleListeners.clear()
   for (const fn of listeners) fn()
+  for (const fn of headerTransitionListeners) fn(false)
 }
 
 export function isHeaderTransitioning(): boolean {
   return headerTransitioning
+}
+
+/** Calls `fn(true)`/`fn(false)` exactly when a header transition starts/ends — and once immediately, with
+ * the current state, so a caller that subscribes mid-transition (unlikely, but not assumed away) still
+ * learns of it. Returns an unsubscribe function. */
+export function subscribeHeaderTransitioning(fn: (transitioning: boolean) => void): () => void {
+  headerTransitionListeners.add(fn)
+  fn(headerTransitioning)
+  return () => headerTransitionListeners.delete(fn)
 }
 
 /** Runs `fn` once the header isn't (or is no longer) transitioning — immediately, if it already isn't. */

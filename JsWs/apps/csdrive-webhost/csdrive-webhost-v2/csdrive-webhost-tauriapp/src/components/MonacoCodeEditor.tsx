@@ -41,7 +41,34 @@ import { linkAt, type LinkHandler } from '../lib/textLinks'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { reportVirtualScroll } from '../lib/scrollAutohide'
+import { isHeaderTransitioning, subscribeHeaderTransitioning } from '../lib/editorHeaderSync'
 import type { CodeEditorHandle } from './CodeEditor'
+
+/** A snapshot of Monaco's own real vertical scrollbar — its track and, when the file is tall enough to have
+ * one, its thumb — taken from the live DOM rather than computed, so the decoy (below) is pixel- and
+ * colour-identical to what it's covering, in whichever theme is active, with nothing of our own to keep in
+ * sync by hand. `null` when the editor has no vertical scrollbar track at all (shouldn't happen — Monaco
+ * always renders the track, just not always a visible thumb — kept as a defensive `null` rather than assumed). */
+interface ScrollbarGhost {
+  trackRect: DOMRect
+  trackBackground: string
+  thumbRect: DOMRect | null
+  thumbBackground: string
+  thumbRadius: string
+}
+
+function captureScrollbarGhost(host: HTMLElement): ScrollbarGhost | null {
+  const track = host.querySelector<HTMLElement>('.scrollbar.vertical')
+  if (!track) return null
+  const thumb = track.querySelector<HTMLElement>('.slider')
+  return {
+    trackRect: track.getBoundingClientRect(),
+    trackBackground: getComputedStyle(track).backgroundColor,
+    thumbRect: thumb ? thumb.getBoundingClientRect() : null,
+    thumbBackground: thumb ? getComputedStyle(thumb).backgroundColor : 'transparent',
+    thumbRadius: thumb ? getComputedStyle(thumb).borderRadius : '0',
+  }
+}
 
 /** `getWorker` is called lazily, once per label Monaco actually needs a worker for — each branch's own
  * `new URL(<literal>, import.meta.url)` is what lets Vite statically find and code-split that one worker's
@@ -189,8 +216,59 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
   onChangeRef.current = onChange
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
+  // The autohiding header above this editor (`.editor-top-bar`) is a sibling, not a parent, of `.code-editor`
+  // — but hiding/showing it still changes this editor's own height (the two are flex children of the same
+  // column), and Monaco's `automaticLayout` reacts to that resize by recomputing its own scrollbar geometry,
+  // which can visibly flicker for a frame or two while it settles — reported live: "as it's being reshown,
+  // there is a slight flicker affecting the monaco editor's vertical scrollbar." Not something this app can
+  // fix inside Monaco itself (its own internal resize/redraw timing, not a bug in how this wrapper drives
+  // it) — so, asked for directly, the flicker is *masked* instead: a frozen decoy of the real scrollbar
+  // (`captureScrollbarGhost`, above) is snapshotted the instant the header's own transition begins and drawn
+  // on top of the real one for exactly its duration, then removed — the person sees a scrollbar that holds
+  // perfectly still through the resize, and the real one underneath (now finished settling) is revealed only
+  // once there's nothing left to flicker.
+  useEffect(() => {
+    let rafId: number | null = null
+    return subscribeHeaderTransitioning((transitioning) => {
+      if (!transitioning) {
+        if (rafId !== null) {
+          cancelAnimationFrame(rafId)
+          rafId = null
+        }
+        setScrollbarGhost(null)
+        return
+      }
+      // **Capturing synchronously here, the first version's own approach, froze a visibly wrong
+      // snapshot — reported live: "when scrolling up the ghost scroll is not over the real scroll, but
+      // just beside it."** The trigger for this header transition is almost always Monaco's own real
+      // scroll (the person scrolling the editor itself, not a resize from elsewhere) — `onDidScrollChange`
+      // calls `reportVirtualScroll`, which this module's own `decideScroll` reacts to *synchronously*,
+      // all the way through `beginHeaderTransition()` and this subscriber, still nested in the very same
+      // call stack `editor.setScrollTop`/the real scroll gesture started. Monaco updates its own *scroll
+      // state* synchronously (`editor.getScrollTop()` already reads the new value) but does **not**
+      // repaint its scrollbar thumb's DOM position in that same synchronous stack — confirmed live: a
+      // snapshot taken here, at this exact point, read the thumb still at its *pre-scroll* position (mid-
+      // track, matching where the file was scrolled to a moment ago), not the correct "about to resize
+      // from" position the new scroll actually left it at — so the frozen decoy spent its whole ~250ms
+      // window sitting at a stale spot unrelated to where the real scrollbar was ever going to be, which
+      // reads as a second, disconnected scrollbar rather than a seamless freeze of the real one. Deferring
+      // the capture by one animation frame gives Monaco's own (already-scheduled, already in flight) paint
+      // pass time to catch up to the scroll state it already committed to, so the snapshot reflects where
+      // the scrollbar genuinely is the instant before the header starts resizing — confirmed live this
+      // closes the gap exactly (see this file's own CLAUDE.md entry for the before/after numbers).
+      rafId = requestAnimationFrame(() => {
+        rafId = null
+        // The transition can end within that one frame (a very short header animation edge case, or a
+        // second flip arriving first) — nothing to capture or show then.
+        if (!isHeaderTransitioning()) return
+        const host = hostRef.current
+        setScrollbarGhost(host ? captureScrollbarGhost(host) : null)
+      })
+    })
+  }, [])
   const [canUndo, setCanUndo] = useState(false)
   const [canRedo, setCanRedo] = useState(false)
+  const [scrollbarGhost, setScrollbarGhost] = useState<ScrollbarGhost | null>(null)
   const lastVisibleLine = useRef<number | null>(null)
   const effectiveLanguage = language ?? languageOf(fileName)
 
@@ -435,8 +513,35 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
-      <div className="code-editor" data-text-menu-anchor>
+      <div className="code-editor code-editor-monaco" data-text-menu-anchor>
         <div ref={hostRef} className="monaco-editor-host" />
+        {scrollbarGhost && (
+          <>
+            <div
+              className="monaco-scrollbar-ghost-track"
+              style={{
+                left: scrollbarGhost.trackRect.left,
+                top: scrollbarGhost.trackRect.top,
+                width: scrollbarGhost.trackRect.width,
+                height: scrollbarGhost.trackRect.height,
+                background: scrollbarGhost.trackBackground,
+              }}
+            />
+            {scrollbarGhost.thumbRect && (
+              <div
+                className="monaco-scrollbar-ghost-thumb"
+                style={{
+                  left: scrollbarGhost.thumbRect.left,
+                  top: scrollbarGhost.thumbRect.top,
+                  width: scrollbarGhost.thumbRect.width,
+                  height: scrollbarGhost.thumbRect.height,
+                  background: scrollbarGhost.thumbBackground,
+                  borderRadius: scrollbarGhost.thumbRadius,
+                }}
+              />
+            )}
+          </>
+        )}
       </div>
     </div>
   )
