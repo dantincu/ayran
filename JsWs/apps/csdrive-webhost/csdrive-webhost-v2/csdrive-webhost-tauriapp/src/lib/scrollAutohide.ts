@@ -1,10 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import {
-  beginHeaderTransition,
-  endHeaderTransition,
-  HEADER_TRANSITION_MS,
-  runAfterHighlightRerender,
-} from './editorHeaderSync'
+import { beginHeaderTransition, endHeaderTransition, HEADER_TRANSITION_MS, runAfterHighlightRerender } from './editorHeaderSync'
 
 const HIDE_AFTER_PX = 40
 const DIRECTION_THRESHOLD_PX = 4
@@ -113,7 +108,101 @@ const AT_BOTTOM_SLACK_PX = 2
  * is used as the stable identity key (`WeakMap`) a real DOM scroll event's `target` would be, so a Monaco
  * instance's own scroll history runs through the exact same `decideScroll` as any other element's — the
  * "pinned at the bottom" and "content height changed, this is typing" guards included, with no second copy
- * of either to keep in sync. */
+ * of either to keep in sync.
+ *
+ * **A scroll inside an open popup (`Modal`) must never toggle the page's own header, asked for directly**:
+ * the person scrolls a long list or a big text box *inside* a modal, and that scroll — bubbling to this
+ * same capture-phase `document` listener, since `scroll` reaches it regardless of which element it actually
+ * fired on — used to be read as if the page behind the modal had scrolled, hiding or showing its header for
+ * no reason connected to what the person was actually looking at. `.modal-overlay` (`components/Modal.tsx`)
+ * is the one marker every popup already renders, so `onScroll`/`onVirtualScroll` simply skip a target that
+ * has one as an ancestor (`Element.closest`) — not just skipping the hide/show decision but never recording
+ * its `scrollTop`/`scrollHeight` or starting to `ResizeObserver` it either, since none of that bookkeeping
+ * means anything for an element whose scroll was never meant to drive this header in the first place. A
+ * modal that later closes leaves no residue: its own content is normally unmounted with it, and even if the
+ * identical element were somehow reused outside a modal afterward, the first scroll event on it would just
+ * seed `lastTop`/`lastHeight` fresh, exactly as any newly-seen element already does.
+ *
+ * **"The header only shows back when scrolling up near the start of the page — scroll a bit further and
+ * scrolling up stops bringing it back," reported live.** Confirmed live, not guessed, by installing a
+ * diagnostic listener directly on `document` and dumping every real `scroll` event's own `scrollTop`/
+ * `scrollHeight` across one ordinary scroll gesture — and the real trace was far stranger than "a single
+ * collapse taking a while to settle": both `scrollTop` *and* `scrollHeight` were oscillating back and forth,
+ * tick after tick, for the entire gesture (one real run: `hiddenNow` flipping `true`/`false`/`true`/`false`
+ * across more than twenty consecutive events, `scrollTop` wandering up and down by tens of pixels with no
+ * net direction), not settling toward a single collapse the way "the shake" above does. **This is the exact
+ * same class of problem as "the shake," just triggered a different way**: the header sits directly *above*
+ * the rest of `.tab-panel`'s content in the document, and CSS **scroll anchoring** — on by default, the
+ * browser's own "keep whatever's on screen from jumping when something *above* the viewport changes size"
+ * feature — actively adjusts `scrollTop` to compensate every time the header's own collapse/expand changes
+ * its height, which is itself a real `scroll` event this hook reads as a genuine gesture; reacting to it by
+ * flipping `hidden` again changes the header's height *again*, which the browser then compensates for
+ * *again* — a self-sustaining feedback loop with no reason to ever stop on its own. The original
+ * `height === lastH` guard (above, built for "typing") only ever *happened* to dampen this by accident — most
+ * individual ticks in the oscillation have a different `scrollHeight` than the one before, so most of them
+ * got silently dropped — which is exactly why the symptom looked like "sometimes works, sometimes doesn't"
+ * rather than a visible shake: enough of the oscillation's own noise was being swallowed to usually settle
+ * quietly, just not reliably, and not in the person's actual intended direction.
+ *
+ * **A fix was first tried at the guard itself** — bypassing `height === lastH` for a time after a flip was
+ * requested, on the reasoning that *our own* known collapse/expand shouldn't trip a check meant for
+ * *unexplained* height changes. This was a real, measurable improvement in isolation (a scripted trial —
+ * reset, scroll down, a short randomized delay, scroll up, repeat — went from 8 failures in 15 attempts down
+ * to 3 with one version of it) but, tested further, made the *oscillation itself* measurably worse (up to 7
+ * failures in 15) once the bypass window was widened to close that gap: letting more of the guard's own
+ * events through meant letting more of the oscillation's own self-reinforcing noise through too — treating
+ * the guard's accidental damping as if it were the problem, when the problem was the oscillation it was
+ * (imperfectly) damping in the first place.
+ *
+ * **`overflow-anchor: none` on `.tab-content` (`App.css`) removes the oscillation itself** — the same
+ * property `markdown.rs`'s own standalone bootstrap script already sets, for the identical reason, on a
+ * completely different page (see CLAUDE.md's "A note opened as a web app..."). With it, a header's own
+ * collapse/expand no longer perturbs `scrollTop` at all, confirmed live by re-running the same diagnostic
+ * trace from the "reported live" paragraph above: what used to be 16–24+ chaotic events per gesture dropped
+ * to 3 clean ones, with `scrollTop` moving in one direction and settling, not wandering. This doesn't reopen
+ * "the shake" above, which is a different scrolling region (`.code-editor`, not `.tab-content`) with its own,
+ * already-correct `pinnedAtBottom` protection — nor does it change what `overflow-anchor` does for genuine,
+ * person-driven scrolling, which this property was never involved in to begin with.
+ *
+ * **This CSS fix alone is *not* sufficient, and an early "0 failures in 15" result claiming otherwise was
+ * wrong — caught by testing a more realistic pattern, not by further inspection of the oscillation itself.**
+ * The scripted trial that first measured 0/15 reset aggressively to the top between attempts and used a short,
+ * randomized delay — exactly the shape the oscillation itself needed to be provoked, but not the shape of an
+ * ordinary person scrolling down, pausing to read, then scrolling back up without ever returning to the top.
+ * A second trial built for that realistic shape (scroll down ~600px, a genuine ~600ms pause, scroll back up
+ * ~600px, repeated without resetting) found the CSS fix alone still failed **5 times in 15** — a real,
+ * separate gap the oscillation's own elimination never touched. Tracing one failing trial down to individual
+ * events found the actual mechanism: with the oscillation gone, each scroll gesture now produces exactly
+ * *one* native `scroll` event, not a stream of momentum ticks — so `lastHeight` for the target is never
+ * updated between the down-scroll (while the header is shown) and the up-scroll (after the header's own
+ * collapse transition has finished and settled `clientHeight` at its new, smaller value). The up-scroll event
+ * is therefore *always* the first opportunity this hook has to observe the post-collapse height, no matter
+ * how long the person paused first — 600ms, 3 seconds, a minute — because nothing else ever walks
+ * `lastHeight` forward in between. A **time-based** guard (bypass the strict `height === lastH` check for a
+ * window after a flip was requested) can never correctly bound this: the "staleness" here isn't about
+ * *recency*, it's about there being no intermediate observation at all, at any duration. This was tried twice
+ * and failed both times for exactly that reason — first as a widened bypass window on the oscillation case
+ * above (made the oscillation itself worse, see "A fix was first tried at the guard itself"), and again,
+ * restored alongside this CSS fix, as a dedicated synchronous ref-based grace period (`recentlyToggledUntil`,
+ * 400ms) aimed specifically at this realistic pattern — re-measured at **still 5/15**, identical to the CSS
+ * fix alone, because 400ms (or any fixed duration) has no bearing on whether an intermediate event ever fired.
+ *
+ * **The actual fix is the directional-consistency check in `decideScroll`** (`consistentWithOwnRequest`,
+ * driven by the `lastRequestedHidden` ref in `useScrollAutohide`, both below): instead of asking "has enough
+ * time passed since we last changed `hidden`," it asks "does this height change match the direction *we*
+ * would expect from our own last request" — shorter after we asked to hide, taller after we asked to show.
+ * This needs no timing assumption at all, because it's judged from what was requested, not when. Verified
+ * live, with the time-based ref removed entirely: 0 failures in 15 attempts on the original adversarial
+ * (reset-to-top, short randomized delay) trial, 0/15 and then 0/30 on the realistic (600ms pause, no reset)
+ * trial, and 0/6 on a trial using a deliberate 3-second pause specifically to confirm the fix's own
+ * time-independence (a time-based guard of any practical duration would have failed this one by construction).
+ * **Re-verified against Monaco's own editor header specifically** (a sibling-element case, not
+ * `.tab-content`'s own child-content case — see `reportVirtualScroll`'s own doc comment below): 0/10 on a
+ * scroll-down-pause-scroll-up trial and 0/12 on a trial that never returns to the top, descending further
+ * into the document on every pass — the exact "works near the start, breaks further down" shape originally
+ * reported, reproduced and confirmed fixed through the virtual-scroll bridge directly, since this harness
+ * could not reliably give Monaco's own input surface real OS focus to drive it through genuine wheel/keyboard
+ * input (see CLAUDE.md's own recurring notes on WebView2 focus quirks for exactly this class of limitation). */
 const VIRTUAL_SCROLL_EVENT = 'csdrive-virtual-scroll'
 interface VirtualScrollDetail {
   key: object
@@ -138,10 +227,26 @@ function decideScroll(
   lastTop: WeakMap<object, number>,
   lastHeight: WeakMap<object, number>,
   setHidden: (value: boolean) => void,
+  lastRequestedHidden: boolean | null,
 ): void {
   const last = lastTop.get(target) ?? 0
   const lastH = lastHeight.get(target) ?? height
-  if (height === lastH) {
+  // A height change is also trusted — not just an exact match — when it moved in the direction *we ourselves*
+  // would expect from our own last request: shorter after asking to hide, taller after asking to show. See the
+  // module doc's own "a scroll-up could stop working past a certain point" paragraph for why a *time*-based
+  // version of this (bypass the guard for a fixed window after a flip) isn't enough: nothing else ever updates
+  // `lastHeight` for this target between scroll events, so the first event *after* our own transition has
+  // fully settled is also the first chance to ever observe the new height — however long that transition
+  // itself took, and regardless of how long the person then paused before scrolling again. Checking the
+  // *direction* instead of a *duration* needs no timing assumption at all: it's correct the instant our own
+  // request explains what changed, no matter when that request was made. For a target where the header isn't
+  // actually part of what's being measured (`.editor-top-bar` beside `.code-editor`, siblings, not
+  // parent/child — unlike `.tab-content`, which contains `.help-header` as a sibling of the very content it
+  // measures), this is harmless and inert: nothing about our own requests ever moves that target's height in
+  // the first place, so a *genuine*, unexplained change (typing) never happens to line up with whichever
+  // direction we last asked for, and the original strict guard still applies to it as before.
+  const consistentWithOwnRequest = lastRequestedHidden === true ? height <= lastH : lastRequestedHidden === false ? height >= lastH : false
+  if (height === lastH || consistentWithOwnRequest) {
     const delta = top - last
     const pinnedAtBottom = top + clientHeight >= height - AT_BOTTOM_SLACK_PX
     if (top <= HIDE_AFTER_PX) setHidden(false)
@@ -163,7 +268,14 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
   // since been requested — the same "only the latest matters" shape `HighlightScheduler` already uses for an
   // unrelated reason.
   const generation = useRef(0)
+  // Set synchronously, the instant a flip is *requested* — not deferred to whenever `runAfterHighlightRerender`
+  // and React's own update eventually apply it, which isn't guaranteed to happen within the same tick for an
+  // update triggered from a native, non-React-managed `scroll` event. `decideScroll` reads this to tell its
+  // own self-inflicted height changes apart from an unexplained one (see its own doc comment) — tracking
+  // *what we last asked for*, not *when*, since there's no reliable duration to time that check against.
+  const lastRequestedHidden = useRef<boolean | null>(null)
   const setHidden = useCallback((value: boolean) => {
+    lastRequestedHidden.current = value
     const myGeneration = ++generation.current
     runAfterHighlightRerender(() => {
       if (generation.current !== myGeneration) return
@@ -188,6 +300,9 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
     function onScroll(e: Event) {
       const target = e.target
       if (!(target instanceof Element)) return
+      // A scroll that happened inside an open popup is never this header's business — see the module doc's
+      // own "A scroll inside an open popup" paragraph above.
+      if (target.closest('.modal-overlay')) return
       // A target seen for the first time defaults to 0, not its current position: every scrollable region in
       // this app starts at the top when it mounts, so this gives the very *first* scroll event a real delta
       // too — the same thing the original, single-target implementation got for free by reading `scrollTop`
@@ -198,13 +313,14 @@ export function useScrollAutohide(): [boolean, () => void, () => void] {
       // never actually differ (it renders its content via its own internal transform, not native overflow),
       // so observing it would misfire the fallback on every layout change.
       if (!lastTop.current.has(target)) observer.current?.observe(target)
-      decideScroll(target, target.scrollTop, target.scrollHeight, target.clientHeight, lastTop.current, lastHeight.current, setHidden)
+      decideScroll(target, target.scrollTop, target.scrollHeight, target.clientHeight, lastTop.current, lastHeight.current, setHidden, lastRequestedHidden.current)
     }
     // The same decision, for a scroll that never fires a native DOM event at all (`reportVirtualScroll`,
     // above) — dispatched on `document` directly, so no capture phase is needed to see it.
     function onVirtualScroll(e: Event) {
       const { key, top, height, clientHeight } = (e as CustomEvent<VirtualScrollDetail>).detail
-      decideScroll(key, top, height, clientHeight, lastTop.current, lastHeight.current, setHidden)
+      if (key instanceof Element && key.closest('.modal-overlay')) return
+      decideScroll(key, top, height, clientHeight, lastTop.current, lastHeight.current, setHidden, lastRequestedHidden.current)
     }
     document.addEventListener('scroll', onScroll, { capture: true, passive: true })
     document.addEventListener(VIRTUAL_SCROLL_EVENT, onVirtualScroll)
