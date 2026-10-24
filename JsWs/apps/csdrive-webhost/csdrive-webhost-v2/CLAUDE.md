@@ -2022,6 +2022,51 @@ file removed via a real `fs_remove` call — nothing was left behind for a later
 
 Tested live on desktop (isolated data): sorting by size, date (folders first kept), name; searches by name (case), contents at every depth (line and folder shown, the big and the binary file reported), regular expressions line by line and on the whole contents, modified / created / size intervals with an edge left out, extension, a refused expression, a 60-file folder paged 25 at a time (next, next, previous, *Show it in its folder*); notes — sort by title and created, the index tools going off, a title and a contents search at every depth with the parent titles, the list coming back on clear. Tested on the Android emulator too (isolated data): the panel fits the phone's width with no sideways scroll, a contents search at every depth (each result with its folder), sorting by size through the one detailed listing, and the indexes dialog's interval buttons ticking a whole interval and converting it. **Not run live:** a search or sort in a Filen account (the cache's listings feed the same generator; it is covered by unit tests only) and the notes search on the Android emulator (verified on desktop).
 
+## Pagination for "Insert a path…"'s own browsers
+
+**"The folder listing from the modal that opens when I tap on the insert path button from the editor pages: that
+listing also needs to be paginated (just like all folder and note listings are paginated — with buttons for
+next/prev page and clicking on the current page opens a popover for selecting the new page from a list of all
+pages)."** Two browsers, both missing it: `components/FileExplorerModal.tsx` (the generic folder browser "Insert
+a path…" and the Files tab's own file editor use) and `system/notes/InsertPathModal.tsx`'s own notes-aware "Notes"
+mode (the notebooks list, and the list of notes once inside one). Both now follow the exact pattern
+`system/notes/LocationPicker.tsx` already established for this ("Add a notebook…"'s own folder browser) — plain
+`page`/`pageSize` state (`DEFAULT_PAGE_SIZE`/`getGlobalPageSize`/`setGlobalPageSize` from `lib/listPageSize.ts`,
+the same global `listPageSize` setting every other paginated list shares), a slice of the full list for the page
+shown, and the shared `<Pagination>` component rendered below the list — not a new mechanism of its own.
+
+`FileExplorerModal.tsx`: `entries` (the full folder listing `list(path)` returns) is sliced to
+`entries.slice(currentPage * pageSize, (currentPage + 1) * pageSize)` for the `<ul>`'s own `.map`, with `page`
+reset to `0` whenever the listing itself reloads (a folder change, in `list`'s existing effect) so a page number
+from the previous folder is never silently kept against a shorter one.
+
+`InsertPathModal.tsx`: one `page`/`pageSize` pair serves *both* of its own lists (the notebooks list and, once
+inside a notebook, its notes list), since only one is ever shown at a time — `totalItems` is `notebooks.length`
+or `notes.length` depending on `browse.view`, and `page` resets to `0` on every `browse` change (switching
+notebooks, or going back to the notebooks list, always starts at page 1 of the new list). The one `<Pagination>`
+render reflects whichever list is currently showing.
+
+Verified live (isolated **debug** data folder — a scratch `DEFAULT_DATA_FOLDER`/WebView2 profile for this pass
+alone, reverted and the debug binary rebuilt clean afterward, confirmed by a clean `git diff` on `layout.rs`;
+desktop, real CDP, real button clicks through the actual UI, not direct backend calls): **`FileExplorerModal`**
+— a real folder of 33 files opened via "Insert a path…" showed "1–25 of 33" and "1 / 2"; **Next** correctly
+advanced to "26–33 of 33"/"2 / 2" with the remaining 8 files; the page-number button's own popover listed "1" and
+"2"; clicking "1" in it navigated back correctly. **`InsertPathModal`**'s notes mode, against a real notebook
+with exactly 30 notes created directly on disk for this test (30 folder pairs, `[note-children].json`, a
+registered `notes.notebooks` entry — all removed afterward): the notebooks list itself (one entry) correctly
+showed "1–1 of 1"/"1 / 1"; opening it showed "1–25 of 30"/"1 / 2" with notes 30 down to 6; **Next** advanced to
+"26–30 of 30"/"2 / 2" with the remaining 5; the page popover listed pages "1" and "2" with "2" marked current, and
+clicking "1" navigated back to the first 25; changing the page-size `<select>` to 10 correctly re-paged to
+"1–10 of 30"/"1 / 3" and persisted `listPageSize` to the backend (confirmed via `get_global_setting`), reset back
+to 25 afterward so the change doesn't linger as a side effect of testing. **Found along the way, not fixed, out
+of scope for this request**: `system/notes/NotePage.tsx`'s own *plain* notes listing (the ordinary, un-searched
+view of a notebook's or note's children) has no pagination at all — it renders every child note in one unbroken
+table, unlike `NoteSearchResults`' own paged generator-backed results. The person's own framing ("just like all
+folder and note listings are paginated") assumes this one already has it; it doesn't, confirmed live against the
+real 30-note test notebook above (30 edit buttons found with no page controls). Left alone here since the actual
+ask named only the Insert-a-path modal — raised here so it isn't mistaken for already covered. `npx tsc --noEmit`
+and `npm run build` both clean; no Rust change, so `cargo test --lib` doesn't apply.
+
 ## Links planted in `user/`
 
 A directory junction or symlink planted inside `user/` (web apps can't create one — no command does — but the OS user, an unzip or a `git clone` can) is **refused in every direction**: the scope follows it to its real location, so listing, reading or creating files through a link that leads outside is an error (this used to be a gap with the fs plugin, which only resolved paths that already existed). The link itself can still be removed or renamed from inside, and its target is never touched. Tested with real symlinks (unit tests) and a Windows junction (live). On Android the `user` folder is in the app's private storage, so only `adb run-as` on a debug build (or root) can plant a link at all.

@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { BookOpen, File as FileIcon, Files, Folder, Paperclip } from 'lucide-react'
 import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
+import Pagination from '../../components/Pagination'
 import FileExplorerModal, { joinPath } from '../../components/FileExplorerModal'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
 import { NOTE_FILES_INDEX, findMarkdown, readChildren, type NoteRef } from './noteModel'
 import { entryKey, loadNotebooks, notebookTitle, type NotebookEntry } from './notebooks'
 import type { FileSource } from './sources'
@@ -32,6 +34,17 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
   const [notebooks, setNotebooks] = useState<NotebookEntry[] | null>(null)
   const [notes, setNotes] = useState<NoteRef[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
+
+  useEffect(() => {
+    getGlobalPageSize().then(setPageSizeState, () => {})
+  }, [])
+
+  // A fresh page for every view (the notebooks list, or a different notebook's/note's own children).
+  useEffect(() => {
+    setPage(0)
+  }, [browse])
   // Where the generic explorer starts when switched to from here — its own path (initialPath, or a note's own
   // files folder when "Its files…" opened it) — kept in a ref (not state) plus a key that bumps to force a fresh
   // mount of FileExplorerModal, which otherwise keeps browsing from wherever it was left.
@@ -89,6 +102,12 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
     }
   }
 
+  const totalItems = browse.view === 'notebooks' ? (notebooks?.length ?? 0) : (notes?.length ?? 0)
+  const pageCount = Math.max(1, Math.ceil(totalItems / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const shownNotebooks = notebooks?.slice(currentPage * pageSize, (currentPage + 1) * pageSize) ?? null
+  const shownNotes = notes?.slice(currentPage * pageSize, (currentPage + 1) * pageSize) ?? null
+
   if (mode === 'files') {
     return (
       <FileExplorerModal
@@ -123,7 +142,7 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
         <ul className="picker-list">
           {notebooks === null && !error && <li className="muted">Loading…</li>}
           {notebooks?.length === 0 && <li className="muted">No notebooks are listed for this source.</li>}
-          {notebooks?.map((n) => (
+          {shownNotebooks?.map((n) => (
             <li key={entryKey(n)}>
               <button className="link-button entry-name" onClick={() => setBrowse({ view: 'notes', folder: n.folder, title: notebookTitle(n) })}>
                 <Folder size={15} strokeWidth={2} aria-hidden="true" /> {notebookTitle(n)}
@@ -136,7 +155,7 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
         <ul className="picker-list">
           {notes === null && !error && <li className="muted">Loading…</li>}
           {notes?.length === 0 && <li className="muted">No notes here.</li>}
-          {notes?.map((note) => (
+          {shownNotes?.map((note) => (
             <li key={note.folder} className="window-item">
               <button className="link-button entry-name" onClick={() => setBrowse({ view: 'notes', folder: note.folder, title: note.title })}>
                 <Folder size={15} strokeWidth={2} aria-hidden="true" /> {note.title}
@@ -149,6 +168,16 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
           ))}
         </ul>
       )}
+      <Pagination
+        page={currentPage}
+        pageSize={pageSize}
+        totalItems={totalItems}
+        onPageChange={setPage}
+        onPageSizeChange={(size) => {
+          setPageSizeState(size)
+          setGlobalPageSize(size).catch(() => {})
+        }}
+      />
       <div className="dialog-actions">
         <button type="button" onClick={onClose}>
           Cancel

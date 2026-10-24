@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { File as FileIcon, Folder } from 'lucide-react'
 import Modal from './Modal'
 import IconButton from './IconButton'
+import Pagination from './Pagination'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
 
 export interface ExplorerEntry {
   name: string
@@ -35,13 +37,23 @@ export default function FileExplorerModal({ title, list, initialPath, onPick, on
   const [path, setPath] = useState(initialPath)
   const [entries, setEntries] = useState<ExplorerEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
+
+  useEffect(() => {
+    getGlobalPageSize().then(setPageSizeState, () => {})
+  }, [])
 
   useEffect(() => {
     let alive = true
     setEntries(null)
     setError(null)
     list(path).then(
-      (result) => alive && setEntries(result),
+      (result) => {
+        if (!alive) return
+        setEntries(result)
+        setPage(0)
+      },
       (e) => alive && setError(e instanceof Error ? e.message : String(e)),
     )
     return () => {
@@ -50,6 +62,9 @@ export default function FileExplorerModal({ title, list, initialPath, onPick, on
   }, [list, path])
 
   const segments = path ? path.split('/') : []
+  const pageCount = Math.max(1, Math.ceil((entries?.length ?? 0) / pageSize))
+  const currentPage = Math.min(page, pageCount - 1)
+  const shown = entries?.slice(currentPage * pageSize, (currentPage + 1) * pageSize) ?? null
 
   return (
     <Modal title={title} actions={actions} onClose={onClose}>
@@ -70,7 +85,7 @@ export default function FileExplorerModal({ title, list, initialPath, onPick, on
       <ul className="picker-list">
         {entries === null && !error && <li className="muted">Loading…</li>}
         {entries?.length === 0 && <li className="muted">This folder is empty.</li>}
-        {entries?.map((entry) => (
+        {shown?.map((entry) => (
           <li key={entry.name}>
             {entry.isDirectory ? (
               <button className="link-button entry-name" onClick={() => setPath(joinPath(path, entry.name))}>
@@ -84,6 +99,16 @@ export default function FileExplorerModal({ title, list, initialPath, onPick, on
           </li>
         ))}
       </ul>
+      <Pagination
+        page={currentPage}
+        pageSize={pageSize}
+        totalItems={entries?.length ?? 0}
+        onPageChange={setPage}
+        onPageSizeChange={(size) => {
+          setPageSizeState(size)
+          setGlobalPageSize(size).catch(() => {})
+        }}
+      />
       <div className="dialog-actions">
         <IconButton icon={Folder} label="Up a folder" onClick={() => setPath(parentOf(path))} disabled={!path} />
         <button type="button" onClick={onClose}>
