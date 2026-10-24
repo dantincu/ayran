@@ -14,6 +14,7 @@ import {
 import { useNotesSources } from './useSources'
 import { NOTEBOOK_INTERNALS_INDEX } from './noteModel'
 import { USER_ACTION_JSON } from '../../lib/appConfig'
+import { notebookTitle } from './notebooks'
 
 /** The dialog that **chooses the page** of the User Action (right click or long press on its button, or the button when no page was chosen
  * yet): the page that is set for the place being shown — its notebook's, or the app's outside every notebook (see `userAction.ts`) — with
@@ -84,7 +85,7 @@ export default function UserActionModal({ onClose }: { onClose: () => void }) {
     }
   }
 
-  const where = scope === null ? '' : scope.kind === 'notebook' ? `The notebook “${scope.notebook.title}”` : 'The Notes app (outside any notebook)'
+  const where = scope === null ? '' : scope.kind === 'notebook' ? `The notebook “${notebookTitle(scope.notebook)}”` : 'The Notes app (outside any notebook)'
   const shown = page ? `${sourceOf(page.sourceId)?.label ?? page.sourceId} · /${page.path}` : null
 
   const actions = (

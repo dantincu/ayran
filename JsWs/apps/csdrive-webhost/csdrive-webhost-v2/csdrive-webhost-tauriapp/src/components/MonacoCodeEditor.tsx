@@ -617,7 +617,6 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
             <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={() => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null)} />
           )}
           {extra}
-          <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
       <div className="code-editor code-editor-monaco" data-text-menu-anchor>

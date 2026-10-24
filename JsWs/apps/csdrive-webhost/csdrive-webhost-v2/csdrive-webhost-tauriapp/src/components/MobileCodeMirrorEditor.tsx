@@ -327,7 +327,6 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
           {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
           {onOpenLink && <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={editOrInsertLink} />}
           {extra}
-          <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
       <div className="code-editor" data-text-menu-anchor>
