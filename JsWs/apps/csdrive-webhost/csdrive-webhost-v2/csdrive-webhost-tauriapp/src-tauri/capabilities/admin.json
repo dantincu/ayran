@@ -32,6 +32,8 @@
     "allow-read-log-tail",
     "allow-export-log-file",
     "allow-get-ayran-tag-config",
-    "allow-set-ayran-tag-config"
+    "allow-set-ayran-tag-config",
+    "allow-get-ayran-global-name",
+    "allow-set-ayran-global-name"
   ]
 }

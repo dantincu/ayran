@@ -1677,8 +1677,20 @@ select {
   gap: 6px;
 }
 
+/* Reported live: on mobile the row can hold more buttons (CodeMirror's own toolbar, up to ten counting the
+   User Action pair) than a phone's own width has room for, and with no wrap the row stayed one line wide —
+   wider than the viewport — so `justify-content: flex-end` packed it against the *right* edge of that
+   oversized line, pushing the *first* button, Undo, off the *left* edge of the screen entirely (not merely
+   crowded — genuinely unreachable). `flex-wrap: wrap` fixes it at the root: a flex container fills each line
+   in DOM order, as many items as fit, before starting a new one — `justify-content` only ever decides how the
+   items *already placed* on one line are packed within it, never which line an item lands on — so Undo, being
+   first, is always on the row's own first line regardless of how many trailing buttons wrap to a line below
+   it. Inert on desktop, where the row already fits on one line with room to spare: wrapping only ever
+   activates once the content genuinely doesn't fit, matching what was asked ("wrap when its length is
+   greater than the viewport width"), not an unconditional multi-row layout. */
 .code-editor-toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
 }

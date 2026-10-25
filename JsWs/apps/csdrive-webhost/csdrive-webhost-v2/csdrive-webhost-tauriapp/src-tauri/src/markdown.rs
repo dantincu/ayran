@@ -16,6 +16,7 @@ use std::path::Path;
 
 use pulldown_cmark::{html, Event, Options, Parser, Tag, TagEnd};
 
+use crate::ayran_global;
 use crate::ayran_tags;
 
 /// Whether the file is one this module renders.
@@ -686,8 +687,13 @@ fn body_with_line_anchors<'a>(events: impl Iterator<Item = (Event<'a>, Range<usi
 /// The whole html page for markdown `source` (a file called `file_name`). `ayran` is the ayran-tag
 /// transform's current configuration (`ayran_tags::current()`, read once by the caller — see that
 /// module's own doc for what it does); disabled (an empty `tag_name`) it costs nothing beyond the one
-/// substring check `ayran_tags::apply` itself makes.
-pub fn render_page(source: &str, file_name: &str, ayran: &ayran_tags::AyranConfig) -> String {
+/// substring check `ayran_tags::apply` itself makes. `global_name` is the configured name of the one
+/// JavaScript global the bootstrap script below creates (`ayran_global::current()`, default `"ayran"`) —
+/// substituted into `BOOTSTRAP`'s own text only, never into the final page as a whole: `title`/`body` are
+/// a person's own content and could perfectly well contain the literal word "ayran" with nothing to do
+/// with this feature, which a blind replace over the whole page would silently corrupt (see
+/// `ayran_global`'s own module doc for the full reasoning).
+pub fn render_page(source: &str, file_name: &str, ayran: &ayran_tags::AyranConfig, global_name: &str) -> String {
     let options = Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options).into_offset_iter().collect();
 
@@ -706,9 +712,12 @@ pub fn render_page(source: &str, file_name: &str, ayran: &ayran_tags::AyranConfi
 
     let body = body_with_line_anchors(events.into_iter(), source, ayran);
     let body = ayran_tags::apply(&body, ayran);
+    // Scoped to the bootstrap script's own fixed text — see this function's own doc for why the whole
+    // assembled page (title/body, a person's own content) must never go through this replace.
+    let bootstrap = BOOTSTRAP.replace(ayran_global::DEFAULT_NAME, global_name);
     format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-         <title>{}</title><style>{STYLE}</style></head><body>\n{body}\n<script>{CODE_HIGHLIGHT_SCRIPT}</script>\n<script>{BOOTSTRAP}</script></body></html>",
+         <title>{}</title><style>{STYLE}</style></head><body>\n{body}\n<script>{CODE_HIGHLIGHT_SCRIPT}</script>\n<script>{bootstrap}</script></body></html>",
         escape(&title)
     )
 }
@@ -721,7 +730,7 @@ mod tests {
     /// any of these fixtures — none of them mention `a-x`) — what every pre-existing test here uses, so a
     /// change to this module doesn't silently stop exercising the composition of the two features.
     fn render_page(source: &str, file_name: &str) -> String {
-        super::render_page(source, file_name, &ayran_tags::AyranConfig::default())
+        super::render_page(source, file_name, &ayran_tags::AyranConfig::default(), ayran_global::DEFAULT_NAME)
     }
 
     #[test]
@@ -903,7 +912,7 @@ mod tests {
         // rendering pipeline (`render_page`, not `ayran_tags::apply` called directly on a hand-built
         // string), so it also proves the two features compose, not just that each works in isolation.
         let source = "<a-x a-y=\"1\" a-z=\"div#wrap\"/>\n\nsome **markdown** content\n\n<a-x a-y=\"1\"/>\n";
-        let page = super::render_page(source, "t.md", &ayran_tags::AyranConfig::default());
+        let page = super::render_page(source, "t.md", &ayran_tags::AyranConfig::default(), ayran_global::DEFAULT_NAME);
         // A text node holding the newline that used to separate the marker from the paragraph's own
         // `data-line` div survives the parse/reserialize round trip as insignificant whitespace between
         // block elements (harmless — browsers collapse it) — so this checks structure and content, not one
@@ -921,7 +930,7 @@ mod tests {
         // Left untouched by the pairing (nothing to match it), but still correctly recognised by
         // `is_bare_tag` as a marker rather than ordinary content — so it doesn't get a meaningless
         // `data-line` div wrapped around a single inert tag either.
-        let page = super::render_page("<a-x a-y=\"1\"/>\n", "t.md", &ayran_tags::AyranConfig::default());
+        let page = super::render_page("<a-x a-y=\"1\"/>\n", "t.md", &ayran_tags::AyranConfig::default(), ayran_global::DEFAULT_NAME);
         // `data-line` on its own also matches the bootstrap script's own `querySelectorAll('[data-line]')`,
         // present on every markdown page regardless — `data-line="` (an actual attribute) is the real check.
         assert!(!page.contains("data-line=\""), "{page}");
@@ -931,7 +940,32 @@ mod tests {
     #[test]
     fn ayran_tags_disabled_leaves_a_literal_tag_wrapped_like_any_other_html_block() {
         let disabled = ayran_tags::AyranConfig { tag_name: String::new(), ..ayran_tags::AyranConfig::default() };
-        let page = super::render_page("<a-x a-y=\"1\"/>\n", "t.md", &disabled);
+        let page = super::render_page("<a-x a-y=\"1\"/>\n", "t.md", &disabled, ayran_global::DEFAULT_NAME);
         assert!(page.contains("data-line=\"1\""), "disabled, it's an ordinary top-level html block again: {page}");
+    }
+
+    #[test]
+    fn a_custom_global_name_renames_the_bootstraps_own_namespace_and_nothing_else() {
+        // The bootstrap script's own JS statements and comments all use the configured name instead of the
+        // default — including inside its comments, which is correct: they're prose about this same global,
+        // not functional code, and stay accurate to whatever name is actually configured.
+        let page = super::render_page("text", "t.md", &ayran_tags::AyranConfig::default(), "csdrive");
+        assert!(page.contains("window.csdrive = window.csdrive || {}"), "{page}");
+        assert!(page.contains("window.csdrive.events = window.csdrive.events || {}"), "{page}");
+        assert!(page.contains("window.csdrive.events.onTabInitialized = function (handler)"), "{page}");
+        assert!(!page.contains("window.ayran"), "the default name must not survive once a custom one is set: {page}");
+
+        // A person's own markdown content that happens to contain the literal word "ayran" — unrelated to
+        // this feature (it's a product name in its own right) — must never be touched by the substitution:
+        // confirms the replace is scoped to the bootstrap script's own fixed text, not the whole page.
+        let page_with_the_word = super::render_page(
+            "# ayran\n\nI like ayran, the drink.\n",
+            "t.md",
+            &ayran_tags::AyranConfig::default(),
+            "csdrive",
+        );
+        assert!(page_with_the_word.contains("<title>ayran</title>"), "{page_with_the_word}");
+        assert!(page_with_the_word.contains("<p>I like ayran, the drink.</p>"), "{page_with_the_word}");
+        assert!(page_with_the_word.contains("window.csdrive.events.onTabInitialized"), "{page_with_the_word}");
     }
 }

@@ -1,4 +1,5 @@
 import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Redo2, Search, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import FindBar from './FindBar'
@@ -1606,6 +1607,21 @@ const ThirdPartyEditor = isMobile
 const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(props, ref) {
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
+  // Reported live, for the Note Files Explorer's own "New file" (its `window.prompt` for the name pauses the
+  // page and hands real OS focus to the separate prompt window — see CLAUDE.md's "Prompts and windows" — and
+  // nothing ever asked for it back once the prompt closed and this editor took its place) and, separately, for
+  // opening an existing file directly: once a window has lost real OS focus for any reason, its freshly
+  // mounted editor can *look* focused (`document.activeElement` is its own textarea/input surface) while
+  // `document.hasFocus()` is false and no real keystroke lands — the exact class of bug `Modal.tsx` already
+  // fixed for popups (its own doc comment has the full account); this component had no equivalent, since an
+  // editor page is never a `Modal`. Fixed the same way, at the one place every editor surface in the app
+  // mounts through (this wrapper, regardless of which of the three real implementations ends up rendering) —
+  // a window that already has focus is unaffected.
+  useEffect(() => {
+    getCurrentWebviewWindow()
+      .setFocus()
+      .catch(() => {})
+  }, [])
   if (settings?.useBuiltInEditor) {
     if (settings.highlightDisabled) return <PlainTextEditor ref={ref} {...props} />
     return <HighlightedEditor ref={ref} {...props} />

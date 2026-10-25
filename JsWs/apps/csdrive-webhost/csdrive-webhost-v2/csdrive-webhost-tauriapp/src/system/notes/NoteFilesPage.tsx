@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FileSource } from './sources'
-import NotesApp from './NotesApp'
+import NotesApp, { type ScopedPlace } from './NotesApp'
 import { ensureNoteFiles, readNote } from './noteModel'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
@@ -11,25 +11,34 @@ const join = (...parts: string[]) => parts.map((p) => p.replace(/^\/+|\/+$/g, ''
  * none, that holds what is uploaded to the note. It is a page of its own, apart from the note's markdown and from its child
  * notes. Every entry can be shown in the File Manager, where it sits among the rest of the source.
  *
- * **Its own current path (within that `01` folder) is persisted** (asked for directly) — the same way every
- * other place already is, through the tab's own resource id (`path`, the `Place` field `tabs.ts`'s own
- * `encodeNotePlace`/`decodePlace` already round-trip as `p=…`; nothing needed changing there, since this
- * component simply never *reported* a real one before). `path` is this page's own incoming prop — where a
- * restored tab, or a tab switched back to, says it was — used only as `NotesApp`'s *initial* path (its own
- * `useState` initializer, read once at mount); from then on, `NotesApp`'s own current scoped path is mirrored
- * back up live via `scope.onPathChange`, into `currentPath`, which is what every `reportNotePlace` call after
- * the first actually sends — not the stale incoming prop, which never changes again once mounted. */
+ * **Its own current place (path, how far into the listing, and a file open in the editor or the media viewer)
+ * is persisted** — the path first, asked for directly ("the note's file explorer's current relative path
+ * should also be persisted"), then the rest once that shipped ("now that the current path is persisted, so
+ * should the current page, and editing/viewing a media file") — the same way every other place already is,
+ * through the tab's own resource id (`tabs.ts`'s own `encodeNotePlace`/`decodePlace` round-trip `offset`/
+ * `edit`/`viewing` as `o=`/`e=`/`m=`, mirroring `Location`'s own shape). `offset`/`edit`/`viewing` are this
+ * page's own incoming props — where a restored tab, or a tab switched back to, says it was — used only as
+ * `NotesApp`'s *initial* place (its `initial` prop, read once at mount by `showLocation`, which already knows
+ * how to restore all three regardless of `scope`); from then on, `NotesApp`'s own current scoped place is
+ * mirrored back up live via `scope.onPlaceChange`, into `place`, which is what every `reportNotePlace` call
+ * after the first actually sends — not the stale incoming props, which never change again once mounted. */
 export default function NoteFilesPage({
   tab,
   sourceId,
   folder,
   path,
+  offset,
+  edit,
+  viewing,
   onPlace,
 }: {
   tab: Tab | null
   sourceId: string
   folder: string
   path: string
+  offset?: number
+  edit?: string
+  viewing?: string
   onPlace: (place: Place) => void
 }) {
   const { ready, sourceOf } = useNotesSources()
@@ -37,7 +46,7 @@ export default function NoteFilesPage({
   const [title, setTitle] = useState<string | null>(null)
   const [root, setRoot] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [currentPath, setCurrentPath] = useState(path)
+  const [place, setPlace] = useState<ScopedPlace>({ path, ...(offset ? { offset } : {}), ...(edit ? { edit } : {}), ...(viewing ? { viewing } : {}) })
 
   useEffect(() => {
     if (!ready || !source) return
@@ -61,8 +70,8 @@ export default function NoteFilesPage({
   }, [ready, source, folder])
 
   useEffect(() => {
-    if (tab && title !== null) reportNotePlace(tab, { view: 'noteFiles', sourceId, folder, path: currentPath }, title)
-  }, [tab, title, sourceId, folder, currentPath])
+    if (tab && title !== null) reportNotePlace(tab, { view: 'noteFiles', sourceId, folder, ...place }, title)
+  }, [tab, title, sourceId, folder, place])
 
   if (!ready) return null
   if (error || !source) {
@@ -80,7 +89,7 @@ export default function NoteFilesPage({
   return (
     <NotesApp
       tab={tab}
-      initial={{ sourceId, branch: null, path }}
+      initial={{ sourceId, branch: null, path, ...(offset ? { offset } : {}), ...(edit ? { edit } : {}), ...(viewing ? { viewing } : {}) }}
       onHome={() => onPlace({ view: 'notes', sourceId, folder })}
       scope={{
         sourceId,
@@ -88,7 +97,7 @@ export default function NoteFilesPage({
         label: `${title} · files`,
         onBack: () => onPlace({ view: 'notes', sourceId, folder }),
         onOpenInFileManager: (atPath) => onPlace({ view: 'files', location: { sourceId, branch: null, path: join(root, atPath) } }),
-        onPathChange: setCurrentPath,
+        onPlaceChange: setPlace,
       }}
     />
   )

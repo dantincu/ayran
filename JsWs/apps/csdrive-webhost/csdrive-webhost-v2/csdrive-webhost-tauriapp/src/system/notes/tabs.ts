@@ -64,8 +64,11 @@ export type Place =
   | { view: 'notes'; sourceId: string; folder: string }
   /** The dedicated page for editing a note's markdown. */
   | { view: 'noteEdit'; sourceId: string; folder: string }
-  /** The explorer of a note's files (its `01` folder), at `path` inside it. */
-  | { view: 'noteFiles'; sourceId: string; folder: string; path: string }
+  /** The explorer of a note's files (its `01` folder), at `path` inside it — the same three fields `Location`
+   * has for the plain file manager (`offset`: records skipped in the listing shown; `edit`/`viewing`: a file
+   * open in the editor or the media viewer, relative to `path`'s own source root) — asked for directly: "now
+   * that the current path is persisted, so should the current page, and editing/viewing a media file." */
+  | { view: 'noteFiles'; sourceId: string; folder: string; path: string; offset?: number; edit?: string; viewing?: string }
 
 /** The place a resource id (or a page's query string) names, if it names one. */
 export function decodePlace(resourceId: string): Place | null {
@@ -80,7 +83,20 @@ export function decodePlace(resourceId: string): Place | null {
   if (sourceId && folder !== null) {
     if (view === 'notes') return { view: 'notes', sourceId, folder }
     if (view === 'noteEdit') return { view: 'noteEdit', sourceId, folder }
-    if (view === 'noteFiles') return { view: 'noteFiles', sourceId, folder, path: params.get('p') ?? '' }
+    if (view === 'noteFiles') {
+      const offset = validOffset(Number(params.get('o')))
+      const edit = params.get('e')
+      const viewing = params.get('m')
+      return {
+        view: 'noteFiles',
+        sourceId,
+        folder,
+        path: params.get('p') ?? '',
+        ...(offset !== null ? { offset } : {}),
+        ...(edit ? { edit } : {}),
+        ...(viewing ? { viewing } : {}),
+      }
+    }
   }
   const location = decodeLocation(resourceId)
   return location ? { view: 'files', location } : null
@@ -201,7 +217,12 @@ export async function registerTab(): Promise<Tab | null> {
 /** The address of a place of the note pages, as it goes in a resource id. */
 export function encodeNotePlace(place: Extract<Place, { view: 'notes' | 'noteEdit' | 'noteFiles' }>): string {
   const params = new URLSearchParams({ v: place.view, s: place.sourceId, f: place.folder })
-  if (place.view === 'noteFiles' && place.path) params.set('p', place.path)
+  if (place.view === 'noteFiles') {
+    if (place.path) params.set('p', place.path)
+    if (place.offset) params.set('o', String(place.offset))
+    if (place.edit) params.set('e', place.edit)
+    if (place.viewing) params.set('m', place.viewing)
+  }
   return params.toString()
 }
 
@@ -213,7 +234,18 @@ export async function reportNotePlace(
   title: string,
   unsaved = false,
 ): Promise<void> {
-  const what = place.view === 'notes' ? 'Notes' : place.view === 'noteEdit' ? 'Editing the note' : `Files${place.path ? ` · /${place.path}` : ''}`
+  // A noteFiles place says the same three things a plain Location's second row already does (`reportLocation`
+  // above) — editing or viewing a file wins over the plain path, and unsaved changes (editing only) show too.
+  const what =
+    place.view === 'notes'
+      ? 'Notes'
+      : place.view === 'noteEdit'
+        ? 'Editing the note'
+        : place.view === 'noteFiles' && place.edit
+          ? `Editing /${place.edit}`
+          : place.view === 'noteFiles' && place.viewing
+            ? `Viewing /${place.viewing}`
+            : `Files${place.path ? ` · /${place.path}` : ''}`
   const firstRow: TabText['firstRow'] = [{ text: title, bold: true }]
   const secondRow: TabText['secondRow'] = [{ text: what }, ...(unsaved ? [{ text: 'unsaved changes', italic: true }] : [])]
   const type = place.view === 'notes' ? RESOURCE_TYPES.notes : place.view === 'noteEdit' ? RESOURCE_TYPES.noteEdit : RESOURCE_TYPES.noteFiles

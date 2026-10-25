@@ -5,6 +5,7 @@ mod android_windows;
 mod app_state;
 mod appearance;
 mod audio_transcode;
+mod ayran_global;
 mod ayran_tags;
 mod html_to_markdown;
 mod pdf_convert;
@@ -214,7 +215,8 @@ pub(crate) fn respond(status: StatusCode, content_type: &str, body: Vec<u8>, csp
 pub(crate) fn respond_bytes(name: &Path, data: Vec<u8>, csp: &str) -> Response<Vec<u8>> {
     if markdown::is_markdown(name) {
         let file_name = name.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let page = markdown::render_page(&String::from_utf8_lossy(&data), &file_name, &ayran_tags::current());
+        let page =
+            markdown::render_page(&String::from_utf8_lossy(&data), &file_name, &ayran_tags::current(), &ayran_global::current());
         return respond(StatusCode::OK, "text/html; charset=utf-8", page.into_bytes(), csp);
     }
     respond(StatusCode::OK, content_type_for(name), data, csp)
@@ -396,6 +398,8 @@ pub fn run() {
             appearance::get_appearance,
             ayran_tags::get_ayran_tag_config,
             ayran_tags::set_ayran_tag_config,
+            ayran_global::get_ayran_global_name,
+            ayran_global::set_ayran_global_name,
             user_action::user_action_launch,
             user_action::user_action_close,
             user_action::user_action_status,
@@ -638,6 +642,7 @@ pub fn run() {
             window_host::init(app.handle());
             appearance::init(app.handle());
             ayran_tags::init(app.handle());
+            ayran_global::init(app.handle());
 
             // What the file commands and SQLite may touch (see `fs_scope.rs`): the user folder, always;
             // never the app's own database and secrets; and the folders picked in earlier sessions.

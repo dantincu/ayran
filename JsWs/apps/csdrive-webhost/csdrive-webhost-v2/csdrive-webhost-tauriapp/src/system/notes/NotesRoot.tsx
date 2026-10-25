@@ -63,7 +63,17 @@ export default function NotesRoot({ tab: initialTab, initial }: { tab: Tab | nul
     ) : place.view === 'noteEdit' ? (
       <NoteEditPage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} onPlace={navigate} />
     ) : place.view === 'noteFiles' ? (
-      <NoteFilesPage key={`${place.sourceId}|${place.folder}`} tab={tab} sourceId={place.sourceId} folder={place.folder} path={place.path} onPlace={navigate} />
+      <NoteFilesPage
+        key={`${place.sourceId}|${place.folder}`}
+        tab={tab}
+        sourceId={place.sourceId}
+        folder={place.folder}
+        path={place.path}
+        offset={place.offset}
+        edit={place.edit}
+        viewing={place.viewing}
+        onPlace={navigate}
+      />
     ) : (
       <NotesApp key={place.location ? `${place.location.sourceId}|${place.location.path}` : 'last'} tab={tab} initial={place.location} onHome={() => navigate({ view: 'home' })} />
     )

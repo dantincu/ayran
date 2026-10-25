@@ -227,6 +227,8 @@ fn main() {
             "get_codec_help_html",
             "get_ayran_tag_config",
             "set_ayran_tag_config",
+            "get_ayran_global_name",
+            "set_ayran_global_name",
         ]),
     );
     // The `window.__TAURI__` script of the Tauri version this is built with — Tauri passes its path to the crates that depend on

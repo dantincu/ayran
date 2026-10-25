@@ -84,6 +84,23 @@ export default function SettingsTab() {
       setError(String(e)),
     )
   }
+  // The name of the one JavaScript global the markdown bootstrap script creates for a note/markdown web
+  // app (`window.<name>.events.onTabInitialized` — `ayran_global.rs`, CLAUDE.md's "Who creates tabs").
+  // Hardcoded as `window.ayran` the first time it was built; made configurable as a direct follow-up, so
+  // it can be renamed away from a global a person's own page (or an injected code snippet) already uses.
+  // Committed on blur like the ayran-tag fields above; unlike those, the backend can genuinely refuse this
+  // one (it must be a real JavaScript identifier), so a rejection reverts the box to whatever is still
+  // actually stored rather than leaving it showing a value that was never saved.
+  const [ayranGlobalName, setAyranGlobalNameText] = useState('')
+  useEffect(() => {
+    invoke<string>('get_ayran_global_name').then(setAyranGlobalNameText)
+  }, [])
+  function commitAyranGlobalName() {
+    invoke<string>('set_ayran_global_name', { name: ayranGlobalName }).then(setAyranGlobalNameText, (e) => {
+      setError(String(e))
+      invoke<string>('get_ayran_global_name').then(setAyranGlobalNameText)
+    })
+  }
   // Whether prompts are prevented, and how many windows are open of how many are allowed (`prompt_guard.rs`).
   const [guard, setGuard] = useState<{ promptsPrevented: boolean; openWindows: number; maxWindows: number } | null>(null)
   const readGuard = useCallback(() => {
@@ -374,6 +391,28 @@ export default function SettingsTab() {
           value={ayranSelectorAttr}
           onChange={(e) => setAyranSelectorAttrText(e.target.value)}
           onBlur={commitAyranConfig}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+          style={{ width: '10em' }}
+        />
+      </label>
+
+      <div className="toolbar" style={{ marginTop: 24 }}>
+        <strong>Markdown: the ayran global object</strong>
+      </div>
+      <p className="muted">
+        The name of the one JavaScript global a note or markdown file's own page creates when it's opened
+        as a web app (<code>window.&lt;name&gt;.events.onTabInitialized</code> — see the Help tab). Rename
+        it to avoid colliding with a global a page of your own, or an injected script, already uses.{' '}
+        <strong>Must be a plain JavaScript identifier</strong> (letters, digits, "_" or "$", not starting
+        with a digit) — unlike the ayran tag above, it can't be left blank.
+      </p>
+      <label className="checkbox-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}>
+        Global object name
+        <input
+          type="text"
+          value={ayranGlobalName}
+          onChange={(e) => setAyranGlobalNameText(e.target.value)}
+          onBlur={commitAyranGlobalName}
           onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
           style={{ width: '10em' }}
         />

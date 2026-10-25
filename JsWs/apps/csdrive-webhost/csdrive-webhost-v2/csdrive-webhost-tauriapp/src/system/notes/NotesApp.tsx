@@ -220,6 +220,19 @@ interface Editing {
 /** The folder a path is in (paths have no leading slash; the root is `''`). */
 const parentPath = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 
+/** What a scoped explorer reports of itself to `Scope.onPlaceChange` — the same three extras a plain `Location`
+ * carries (`offset`/`edit`/`viewing`), minus `sourceId`/`branch`, which the scope already fixes. */
+export interface ScopedPlace {
+  /** Relative to `Scope.root`, the same shape `Scope.onOpenInFileManager` takes. */
+  path: string
+  /** Records skipped in the listing shown (see `lib/pagedPosition.ts`) — absent: the start. */
+  offset?: number
+  /** A file open in the editor, relative to `Scope.root`; absent: none. */
+  edit?: string
+  /** A picture, video or sound open in the media viewer, relative to `Scope.root`; absent: none. */
+  viewing?: string
+}
+
 /** A file explorer that works inside one folder of a source and nowhere else (a note's files, see `NoteFilesPage`): what it shows
  * is that folder, its breadcrumbs start at `label`, Back leaves it, and each entry can be shown in the File Manager. */
 export interface Scope {
@@ -230,13 +243,15 @@ export interface Scope {
   onBack: () => void
   /** Shows `path` (relative to `root`) in the File Manager, at its place in the whole source. */
   onOpenInFileManager: (path: string) => void
-  /** The scoped explorer's own current path (relative to `root`, the same shape `onOpenInFileManager` takes)
-   * — asked for directly: "the note's file explorer's current relative path should also be persisted."
-   * Called whenever it changes, so the caller (`NoteFilesPage.tsx`) can report it as part of its own place —
-   * this component's *own* "last location" persistence (`LAST_LOCATION_KEY`, `reportLocation`) is skipped
-   * entirely for a scoped explorer (see `showLocation`'s own `!scope` guard), since that mechanism is the
-   * plain File Manager's, keyed for browsing the whole source, not one note's own `01` folder. */
-  onPathChange?: (path: string) => void
+  /** The scoped explorer's own current place — its path, how far into the listing it is, and whether a file
+   * is open in its editor or its media viewer — asked for directly: "the note's file explorer's current
+   * relative path should also be persisted," and later, once that shipped: "now that the current path is
+   * persisted, so should the current page of the listing, and editing/viewing a media file." Called whenever
+   * any of it changes, so the caller (`NoteFilesPage.tsx`) can report it as part of its own place — this
+   * component's *own* "last location" persistence (`LAST_LOCATION_KEY`, `reportLocation`) is skipped entirely
+   * for a scoped explorer (see `showLocation`'s own `!scope` guard), since that mechanism is the plain File
+   * Manager's, keyed for browsing the whole source, not one note's own `01` folder. */
+  onPlaceChange?: (place: ScopedPlace) => void
 }
 
 export default function NotesApp({
@@ -1487,11 +1502,22 @@ export default function NotesApp({
     setSelected(new Set())
   }, [sourceId, branch, path])
 
-  // Tell a scoped explorer's own caller where it is now, so it can persist that itself (see `Scope.onPathChange`'s
-  // own doc comment) — this component's *own* place-persistence is deliberately skipped for a scoped explorer.
+  // Tell a scoped explorer's own caller where it is now — path, how far into the listing, and whether a file
+  // is open in the editor or the media viewer — so it can persist that itself (see `Scope.onPlaceChange`'s own
+  // doc comment); this component's *own* place-persistence (the effect above) is deliberately skipped for a
+  // scoped explorer, so this is its only route to being remembered at all. `restoringPage` is checked (and in
+  // the deps, so this re-fires once it clears) the same way the effect above does: without it, a place with a
+  // saved offset would briefly get reported as "at the very start" the instant this mounts, before the real
+  // position has been restored, and that wrong report could be what a reload or a tab switch sees.
   useEffect(() => {
-    scope?.onPathChange?.(path)
-  }, [scope, path])
+    if (!scope || restoringPage) return
+    scope.onPlaceChange?.({
+      path,
+      ...(currentPage > 0 ? { offset: offsetOfPage(currentPage, pageSize) } : {}),
+      ...(editing ? { edit: editing.path } : {}),
+      ...(viewer ? { viewing: joinRelative(path, viewer.items[viewer.start].name) } : {}),
+    })
+  }, [scope, path, currentPage, pageSize, restoringPage, editing?.path, viewer])
   useEffect(() => {
     const pending = pendingFocusRef.current
     if (pending === null || loading) return
