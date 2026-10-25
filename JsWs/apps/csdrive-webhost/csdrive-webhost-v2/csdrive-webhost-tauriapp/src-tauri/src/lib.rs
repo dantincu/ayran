@@ -30,6 +30,7 @@ mod local_branch_commands;
 mod layout;
 mod logging;
 mod markdown;
+mod note_viewer_script;
 mod notes_pages;
 mod page_dialogs;
 mod picked_roots;

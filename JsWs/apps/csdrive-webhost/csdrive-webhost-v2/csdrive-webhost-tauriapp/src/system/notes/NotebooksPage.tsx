@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { confirm } from '../../lib/dialogs'
-import { BookOpen, FolderOpen, House, Info, Pencil, Plus, Trash2 } from 'lucide-react'
+import { BookOpen, FileCode, FolderOpen, House, Info, Pencil, Plus, Trash2 } from 'lucide-react'
 import DetailsModal from '../../components/DetailsModal'
 import IconButton from '../../components/IconButton'
 import RowActions from '../../components/RowActions'
@@ -29,6 +29,7 @@ import {
 import { useNotesSources } from './useSources'
 import UserActionButton from './UserActionButton'
 import CacheMenu from './CacheMenu'
+import NoteViewerScriptModal from './NoteViewerScriptModal'
 
 /** Where the person is in adding a notebook. */
 type Adding =
@@ -63,6 +64,7 @@ export default function NotebooksPage({
   const [notice, setNotice] = useState<string | null>(null)
   const [adding, setAdding] = useState<Adding | null>(null)
   const [editing, setEditing] = useState<NotebookEntry | null>(null)
+  const [scriptEditing, setScriptEditing] = useState<NotebookEntry | null>(null)
   const [details, setDetails] = useState<NotebookEntry | null>(null)
   const [busy, setBusy] = useState(false)
   const [kbdFocus, setKbdFocus] = useState(-1)
@@ -102,7 +104,7 @@ export default function NotebooksPage({
     setFocused: setKbdFocus,
     onOpen: (index) => list[index] && onShowFolder(list[index]),
     onParent: onHome,
-    enabled: !adding && !editing && !details,
+    enabled: !adding && !editing && !details && !scriptEditing,
   })
 
   async function guarded(work: () => Promise<void>) {
@@ -272,6 +274,7 @@ export default function NotebooksPage({
                             { icon: Info, label: 'Details', onClick: () => setDetails(entry) },
                             { icon: BookOpen, label: 'Open the notebook — its notes', onClick: () => onOpenNotebook(entry) },
                             { icon: FolderOpen, label: 'Show its folder in the file manager', onClick: () => onShowFolder(entry) },
+                            { icon: FileCode, label: 'Set its viewer script…', onClick: () => setScriptEditing(entry), disabled: busy },
                             ...(isFolderNotebook(entry)
                               ? []
                               : [{ icon: Pencil, label: 'Change its title', onClick: () => setEditing(entry), disabled: busy }]),
@@ -425,6 +428,8 @@ export default function NotebooksPage({
           onCancel={() => setEditing(null)}
         />
       )}
+
+      {scriptEditing && <NoteViewerScriptModal notebook={scriptEditing} onClose={() => setScriptEditing(null)} />}
     </div>
   )
 }

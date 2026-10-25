@@ -15,7 +15,8 @@
       "notebook": "[note-book].json",
       "note": "[note].json",
       "children": "[note-children].json",
-      "userAction": "[user-action].json"
+      "userAction": "[user-action].json",
+      "noteViewerScript": "[note-viewer-script].json"
     },
     "markdown": { "prefix": "0-", "suffix": "[note].md" },
     "numberings": {

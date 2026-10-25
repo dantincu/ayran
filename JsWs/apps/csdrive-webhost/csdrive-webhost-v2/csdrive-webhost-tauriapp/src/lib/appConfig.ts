@@ -27,7 +27,7 @@ interface AppConfig {
     defaultNumbering: NumberingDef
   }
   notes: {
-    files: { notebook: string; note: string; children: string; userAction: string }
+    files: { notebook: string; note: string; children: string; userAction: string; noteViewerScript: string }
     markdown: { prefix: string; suffix: string }
     numberings: {
       noteItems: NumberingDef
@@ -54,5 +54,8 @@ export const NOTE_JSON = config.notes.files.note
 export const CHILDREN_JSON = config.notes.files.children
 /** The file in the notebook's own internals folder (`03`) that names the page of its User Action. */
 export const USER_ACTION_JSON = config.notes.files.userAction
+/** The file in the notebook's own internals folder (`03`) that names its own viewer script — see
+ * `system/notes/noteViewerScript.ts`. */
+export const NOTE_VIEWER_SCRIPT_JSON = config.notes.files.noteViewerScript
 export const MARKDOWN_PREFIX = config.notes.markdown.prefix
 export const NOTE_MARKDOWN_SUFFIX = config.notes.markdown.suffix

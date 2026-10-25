@@ -589,6 +589,126 @@ and the identical begin/poll/export loop is the one already live-verified for vi
 **Tested** live on desktop (isolated data folder): the guid, the two buttons in the header, a first launch (a window opened, listed under the Notes tab, the page told — `resourceId` and `kind: 'button'` — after its `init_window_tab`, its init saying `role: 'UserAction'`), its own state (it can't see Notes' setting nor window state), a second launch reusing the window and telling it again, going to the home page telling it the scope was left while the window stayed open, the buttons at a text box (the strip: clipboard menu, launch, close) with only the kind of box in the context, closing (the window gone, the Notes window told) and launching again (a new window, the event after its page started). Also on the Android emulator (isolated, fresh app data): the User Action window as its own task with the page told after it started, its `role`, its own state, **Back suspending it and the next launch opening it again and telling it once its page had started**, the scope-left event, and the ⚡ / ⚡✕ strip at a text box on a phone-width screen (it launched with the box as the context; the strip is placed by `requestAnimationFrame`, so it only appears while the Notes window is the one in front — a backgrounded Android window doesn't run it). Also on the emulator: the themes reaching an open Notes window at once and the `color-scheme` snippet, the refusal of `set_appearance` to Notes, the editor's Undo/Redo buttons, root guids, local branches (the branch bar, a window in a branch, a new window on the main view), and the orange icon and splash accent. **Not exercised live:** the cache options on a real Filen account (only the Rust tests and the fact that a folder of this device shows none), committing/discarding a local branch through the dialogs (unit tests only), and the *New branch…* prompt path of the same-window exception (the rule itself is Node-tested).
 
 
+## A notebook's own viewer script
+
+**"For any notebook let's give the user the option to load a script to be inserted in the DOM for Note
+Viewer and markdown/html File Viewer pages in the scope of such notebooks. This script will be specified
+by path per notebook and will be saved in a json file inside the notebook's `[notebook]` folders pair."**
+**A security-relevant change — `docs/app-security.md` was read first, per the standing rule, and the
+framing below was confirmed with the person before writing any code.** The script runs with **exactly the
+same rights as the page itself** — not a sandboxed window, not a separate origin — the same spirit as a
+note's own `<script>` tag already being allowed to run in a markdown file ("Markdown web apps" above): the
+person is configuring their *own* notebook, the same trust level as hand-authoring a `<script>` tag into
+one of their own files, not a new attack surface opened up to anyone else. This is a deliberate difference
+from User Action, which stays a separate window with its own identity for its own, independent reasons
+("Why a window and not a frame" above) — confirmed directly with the person that this script's own design
+doesn't change that.
+
+**Storage: `03/[note-viewer-script].json`, in the notebook's own internals pair** — the exact convention
+`03/[user-action].json` already uses for User Action's own per-notebook page (`config/folder-pairs-and-
+notes.json`'s `notes.files.noteViewerScript`, `config.rs`'s `NoteFilesConfig.note_viewer_script`,
+`appConfig.ts`'s `NOTE_VIEWER_SCRIPT_JSON`). `{ "Script": { "SourceId", "Path" } }` — the script file itself
+can be anywhere the person points to (this folder, another one, a Filen account), not necessarily the
+notebook's own source, the same as a User Action page can be. `system/notes/noteViewerScript.ts` mirrors
+`userAction.ts`'s own per-notebook half exactly (`readNotebookScript`/`saveNotebookScript`/
+`resetNotebookScript`, `ensureNotebookInternals`). **Notebook-only — there is no "global" script outside
+every notebook** (unlike User Action's own global fallback): the ask was specifically "for any notebook."
+
+**Delivery: resolved server-side, fresh on every page load, through the existing code-snippets mechanism
+— no new plumbing through the many "open a file as a web app" commands.** Notebooks are a frontend-only
+concept (`notes.notebooks`, in Notes' own `app_state`); rather than threading a resolved script reference
+through every one of `open_file_as_web_app`/`open_note_tab`/`open_related_web_app`/a link followed inside a
+page (which would need a race-free way to attach it before the page's own first `init_window_tab` call, and
+would still miss the link-followed case), the new `note_viewer_script.rs` module reads `notes.notebooks`
+directly **by SQL**, from the one choke point every tab's `codeSnippets` already passes through
+(`secondary_windows::fill_origin`) — called from `init_window_tab`, `add_window_tab` and `activate_tab`'s
+`tab-navigate` event alike, with no new command and no change to any "open as web app" signature. This also
+means a link followed *inside* a page, into a different notebook (or out of every notebook), picks up the
+*new* notebook's script for free the next time that tab's `codeSnippets` are built — `fill_origin` already
+re-derives the shown page's real location on every call, link-following included.
+
+`fill_origin` already computes, by the time this runs, `response.storage`/`response.relative_path`/
+`response.filen` (plus the window's own `origin.root`, in scope) — the file's **current** location,
+whichever way it got there (a plain open, Filen, a picked folder, or a link followed inside the page).
+`note_viewer_script::snippet_for` turns that into a frontend-style `source_id` (`local:user`,
+`local:<rootId>`, `filen:<userId>` — never a branch, the same restriction `notebooks.ts`'s own `sourceId`
+already has) and the file's folder, mirrors the frontend's own `notebookContaining` (`pick_notebook`, a pure
+function, Node-for-Rust tested directly — the innermost listed notebook whose folder contains the place,
+both trimmed of leading/trailing slashes before comparing, so a Filen path's leading `/` never throws the
+match off), and — if one is found and has a script configured — reads the config file and then the script
+itself (`read_from_source`: `FsScope::check_in` + `std::fs::read` for `local:`, `filen_cache::prepare` +
+`Cache::read` for `filen:`, the same primitives `fs_commands.rs`/`filen_cache.rs` already use) and appends
+it to the tab's `codeSnippets` as a `javascript` entry. **Never for the User Action page** (`response.role
+!= user_action::ROLE`, checked before the lookup) — a deliberate exclusion, confirmed with the person: User
+Action's own `Origin` *does* carry real storage/path (unlike the "one reused window" `NoteWebApp` role,
+which never does, since its underlying file changes across launches without a new window), so without this
+check a User Action page whose chosen file happens to sit inside a notebook's folder would also get the
+notebook's own viewer script injected — a different mechanism with its own separate design, never meant to
+be affected by this one.
+
+**Never an error — a missing notebook, a missing config file, or an unreadable script is simply "no extra
+snippet," the same as the page having nothing more to apply.** `app: Option<&AppHandle>` is `None` only for
+`navigation_payload`'s own `tab-navigate` event (`activate_tab`'s own ordinary reaction is a full
+`location.reload()` anyway, which calls `init_window_tab` fresh, with `app` present, and picks the script up
+there) — the one, already-disclosed gap, mirroring how `fill_origin`'s own pre-existing Filen-email lookup
+already degrades for the identical `app: None` case.
+
+**UI: a new per-notebook row action, "Set its viewer script…"** (`NotebooksPage.tsx`, beside "Show its
+folder in the file manager" — offered for both file-based and folder-based notebooks alike, unlike "Change
+its title," since a script applies regardless of the notebook's own kind), opening `NoteViewerScriptModal.tsx`
+— choose / change / reset, and "What is this?", the same shape `UserActionModal.tsx` already has.
+**`LocationPicker.tsx` gained a fourth mode, `'file'`** (alongside `'folder'`/`'notebook'`/`'page'`): picks
+any file, not just an `.html`/`.htm` page — needed since the script is a `.js` file, which `mode="page"`'s
+own `isPageFileName` filter would have refused.
+
+**The one-time explanatory note, asked for and confirmed directly** ("yes, a one-time explanatory note...
+shown in the picker dialog itself... before the first script is chosen"): a plain, non-blocking
+`warning-banner` in the modal's own body — "This script runs with the same rights as the page itself... Only
+choose a script you wrote yourself, or trust completely" — shown **whenever no script is yet configured for
+this notebook** (not tracked as a separately-dismissible "seen it once, ever" flag; it disappears the
+instant a script is chosen and doesn't come back unless the notebook's script is reset) — the modal's own
+"What is this?" button has the fuller explanation for afterward.
+
+**A real finding, confirmed live, not assumed**: a note's markdown page and a plain, hand-authored `.html`
+file behave differently here for the same reason they already do for every *other* code snippet
+("Android"'s own "Web apps must apply the snippets they receive") — a bare `.html` file with no script of
+its own never calls `init_window_tab` in the first place, so it has nothing to apply a snippet *to*; a page
+that does call it (a note's own markdown, rendered server-side with `init_window_tab` baked into its
+bootstrap, or a hand-authored page that includes the ordinary `TabLib`-style bootstrap) picks the injected
+script up exactly the same way it already picks up every other snippet (`SAFE_AREA_CSS`, the top-bar CSS).
+This is not a gap in the feature — it's the pre-existing contract every code snippet already has, and this
+feature rides on top of it rather than inventing a second delivery mechanism.
+
+Rust-tested (`note_viewer_script.rs`): `folder_of` strips a leading Filen slash and the file name correctly;
+the innermost containing notebook wins over an outer one, and a root-folder notebook (`folder: ""`) matches
+everything else in that source; a different source never matches; a leading or trailing slash on either
+side of the comparison never throws the match off, and a sibling folder sharing a name prefix doesn't
+falsely match. Verified live (isolated **nvscript-test** scratch data folder — a dedicated `DEFAULT_DATA_
+FOLDER` **and** a separate `WEBVIEW2_USER_DATA_FOLDER`, both reverted afterward and confirmed by a clean
+`git diff` on `layout.rs`; desktop, real CDP, through the real backend command stack — `fs_write_file`,
+`open_file_as_web_app`, `user_action_launch` — not a hand-called Rust function): a folder-based test
+notebook (`nvtest`) with a real markdown note, a real plain `.html` file and a real self-bootstrapping
+`.html` file (calling `init_window_tab` and applying its own `codeSnippets` the CSP-safe way — appending a
+real `<script>` element, **not** `eval`, which this app's CSP explicitly disallows and which a first test
+attempt wrongly used, producing a false negative before this was caught and corrected) inside it, its own
+`03/[note-viewer-script].json` pointing at a real `.js` file that sets `window.__nvScriptRan` and
+`document.title` — opening the markdown note and the bootstrapped `.html` file as web apps **both** ran the
+script correctly; a bare, non-bootstrapping `.html` file correctly did **not** (confirmed, after the eval
+mistake was caught and fixed, to be the pre-existing "a page must call `init_window_tab` to get any snippet"
+contract, not a gap); a file **outside** the notebook, opened the same way, correctly got nothing; editing
+the script's content and opening the note **again** (a second, independent window) correctly ran the
+**new** content while the **first**, already-open window kept running the old one it had already loaded —
+confirming the "re-read fresh on every load, no caching" design directly, not merely asserting it;
+`user_action_launch` on the same bootstrapped `.html` file (inside the same notebook) correctly got **no**
+injected script, confirming the User Action exclusion. **Not exercised live**: Android (the mechanism is
+server-side Rust resolution with no platform-specific code path, so nothing here is expected to differ) and
+a link followed *inside* a page from one notebook's scope into another's (the `fill_origin` re-derivation
+this relies on is the same, already-tested mechanism "In this tab / in a new tab" above already proves
+correct for the *storage*/path side of a link; this feature's own notebook lookup on top of it wasn't
+separately click-verified for that specific case). `npx tsc --noEmit`, `npm run build`, `cargo build` and
+`cargo test --lib` (286 tests, 2 ignored) all clean throughout.
+
+
 ## Prompts and windows: the rules of `docs/app-security.md` (`prompt_guard.rs`, `window_host::MAX_OPEN_WINDOWS`)
 
 **Read `docs/app-security.md` before widening what a page or a window may do**, and put a warning about any of its requirements a change touches in the final reply. What it asks, and what implements it:

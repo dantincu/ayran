@@ -2050,6 +2050,18 @@ async fn fill_origin(pool: &SqlitePool, app: Option<&AppHandle>, response: &mut 
     let tab_text: Option<TabText> = row.get::<Option<String>, _>("tab_text").and_then(|json| serde_json::from_str(&json).ok());
     response.top_bar_html = crate::top_bar::render_html(pool, &window_relative_path, &response.resource_id, &response.tab_guid, tab_text.as_ref()).await;
     response.top_bar_hidden = crate::top_bar::hidden(pool, &response.tab_guid).await;
+    // A notebook's own viewer script (`note_viewer_script.rs`), when the page shown is inside one that has
+    // one configured — never for the User Action page, a different, separately designed mechanism.
+    // `app` is `None` only for `navigation_payload`'s `tab-navigate` event (`activate_tab`), whose ordinary
+    // reaction is a full `location.reload()` anyway — which calls `init_window_tab` fresh, with `app`
+    // present, and picks the script up there.
+    if let Some(app) = app {
+        if response.role != crate::user_action::ROLE {
+            if let Some(snippet) = crate::note_viewer_script::snippet_for(app, pool, &response.storage, origin.root.as_deref(), response.filen.as_ref(), &response.relative_path).await {
+                response.code_snippets.push(snippet);
+            }
+        }
+    }
     Ok(())
 }
 

@@ -20,8 +20,8 @@ export interface Picked {
 
 interface Props {
   /** `folder`: a folder is chosen (for a notebook's root); `notebook`: a notebook file is (the folder it is in is then its root);
-   * `page`: an html file is (the page of a User Action). */
-  mode: 'folder' | 'notebook' | 'page'
+   * `page`: an html file is (the page of a User Action); `file`: any file is (a notebook's own viewer script). */
+  mode: 'folder' | 'notebook' | 'page' | 'file'
   title: string
   roots: FileRoot[]
   accounts: FilenAccountInfo[]
@@ -99,7 +99,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
     if (!source) return
     let alive = true
     for (const entry of shown) {
-      if (entry.isDirectory || mode === 'page' || !isNotebookFileName(entry.name)) continue
+      if (entry.isDirectory || mode === 'page' || mode === 'file' || !isNotebookFileName(entry.name)) continue
       const key = `${source.viewKey}|${path}|${entry.name}`
       if (infos[key]) continue
       readNotebookFile(source, path, entry.name).then(
@@ -227,7 +227,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
                   </li>
                 )
               }
-              const isNotebook = mode !== 'page' && isNotebookFileName(entry.name)
+              const isNotebook = mode !== 'page' && mode !== 'file' && isNotebookFileName(entry.name)
               const info = isNotebook ? infoOf(entry.name) : undefined
               const here = isNotebook ? listedHere(entry.name) : undefined
               const elsewhere = isNotebook ? listedElsewhere(entry.name, info) : []
@@ -261,6 +261,15 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
                 )
               }
               if (mode === 'page' && isPageFileName(entry.name)) {
+                return (
+                  <li key={entry.name}>
+                    <button className="link-button entry-name" onClick={() => source && onPick({ source, folder: path, fileName: entry.name })}>
+                      <FileIcon size={15} strokeWidth={2} aria-hidden="true" /> {entry.name}
+                    </button>
+                  </li>
+                )
+              }
+              if (mode === 'file') {
                 return (
                   <li key={entry.name}>
                     <button className="link-button entry-name" onClick={() => source && onPick({ source, folder: path, fileName: entry.name })}>
@@ -327,7 +336,9 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
             </>
           ) : (
             <>
-              <span className="muted picker-info">{mode === 'page' ? 'Pick an html file (.html or .htm).' : 'Pick a file whose name ends with [note-book].json.'}</span>
+              <span className="muted picker-info">
+                {mode === 'page' ? 'Pick an html file (.html or .htm).' : mode === 'file' ? 'Pick a file.' : 'Pick a file whose name ends with [note-book].json.'}
+              </span>
               <button type="button" onClick={onCancel}>
                 Cancel
               </button>

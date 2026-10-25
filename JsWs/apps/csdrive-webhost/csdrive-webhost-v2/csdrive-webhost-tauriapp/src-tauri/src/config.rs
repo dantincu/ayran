@@ -52,6 +52,9 @@ pub struct NoteFilesConfig {
     pub children: String,
     #[allow(dead_code)] // read by the frontend (same file); checked here as a file name
     pub user_action: String,
+    /// The name of a notebook's own viewer-script setting file (`note_viewer_script.rs`), in its internals
+    /// pair (`internals.notebook`) — the frontend's `NoteViewerScriptModal.tsx` writes it, read fresh here.
+    pub note_viewer_script: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,7 +155,7 @@ pub fn validate(config: &Config) -> Result<(), String> {
         return Err("the longest name part must be 10 to 200 characters".into());
     }
     let notes = &config.notes;
-    for name in [&notes.files.notebook, &notes.files.note, &notes.files.children, &notes.files.user_action, &notes.markdown.suffix] {
+    for name in [&notes.files.notebook, &notes.files.note, &notes.files.children, &notes.files.user_action, &notes.files.note_viewer_script, &notes.markdown.suffix] {
         if invalid_name(name) {
             return Err(format!("\"{name}\" isn't a usable file name"));
         }
