@@ -3059,3 +3059,128 @@ from an already-open window returned correctly and quickly, proving the backend 
 re-running the identical open-a-new-window step once the file held real bytes succeeded within 500ms, with
 no further occurrence across several repeats. `npx tsc --noEmit`, `npm run build`, `cargo build` and
 `cargo test --lib` (292 tests) all clean throughout.
+
+## ArrowDown/ArrowUp between a page's own top row and its second, page-specific header
+
+**"Regarding the system of keyboard shortcuts... there are pages in our app where there is a second
+page-specific top header (mainly our text editor has its own row of buttons). The buttons on that second
+page-specific header should also be navigable in the same fashion the page's top header. So pressing Down
+Key will navigate to the first button on that row. Likewise, pressing Up Key will navigate back to the
+first button on the page's top row."** A follow-up to the keyboard-shortcuts feature in
+`docs/features/features.md`/CLAUDE.md's own "Keyboard" section — not a new mechanism, one more marker and
+one more pair of keys inside the existing `lib/buttonRowKeyboard.ts`.
+
+**`[data-secondary-actions]`** is the new marker, the counterpart of the existing `[data-primary-actions]`
+(the page's own top row, reached with Alt+Shift+J) — added to the one real instance of "a second
+page-specific header" in the app today: `.code-editor-toolbar`, in all three places it's rendered
+(`CodeEditor.tsx`'s `HighlightedEditor`/`PlainTextEditor`, `MonacoCodeEditor.tsx`, `MobileCodeMirrorEditor.tsx`
+— the Undo/Redo/Find/etc. row that sits directly below an editor page's own `.editor-top-bar
+[data-primary-actions]`). `ROW_SELECTOR` (what `.closest()`/the "move within a row" logic already treats
+as *a* row of buttons) grew the new selector too, so Left/Right/Home/End/PageUp/PageDown/the fast-nav keys/
+Escape all already applied to this row for free, with no change needed — matching "navigable in the same
+fashion" for everything except the one new thing that wasn't already true: moving *between* the two rows.
+
+**One new `if` block, placed after the existing Alt+Shift+J/Alt+J handling and before the "move within a
+row" switch**: with no modifier keys held, **ArrowDown** while focus is inside `[data-primary-actions]`
+jumps to the first (enabled) button of `[data-secondary-actions]`; **ArrowUp** while focus is inside
+`[data-secondary-actions]` jumps back to the first button of `[data-primary-actions]` — found the same way
+Alt+Shift+J's own lookup already finds the primary row (the open modal if there is one, else the page's own
+`.tab-content`), so this can only ever jump between the one primary and the one secondary row that actually
+belong to whatever's on screen. A page with no secondary row (everything except the three editor hosts
+today) simply finds nothing to jump to and falls through unchanged — no new behavior, no regression, since
+neither key was ever handled by the "move within a row" switch below it.
+
+Verified live (`cargo tauri dev`, no Rust change at all so the debug build's own already-isolated default
+data folder — see "Folder layout" — needed no scratch override this time; real CDP, real trusted
+`Input.dispatchKeyEvent` sequences, not synthetic DOM events, through the actual Files tab and a real text
+file opened for editing — Monaco, the desktop default editor): a real Alt+Shift+J correctly focused "Back"
+(`parentRow: primary`); a real ArrowDown correctly jumped to the secondary row's first *enabled* button
+("Select paragraphs" — Undo/Redo start disabled on a freshly-opened file with nothing to undo yet, and
+`buttonsIn`'s existing `:not(:disabled)` filter already skips them, exactly as it already does for the
+primary/list rows); a real ArrowRight then moved correctly to the next secondary-row button ("Copy the
+selection to the app's clipboard"), confirming Left/Right still work inside this row unchanged; a real
+ArrowUp from there correctly jumped back to "Back" (`parentRow: primary`) — proving the return jump isn't
+tied to having started from the secondary row's own first button. **Regression-checked on a page with no
+secondary row** (Settings): Alt+Shift+J focused its own first primary-row button, and a real ArrowDown
+afterward left the focus completely unchanged — confirmed by comparing the focused element before and
+after, byte for byte. `npx tsc --noEmit` and `npm run build` both clean; no Rust change, so `cargo build`/
+`cargo test --lib` don't apply.
+
+## Alt+Shift+J toggles back to the list, and a real event-listener registration-order race, found live
+
+**A follow-up to the item above, asked for directly: "while a page's top header or page-specific header is
+being focused, pressing Alt+Shift+J again will refocus the current item in the main list. Note: while a
+page's top header or page-specific header is being focused, Down and Up arrows no longer move across the
+main list, even when there is no page-specific header (just the page top header), and the left and right
+arrows no longer navigate up or down the list hierarchy, but through the top row of buttons."** The second
+half of that sentence — read at first as simply restating the two rows' own intended behavior — turned out
+to describe something that wasn't actually true yet: a real, live-reproduced bug, not a wording
+clarification.
+
+**Toggling back** needed one new branch in `buttonRowKeyboard.ts`'s own Alt+Shift+J handler: pressed while
+`document.activeElement` already sits inside `[data-primary-actions]` or `[data-secondary-actions]`
+(`currentRow()`, a small new helper doing the same `.closest(ROW_SELECTOR)` lookup the rest of the module
+already relies on), it blurs the focused button instead of re-finding and re-focusing the same row. A plain
+`blur()` is enough — `useListKeyboard`'s own `[data-kbd-focused]` marker is independent React state, never
+tied to real DOM focus in the first place (a list item is never actually focusable — see `keyboard.ts`'s own
+`kbdItem`), so it was never disturbed by a button having the browser's own focus; giving that focus up is
+already "refocusing the current item in the main list," since the very next arrow key now has nothing
+competing for it. Deliberately scoped to the primary/secondary rows only, not `.row-actions` — a list item's
+own action row keeps its existing behavior (Alt+Shift+J from there still jumps to the page's own top row).
+
+**The real bug: Up/Down/Left/Right, with focus genuinely inside the primary or secondary row, were
+*actually reaching* `useListKeyboard`'s own handler too** — not merely a risk, confirmed live on a real
+listing page (a toolbar button focused via Alt+Shift+J, a list item already keyboard-focused below it):
+ArrowDown/ArrowUp/ArrowRight all silently moved the list's own `[data-kbd-focused]` marker (ArrowRight even
+opened the focused folder, through the list's `onOpen`) while the visibly-focused button never moved —
+exactly backwards from what both this module's own code and the person's report said should happen.
+**Root cause: two independent, plain bubble-phase `window.addEventListener('keydown', ...)` listeners**
+(`useButtonRowKeyboard` here, `useListKeyboard` in `keyboard.ts`) **cooperate only through
+`e.defaultPrevented`** — whichever one calls `preventDefault()` *first* is the one whose own reaction
+actually "wins," and which one that is depends entirely on React's own effect-mount order for a given page,
+not on anything either module's code says. On this page, the list's own listener happened to mount (and
+thus run) first for these keys.
+
+**Two matched fixes, confirmed live to each be necessary and together sufficient — neither one alone was
+enough:**
+1. **Up/Down now call `preventDefault()` unconditionally** the moment focus is in either row, before this
+   only called it when a cross-row jump actually found somewhere to go — so ArrowDown with no secondary row
+   on screen (or ArrowUp with no primary row, kept symmetric even though it can't happen in practice) fell
+   through unclaimed. Left/Right already called `preventDefault()` unconditionally once any row had focus
+   and needed no change of their own here — but, per fix 2 below, "already calls it" was never sufficient
+   by itself when the *other* listener could still run first.
+2. **The whole listener moved from the bubble phase to the *capture* phase**
+   (`window.addEventListener('keydown', onKeyDown, true)`, with the matching `removeEventListener(...,
+   true)`) — the one ordering guarantee the DOM event model actually makes: a capture-phase listener on
+   `window` always runs before *any* bubble-phase listener anywhere in the tree, including another
+   bubble-phase `window` listener, regardless of which one registered first. This codebase already had
+   precedent for exactly this (`ChordHost.tsx`'s own Ctrl+K chord handler), just not yet applied here. Fix 1
+   alone, re-tested without the capture-phase change, did **not** stop the leak — `useListKeyboard`'s
+   handler could still run first and claim the key before this module's own (now-unconditional)
+   `preventDefault()` ever executed; only the two together close the gap for good, which is why the module's
+   own doc comment now calls them "a matched pair."
+
+Verified live (isolated `cargo tauri dev` instance, a freshly-created `WEBVIEW2_USER_DATA_FOLDER` to force a
+genuinely new WebView2 browser host with its own working CDP debugging port — the shared-host quirk
+documented elsewhere in this file; real CDP, real trusted `Input.dispatchKeyEvent` sequences):
+- **On a plain listing page** (no secondary row): a list row keyboard-focused, then Alt+Shift+J to the
+  toolbar's first button — a real ArrowDown and a real ArrowUp both left the list's own
+  `[data-kbd-focused]` text completely unchanged (previously, before either fix, both silently changed it);
+  a real ArrowRight moved *within* the button row (confirmed by the focused button's own title changing,
+  e.g. "Go to a path…" → "Details of this folder") rather than leaking to the list's `onOpen`/`onParent`; a
+  second Alt+Shift+J correctly blurred the button (`document.activeElement` back to `BODY`); a further
+  ArrowDown afterward correctly moved the list normally again, confirming nothing is left over-claimed once
+  focus has been handed back.
+- **On a real editor page** (both a primary and a secondary row genuinely present, confirmed via
+  `!!document.querySelector('[data-primary-actions]')`/`[data-secondary-actions]` both reading `true`): a
+  real Alt+Shift+J correctly focused "Back" (`row: primary`); a real ArrowDown correctly jumped to the
+  secondary row's own first enabled button ("Select paragraphs") — proving the pre-existing primary→
+  secondary jump from the previous section still works unchanged under the new capture-phase registration;
+  a further Alt+Shift+J (now from the secondary row) correctly blurred (`BODY/none`); and a fresh
+  Alt+Shift+J from that blurred state correctly returned to "Back" in the primary row — confirming the
+  toggle-back is not a one-way trip and a subsequent press re-finds the primary row exactly as the very
+  first press did.
+
+`npx tsc --noEmit` and `npm run build` both clean; no Rust change, so `cargo build`/`cargo test --lib` don't
+apply. Not yet deployed to either the phone or this machine's production build as of this writing — this
+was a pure dev-mode verification pass.

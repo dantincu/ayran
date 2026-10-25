@@ -317,7 +317,7 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
-        <div className="code-editor-toolbar">
+        <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => viewRef.current && undo(viewRef.current)} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => viewRef.current && redo(viewRef.current)} />
           <IconButton icon={TextCursorInput} label="Select paragraphs" onClick={selectParagraphsAtCursor} />

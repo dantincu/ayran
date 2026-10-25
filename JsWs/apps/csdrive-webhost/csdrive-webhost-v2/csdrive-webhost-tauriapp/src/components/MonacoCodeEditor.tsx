@@ -592,7 +592,7 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
-        <div className="code-editor-toolbar">
+        <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => editorRef.current?.trigger('', 'undo', null)} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => editorRef.current?.trigger('', 'redo', null)} />
           <IconButton

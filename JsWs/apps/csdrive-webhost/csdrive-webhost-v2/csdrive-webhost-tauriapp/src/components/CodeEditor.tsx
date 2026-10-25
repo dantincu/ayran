@@ -1088,7 +1088,7 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
-        <div className="code-editor-toolbar">
+        <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton
@@ -1485,7 +1485,7 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
-        <div className="code-editor-toolbar">
+        <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton

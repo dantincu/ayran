@@ -55,6 +55,8 @@ Every list item's own row of action buttons (edit, delete, details, …), and a 
 | --- | --- |
 | **Alt+Shift+J** | Focus the **first button of the page's own top row of icon buttons** (or, with a popup open, its own header's row). |
 | **Alt+J** | With a list item focused (above), focus the **first button of that item's own row of action buttons**. |
+| **↓** | From the page's own top row: jump down to the **first button of the page's own second, page-specific header** (the text editor's own row of buttons — Undo/Redo/Find/…), on pages that have one. |
+| **↑** | From that second row: jump back up to the **first button of the page's own top row**. |
 | **←** / **→** | Move to the previous / next button in the row. |
 | **Home** / **End** | Move to the first / last button in the row. |
 | **Page Down** / **Page Up** | Move 10 buttons forward / back (rarely does anything, most rows are shorter). |
