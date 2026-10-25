@@ -412,8 +412,33 @@ export async function removeWindowTag(id: number): Promise<void> {
  * time the backend has seen this `appVersion` for this html file, it will emit
  * `request-resource-icons` back at this same window, expecting a reply via
  * `submitResourceIcons`. */
+let lastTabInit: TabInitResponse | null = null
+const tabInitListeners = new Set<(tab: TabInitResponse) => void>()
+
 export async function initWindowTab(appVersion: number, url: string, resourceType?: string): Promise<TabInitResponse> {
-  return invoke<TabInitResponse>('init_window_tab', { appVersion, url, resourceType: resourceType ?? null })
+  const response = await invoke<TabInitResponse>('init_window_tab', { appVersion, url, resourceType: resourceType ?? null })
+  lastTabInit = response
+  for (const callback of tabInitListeners) callback(response)
+  return response
+}
+
+/** Fired once this window's page has bound to its tab — `initWindowTab`'s own answer, again. **Not a real
+ * backend event**: the payload is always exactly what `initWindowTab`'s own call already returned to this
+ * same page, so there is nothing for the backend to push that the page doesn't already have the moment its
+ * own call resolves — asking "can the backend fire this on subscribe" doesn't apply here the way it does for
+ * a genuinely external event like `tab-navigate` (that one really does need a backend push: a *different*
+ * window's own action triggers it). Instead this is a plain, page-local cache: a subscriber added *before*
+ * `initWindowTab` is called is notified once it resolves; one added *after* is notified immediately, with
+ * the same cached data — so it never matters which happens first, with no round trip and nothing to race.
+ * Scoped to `initWindowTab` only, not `addWindowTab` — a second tab a page adds for itself is a different
+ * event entirely (the page already has that answer synchronously, with no subscribe-before/after question).
+ * Returns a function that stops listening. */
+export function onTabInitialized(callback: (tab: TabInitResponse) => void): () => void {
+  tabInitListeners.add(callback)
+  if (lastTabInit) callback(lastTabInit)
+  return () => {
+    tabInitListeners.delete(callback)
+  }
 }
 
 /** Called by a page to **add another tab** to the list — a second document, a new view. It takes what

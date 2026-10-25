@@ -463,6 +463,27 @@ const BOOTSTRAP: &str = "
       else { el.innerHTML = s.code; document.body.appendChild(el) }
     })
   }
+  // Fired once this page has bound to its tab — init_window_tab's own answer, again. Not a real backend
+  // event (see CLAUDE.md's \"A page-local ... onTabInitialized\" / `secondaryWindows.ts`): the payload is
+  // always exactly what init_window_tab already returned to this very script, so there's nothing for the
+  // backend to push a second time. Exposed as `window.ayran.events.onTabInitialized`, not a bare `window`
+  // leaf member — this bootstrap's one and only global is the `ayran` namespace object itself, so a future
+  // addition here (or anywhere else this app injects a global) has a home that isn't the top-level `window`
+  // object, where unrelated page/snippet code could just as easily clobber a bare name. Reached this way
+  // specifically so a *code snippet*, injected moments later by `apply()` above as a real <script> tag in
+  // this same document, can reach it: a snippet's own script runs synchronously the instant it's appended,
+  // strictly after the tab is already known (apply() is only ever called once init_window_tab has resolved),
+  // so calling this from a snippet's own top-level code always gets the cached data immediately — there is
+  // no \"early\" case on this particular page, only \"already known\", but the same call works
+  // unconditionally either way.
+  var lastTabInit = null
+  var tabInitListeners = []
+  window.ayran = window.ayran || {}
+  window.ayran.events = window.ayran.events || {}
+  window.ayran.events.onTabInitialized = function (handler) {
+    tabInitListeners.push(handler)
+    if (lastTabInit) handler(lastTabInit)
+  }
   var win = t.webviewWindow.getCurrentWebviewWindow()
   win.listen('tab-navigate', function () { location.reload() })
   win.listen('sync-scroll-to-line', function (event) {
@@ -576,6 +597,8 @@ const BOOTSTRAP: &str = "
 
   t.core.invoke('init_window_tab', { appVersion: 1, url: location.href, resourceType: null }).then(function (tab) {
     tabGuid = tab.tabGuid
+    lastTabInit = tab
+    tabInitListeners.forEach(function (cb) { cb(tab) })
     apply(tab.codeSnippets)
     barInfo.innerHTML = tab.topBarHtml || ''
     return t.core.invoke('get_app_state', { key: HIDDEN_KEY })
@@ -827,6 +850,24 @@ mod tests {
         assert!(page.contains("#csdrive-top-bar.csdrive-tb-persisted-hidden"), "{page}");
         assert!(page.contains("#csdrive-top-bar.csdrive-tb-scroll-hidden"), "{page}");
         assert!(page.contains("margin-bottom: -16px;"), "{page}");
+    }
+
+    #[test]
+    fn on_tab_initialized_is_exposed_under_the_ayran_namespace_and_cached_before_snippets_are_applied() {
+        let page = render_page("text", "t.md");
+        // Scoped under `window.ayran.events`, not a bare `window` leaf — the one global this bootstrap
+        // ever creates is the `ayran` namespace object itself; a code snippet, injected moments later as
+        // a real <script> tag by `apply()`, has no other way to reach anything this page's own closure
+        // holds, but reaches it through that one namespace rather than a scattered top-level name.
+        assert!(page.contains("window.ayran = window.ayran || {}"), "{page}");
+        assert!(page.contains("window.ayran.events = window.ayran.events || {}"), "{page}");
+        assert!(page.contains("window.ayran.events.onTabInitialized = function (handler)"), "{page}");
+        // `lastTabInit = tab` (the cache write) must come before `apply(tab.codeSnippets)` — a snippet's own
+        // script runs synchronously the instant `apply()` appends it, so the cache has to already be set by
+        // then, or a snippet calling `onTabInitialized` from its own top-level code would see nothing yet.
+        let cache_write = page.find("lastTabInit = tab").expect("the cache write is present");
+        let apply_call = page.find("apply(tab.codeSnippets)").expect("apply() is called");
+        assert!(cache_write < apply_call, "the cache must be set before snippets are applied");
     }
 
     #[test]

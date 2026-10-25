@@ -54,6 +54,8 @@
     // topBarHtml, topBarHidden } — the last two are what a page's own top bar shows besides its
     // buttons, and whether it should start hidden (see "Show its markup and starting state" below).
     let tabGuid = null
+    let lastTabInit = null
+    const tabInitListeners = []
     async function bindTab(resourceType) {
       const response = await invoke('init_window_tab', {
         appVersion: 1,
@@ -61,7 +63,20 @@
         resourceType: resourceType || null,
       })
       tabGuid = response.tabGuid
+      lastTabInit = response
+      tabInitListeners.forEach((cb) => cb(response))
       return response
+    }
+
+    // Fired once bindTab() has resolved — bindTab's own answer, again. Not a real backend event: the
+    // payload is always exactly what bindTab() already returned to this same page, so there's nothing for
+    // the backend to push that the page doesn't already have the moment its own call resolves (unlike
+    // onNavigate below, which really does need a backend push — a *different* window's own action triggers
+    // it). A handler added before bindTab() is called is notified once it resolves; one added after is
+    // notified immediately, with the same cached data — so it never matters which happens first.
+    function onTabInitialized(handler) {
+      tabInitListeners.push(handler)
+      if (lastTabInit) handler(lastTabInit)
     }
 
     // The window manager tells this page when the person switches to another tab of the same
@@ -127,7 +142,7 @@
       return invoke('set_top_bar_hidden', { tabGuid, hidden })
     }
 
-    return { invoke, windowGuid, bindTab, onNavigate, updateTab, suspendThisWindow, closeThisTab, closeThisWindow, goBack, onShowTopBar, setTopBarHidden }
+    return { invoke, windowGuid, bindTab, onTabInitialized, onNavigate, updateTab, suspendThisWindow, closeThisTab, closeThisWindow, goBack, onShowTopBar, setTopBarHidden }
   })()
 </script>
 
@@ -169,6 +184,10 @@
 
   Backend.onNavigate((response) => applyInfo(response))
   Backend.bindTab('example-toolbar').then(applyInfo)
+
+  // Demonstrates onTabInitialized: this fires once bindTab() above resolves — whether this handler is
+  // registered before that call (as here) or, just as well, added later from some other part of the page.
+  Backend.onTabInitialized((response) => console.log('tab initialized:', response.tabGuid))
 
   Backend.onShowTopBar(() => {
     toolbar.hidden = false
