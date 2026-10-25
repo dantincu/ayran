@@ -25,7 +25,7 @@ import {
   type FilenAccount,
   type FilenEntry,
 } from '../lib/filen'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, setResourceTypePageSize } from '../lib/listPageSize'
 import { writeUserFile } from '../lib/localFs'
 import { formatBytesExact } from '../lib/format'
 import { pathForInput } from '../lib/pathInput'
@@ -76,12 +76,12 @@ export default function FilenTab() {
   const pendingFocusRef = useRef<string | 'first' | null>(null)
 
   useEffect(() => {
-    getGlobalPageSize().then(setPageSizeState)
+    getResourceTypePageSize('files').then(setPageSizeState)
   }, [])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setGlobalPageSize(size)
+    setResourceTypePageSize('files', size)
     setPage(0)
   }
 

@@ -65,7 +65,7 @@ import FolderPairModal from './FolderPairModal'
 import { selectBaseName } from './renaming'
 import { useNotesSettings } from './settings'
 import { exportPathToDevice, isMobile, pickDeviceFiles } from '../../lib/platform'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, setResourceTypePageSize, getNotebookPageSize, setNotebookPageSize } from '../../lib/listPageSize'
 import { joinRelative } from '../../lib/localFs'
 import { formatBytesExact } from '../../lib/format'
 import { pathForInput } from '../../lib/pathInput'
@@ -121,7 +121,7 @@ import { decodeLocation, reportLocation, subscribeNavigate, type Location, type 
 import UserActionButton from './UserActionButton'
 import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
 import InsertPathModal from './InsertPathModal'
-import { loadNotebooks } from './notebooks'
+import { loadNotebooks, entryKey } from './notebooks'
 import { notebookContaining } from './userAction'
 import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
 import { draftsInTheWay, setWindowBranch, windowBranchOf, type UnsavedEdit } from './windowBranch'
@@ -230,6 +230,13 @@ export interface Scope {
   onBack: () => void
   /** Shows `path` (relative to `root`) in the File Manager, at its place in the whole source. */
   onOpenInFileManager: (path: string) => void
+  /** The scoped explorer's own current path (relative to `root`, the same shape `onOpenInFileManager` takes)
+   * — asked for directly: "the note's file explorer's current relative path should also be persisted."
+   * Called whenever it changes, so the caller (`NoteFilesPage.tsx`) can report it as part of its own place —
+   * this component's *own* "last location" persistence (`LAST_LOCATION_KEY`, `reportLocation`) is skipped
+   * entirely for a scoped explorer (see `showLocation`'s own `!scope` guard), since that mechanism is the
+   * plain File Manager's, keyed for browsing the whole source, not one note's own `01` folder. */
+  onPathChange?: (path: string) => void
 }
 
 export default function NotesApp({
@@ -354,6 +361,12 @@ export default function NotesApp({
   const restoredOffsetRef = useRef<number | null>(null)
   const [restoringPage, setRestoringPage] = useState(false)
   const pageSizeRef = useRef(DEFAULT_PAGE_SIZE)
+  // The notebook the folder shown is inside (its own `entryKey`), or `null` outside every notebook — read
+  // synchronously by `setPageSize` below, which needs to know *at the moment of the change* which store to
+  // write to; kept as a ref, not state, since nothing renders from it directly (the resolved `pageSize`
+  // itself is what's shown). Never resolved for a scoped explorer (`scope`): the Note Files Explorer has no
+  // notebook concept of its own to persist against (see `showLocation`'s identical `!scope` guard for branches).
+  const notebookKeyRef = useRef<string | null>(null)
   const loadedForRef = useRef<string | null>(null)
   const earlyNavigationRef = useRef<Tab | null>(null)
   const sourcesRef = useRef<{ roots: FileRoot[]; accounts: FilenAccountInfo[] } | null>(null)
@@ -395,7 +408,7 @@ export default function NotesApp({
         getUserRoot(),
         loadSavedRoots().catch(() => []),
         listFilenAccounts().catch(() => []),
-        getGlobalPageSize().catch(() => DEFAULT_PAGE_SIZE),
+        getResourceTypePageSize('files').catch(() => DEFAULT_PAGE_SIZE),
         initial ? Promise.resolve(null) : getAppState<Location>(LAST_LOCATION_KEY).catch(() => null),
       ])
       lastRef.current = last ?? null
@@ -712,9 +725,37 @@ export default function NotesApp({
     }
   }, [source, listing, currentPage, pageSize])
 
+  // The folder shown's own notebook, if any (asked for directly: "when in the scope of a notebook, persist
+  // the page size separately for each notebook" — this app-wide setting shouldn't have to fight whatever a
+  // notebook kept this way was last set to just because another listing elsewhere changed it). Resolved
+  // whenever the folder changes, not once at mount, since moving between folders can move into, out of, or
+  // between notebooks; `pageSize` itself is re-resolved in the same pass, from whichever store now applies —
+  // the notebook's own, falling back to the shared one for this resource type (this component only ever
+  // lists *files*, never notes — `lib/listPageSize.ts`'s own `ListResourceType` split) until the notebook
+  // has had one of its own set for that type.
+  useEffect(() => {
+    if (scope) {
+      notebookKeyRef.current = null
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const notebook = notebookContaining(await loadNotebooks().catch(() => []), sourceId, path)
+      const key = notebook ? entryKey(notebook) : null
+      if (cancelled) return
+      notebookKeyRef.current = key
+      setPageSizeState(await (key ? getNotebookPageSize(key, 'files') : getResourceTypePageSize('files')))
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [scope, sourceId, path])
+
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setGlobalPageSize(size).catch(() => {})
+    const key = notebookKeyRef.current
+    if (key) setNotebookPageSize(key, 'files', size).catch(() => {})
+    else setResourceTypePageSize('files', size).catch(() => {})
     setPage(0)
   }
 
@@ -1445,6 +1486,12 @@ export default function NotesApp({
     setKbdFocus(-1)
     setSelected(new Set())
   }, [sourceId, branch, path])
+
+  // Tell a scoped explorer's own caller where it is now, so it can persist that itself (see `Scope.onPathChange`'s
+  // own doc comment) — this component's *own* place-persistence is deliberately skipped for a scoped explorer.
+  useEffect(() => {
+    scope?.onPathChange?.(path)
+  }, [scope, path])
   useEffect(() => {
     const pending = pendingFocusRef.current
     if (pending === null || loading) return

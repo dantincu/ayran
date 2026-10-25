@@ -44,7 +44,7 @@ import { TagList } from './Tags'
 import { getAppState, setAppState } from '../lib/appState'
 import { offsetOfPage, pageOfOffset, validOffset } from '../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, setResourceTypePageSize } from '../lib/listPageSize'
 import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
 import { joinRelative } from '../lib/localFs'
 import { formatBytesExact } from '../lib/format'
@@ -260,7 +260,7 @@ export default function FilesTab() {
       // Folders picked in earlier sessions (Android remembers them; elsewhere they last one session).
       const savedRoots = await loadSavedRoots().catch(() => [])
       const saved = await getAppState<SavedLocation>(LOCATION_KEY)
-      const savedPageSize = await getGlobalPageSize()
+      const savedPageSize = await getResourceTypePageSize('files')
       const all = [root, ...savedRoots]
       setRoots(all)
       if (saved && typeof saved.path === 'string' && all.some((r) => r.id === saved.rootId)) {
@@ -277,7 +277,7 @@ export default function FilesTab() {
 
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setGlobalPageSize(size)
+    setResourceTypePageSize('files', size)
     setPage(0)
   }
 

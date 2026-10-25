@@ -40,7 +40,7 @@ import DeleteNotesModal from './DeleteNotesModal'
 import IndexesModal from './IndexesModal'
 import { setNoteClipboard, useNoteClipboard } from './noteClipboard'
 import { indexText, parseIndex, type NoteInterval } from './noteIndexes'
-import { loadNotebooks, notebookTitle, type NotebookEntry } from './notebooks'
+import { entryKey, loadNotebooks, notebookTitle, type NotebookEntry } from './notebooks'
 import { ancestorsOf, changeNoteIndex, createNote, deleteNote, findMarkdown, normalizeChildren, parentOf, readChildren, readNote, renameNote, type NoteRef } from './noteModel'
 import NewNoteModal from './NewNoteModal'
 import PasteNotesModal from './PasteNotesModal'
@@ -48,7 +48,7 @@ import SearchPanel from './SearchPanel'
 import { NoteSearchResults } from './SearchResults'
 import CacheMenu from './CacheMenu'
 import { DEFAULT_SORT, isSorted, sortNotes, type SearchCriteria, type SortSpec } from './search'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, getNotebookPageSize } from '../../lib/listPageSize'
 import { useNotesSettings } from './settings'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
@@ -135,10 +135,16 @@ export default function NotePage({
   const [searchOpen, setSearchOpen] = useState(false)
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const [criteria, setCriteria] = useState<SearchCriteria | null>(null)
+  // The notebook's own page size, for the "notes" resource type (`NotesApp.tsx`'s own file manager is where
+  // the "files" type is actually chosen; this page only has search results to apply its own type to, with no
+  // selector of its own) — falls back to the shared "notes" page size outside every notebook, or until the
+  // notebook has had one of its own set for notes specifically (its own "files" page size, if any, is a
+  // separate slot). Re-resolved whenever `notebook` changes (not once at mount): this page is reused for
+  // every notebook and note folder in turn, not remounted between them.
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   useEffect(() => {
-    getGlobalPageSize().then(setPageSize).catch(() => {})
-  }, [])
+    ;(notebook ? getNotebookPageSize(entryKey(notebook), 'notes') : getResourceTypePageSize('notes')).then(setPageSize).catch(() => {})
+  }, [notebook])
   useEffect(() => {
     setCriteria(null) // the results belong to the notes that were searched
   }, [sourceId, folder])
