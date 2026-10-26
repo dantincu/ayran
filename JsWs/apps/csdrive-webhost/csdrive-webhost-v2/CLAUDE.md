@@ -3584,3 +3584,36 @@ locations' mode changes confirmed persisted to the real `[custom-text-locations]
 All test data (the notebook registration, the `customtext-test` folder and its contents) was removed from
 the isolated debug data folder afterward. `npm run build` clean throughout (after the comment-syntax fix
 above); no Rust change, so `cargo build`/`cargo test --lib` don't apply.
+
+**Reported live, right after deploying the above: `zzz` was the wrong design — it rendered the UTC offset
+even in a format that never asked for one.** `{$d:yyyy-MM-dd_hh-mm-ss-zzz}` produced
+`"2026-10-26_13-45-54-+02:00"` instead of the person's own expectation of millis
+(`"2026-10-26_13-45-54-123"`) — the real symptom was simply that `zzz`, in this module's own (now-superseded)
+design, meant "the resolved offset," matching .NET's *actual* meaning for that exact token (not a bug in that
+sense), but never what the person themselves meant by it in their own prepared formats — and, separately,
+there had never been a way to say *where* in the output the offset should land, or whether it should carry
+its own colon. **Fixed by splitting the one overloaded token into two unambiguous ones**, per the person's own
+follow-up, worked out loud and matched exactly: `zzz` is no longer a recognized token at all (it passes
+through as the three literal characters, same as any other text the format doesn't otherwise claim);
+milliseconds is `fff` (the alias already added above — `SSS` still works too, kept only because it predates
+`fff`); and the UTC offset is rendered only when the format explicitly asks for it, with **`K`** including the
+colon (`+02:00`) and **`KK`** omitting it (`+0200`) — the reverse of the usual "more repetition is more
+detail" convention most custom-date-format languages use, but spelled out this way, with concrete worked
+examples, when it was asked for, so it's kept exactly as given rather than "corrected" back to the more
+familiar direction. `DATE_TOKEN_RE` lists `KK` ahead of bare `K` (the same longest-alternative-first rule
+`OFFSET_TOKEN_RE`'s own `mo`/`ms` already follow, so a format's `"KK"` reads as one token, not two separate
+`K`s) and a new `formatOffsetNoColon` sits beside the pre-existing `formatOffset`, each a one-line, obviously
+correct lookup in `formatDate`'s own switch — nothing about `displayParts`, `T<tz>` resolution, or the offset
+date-math segment needed any change: `K`/`KK` only decide *how* the already-resolved offset renders wherever
+placed in the format, composing with `T<tz>` exactly as `zzz` used to.
+
+Re-verified with the project's own Node ad-hoc-script convention (`node --experimental-strip-types`, written
+temporarily into `src/lib/` and deleted after): `fff` alone (no `K`/`KK` in the format) renders millis with no
+offset appended at all; a bare `zzz` in a format now renders as the literal text `"zzz"`; the person's own two
+worked examples reproduced exactly — `{$d:yyyy-MM-dd_hh-mm-ss-fffKK:T+0200}` → `"2026-10-26_13-45-54-123+0200"`
+and `...fffK:T+0200` → `"...-123+02:00"`; a negative offset (`T-0530`) rendering correctly in both forms
+(`"-0530"`/`"-05:30"`, confirming the sign and zero-padding survive the colon-free form too); `TZ` (UTC)
+rendering `"+0000"`/`"+00:00"` through `KK`/`K`; and a date-math offset (`+1d`) combined with a `T<tz>`
+render (`KK`) still composing correctly (`"2026-10-27-123+0530"`), confirming the two independent segments —
+*which* date/time, and *how* to render its offset — are genuinely unaffected by each other after the fix.
+`npm run build` clean; no Rust change, so `cargo build`/`cargo test --lib` don't apply.

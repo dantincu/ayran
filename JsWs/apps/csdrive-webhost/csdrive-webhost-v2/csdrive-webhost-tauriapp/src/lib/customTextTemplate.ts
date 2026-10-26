@@ -9,16 +9,27 @@
  * convention for a module with no committed test file of its own yet).
  *
  * **The date format's own tokens are a deliberate near-match of what the person's own prepared format strings
- * already used** (`{$d:yyyy-MM-dd}`, `{$d:hh-mm-ss}`, a final `{$d:…-zzz}`) — those line up almost exactly with
- * .NET's own custom date-and-time format specifiers (`yyyy`/`MM`/`dd`/`HH`/`hh`/`mm`/`ss`/`fff`/`zzz`), which is
- * why that's the convention adopted here rather than inventing a third one: `yyyy`/`YYYY` (4-digit year),
- * `MM` (month), `dd`/`DD` (day), `HH`/`hh` (hour, **both 24-hour** — this module has no 12-hour/AM-PM token,
- * since nothing asked for one and every example format given was bare digits with no "tt" designator),
- * `mm` (minute), `ss` (second), `SSS`/`fff` (millisecond), and **`zzz`**, which (matching .NET's own meaning
- * for that exact token) renders the *resolved* UTC offset as `±HH:MM` — not a literal the person types, a
- * token the format can *include* to show whichever offset ends up applying (the local system's own, or the
- * explicit one from the `T<tz>` segment below). Anything in the format string that isn't one of these tokens
- * passes through literally, so a format can mix in its own punctuation (`YYYY-MM-DD`, `DD/MM/YYYY hh:mm`).
+ * already used** (`{$d:yyyy-MM-dd}`, `{$d:hh-mm-ss}`) — close to .NET's own custom date-and-time format
+ * specifiers (`yyyy`/`MM`/`dd`/`HH`/`hh`/`mm`/`ss`/`fff`), which is why that's the convention adopted here
+ * rather than inventing a third one: `yyyy`/`YYYY` (4-digit year), `MM` (month), `dd`/`DD` (day), `HH`/`hh`
+ * (hour, **both 24-hour** — this module has no 12-hour/AM-PM token, since nothing asked for one and every
+ * example format given was bare digits with no "tt" designator), `mm` (minute), `ss` (second), and `SSS`/
+ * `fff` (millisecond, zero-padded to 3 digits — `fff` is the one to reach for; `SSS` is kept only because it
+ * was there first).
+ *
+ * **`K`/`KK` render the *resolved* UTC offset** — not a literal the person types, a token the format can
+ * *include* to show whichever offset ends up applying (the local system's own, or the explicit one from the
+ * `T<tz>` segment below) — asked for directly, once `zzz` (this module's first attempt at the same idea) was
+ * found to produce it unprompted even when no timezone-rendering token had actually been written: **`K`**
+ * includes the colon (`+02:00`, `-05:30`) and **`KK`** omits it (`+0200`, `-0530`) — the reverse of the usual
+ * "more repetition is more detail" convention, but spelled out explicitly, with worked examples, when these
+ * were asked for, so it's kept exactly as given rather than "corrected" to the more familiar direction. `zzz`
+ * itself is no longer a recognized token at all — it passes through as the literal three characters, the
+ * same as any other text the format doesn't otherwise claim — so there is exactly one way to ask for each
+ * piece: milliseconds is `fff`, the offset is `K` or `KK`, and a format combining both (`fffKK`) renders them
+ * back to back with no separator of its own, e.g. `yyyy-MM-dd_hh-mm-ss-fffKK` → `2026-10-26_13-45-54-123+0200`.
+ * Anything in the format string that isn't one of these tokens passes through literally, so a format can mix
+ * in its own punctuation (`YYYY-MM-DD`, `DD/MM/YYYY hh:mm`).
  *
  * **The offset segment** (add/subtract date components) is `[+-]\d+` immediately followed by a unit, one or
  * more such runs concatenated with no separator (`+1y2mo3d`, `-90m`) — `y`/`d`/`h`/`m`/`s` as before, `mo` *or*
@@ -60,10 +71,10 @@ export interface CustomTextVariable {
   persist: boolean
 }
 
-/** Either UTC (`zzz` renders `+00:00`), or a fixed number of minutes offset from UTC (`zzz` renders that
- * offset; the displayed date/time is computed as if living at that offset, regardless of the system's own
- * timezone). `null` (the default, everywhere this type appears) means "the system's own local time," exactly
- * as this module worked before timezones existed in it at all. */
+/** Either UTC (`K`/`KK` render `+00:00`/`+0000`), or a fixed number of minutes offset from UTC (`K`/`KK`
+ * render that offset; the displayed date/time is computed as if living at that offset, regardless of the
+ * system's own timezone). `null` (the default, everywhere this type appears) means "the system's own local
+ * time," exactly as this module worked before timezones existed in it at all. */
 export type CustomTextTimezone = { kind: 'utc' } | { kind: 'fixed'; offsetMinutes: number }
 
 export type CustomTextToken =
@@ -222,12 +233,17 @@ export function templateVariables(tokens: CustomTextToken[]): CustomTextVariable
   return [...seen.values()]
 }
 
-const DATE_TOKEN_RE = /YYYY|yyyy|MM|DD|dd|HH|hh|mm|ss|SSS|fff|zzz/g
+// `KK` is listed ahead of `K` — the same "longer run before the single letter it would otherwise swallow"
+// rule `OFFSET_TOKEN_RE`'s own `mo`/`ms` already follow — so a format's own "KK" is read as one token, not
+// two separate "K"s in a row. `zzz` is deliberately absent: it isn't a token any more, so it's left for the
+// `default` branch below (which never actually sees it, since this regex is what `.replace` scans the format
+// with in the first place) — in practice it just means "zzz" never matches here and passes through literally.
+const DATE_TOKEN_RE = /YYYY|yyyy|MM|DD|dd|HH|hh|mm|ss|SSS|fff|KK|K/g
 
 /** `date`'s own field values, read for whichever timezone is in effect — `null` (the system's local time,
  * via the plain getters) or a resolved utc/fixed one (via a timestamp shifted by the chosen offset, read back
  * with the UTC getters, the standard trick for "what would the wall clock read at this other offset"). Also
- * carries the *effective* offset in minutes, which is what the `zzz` token itself renders. */
+ * carries the *effective* offset in minutes, which is what the `K`/`KK` tokens themselves render. */
 function displayParts(date: Date, timezone: CustomTextTimezone | null) {
   if (timezone === null) {
     return {
@@ -263,6 +279,16 @@ function formatOffset(offsetMinutes: number): string {
   return `${sign}${hh}:${mm}`
 }
 
+// `KK`'s own, colon-free sibling — kept as a second, separate function rather than a parameter on
+// `formatOffset` so each token's own formatter stays a one-line, obviously-correct lookup in the switch below.
+function formatOffsetNoColon(offsetMinutes: number): string {
+  const sign = offsetMinutes < 0 ? '-' : '+'
+  const abs = Math.abs(offsetMinutes)
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0')
+  const mm = String(abs % 60).padStart(2, '0')
+  return `${sign}${hh}${mm}`
+}
+
 function formatDate(date: Date, format: string, timezone: CustomTextTimezone | null): string {
   const parts = displayParts(date, timezone)
   return format.replace(DATE_TOKEN_RE, (token) => {
@@ -285,8 +311,10 @@ function formatDate(date: Date, format: string, timezone: CustomTextTimezone | n
       case 'SSS':
       case 'fff':
         return String(parts.millis).padStart(3, '0')
-      case 'zzz':
+      case 'K':
         return formatOffset(parts.offsetMinutes)
+      case 'KK':
+        return formatOffsetNoColon(parts.offsetMinutes)
       default:
         return token
     }
