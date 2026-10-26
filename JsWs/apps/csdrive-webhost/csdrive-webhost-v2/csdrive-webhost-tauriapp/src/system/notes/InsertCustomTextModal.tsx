@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { File as FileIcon, Folder, Search as SearchIcon } from 'lucide-react'
+import { ArrowLeftRight, File as FileIcon, Folder, Search as SearchIcon } from 'lucide-react'
 import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
 import Pagination from '../../components/Pagination'
@@ -81,6 +81,14 @@ export default function InsertCustomTextModal({
   const [restored, setRestored] = useState(false)
   const [filePage, setFilePage] = useState(0)
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
+  /** Which of the two lists is shown when a level has **both** folders/object-properties and files/string-
+   * properties — reported live: with both present, the files/strings had no way to be reached at all (the
+   * folder list's own `max-height: 40vh; overflow-y: auto` traps the scroll wheel the moment the folders
+   * alone fill it, so there was never a way to scroll the modal body far enough to reach the file table
+   * stacked underneath). Fixed by never stacking the two — exactly one is rendered at a time, with a toggle
+   * button to switch, rather than trying to patch the scroll-trapping instead. Only matters, and only shows,
+   * when a level genuinely has both; a level with just one kind is unaffected and needs no toggle at all. */
+  const [view, setView] = useState<'folders' | 'files'>('folders')
   const [filling, setFilling] = useState<{ file: HierarchyFile; identity: string; variables: CustomTextVariable[] } | null>(null)
 
   useEffect(() => {
@@ -125,6 +133,11 @@ export default function InsertCustomTextModal({
 
   const level = root && levelAt(root, breadcrumb)
   const shown = useMemo(() => (level ? filterHierarchyLevel(level, query) : null), [level, query])
+  const hasFolders = !!shown && shown.folders.length > 0
+  const hasFiles = !!shown && shown.files.length > 0
+  // A level with only one kind just shows that one — the toggle only ever matters, and only ever shows,
+  // once a level genuinely has both.
+  const effectiveView: 'folders' | 'files' = hasFolders && hasFiles ? view : hasFolders ? 'folders' : 'files'
 
   function openFile(file: HierarchyFile) {
     const identity = [...breadcrumb, file.name].join('/')
@@ -205,6 +218,14 @@ export default function InsertCustomTextModal({
             </button>
           </span>
         ))}
+        {hasFolders && hasFiles && (
+          <IconButton
+            icon={ArrowLeftRight}
+            label={effectiveView === 'folders' ? 'Show files instead of folders' : 'Show folders instead of files'}
+            onClick={() => setView(effectiveView === 'folders' ? 'files' : 'folders')}
+            style={{ marginLeft: 'auto' }}
+          />
+        )}
       </div>
       <label className="notes-field">
         <span>
@@ -212,8 +233,8 @@ export default function InsertCustomTextModal({
         </span>
         <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Name or text" aria-label="Search by name or text" />
       </label>
-      {shown.folders.length === 0 && shown.files.length === 0 && <p className="muted">Nothing here.</p>}
-      {shown.folders.length > 0 && (
+      {!hasFolders && !hasFiles && <p className="muted">Nothing here.</p>}
+      {effectiveView === 'folders' && hasFolders && (
         <ul className="picker-list">
           {shown.folders.map((folder, i) => (
             <li key={`${folder.name}#${i}`}>
@@ -224,7 +245,7 @@ export default function InsertCustomTextModal({
           ))}
         </ul>
       )}
-      {shown.files.length > 0 && (
+      {effectiveView === 'files' && hasFiles && (
         <>
           <table className="custom-text-table">
             <thead>
