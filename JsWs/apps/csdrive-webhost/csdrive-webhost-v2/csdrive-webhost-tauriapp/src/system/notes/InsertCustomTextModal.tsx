@@ -4,7 +4,7 @@ import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
 import Pagination from '../../components/Pagination'
 import { getAppState, setAppState } from '../../lib/appState'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { buildCustomTextHierarchy, filterHierarchyLevel, type HierarchyFile, type HierarchyLevel, type HierarchySource } from '../../lib/customTextHierarchy'
 import { parseCustomTextTemplate, renderCustomTextTemplate, templateVariables, type CustomTextVariable } from '../../lib/customTextTemplate'
 
@@ -84,7 +84,7 @@ export default function InsertCustomTextModal({
   const [filling, setFilling] = useState<{ file: HierarchyFile; identity: string; variables: CustomTextVariable[] } | null>(null)
 
   useEffect(() => {
-    getGlobalPageSize().then(setPageSizeState, () => {})
+    getPagePageSize(PAGE_IDS.notesInsertCustomText, getGlobalPageSize).then(setPageSizeState, () => {})
   }, [])
 
   useEffect(() => {
@@ -253,7 +253,7 @@ export default function InsertCustomTextModal({
             onPageChange={setFilePage}
             onPageSizeChange={(size) => {
               setPageSizeState(size)
-              setGlobalPageSize(size).catch(() => {})
+              setPagePageSize(PAGE_IDS.notesInsertCustomText, size).catch(() => {})
             }}
           />
         </>

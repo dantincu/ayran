@@ -25,7 +25,7 @@ import {
   type FilenAccount,
   type FilenEntry,
 } from '../lib/filen'
-import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, setResourceTypePageSize } from '../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../lib/listPageSize'
 import { writeUserFile } from '../lib/localFs'
 import { formatBytesExact } from '../lib/format'
 import { pathForInput } from '../lib/pathInput'
@@ -75,13 +75,20 @@ export default function FilenTab() {
   const [kbdFocus, setKbdFocus] = useState(-1)
   const pendingFocusRef = useRef<string | 'first' | null>(null)
 
+  // This page's own page size (asked for directly: "preserve the page size on per location... not just
+  // resource type," then clarified: "by location I meant pages/modals in our app" — the Filen.io tab is one
+  // such page, independent of the Files tab and Notes' own listings even though all three show "files";
+  // falls back to the plain shared "files" value for continuity until this tab's own choice is actually set
+  // — see `lib/listPageSize.ts`'s own "per page/modal" section). Resolved once, at mount — unlike the
+  // notebook level this has nothing to do with *which* account/path is shown, so there's no reason to
+  // re-resolve it as `activeId`/`path` change.
   useEffect(() => {
-    getResourceTypePageSize('files').then(setPageSizeState)
+    getPagePageSize(PAGE_IDS.filenTab, () => getResourceTypePageSize('files')).then(setPageSizeState, () => {})
   }, [])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setResourceTypePageSize('files', size)
+    setPagePageSize(PAGE_IDS.filenTab, size).catch(() => {})
     setPage(0)
   }
 

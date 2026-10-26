@@ -4,7 +4,7 @@ import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
 import Pagination from '../../components/Pagination'
 import FileExplorerModal, { joinPath } from '../../components/FileExplorerModal'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { NOTE_FILES_INDEX, findMarkdown, readChildren, type NoteRef } from './noteModel'
 import { entryKey, loadNotebooks, notebookTitle, type NotebookEntry } from './notebooks'
 import type { FileSource } from './sources'
@@ -38,7 +38,7 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
 
   useEffect(() => {
-    getGlobalPageSize().then(setPageSizeState, () => {})
+    getPagePageSize(PAGE_IDS.notesInsertPathNotes, getGlobalPageSize).then(setPageSizeState, () => {})
   }, [])
 
   // A fresh page for every view (the notebooks list, or a different notebook's/note's own children).
@@ -118,6 +118,7 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
         onPick={onPick}
         onClose={onClose}
         actions={<IconButton icon={BookOpen} label="Browse notes instead…" onClick={() => setMode('notes')} />}
+        pageId={PAGE_IDS.notesInsertPathFiles}
       />
     )
   }
@@ -175,7 +176,7 @@ export default function InsertPathModal({ source, sourceId, initialPath, onPick,
         onPageChange={setPage}
         onPageSizeChange={(size) => {
           setPageSizeState(size)
-          setGlobalPageSize(size).catch(() => {})
+          setPagePageSize(PAGE_IDS.notesInsertPathNotes, size).catch(() => {})
         }}
       />
       <div className="dialog-actions">

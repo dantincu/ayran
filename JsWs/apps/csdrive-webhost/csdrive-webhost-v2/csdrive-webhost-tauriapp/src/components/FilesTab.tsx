@@ -44,7 +44,7 @@ import { TagList } from './Tags'
 import { getAppState, setAppState } from '../lib/appState'
 import { offsetOfPage, pageOfOffset, validOffset } from '../lib/pagedPosition'
 import { kbdItem, useListKeyboard } from '../lib/keyboard'
-import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, setResourceTypePageSize } from '../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../lib/listPageSize'
 import { getDeployableAppHtml, listDeployableApps, type DeployableAppInfo } from '../lib/deployableApps'
 import { joinRelative } from '../lib/localFs'
 import { formatBytesExact } from '../lib/format'
@@ -260,7 +260,6 @@ export default function FilesTab() {
       // Folders picked in earlier sessions (Android remembers them; elsewhere they last one session).
       const savedRoots = await loadSavedRoots().catch(() => [])
       const saved = await getAppState<SavedLocation>(LOCATION_KEY)
-      const savedPageSize = await getResourceTypePageSize('files')
       const all = [root, ...savedRoots]
       setRoots(all)
       if (saved && typeof saved.path === 'string' && all.some((r) => r.id === saved.rootId)) {
@@ -270,14 +269,19 @@ export default function FilesTab() {
         restoredOffsetRef.current = validOffset(saved.offset)
         setRestoringPage(restoredOffsetRef.current !== null)
       }
-      setPageSizeState(savedPageSize)
+      // This page's own page size (asked for directly: "preserve the page size on per location... not just
+      // resource type," then clarified: "by location I meant pages/modals in our app" — the Files tab is
+      // one such page, independent of the Filen.io tab and Notes' own listings even though all three show
+      // "files"; falls back to the plain shared "files" value for continuity until this tab's own choice is
+      // actually set — see `lib/listPageSize.ts`'s own "per page/modal" section).
+      setPageSizeState(await getPagePageSize(PAGE_IDS.filesTab, () => getResourceTypePageSize('files')).catch(() => DEFAULT_PAGE_SIZE))
       setHydrated(true)
     })()
   }, [])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
-    setResourceTypePageSize('files', size)
+    setPagePageSize(PAGE_IDS.filesTab, size).catch(() => {})
     setPage(0)
   }
 
@@ -886,6 +890,7 @@ export default function FilesTab() {
               initialPath={parentOf(editing.path)}
               onPick={pathPicked}
               onClose={() => setInserting(false)}
+              pageId={PAGE_IDS.filesTabInsertPath}
             />
           )}
           {pathChoice && (

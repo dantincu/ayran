@@ -3,7 +3,7 @@ import { Cloud, File as FileIcon, Folder, FolderPlus, TriangleAlert } from 'luci
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
 import Pagination from '../../components/Pagination'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { pickNewRoot, type FileRoot } from '../../lib/fileRoots'
 import { joinRelative } from '../../lib/localFs'
 import { FILEN_PREFIX, LOCAL_PREFIX, type DirListing, type FilenAccountInfo, type FileSource } from './sources'
@@ -56,7 +56,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
   const [newFolder, setNewFolder] = useState<string | null>(null)
 
   useEffect(() => {
-    getGlobalPageSize().then(setPageSizeState, () => {})
+    getPagePageSize(PAGE_IDS.notesLocationPicker, getGlobalPageSize).then(setPageSizeState, () => {})
   }, [])
 
   const source = useMemo(() => resolveSource(sourceId, roots, accounts), [sourceId, roots, accounts])
@@ -296,7 +296,7 @@ export default function LocationPicker({ mode, title, roots, accounts, onAddRoot
           onPageChange={setPage}
           onPageSizeChange={(size) => {
             setPageSizeState(size)
-            setGlobalPageSize(size).catch(() => {})
+            setPagePageSize(PAGE_IDS.notesLocationPicker, size).catch(() => {})
           }}
         />
 

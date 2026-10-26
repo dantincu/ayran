@@ -65,7 +65,7 @@ import FolderPairModal from './FolderPairModal'
 import { selectBaseName } from './renaming'
 import { useNotesSettings } from './settings'
 import { exportPathToDevice, isMobile, pickDeviceFiles } from '../../lib/platform'
-import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, setResourceTypePageSize, getNotebookPageSize, setNotebookPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getResourceTypePageSize, getNotebookPageSize, setNotebookPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { joinRelative } from '../../lib/localFs'
 import { formatBytesExact } from '../../lib/format'
 import { pathForInput } from '../../lib/pathInput'
@@ -394,6 +394,10 @@ export default function NotesApp({
   // itself is what's shown). Never resolved for a scoped explorer (`scope`): the Note Files Explorer has no
   // notebook concept of its own to persist against (see `showLocation`'s identical `!scope` guard for branches).
   const notebookKeyRef = useRef<string | null>(null)
+  // Which page this instance is — the File Manager or the Note Files Explorer — decides which page-level
+  // slot `setPageSize` below writes to (see `lib/listPageSize.ts`'s own "per page/modal" section). Fixed for
+  // the component's whole lifetime (it follows `scope`, a prop that never changes after mount in practice).
+  const pageId = scope ? PAGE_IDS.noteFilesExplorer : PAGE_IDS.notesFileManager
   const loadedForRef = useRef<string | null>(null)
   const earlyNavigationRef = useRef<Tab | null>(null)
   const sourcesRef = useRef<{ roots: FileRoot[]; accounts: FilenAccountInfo[] } | null>(null)
@@ -766,14 +770,18 @@ export default function NotesApp({
   // The folder shown's own notebook, if any (asked for directly: "when in the scope of a notebook, persist
   // the page size separately for each notebook" — this app-wide setting shouldn't have to fight whatever a
   // notebook kept this way was last set to just because another listing elsewhere changed it). Resolved
-  // whenever the folder changes, not once at mount, since moving between folders can move into, out of, or
-  // between notebooks; `pageSize` itself is re-resolved in the same pass, from whichever store now applies —
-  // the notebook's own, falling back to the shared one for this resource type (this component only ever
-  // lists *files*, never notes — `lib/listPageSize.ts`'s own `ListResourceType` split) until the notebook
-  // has had one of its own set for that type.
+  // whenever the folder changes, not once at mount, since moving between folders can move into, out of or
+  // between notebooks; `pageSize` itself is re-resolved in the same pass, falling to **this page's own**
+  // level (`pageId`, above — "preserve the page size on per location... [meaning] pages/modals in our app")
+  // before the plain resource-type one, so a notebook with no size of its own still prefers whichever default
+  // this exact page (File Manager vs. Note Files Explorer) was last left at. **Skipped for a scoped
+  // explorer** (`scope`): the Note Files Explorer has no notebook concept of its own to persist against
+  // (`showLocation`'s identical `!scope` guard for branches) — it goes straight to its own page-level value.
   useEffect(() => {
+    const pageLevel = () => getPagePageSize(pageId, () => getResourceTypePageSize('files'))
     if (scope) {
       notebookKeyRef.current = null
+      pageLevel().then(setPageSizeState).catch(() => {})
       return
     }
     let cancelled = false
@@ -782,18 +790,18 @@ export default function NotesApp({
       const key = notebook ? entryKey(notebook) : null
       if (cancelled) return
       notebookKeyRef.current = key
-      setPageSizeState(await (key ? getNotebookPageSize(key, 'files') : getResourceTypePageSize('files')))
+      setPageSizeState(key ? await getNotebookPageSize(key, 'files', pageLevel) : await pageLevel())
     })()
     return () => {
       cancelled = true
     }
-  }, [scope, sourceId, path])
+  }, [scope, sourceId, path, pageId])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
     const key = notebookKeyRef.current
     if (key) setNotebookPageSize(key, 'files', size).catch(() => {})
-    else setResourceTypePageSize('files', size).catch(() => {})
+    else setPagePageSize(pageId, size).catch(() => {})
     setPage(0)
   }
 

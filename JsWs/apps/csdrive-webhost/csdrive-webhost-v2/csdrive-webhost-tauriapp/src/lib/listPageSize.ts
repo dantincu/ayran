@@ -83,14 +83,80 @@ function notebookPageSizeMapKey(notebookKey: string, type: ListResourceType): st
   return `${notebookKey}:${type}`
 }
 
-export async function getNotebookPageSize(notebookKey: string, type: ListResourceType): Promise<number> {
+/** `fallback`, when given, replaces the plain resource-type value as what a notebook that has no size of its
+ * own for this type falls through to — used by a page that also has its own per-page level (below) sitting
+ * between the notebook and the resource type, so a notebook without its own override still prefers that
+ * page's own default over the generic cross-app one. Omitted, this is exactly today's behaviour. */
+export async function getNotebookPageSize(notebookKey: string, type: ListResourceType, fallback?: () => Promise<number>): Promise<number> {
   const map = (await getAppState<Record<string, number>>(NOTEBOOK_PAGE_SIZE_KEY).catch(() => undefined)) ?? {}
   const saved = map[notebookPageSizeMapKey(notebookKey, type)]
-  return PAGE_SIZE_OPTIONS.includes(saved) ? saved : getResourceTypePageSize(type)
+  return PAGE_SIZE_OPTIONS.includes(saved) ? saved : fallback ? fallback() : getResourceTypePageSize(type)
 }
 
 export async function setNotebookPageSize(notebookKey: string, type: ListResourceType, size: number): Promise<void> {
   const map = (await getAppState<Record<string, number>>(NOTEBOOK_PAGE_SIZE_KEY).catch(() => undefined)) ?? {}
   map[notebookPageSizeMapKey(notebookKey, type)] = size
   await setAppState(NOTEBOOK_PAGE_SIZE_KEY, map)
+}
+
+/** Which distinct *page or modal* is showing the listing — asked for directly: "preserve the page size on
+ * per location... not just resource type," then clarified once the first attempt (above, keyed by the exact
+ * folder/account/branch being browsed) turned out to be the wrong axis: "by location I meant pages/modals in
+ * our app, not differences in resource identifier of the same resource type." So this is **not** about
+ * *where* a listing is pointed (that's the resource-type/notebook levels above, untouched); it's about
+ * *which UI surface* is showing it — the Files tab, the Filen.io tab, Notes' File Manager, the Note Files
+ * Explorer, "Insert a path…", "Add a notebook…"'s own folder picker, "Create image from the clipboard…",
+ * "Insert custom text at the caret…" — each remembers its own choice, independent of every other one, even
+ * though more than one of them lists the very same kind of thing. A page id is a short, arbitrary string
+ * private to the one component that picks it (`PAGE_IDS` below is where every one in use is listed, so a new
+ * page/modal with its own pagination picks an unused id from the same place). **One flat map, in
+ * `global_settings`** — not split by resource type or by app, unlike the two levels above: nothing outside
+ * the one component that owns a given id ever reads or writes it, so there is no cross-app-confusion risk of
+ * the kind that split "files" from "notes" in the first place; keeping it to one map is simpler, and matches
+ * this module's own established shape for "yet one more fallback tier" (compare the notebook level's own map,
+ * keyed by notebook+type, in one place rather than per notebook).
+ *
+ * **Falls back to whatever the caller already used before this level existed** — the one thing that matters
+ * for continuity: a page that already had its own resource-type-level value (the Files/Filen.io tabs, Notes'
+ * File Manager outside a notebook) keeps showing it until its own page-level override is actually set; a
+ * one-off picker that was deliberately left on the plain global value (`FileExplorerModal`,
+ * `InsertPathModal`'s own "notes" mode, `LocationPicker`, "Create image from the clipboard…", "Insert custom
+ * text at the caret…") keeps falling to *that*, not suddenly inheriting whatever the resource-type split
+ * settled on — each caller passes its own `fallback` for exactly this reason, rather than this module
+ * guessing which broader level, if any, used to apply. */
+export const PAGE_IDS = {
+  filesTab: 'files-tab',
+  filenTab: 'filen-tab',
+  notesFileManager: 'notes-file-manager',
+  noteFilesExplorer: 'note-files-explorer',
+  filesTabInsertPath: 'files-tab-insert-path',
+  notesInsertPathFiles: 'notes-insert-path-files',
+  notesInsertPathNotes: 'notes-insert-path-notes',
+  notesLocationPicker: 'notes-location-picker',
+  notesCreateImageFromClipboard: 'notes-create-image-from-clipboard',
+  notesInsertCustomText: 'notes-insert-custom-text',
+} as const
+
+const PAGE_PAGE_SIZE_KEY = 'listPageSize.byPage'
+
+async function readPageMap(): Promise<Record<string, number>> {
+  const raw = await invoke<string | null>('get_global_setting', { key: PAGE_PAGE_SIZE_KEY })
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw) as Record<string, number>
+  } catch {
+    return {}
+  }
+}
+
+export async function getPagePageSize(pageId: string, fallback: () => Promise<number>): Promise<number> {
+  const map = await readPageMap()
+  const saved = map[pageId]
+  return PAGE_SIZE_OPTIONS.includes(saved) ? saved : fallback()
+}
+
+export async function setPagePageSize(pageId: string, size: number): Promise<void> {
+  const map = await readPageMap()
+  map[pageId] = size
+  await invoke('set_global_setting', { key: PAGE_PAGE_SIZE_KEY, value: JSON.stringify(map) })
 }

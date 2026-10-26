@@ -6,7 +6,7 @@ import Pagination from '../../components/Pagination'
 import { confirm } from '../../lib/dialogs'
 import { readOsClipboardImage } from '../../lib/clipboard'
 import { getAppState, setAppState } from '../../lib/appState'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import type { DirListing, FileSource } from './sources'
 
 /** Where the explorer's own last-browsed folder is persisted, per `persistKey` (asked for directly, item 2 of
@@ -63,7 +63,7 @@ export default function CreateImageFromClipboardModal({
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    getGlobalPageSize().then(setPageSizeState, () => {})
+    getPagePageSize(PAGE_IDS.notesCreateImageFromClipboard, getGlobalPageSize).then(setPageSizeState, () => {})
   }, [])
 
   // Reads the clipboard once, then where the browser was last left for this same file — in that order, since
@@ -212,7 +212,7 @@ export default function CreateImageFromClipboardModal({
         onPageChange={setPage}
         onPageSizeChange={(size) => {
           setPageSizeState(size)
-          setGlobalPageSize(size).catch(() => {})
+          setPagePageSize(PAGE_IDS.notesCreateImageFromClipboard, size).catch(() => {})
         }}
       />
       <form

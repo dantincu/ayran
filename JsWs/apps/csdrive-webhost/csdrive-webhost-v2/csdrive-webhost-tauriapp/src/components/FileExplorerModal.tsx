@@ -3,7 +3,7 @@ import { File as FileIcon, Folder } from 'lucide-react'
 import Modal from './Modal'
 import IconButton from './IconButton'
 import Pagination from './Pagination'
-import { DEFAULT_PAGE_SIZE, getGlobalPageSize, setGlobalPageSize } from '../lib/listPageSize'
+import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize } from '../lib/listPageSize'
 
 export interface ExplorerEntry {
   name: string
@@ -23,6 +23,10 @@ interface Props {
   /** Extra buttons in the header, before Cancel — a caller with more than one way to browse (Notes' own
    * "Files" / "Notes" switch, `system/notes/InsertPathModal.tsx`) puts its own tab buttons here. */
   actions?: ReactNode
+  /** This dialog's own page-size slot (`lib/listPageSize.ts`'s per-page/modal level) — each distinct caller
+   * passes its own id (e.g. `PAGE_IDS.filesTabInsertPath`), so the Files tab's "Insert a path…" and Notes'
+   * own remember separately, falling back to the plain shared value for continuity. */
+  pageId: string
 }
 
 const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
@@ -33,7 +37,7 @@ export const joinPath = (folder: string, name: string) => (folder ? `${folder}/$
  * (a `FileSource`'s own `list`, `listRootDir`, …), so this one component works for the admin-app's Files tab and
  * for Notes alike. `system/notes/InsertPathModal.tsx` wraps this for Notes' own "Insert a path…", adding a
  * second, notes-aware way to browse alongside this one. */
-export default function FileExplorerModal({ title, list, initialPath, onPick, onClose, actions }: Props) {
+export default function FileExplorerModal({ title, list, initialPath, onPick, onClose, actions, pageId }: Props) {
   const [path, setPath] = useState(initialPath)
   const [entries, setEntries] = useState<ExplorerEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -41,8 +45,8 @@ export default function FileExplorerModal({ title, list, initialPath, onPick, on
   const [pageSize, setPageSizeState] = useState(DEFAULT_PAGE_SIZE)
 
   useEffect(() => {
-    getGlobalPageSize().then(setPageSizeState, () => {})
-  }, [])
+    getPagePageSize(pageId, getGlobalPageSize).then(setPageSizeState, () => {})
+  }, [pageId])
 
   useEffect(() => {
     let alive = true
@@ -106,7 +110,7 @@ export default function FileExplorerModal({ title, list, initialPath, onPick, on
         onPageChange={setPage}
         onPageSizeChange={(size) => {
           setPageSizeState(size)
-          setGlobalPageSize(size).catch(() => {})
+          setPagePageSize(pageId, size).catch(() => {})
         }}
       />
       <div className="dialog-actions">
