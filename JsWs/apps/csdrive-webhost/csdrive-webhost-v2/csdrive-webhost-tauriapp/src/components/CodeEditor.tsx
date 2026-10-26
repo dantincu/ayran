@@ -1,7 +1,8 @@
 import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { Redo2, Search, Undo2 } from 'lucide-react'
+import { Braces, ImagePlus, Redo2, Search, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
+import MoreMenuButton from './MoreMenuButton'
 import FindBar from './FindBar'
 import { type FindMatch } from '../lib/textFind'
 import { UndoHistory } from '../lib/undoHistory'
@@ -24,6 +25,7 @@ import { RunPatchController } from '../lib/runPatchController'
 import { splitRunsAt, tokensOf } from '../lib/highlightTokens'
 import { beginHighlightRerender, endHighlightRerender, runAfterHeaderTransition } from '../lib/editorHeaderSync'
 import { isMobile } from '../lib/platform'
+import { useNotebookEditorMenuItems } from '../lib/notebookEditorMenu'
 
 /** Above this many lines, the line-number gutter falls back to one row per line (what it always showed before
  * wrapped-row measurement existed) rather than measuring — tens of thousands of `Range` queries would be a real
@@ -77,13 +79,33 @@ interface Props {
    * already get the same pair for free, at every focused text field, through `TextFieldMenu`'s own floating strip,
    * which these two third-party editors don't have (see `MonacoCodeEditor.tsx`'s own doc comment for why). */
   extra?: ReactNode
+  /** **A notebook-scoped three-dots menu** (asked for directly, item 2 of the todo: "for the text editors that
+   * fall under the scope of notebook let's add a three-dots icon button that launches a popover menu"), set only
+   * by a caller that has already worked out the file being edited sits inside a listed notebook
+   * (`notebookContaining`, the same check User Action/"Insert a path…" already make) — `undefined` for every
+   * other file (the Files tab's own editor on a plain folder, a file outside any notebook), which then behaves
+   * exactly as it always has: Search/Select paragraphs/Open link/Edit-insert-link stay wherever they already are
+   * (an inline toolbar button, or — the built-in editor's own Select paragraphs/Open link/Edit-insert-link —
+   * `TextFieldMenu`'s floating clipboard menu). When set, every one of the four concrete editor implementations
+   * moves those same four actions into one `MoreMenuButton` instead (Search included — asked for directly,
+   * "which, btw, should be visible on desktop too": Monaco's own Search was previously reachable only by
+   * Ctrl+F, with no toolbar button at all), alongside the two genuinely new, notebook-only actions below. */
+  notebookMenu?: {
+    onCreateImageFromClipboard: () => void
+    onInsertCustomText: () => void
+  }
 }
 
 /** What a ref to `CodeEditor` gives its parent: inserting text at the caret (or over the selection) from the
  * outside — "Insert a path…" is the one caller today. Goes through the same `applyEdit` every real keystroke
- * does, so it's one undo step and the caret ends up right after what was inserted, exactly like typing it. */
+ * does, so it's one undo step and the caret ends up right after what was inserted, exactly like typing it —
+ * **unless `caretOffset` is given**, in which case the caret instead lands `caretOffset` characters into the
+ * *inserted text itself* (relative to where the insertion started), not at its end. Added for "Insert custom
+ * text at the caret" (`lib/customTextTemplate.ts`'s `{$p}` token — item 2 of the todo): a template can mark
+ * exactly where the caret should sit once its text is in, which is usually *inside* the inserted text (a
+ * snippet with a placeholder to type over next), not always at its tail. */
 export interface CodeEditorHandle {
-  insertAtCursor: (text: string) => void
+  insertAtCursor: (text: string, caretOffset?: number) => void
 }
 
 /** A genuinely exact (never approximate) highlight result and what it was computed for — see
@@ -267,7 +289,7 @@ function useBackgroundHighlighted(value: string, language: Language): { html: st
  * **A ref gives a caller `insertAtCursor`** (`CodeEditorHandle`, above) — "Insert a path…" (`NoteEditPage.tsx`,
  * `NotesApp.tsx`'s file editor, `FilesTab.tsx`'s) is the one user of it today. */
 const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function HighlightedEditor(
-  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge },
+  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, notebookMenu },
   ref,
 ) {
   const frameRef = useRef<HTMLDivElement>(null)
@@ -1032,6 +1054,12 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
     redraw()
   }
 
+  // The notebook-scoped three-dots menu's own "Select paragraphs"/"Open link"/"Edit-insert link" — see
+  // `CodeEditor.tsx`'s own `notebookMenu` prop doc. The hook is called unconditionally (its own `linkEdit`
+  // state must exist whether or not the menu is shown this render, or a toggle mid-session would lose it) —
+  // only whether `menuItems`/`menuModal` are actually *used* below depends on `notebookMenu`.
+  const { items: notebookTextItems, modal: notebookLinkModal } = useNotebookEditorMenuItems(inputRef, value, applyEdit, onOpenLink)
+
   /** Moves the real selection to a find match and brings it into view — the same shape as Page Up/Down's own
    * handling, below, for a caret-only move with no text change: set the selection directly on the real,
    * always-whole `<textarea>`, then set `frame.scrollTop` by hand rather than relying on any native "scroll
@@ -1052,11 +1080,12 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
   }
 
   useImperativeHandle(ref, () => ({
-    insertAtCursor(text) {
+    insertAtCursor(text, caretOffset) {
       const input = inputRef.current
       const start = input?.selectionStart ?? value.length
       const end = input?.selectionEnd ?? value.length
-      applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: start + text.length, end: start + text.length })
+      const caret = start + (caretOffset ?? text.length)
+      applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: caret, end: caret })
       input?.focus()
     },
   }))
@@ -1091,17 +1120,30 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
         <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
-          <IconButton
-            icon={Search}
-            label="Find (Ctrl+F)"
-            onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
-          />
+          {notebookMenu ? (
+            <MoreMenuButton
+              label="More actions"
+              items={[
+                { label: 'Find (Ctrl+F)', icon: Search, onSelect: () => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0) },
+                ...notebookTextItems,
+                { label: 'Create image from the clipboard…', icon: ImagePlus, onSelect: notebookMenu.onCreateImageFromClipboard },
+                { label: 'Insert custom text at the caret…', icon: Braces, onSelect: notebookMenu.onInsertCustomText },
+              ]}
+            />
+          ) : (
+            <IconButton
+              icon={Search}
+              label="Find (Ctrl+F)"
+              onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
+            />
+          )}
           {/* Reserves room for TextFieldMenu's own clipboard button (and, in Notes, the User Action pair beside it) to sit
               in, instead of floating over the top-right corner of the text — which used to cover whatever happened to be
               rendered there (reported live). */}
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
+      {notebookMenu && notebookLinkModal}
       {/* The clipboard menu's button sits at the corner of the frame, not of the (tall) box. */}
       <div className={`code-editor ${settings?.wrapLines === false ? 'code-editor-nowrap' : ''}`} ref={frameRef} onScroll={handleScroll} data-text-menu-anchor>
         {find && (
@@ -1177,6 +1219,10 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
+              // `TextFieldMenu.tsx`'s own floating clipboard menu reads this to suppress its "Select paragraphs"/
+              // "Open link"/"Edit link"/"Insert a link" items once they've moved into the notebook-scoped
+              // three-dots menu above (`notebookMenu` prop) — see that component's own doc comment.
+              data-notebook-editor-menu={notebookMenu ? '1' : undefined}
               // Deferred to a setTimeout, as every keystroke handler here is (see the module's own doc comment
               // for why): the browser's own native textarea update — what makes a keystroke feel instant — has
               // nothing to do with any of this running synchronously; deferring it just keeps this handler's own
@@ -1339,7 +1385,7 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
  * implementations below are the same logic `HighlightedEditor` uses, just without anything downstream that
  * depends on a window or a measured line. */
 const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEditor(
-  { value, onChange, onOpenLink, readOnly, onVisibleLineChange, onScrollNudge },
+  { value, onChange, onOpenLink, readOnly, onVisibleLineChange, onScrollNudge, notebookMenu },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -1406,6 +1452,9 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
     redraw()
   }
 
+  // Same reasoning as `HighlightedEditor`'s own identical call — see its doc comment.
+  const { items: notebookTextItems, modal: notebookLinkModal } = useNotebookEditorMenuItems(inputRef, value, applyEdit, onOpenLink)
+
   /** Same idea as `HighlightedEditor`'s own `jumpToMatch` — see its doc comment — simpler here since this
    * textarea scrolls itself natively (no separate frame, and no virtualized window to let a `scroll` event
    * recompute): compute the match's line fresh (this component keeps no memoized `lineStartOffsets` of its
@@ -1422,11 +1471,12 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
   }
 
   useImperativeHandle(ref, () => ({
-    insertAtCursor(text) {
+    insertAtCursor(text, caretOffset) {
       const input = inputRef.current
       const start = input?.selectionStart ?? value.length
       const end = input?.selectionEnd ?? value.length
-      applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: start + text.length, end: start + text.length })
+      const caret = start + (caretOffset ?? text.length)
+      applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: caret, end: caret })
       input?.focus()
     },
   }))
@@ -1488,14 +1538,27 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
         <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" onClick={() => step('undo')} disabled={!h.canUndo} onMouseDown={(e) => e.preventDefault()} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" onClick={() => step('redo')} disabled={!h.canRedo} onMouseDown={(e) => e.preventDefault()} />
-          <IconButton
-            icon={Search}
-            label="Find (Ctrl+F)"
-            onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
-          />
+          {notebookMenu ? (
+            <MoreMenuButton
+              label="More actions"
+              items={[
+                { label: 'Find (Ctrl+F)', icon: Search, onSelect: () => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0) },
+                ...notebookTextItems,
+                { label: 'Create image from the clipboard…', icon: ImagePlus, onSelect: notebookMenu.onCreateImageFromClipboard },
+                { label: 'Insert custom text at the caret…', icon: Braces, onSelect: notebookMenu.onInsertCustomText },
+              ]}
+            />
+          ) : (
+            <IconButton
+              icon={Search}
+              label="Find (Ctrl+F)"
+              onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
+            />
+          )}
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>
       )}
+      {notebookMenu && notebookLinkModal}
       <div className="code-editor" data-text-menu-anchor>
         {find && (
           <FindBar
@@ -1515,6 +1578,7 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
           defaultValue={value}
           readOnly={readOnly}
           spellCheck={false}
+          data-notebook-editor-menu={notebookMenu ? '1' : undefined}
           autoCapitalize="off"
           autoCorrect="off"
           onScroll={handleScroll}

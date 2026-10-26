@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
-import { Clipboard, ClipboardPaste, ExternalLink, Link2, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
+import { Braces, Clipboard, ClipboardPaste, ExternalLink, ImagePlus, Link2, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
 import { basicSetup, EditorView } from 'codemirror'
 import { Compartment, EditorState } from '@codemirror/state'
 import { highlightWhitespace, keymap } from '@codemirror/view'
@@ -12,6 +12,7 @@ import { html } from '@codemirror/lang-html'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import IconButton from './IconButton'
+import MoreMenuButton from './MoreMenuButton'
 import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
@@ -52,6 +53,8 @@ interface Props {
   onScrollNudge?: (direction: 'up' | 'down' | 'pageUp' | 'pageDown') => void
   /** More buttons in the toolbar, beside "Edit or insert a link" — see `CodeEditor.tsx`'s own `Props.extra` doc. */
   extra?: ReactNode
+  /** See `CodeEditor.tsx`'s own `Props.notebookMenu` doc. */
+  notebookMenu?: { onCreateImageFromClipboard: () => void; onInsertCustomText: () => void }
 }
 
 /** The mobile default editor while `editor.useBuiltInEditor` is off (`lib/editorSettings.ts`) — asked for
@@ -92,7 +95,7 @@ interface Props {
  * — rather than assumed), so `basicSetup` not including the full `search()` extension up front is not a gap:
  * nothing more had to be added here for this to work, the button is the whole fix. */
 const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function MobileCodeMirrorEditor(
-  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, extra },
+  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, extra, notebookMenu },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -242,11 +245,11 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
   }, [settings?.tabInsertsSpaces, settings?.tabSpaceCount, tabCompartment])
 
   useImperativeHandle(ref, () => ({
-    insertAtCursor(text) {
+    insertAtCursor(text, caretOffset) {
       const view = viewRef.current
       if (!view) return
       const sel = view.state.selection.main
-      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text }, selection: { anchor: sel.from + text.length } })
+      view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text }, selection: { anchor: sel.from + (caretOffset ?? text.length) } })
       view.focus()
     },
   }))
@@ -320,12 +323,32 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
         <div className="code-editor-toolbar" data-secondary-actions>
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => viewRef.current && undo(viewRef.current)} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => viewRef.current && redo(viewRef.current)} />
-          <IconButton icon={TextCursorInput} label="Select paragraphs" onClick={selectParagraphsAtCursor} />
           <IconButton icon={Clipboard} label="Copy the selection to the app’s clipboard" onClick={copySelectionToAppClipboard} />
           <IconButton icon={ClipboardPaste} label="Paste from the app’s clipboard" onClick={pasteFromAppClipboard} />
-          <IconButton icon={Search} label="Find" onClick={() => viewRef.current && openSearchPanel(viewRef.current)} />
-          {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
-          {onOpenLink && <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={editOrInsertLink} />}
+          {notebookMenu ? (
+            <MoreMenuButton
+              label="More actions"
+              items={[
+                { label: 'Find', icon: Search, onSelect: () => viewRef.current && openSearchPanel(viewRef.current) },
+                { label: 'Select paragraphs', icon: TextCursorInput, onSelect: selectParagraphsAtCursor },
+                ...(onOpenLink
+                  ? [
+                      { label: 'Open link at the caret', icon: ExternalLink, onSelect: openLinkAtCursor },
+                      { label: 'Edit the link at the caret, or insert a new one', icon: Link2, onSelect: editOrInsertLink },
+                    ]
+                  : []),
+                { label: 'Create image from the clipboard…', icon: ImagePlus, onSelect: notebookMenu.onCreateImageFromClipboard },
+                { label: 'Insert custom text at the caret…', icon: Braces, onSelect: notebookMenu.onInsertCustomText },
+              ]}
+            />
+          ) : (
+            <>
+              <IconButton icon={TextCursorInput} label="Select paragraphs" onClick={selectParagraphsAtCursor} />
+              <IconButton icon={Search} label="Find" onClick={() => viewRef.current && openSearchPanel(viewRef.current)} />
+              {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
+              {onOpenLink && <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={editOrInsertLink} />}
+            </>
+          )}
           {extra}
         </div>
       )}

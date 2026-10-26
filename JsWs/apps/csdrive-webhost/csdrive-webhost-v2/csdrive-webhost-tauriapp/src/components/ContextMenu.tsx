@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { LucideIcon } from 'lucide-react'
+import { fastNavAmount, PAGE_JUMP } from '../lib/keyboard'
 
 export interface MenuItem {
   label: string
@@ -20,8 +21,22 @@ interface Props {
   onClose: () => void
 }
 
+/** The menu's own real, focusable `<button role="menuitem">`s — disabled ones excluded, the same `:not(:disabled)` filter
+ * `buttonRowKeyboard.ts`'s `buttonsIn` already uses for a row of icon buttons (this menu is a *list* of them, one per line,
+ * so it moves by Up/Down rather than Left/Right, but is otherwise the identical kind of "real DOM focus, nothing virtual" row). */
+function menuItemsIn(menu: HTMLElement): HTMLButtonElement[] {
+  return Array.from(menu.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]:not(:disabled)'))
+}
+
 /** A menu of actions that opens where it was asked for — at a pointer, or at a button — and closes on a choice, on Escape, or
- * on a press or a scroll anywhere else. */
+ * on a press or a scroll anywhere else. **Keyboard-navigable** (asked for directly, for the new three-dots popovers — item 2's
+ * own "readily navigable with arrows, pg up, pg down, Alt+N, Alt+P etc" — but this is the one `ContextMenu` every right-click/
+ * long-press menu in the app already opens, so every one of them gets this for free too, not just the new callers): the first
+ * enabled item takes real focus the moment the menu opens, and from there **Up/Down** move it by one, **Home/End** to the
+ * first/last, **PageUp/PageDown** by `PAGE_JUMP`, and the same **fast-navigation** modifiers (`fastNavAmount`) every list and
+ * row of buttons elsewhere already use move it by 2/5/20/50 — Enter/Space activating the focused item is the browser's own
+ * default action on a real `<button>`, needing nothing from this module (the same reasoning `buttonRowKeyboard.ts`'s own doc
+ * comment already gives for why a row of *real* buttons is simpler than a list's virtual focus). */
 export default function ContextMenu({ items, x, y, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const [at, setAt] = useState({ left: x, top: y })
@@ -36,6 +51,51 @@ export default function ContextMenu({ items, x, y, onClose }: Props) {
       top: Math.max(4, Math.min(y, window.innerHeight - box.height - 4)),
     })
   }, [x, y, items.length])
+
+  // The first enabled item gets real focus once the menu has actually settled at its final position
+  // (the layout effect above, not mount — focusing before `at` is corrected would still work, since focus
+  // doesn't depend on position, but doing it in the same effect that already runs right after layout keeps
+  // this in one place rather than a second, separate mount-only effect).
+  useEffect(() => {
+    menuItemsIn(ref.current!)[0]?.focus()
+  }, [])
+
+  function onKeyDown(e: React.KeyboardEvent) {
+    const menu = ref.current
+    if (!menu) return
+    const fast = fastNavAmount(e.nativeEvent)
+    let delta: number | null = fast
+    if (delta === null) {
+      switch (e.key) {
+        case 'ArrowDown':
+          delta = 1
+          break
+        case 'ArrowUp':
+          delta = -1
+          break
+        case 'PageDown':
+          delta = PAGE_JUMP
+          break
+        case 'PageUp':
+          delta = -PAGE_JUMP
+          break
+        case 'Home':
+          delta = -Infinity
+          break
+        case 'End':
+          delta = Infinity
+          break
+        default:
+          return
+      }
+    }
+    e.preventDefault()
+    e.stopPropagation()
+    const buttons = menuItemsIn(menu)
+    if (buttons.length === 0) return
+    const current = Math.max(0, buttons.indexOf(document.activeElement as HTMLButtonElement))
+    buttons[Math.min(buttons.length - 1, Math.max(0, current + delta))]?.focus()
+  }
 
   useEffect(() => {
     // The backdrop below (a real element under the pointer, covering everything but the menu) is what
@@ -78,7 +138,7 @@ export default function ContextMenu({ items, x, y, onClose }: Props) {
        * the follow-up `click` a real tap or mouse click does — which is why an earlier, `pointerdown`-based
        * version of this fix passed a synthetic-event test but failed on real touch input.) */}
       <div className="context-menu-backdrop" onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClose() }} />
-      <div ref={ref} className="context-menu" role="menu" style={{ left: at.left, top: at.top }} data-no-text-menu>
+      <div ref={ref} className="context-menu" role="menu" style={{ left: at.left, top: at.top }} data-no-text-menu onKeyDown={onKeyDown}>
         {items.map((item) => {
           const Icon = item.icon
           return (

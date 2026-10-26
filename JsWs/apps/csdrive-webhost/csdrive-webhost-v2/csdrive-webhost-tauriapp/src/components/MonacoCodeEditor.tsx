@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
-import { Clipboard, ClipboardPaste, ExternalLink, Link2, Redo2, TextCursorInput, Undo2 } from 'lucide-react'
+import { Braces, Clipboard, ClipboardPaste, ExternalLink, ImagePlus, Link2, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
 import * as monaco from 'monaco-editor/editor/editor.api'
 import 'monaco-editor/languages/definitions/javascript/register.js'
 import 'monaco-editor/languages/definitions/css/register.js'
@@ -36,6 +36,7 @@ import 'monaco-editor/editor/contrib/find/browser/findController.js'
 import '../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon.css'
 import '../../node_modules/monaco-editor/esm/vs/base/browser/ui/codicons/codicon/codicon-modifiers.css'
 import IconButton from './IconButton'
+import MoreMenuButton from './MoreMenuButton'
 import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
@@ -186,6 +187,8 @@ interface Props {
   onScrollNudge?: (direction: 'up' | 'down' | 'pageUp' | 'pageDown') => void
   /** More buttons in the toolbar, beside "Edit or insert a link" — see `CodeEditor.tsx`'s own `Props.extra` doc. */
   extra?: ReactNode
+  /** See `CodeEditor.tsx`'s own `Props.notebookMenu` doc. */
+  notebookMenu?: { onCreateImageFromClipboard: () => void; onInsertCustomText: () => void }
 }
 
 /** The desktop default editor while `editor.useBuiltInEditor` is off (`lib/editorSettings.ts`) — asked for
@@ -241,7 +244,7 @@ interface Props {
  * `UserActionButton` doesn't need to know *which* field — just `sourceId`/`folder`, which the caller already has
  * in scope — so a plain node is simpler and sufficient. The Files tab's own editor (not Notes) passes nothing. */
 const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCodeEditor(
-  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, extra },
+  { value, onChange, fileName, onOpenLink, readOnly, language, onVisibleLineChange, onScrollNudge, extra, notebookMenu },
   ref,
 ) {
   const hostRef = useRef<HTMLDivElement>(null)
@@ -580,12 +583,15 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
   }
 
   useImperativeHandle(ref, () => ({
-    insertAtCursor(text) {
+    insertAtCursor(text, caretOffset) {
       const editor = editorRef.current
+      const model = editor?.getModel()
       const sel = editor?.getSelection()
-      if (!editor || !sel) return
+      if (!editor || !model || !sel) return
+      const start = model.getOffsetAt(sel.getStartPosition())
       editor.executeEdits('csdrive.insertAtCursor', [{ range: sel, text }])
       editor.focus()
+      if (caretOffset !== undefined) editor.setPosition(model.getPositionAt(start + caretOffset))
     },
   }))
 
@@ -596,11 +602,6 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
           <IconButton icon={Undo2} label="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => editorRef.current?.trigger('', 'undo', null)} />
           <IconButton icon={Redo2} label="Redo (Ctrl+Y)" disabled={!canRedo} onClick={() => editorRef.current?.trigger('', 'redo', null)} />
           <IconButton
-            icon={TextCursorInput}
-            label="Select paragraphs"
-            onClick={() => editorRef.current?.trigger('', 'csdrive.selectParagraphs', null)}
-          />
-          <IconButton
             icon={Clipboard}
             label="Copy the selection to the app’s clipboard"
             onClick={() => editorRef.current?.trigger('', 'csdrive.copyToAppClipboard', null)}
@@ -610,11 +611,36 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
             label="Paste from the app’s clipboard"
             onClick={() => editorRef.current?.trigger('', 'csdrive.pasteFromAppClipboard', null)}
           />
-          {onOpenLink && (
-            <IconButton icon={ExternalLink} label="Open link at the caret" onClick={() => editorRef.current?.trigger('', 'csdrive.openLink', null)} />
-          )}
-          {onOpenLink && (
-            <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={() => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null)} />
+          {notebookMenu ? (
+            <MoreMenuButton
+              label="More actions"
+              items={[
+                { label: 'Find (Ctrl+F)', icon: Search, onSelect: () => editorRef.current?.trigger('', 'actions.find', null) },
+                { label: 'Select paragraphs', icon: TextCursorInput, onSelect: () => editorRef.current?.trigger('', 'csdrive.selectParagraphs', null) },
+                ...(onOpenLink
+                  ? [
+                      { label: 'Open link at the caret', icon: ExternalLink, onSelect: () => editorRef.current?.trigger('', 'csdrive.openLink', null) },
+                      { label: 'Edit the link at the caret, or insert a new one', icon: Link2, onSelect: () => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null) },
+                    ]
+                  : []),
+                { label: 'Create image from the clipboard…', icon: ImagePlus, onSelect: notebookMenu.onCreateImageFromClipboard },
+                { label: 'Insert custom text at the caret…', icon: Braces, onSelect: notebookMenu.onInsertCustomText },
+              ]}
+            />
+          ) : (
+            <>
+              <IconButton
+                icon={TextCursorInput}
+                label="Select paragraphs"
+                onClick={() => editorRef.current?.trigger('', 'csdrive.selectParagraphs', null)}
+              />
+              {onOpenLink && (
+                <IconButton icon={ExternalLink} label="Open link at the caret" onClick={() => editorRef.current?.trigger('', 'csdrive.openLink', null)} />
+              )}
+              {onOpenLink && (
+                <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={() => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null)} />
+              )}
+            </>
           )}
           {extra}
         </div>

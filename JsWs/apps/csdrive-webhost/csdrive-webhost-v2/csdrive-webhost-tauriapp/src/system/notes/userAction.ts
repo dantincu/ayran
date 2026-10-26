@@ -1,9 +1,11 @@
+import { useEffect, useState } from 'react'
 import { getAppState, setAppState } from '../../lib/appState'
 import { USER_ACTION_JSON } from '../../lib/appConfig'
 import { ensureNotebookInternals, join, NOTEBOOK_INTERNALS_INDEX } from './noteModel'
 import type { NotebookEntry } from './notebooks'
 import type { FileSource } from './sources'
 import { invoke } from '@tauri-apps/api/core'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { getUserRoot, loadSavedRoots } from '../../lib/fileRoots'
 import { listFilenAccounts } from '../../lib/filen'
 import { loadNotebooks, resolveSource } from './notebooks'
@@ -17,7 +19,8 @@ import { currentResource, launchedNow } from './userActionScope'
  *   (`03/[user-action].json`, in the notebook's own source — so it travels with the notebook);
  * - **anywhere else** (the home page, the notebooks page, a folder outside every notebook): one global setting in the Notes app's own
  *   state (`notes.userAction`, `data.db`).
- * This file is the setting and its two homes, and the launch; `UserActionButton.tsx` is the control (launch, close), `UserActionModal.tsx`
+ * This file is the setting and its two homes, and the launch; `UserActionButton.tsx` is the control (launch only — close moved into the
+ * configuration dialog below, reached by right-clicking the launch button), `UserActionModal.tsx`
  * the dialog that chooses the page, and `userActionScope.ts` what tells the window that what opened it is out of scope. */
 
 /** Where the page is: a file of a source (`local:user`, `local:<root id>`, `filen:<user id>`). */
@@ -171,4 +174,23 @@ export async function launchUserAction(context: Record<string, unknown>): Promis
 /** Closes the User Action window of this Notes window (if it is open). */
 export async function closeUserAction(): Promise<void> {
   await invoke('user_action_close')
+}
+
+/** Whether this Notes window's User Action window is open (the backend tells the window: `user-action-state`) — in this module, not
+ * `UserActionButton.tsx`/`UserActionModal.tsx`, specifically so both can import it with no circular dependency between the two. */
+export function useUserActionOpen(): boolean {
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    let alive = true
+    let stop: (() => void) | undefined
+    invoke<boolean>('user_action_status').then((now) => alive && setOpen(now), () => {})
+    getCurrentWebviewWindow()
+      .listen<{ open: boolean }>('user-action-state', (event) => setOpen(event.payload.open))
+      .then((unlisten) => (alive ? (stop = unlisten) : unlisten()), () => {})
+    return () => {
+      alive = false
+      stop?.()
+    }
+  }, [])
+  return open
 }

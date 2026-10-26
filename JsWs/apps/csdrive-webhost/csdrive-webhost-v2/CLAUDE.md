@@ -3184,3 +3184,195 @@ documented elsewhere in this file; real CDP, real trusted `Input.dispatchKeyEven
 `npx tsc --noEmit` and `npm run build` both clean; no Rust change, so `cargo build`/`cargo test --lib` don't
 apply. Not yet deployed to either the phone or this machine's production build as of this writing — this
 was a pure dev-mode verification pass.
+
+## User Action's close button moved into its own configuration dialog; a notebook-scoped three-dots menu for the editors; a danger-zone explanation; a note editor's own overflow menu
+
+Four items from the same todo file, taken in order.
+
+**1. "Keep just the launch button; right-clicking it opens the configuration dialog, which gets its own
+Close button."** `UserActionButton.tsx` (the header control) and `UserActionFieldButtons` (the text-field
+strip) each drop their `ZapOff` "close" icon down to one `Zap` launch button — `contextTrigger(choose)`
+(already how a right click/long-press reached `UserActionModal` for *configuring* the page) is now also
+the only way to reach **closing** it. `useUserActionOpen` (the hook both the button and the modal need to
+know whether a window is open) moved out of `UserActionButton.tsx` into the plain logic module `userAction.ts`
+— keeping it in the button file would have made `UserActionModal.tsx` import from `UserActionButton.tsx`
+while the button already imports the modal, a genuine circular import. `UserActionModal.tsx` gained a
+`ZapOff` **"Close the User Action window"** button, between Reset and "What is this?", calling the same
+`closeUserAction()` the old adjacent button already called, disabled while nothing is open.
+
+**2. The notebook-scoped three-dots menu** — the one genuinely large item, covered in its own section
+below.
+
+**3. "The two delete buttons in Settings' danger zone look identical — explain what tells them apart."**
+One new paragraph in `SettingsTab.tsx`, shown only while `info?.canRelocate` (so it only appears where the
+distinction it explains can actually matter), between the existing danger-zone text and the button row:
+*Delete custom folder contents* (left) empties the folder the app is **actually** reading and writing right
+now, keeping the folder itself; *Delete app data* (right) empties the **default** folder and forgets the
+relocation pointer, leaving a custom folder's own files completely untouched on disk, just unreachable
+until pointed at again by hand. So with a custom folder set, the left button is the one that actually wipes
+what's in use.
+
+**4. "Move Discard/Open-as-web-app/Show-its-top-bar/Its-files on the note editor's own header into a
+three-dots menu."** New `MoreMenuButton.tsx` — a generic, always-on overflow button (unlike `RowActions.tsx`'s
+own "collapse into one only if the global compact-row-actions setting is on") that opens `ContextMenu` at
+its own corner; `NoteEditPage.tsx`'s header replaces those four `IconButton`s with one `MoreMenuButton`
+carrying them as items, Save/Refresh-the-web-app/Insert-a-path/`UserActionButton` staying inline.
+
+**Right-click/long-press menus gained real keyboard navigation, project-wide, not just for this one new
+button.** `ContextMenu.tsx` (used by every existing right-click menu in the app) now focuses its first
+enabled item the moment it mounts and handles arrow/Home/End/PageUp/PageDown/the fast-nav modifiers
+(`lib/keyboard.ts`'s `fastNavAmount`/`PAGE_JUMP`, the same constants the row-of-buttons and list keyboard
+handlers already share) by moving real DOM focus among its `button[role="menuitem"]`s — the same "real,
+natively focusable buttons, not a virtual `[data-kbd-focused]`" shape `buttonRowKeyboard.ts` already uses for
+a row of icon buttons, applied here to a vertical menu instead.
+
+### A notebook's three-dots menu: moved items, "Create image from the clipboard…", and "Insert custom text at the caret…"
+
+**"For editors inside a notebook's scope, add a three-dots menu with Create-image-from-clipboard and
+Insert-custom-text, and move Search/Select-paragraphs/Open-link/Edit-insert-link into it too — Search
+should also be visible on desktop, which it wasn't before."** `CodeEditor.tsx`'s `Props` gained
+`notebookMenu?: { onCreateImageFromClipboard, onInsertCustomText }` — set only by a caller that has already
+worked out the file being edited sits inside a listed notebook, `undefined` otherwise (so the menu, and
+everything it moves, simply doesn't exist for a file outside every notebook — the existing inline buttons
+stay exactly as they were there). All **four** real editor surfaces take it — `HighlightedEditor`/
+`PlainTextEditor` (`CodeEditor.tsx` itself), `MonacoCodeEditor.tsx` (the desktop default) and
+`MobileCodeMirrorEditor.tsx` — each swapping its own inline Search/Select-paragraphs/Open-link/
+Edit-insert-link buttons for one `MoreMenuButton` carrying all six items (the four moved ones plus the two
+new ones) the moment `notebookMenu` is set; `TextFieldMenu.tsx`'s own floating clipboard-menu checks a new
+`data-notebook-editor-menu` attribute on the built-in editors' real `<textarea>` to suppress its own
+"Insert a link"/"Select paragraphs" items when they've moved into this menu instead, so nothing is offered
+twice.
+
+**Detecting "inside a notebook" needed its own effect in each of the two hosts, and the Note Files
+Explorer's own scoping had to be translated back to a real path first.** `NoteEditPage.tsx` resolves the
+note's own notebook once (`notebookContaining(await loadNotebooks(), sourceId, folder)`) and keeps it in
+state, reused both for gating the menu and for `pathPicked`'s existing absolute-path root (replacing its own
+ad hoc re-load on every pick). `NotesApp.tsx` resolves the *editor's* notebook the same way, but from the
+**real**, source-root-relative folder: inside the Note Files Explorer (`scope` set), `editing.path` is
+relative to `scope.root`, not the source's own root, so `notebookContaining` would otherwise compare a
+scope-relative path against a notebook's source-relative `folder` and never match — `joinRelative(scope.root,
+parentPath(editing.path))` first, scope or not, is what the effect actually hands it.
+
+**"Create image from the clipboard"** (`CreateImageFromClipboardModal.tsx`) is "we already have this in the
+file explorer" (`NotesApp.tsx`'s own `pasteClipboardImage`) reached from an *editor*, which has no "folder
+currently shown" of its own — so it gets a small paginated browser of its own, confined to the same `source`
+the file being edited is already in (never a cross-account picker, since a relative markdown image reference
+only makes sense within one storage), with its own current folder persisted per `persistKey` (the file being
+edited). Picking a name warns, rather than silently overwriting, if it collides with something already
+there. The caller wraps the result the same way "Insert a path…" already does — the same relative/absolute
+`PathStyleModal` choice — just prefixed `![](...)` instead of inserted bare.
+
+**"Insert custom text at the caret"** is the one genuinely new piece of language in this app: a small
+templating mini-language, a per-notebook, multi-location, JSON-aware file/folder **merge**, and a browsing
+UI, documented together since none of the three stand alone.
+
+**The template language** (`lib/customTextTemplate.ts`, pure, no DOM — Node-tested with an ad-hoc script,
+this project's own established pattern for a module with no committed test file yet): `{name}` (not
+`$`-prefixed) is a **user variable** — `{name:single:default}`/`{name:multi:default}` picks a single- or
+multi-line textbox (default: single), with an optional trailing `:nopersist` opting that one variable out of
+being remembered for next time; `{$d:FORMAT}`/`{$d:FORMAT:OFFSET}` is a **dynamic date** token (`YYYY`/`MM`/
+`DD`/`hh`/`mm`/`ss`/`SSS` in the format, an optional offset like `+2h-15m` applied against "now"); `{$p}` is
+the **caret-pointer** token — it renders to nothing, but marks exactly where the caret should land once the
+rendered text is inserted; `{{`/`}}` escape to a literal `{`/`}`. **Two real parsing bugs were caught by the
+module's own Node smoke test before this ever reached a browser**: the offset's own trailing segment was
+first peeled off by a fixed `split(':')`, which wrongly treated a legitimate `hh:mm:ss.SSS` format as a bogus
+offset — fixed by only peeling a trailing segment that *validates* as a real offset, leaving the format
+untouched otherwise; and a variable's own default value, split the same fixed way, lost everything past its
+own first embedded colon (`{time:single:10:30:00}` kept only `"10"`) — fixed by splitting only `name`/`mode`
+positionally and treating everything else as one `default`, peeling only a genuine trailing `:nopersist` off
+the very end of *that*. (The offset regex's own alternation order matters too: `mo`/`ms` have to be tried
+before `m`/`s`, or the shorter unit would shadow the longer one.)
+
+**The merge** (`lib/customTextHierarchy.ts`, also pure and Node-smoke-tested): a notebook's own configured
+**locations** (below) are each listed and merged into one `HierarchyLevel` tree — real files and folders as
+themselves, and **every `.json` file's own parsed content merged in too**, recursively, in place of the
+`.json` file itself (which never appears as its own row): a plain string/number/boolean property becomes a
+file (its name the key, its content the stringified value); a nested object becomes a folder; an array of
+plain strings/literals becomes a folder of files named (and containing) themselves; an array of objects
+merges each object's own properties directly into that folder, one level flatter, rather than nesting them
+under a numbered index. Identical names are **not** deduplicated — a real file and a json-derived entry
+sharing a name both show up, since a template file and a generated snippet genuinely can collide in practice
+and hiding one would be surprising. Everything is merged **eagerly**, not lazily per folder, specifically so
+search can match a file's own *content*, not just its name.
+
+**Locations** (`system/notes/customTextLocations.ts`) are a notebook's own `{ "Locations": [...] }`, kept —
+like User Action's and the viewer script's own per-notebook settings — in `03/[custom-text-locations].json`
+inside the notebook's internals pair, a plain local constant (not `lib/appConfig.ts`) since nothing on the
+Rust side ever reads this file's name. **`CustomTextLocationsModal.tsx`** (reached from the notebook's own
+row, "Set its custom-text locations…") browses *the notebook's whole source* (never scoped to the notebook's
+own folder — a template's text has no path to reference, so there's no technical reason to restrict it
+further, but the spec's own wording, "inside the current root," is one fixed root, not a free choice of
+any), letting several folders be added and removed, each taking effect immediately with no separate "Save."
+
+**A real, live-reproduced bug, not caught by `tsc`: the folder browser inside `CustomTextLocationsModal.tsx`
+got permanently stuck on "Loading…".** `source = sourceOf(notebook.sourceId)` was called directly in the
+render body — but `sourceOf` builds a *fresh* `FileSource` object (`localSource`/`filenSource` aren't
+cached) on every call, so `source` had a new identity on every single render. The browse effect depends on
+it (`[source, browsePath, browsing]`): each run set `setListing(null)` first, which (once the *previous*
+run's listing had actually resolved and rendered) was itself a state change, triggering a re-render, which
+computed a *new* `source`, which re-triggered the effect — forever. The browser only ever glimpsed the real
+listing in the instant between one loop's resolve and the next loop's reset, which is why this looked, live,
+like a permanently blank "Loading…" rather than a flicker. **Fixed with `useMemo(() => sourceOf(notebook
+.sourceId), [sourceOf, notebook.sourceId])`** — keeping `source`'s identity stable across renders as long as
+the notebook and the loaded roots/accounts don't actually change. **The identical pattern was found,
+live, in the pre-existing `NoteViewerScriptModal.tsx`** (`const source = sourceOf(notebook.sourceId)` feeding
+a `useCallback`'s own dependency array, the same shape, just with no `alive`-guard to make it look
+*permanently* stuck rather than a fast, continuous re-fetch loop) — fixed the identical way, as a drive-by
+correctness fix rather than leaving a known-bad pattern in place right next to its own just-fixed sibling.
+
+**`InsertCustomTextModal.tsx`** browses the merged hierarchy with breadcrumbs, a search box (name or text,
+case-insensitive), a folder list and a 2-column name/text table for files (`.custom-text-table`/
+`.custom-text-preview`, new `App.css` rules matching `.file-table`'s own plain look, the preview column
+truncated with an ellipsis rather than pushing the table wide). Clicking a file with no variables inserts its
+rendered text immediately; one with variables opens a small form (one textbox per variable, pre-filled from
+what was typed last time for *this exact snippet* — keyed by its own breadcrumb path, deliberately **not**
+by the editor's `persistKey`, since the same snippet is meant to be reused from many different notes and the
+whole point of remembering a value is so it isn't retyped regardless of where it's inserted from next). Both
+the browse state (breadcrumb, query) and the typed variable values persist through `getAppState`/
+`setAppState`, the same storage every other remembered place in this app uses.
+
+**`CodeEditorHandle.insertAtCursor` gained an optional second parameter, `caretOffset`** — needed for `{$p}`:
+without it, the caret always lands right after the inserted text, never *inside* it. All four
+implementations (`HighlightedEditor`/`PlainTextEditor` in `CodeEditor.tsx`, `MonacoCodeEditor.tsx`,
+`MobileCodeMirrorEditor.tsx`) honor it, landing the caret at `start + (caretOffset ?? text.length)` — Monaco's
+own version additionally calls `editor.setPosition(model.getPositionAt(...))` after `executeEdits`, since
+Monaco's own edit API doesn't otherwise let the caret land anywhere but the edit's own end.
+
+**A second real bug, found live, in `CreateImageFromClipboardModal.tsx` itself**: a rejected clipboard read
+(the ordinary case in a sandbox with no real OS clipboard, and a real possibility on a genuine machine too —
+a denied permission, a webview that refuses to read it) only ever called `setError(...)`, never advanced
+`stage` out of `'checking'` — and `stage === 'checking'` unconditionally `return`s `null`, so the modal
+showed nothing at all, forever, with the error message set but never actually displayed anywhere. Fixed by
+also calling `setStage('none')` in that branch — the `'none'` branch already shows `error` when it's set
+(falling back to "There is no image on the clipboard." otherwise), so advancing to it is the whole fix.
+
+Verified live (the debug build's own isolated data folder — see "Folder layout" — `cargo tauri dev` with a
+dedicated WebView2 debugging profile, real CDP throughout, a real folder-based test notebook registered
+from a real Notes window's own `app_state` call, a real `.txt` template file and a real markdown file
+created via `fs_write_file`): the Monaco toolbar's **"More actions"** menu, opened on a file inside the
+notebook, listed exactly `Find (Ctrl+F) | Select paragraphs | Open link at the caret | Edit the link at the
+caret, or insert a new one | Create image from the clipboard… | Insert custom text at the caret…`, in that
+order; a real ArrowDown moved real DOM focus from "Find" to "Select paragraphs" inside the open menu. The
+same six items, plus the four from item 4, showed correctly in the note editor's own two-row toolbar when
+the new note (created live through the real "New note…" dialog) was shown to sit inside the same notebook —
+confirming the identical `notebookMenu` wiring reaches `NoteEditPage.tsx` too, not only `NotesApp.tsx`'s
+plain-file editor. "No locations chosen yet" showed correctly before any location was configured; configuring
+one through the real `CustomTextLocationsModal.tsx` UI (Add a location… → browse → Add this folder) — after
+the `useMemo` fix, since before it the browser never got past "Loading…" — persisted correctly and showed up
+in the Insert-custom-text modal's own root listing a moment later. **The full template pipeline was verified
+end to end, through the real UI, not assumed from the pure-function tests alone**: a template file
+containing `Hi {name:single:World}! Pointer->X{$p}Y<- today is {$d:YYYY-MM-DD}.` — opened through the real
+variable-fill form, its default `World` confirmed pre-filled, changed to `Ayran` via a real React-tracked
+input change — inserted, through the real `insertAtCursor` path, as `Hi Ayran! Pointer->XY<- today is
+2026-10-26.` (matching the environment's own real current date) at the real caret position in Monaco; a
+real CDP-dispatched keystroke typed immediately afterward landed *between* the X and the Y, confirming
+`{$p}`'s own caret-offset placement was honored exactly, not just approximated. User Action's single button
+plus its right-click-reached **"Close the User Action window"** (correctly disabled with no window open) was
+confirmed through the same real notebook; the Settings danger-zone paragraph read correctly describing the
+asymmetry between the two delete buttons; `NoteEditPage.tsx`'s own **"More actions"** correctly listed
+`Discard your unsaved changes | Open it as a web app in a window of its own — it follows this editor | Show
+its top bar — the web app's own window isn't listed to do this from elsewhere | Its files`. **Both
+found-live bugs were reproduced first against the unfixed build and re-confirmed working against the fixed
+one** (the stuck-"Loading…" browser, and the stuck-blank clipboard-error modal), not merely fixed and trusted.
+`npx tsc --noEmit` and `npm run build` both clean throughout; no Rust change, so `cargo build`/
+`cargo test --lib` don't apply.

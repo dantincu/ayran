@@ -166,7 +166,10 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
       const target = anchor?.parentElement?.querySelector('[data-text-menu-target]') as HTMLElement | null
       const box = (target ?? anchor ?? field).getBoundingClientRect()
       const visible = box.width > 0 && box.height > 0 && box.bottom > 0 && box.top < window.innerHeight
-      const room = extra ? (TRIGGER_SIZE + 2) * 2 : 0 // the buttons of `extra` are left of the trigger
+      // `extra` is now always exactly one button (the User Action launch — its own close moved into a
+      // configuration dialog opened by right-clicking it, see `UserActionButton.tsx`), so one trigger's
+      // worth of room is reserved for it, not two.
+      const room = extra ? TRIGGER_SIZE + 2 : 0
       if (!visible) {
         setPlacement((current) => (current === null ? current : null))
       } else if (target) {
@@ -322,13 +325,23 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
   if (field && placement) {
     const multi = isMultiLine(field)
     const hasSelection = selected() !== ''
+    // A field marked `data-notebook-editor-menu` (the built-in editor's own textarea, `CodeEditor.tsx`'s
+    // `HighlightedEditor`/`PlainTextEditor`, while it's inside a listed notebook) has these four moved into
+    // its own notebook-scoped three-dots menu instead (`lib/notebookEditorMenu.tsx`) — asked for directly,
+    // item 2 of the todo: "move here the following options... 'select paragraphs', 'open link at the caret'
+    // and 'edit the link at the caret or insert a new one'". Suppressed here rather than left reachable from
+    // both places, so "move" means move, not duplicate; "Select all"/copy/paste/"Manage the app's clipboard…"
+    // are unaffected — they have nothing to do with this feature. (Monaco/CodeMirror never reach this generic
+    // menu in the first place — see `MonacoCodeEditor.tsx`'s own doc comment for why — so they need no
+    // equivalent suppression: their own toolbar buttons are simply swapped for the menu directly.)
+    const notebookScoped = field instanceof HTMLTextAreaElement && field.dataset.notebookEditorMenu === '1'
     // An editor that can open links offers to open the one the caret (or the selection) is in — and, in the same
     // place, to edit it (a markdown link specifically — see `markdownLinkAt`'s own doc for why it's not `linkAt`'s
     // plain address) or to insert a new one.
     const openLink = field instanceof HTMLTextAreaElement ? editorLinkHandlers.get(field) : undefined
     const caret = selection(field)
-    const link = openLink ? linkAt(field.value, caret.start, caret.end) : null
-    const markdownLink = openLink ? markdownLinkAt(field.value, caret.start, caret.end) : null
+    const link = !notebookScoped && openLink ? linkAt(field.value, caret.start, caret.end) : null
+    const markdownLink = !notebookScoped && openLink ? markdownLinkAt(field.value, caret.start, caret.end) : null
 
     menu = (
       <div ref={rootRef} className="text-menu" style={{ top: placement.top, left: placement.left }}>
@@ -362,14 +375,16 @@ export default function TextFieldMenu({ extra }: { /** More buttons beside the t
                 <Link2 size={14} aria-hidden="true" /> Edit link
               </button>
             )}
-            {openLink && (
+            {!notebookScoped && openLink && (
               <button type="button" role="menuitem" disabled={field.readOnly} onMouseDown={keepFocus} onClick={() => openInsertLink(field as HTMLTextAreaElement)}>
                 <Link size={14} aria-hidden="true" /> Insert a link
               </button>
             )}
-            <button type="button" role="menuitem" onMouseDown={keepFocus} onClick={selectAction}>
-              <TextCursorInput size={14} aria-hidden="true" /> {multi ? 'Select paragraphs' : 'Select all'}
-            </button>
+            {!(notebookScoped && multi) && (
+              <button type="button" role="menuitem" onMouseDown={keepFocus} onClick={selectAction}>
+                <TextCursorInput size={14} aria-hidden="true" /> {multi ? 'Select paragraphs' : 'Select all'}
+              </button>
+            )}
             <button type="button" role="menuitem" disabled={!hasSelection} onMouseDown={keepFocus} onClick={() => copyTo('app')}>
               <ClipboardCopy size={14} aria-hidden="true" /> Copy to the app's clipboard
             </button>

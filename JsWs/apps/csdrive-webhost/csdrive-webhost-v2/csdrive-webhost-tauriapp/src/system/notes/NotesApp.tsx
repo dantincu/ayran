@@ -121,8 +121,11 @@ import { decodeLocation, reportLocation, subscribeNavigate, type Location, type 
 import UserActionButton from './UserActionButton'
 import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
 import InsertPathModal from './InsertPathModal'
-import { loadNotebooks, entryKey } from './notebooks'
+import { loadNotebooks, entryKey, type NotebookEntry } from './notebooks'
 import { notebookContaining } from './userAction'
+import { readCustomTextLocations } from './customTextLocations'
+import CreateImageFromClipboardModal from './CreateImageFromClipboardModal'
+import InsertCustomTextModal from './InsertCustomTextModal'
 import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
 import { draftsInTheWay, setWindowBranch, windowBranchOf, type UnsavedEdit } from './windowBranch'
 import { listSecondaryWindows } from '../../lib/secondaryWindows'
@@ -306,7 +309,16 @@ export default function NotesApp({
   editingRef.current = editing
   const editorRef = useRef<CodeEditorHandle>(null)
   const [inserting, setInserting] = useState(false)
-  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string } | null>(null)
+  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string; image: boolean } | null>(null)
+  // The listed notebook the file being edited sits inside, if any (item 2 of the todo's notebook-scoped
+  // three-dots menu) — resolved from the *real*, source-root-relative folder, which in a scoped explorer
+  // (`NoteFilesPage`) means translating `editing.path` (relative to `scope.root`) back through it first;
+  // `notebookContaining` otherwise only ever gets a scope-relative path to compare against a source-relative
+  // one, which could never match.
+  const [editorNotebook, setEditorNotebook] = useState<NotebookEntry | null>(null)
+  const [creatingImage, setCreatingImage] = useState(false)
+  const [insertingCustomText, setInsertingCustomText] = useState(false)
+  const [customTextLocations, setCustomTextLocations] = useState<string[] | null>(null)
   // The editor's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
   // autohide and nested scrollable content"), following the same "show it" trigger as Notes' own top bar.
   const [editorHeaderHidden, showEditorHeader] = useScrollAutohide()
@@ -518,6 +530,17 @@ export default function NotesApp({
     return base && scope ? scopedSource(base, scope.root, scope.label) : base
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [account, branch, localRoot, sourceId, scope?.root, scope?.label])
+
+  /** The same base `source` above, *without* the scope wrap — a notebook's own custom-text locations are
+   * always relative to its real source root (`customTextLocations.ts`'s own doc comment: "inside the current
+   * root"), never to a scoped explorer's own note-files folder, so resolving/reading them needs this one, not
+   * the (possibly scoped) `source`. */
+  const realSource = useMemo<FileSource | null>(() => {
+    if (account) return filenSource(account, branch)
+    if (localRoot) return localSource(localRoot, branch)
+    return null
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, branch, localRoot, sourceId])
 
   const currentBranch = branches.find((b) => b.index === branch) ?? null
 
@@ -1034,13 +1057,53 @@ export default function NotesApp({
     setEditing(null)
   }
 
+  // Which listed notebook (if any) the file now being edited sits inside — gates the notebook-only three-dots
+  // menu (`notebookMenu`, below). Resolved from the *real* folder: in a scoped explorer `editing.path` is
+  // relative to `scope.root`, so it's joined back onto it first — `notebookContaining` otherwise compares a
+  // scope-relative path against `notebook.folder`'s source-relative one, which could never match.
+  useEffect(() => {
+    if (!editing) {
+      setEditorNotebook(null)
+      return
+    }
+    let cancelled = false
+    const ownFolder = parentPath(editing.path)
+    const realFolder = scope ? joinRelative(scope.root, ownFolder) : ownFolder
+    loadNotebooks().then(
+      (list) => !cancelled && setEditorNotebook(notebookContaining(list, sourceId, realFolder)),
+      () => !cancelled && setEditorNotebook(null),
+    )
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing?.path, scope, sourceId])
+
   /** "Insert a path…" picked one: the relative form (from the edited file's own folder) and the absolute one —
    * from the notebook's root when this folder is inside one, the source root otherwise (`lib/relativePath.ts`). */
-  async function pathPicked(target: string) {
+  function pathPicked(target: string) {
     if (!editing) return
     setInserting(false)
-    const notebook = notebookContaining(await loadNotebooks(), sourceId, parentPath(editing.path))
-    setPathChoice({ relative: relativePathFrom(parentPath(editing.path), target), absolute: absolutePathFrom(target, notebook?.folder ?? null) })
+    setPathChoice({ relative: relativePathFrom(parentPath(editing.path), target), absolute: absolutePathFrom(target, editorNotebook?.folder ?? null), image: false })
+  }
+
+  /** The notebook-scoped three-dots menu's own "Create image from the clipboard" (item 2 of the todo): the
+   * new file's own path is offered the same relative/absolute choice as "Insert a path…" above, wrapped as a
+   * markdown image (`![](...)`) once a style is chosen. */
+  function imageCreatedInEditor(target: string) {
+    setCreatingImage(false)
+    if (!editing) return
+    setPathChoice({ relative: relativePathFrom(parentPath(editing.path), target), absolute: absolutePathFrom(target, editorNotebook?.folder ?? null), image: true })
+  }
+
+  /** The notebook-scoped three-dots menu's own "Insert custom text at the caret": the notebook's own
+   * configured locations are read fresh every time against the *real*, unscoped source (`realSource`) —
+   * they're relative to the notebook's own source root, never to a scoped explorer's own note-files folder. */
+  function insertCustomTextInEditor() {
+    if (!editorNotebook) return
+    setCustomTextLocations(null)
+    setInsertingCustomText(true)
+    if (realSource) readCustomTextLocations(realSource, editorNotebook).then(setCustomTextLocations, () => setCustomTextLocations([]))
   }
 
   function nameOk(name: string): boolean {
@@ -1783,6 +1846,9 @@ export default function NotesApp({
               onChange={(content) => setEditing({ ...editing, content, dirty: true })}
               onOpenLink={openLinkFromEditor}
               extra={<UserActionButton sourceId={editing.source.id} folder={editing.path.includes('/') ? editing.path.slice(0, editing.path.lastIndexOf('/')) : ''} />}
+              notebookMenu={
+                editorNotebook ? { onCreateImageFromClipboard: () => setCreatingImage(true), onInsertCustomText: insertCustomTextInEditor } : undefined
+              }
             />
             {inserting && (
               <InsertPathModal source={editing.source} sourceId={sourceId} initialPath={parentPath(editing.path)} onPick={pathPicked} onClose={() => setInserting(false)} />
@@ -1792,10 +1858,31 @@ export default function NotesApp({
                 relative={pathChoice.relative}
                 absolute={pathChoice.absolute}
                 onPick={(inserted) => {
-                  editorRef.current?.insertAtCursor(inserted)
+                  editorRef.current?.insertAtCursor(pathChoice.image ? `![](${inserted})` : inserted)
                   setPathChoice(null)
                 }}
                 onClose={() => setPathChoice(null)}
+              />
+            )}
+            {creatingImage && editing && (
+              <CreateImageFromClipboardModal
+                source={editing.source}
+                initialPath={parentPath(editing.path)}
+                persistKey={`${editing.source.id}|${editing.path}`}
+                onCreated={imageCreatedInEditor}
+                onClose={() => setCreatingImage(false)}
+              />
+            )}
+            {insertingCustomText && editing && realSource && customTextLocations !== null && (
+              <InsertCustomTextModal
+                source={realSource}
+                locationPaths={customTextLocations}
+                persistKey={`${editing.source.id}|${editing.path}`}
+                onInsert={(text, caretOffset) => {
+                  editorRef.current?.insertAtCursor(text, caretOffset ?? undefined)
+                  setInsertingCustomText(false)
+                }}
+                onClose={() => setInsertingCustomText(false)}
               />
             )}
           </div>

@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Info, RotateCcw, Settings2 } from 'lucide-react'
+import { Info, RotateCcw, Settings2, ZapOff } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
 import LocationPicker, { type Picked } from './LocationPicker'
 import {
+  closeUserAction,
   pageHere,
   resetNotebookPage,
   saveGlobalPage,
   saveNotebookPage,
+  useUserActionOpen,
   type UserActionPage,
   type UserActionScope,
 } from './userAction'
@@ -28,6 +30,15 @@ export default function UserActionModal({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
   const [choosing, setChoosing] = useState(false)
   const [explaining, setExplaining] = useState(false)
+  const open = useUserActionOpen()
+
+  async function close() {
+    try {
+      await closeUserAction()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
 
   // Which setting this is — the notebook the place is in, else the app's — and what it says.
   const load = useCallback(async () => {
@@ -92,6 +103,7 @@ export default function UserActionModal({ onClose }: { onClose: () => void }) {
     <>
       <IconButton icon={Settings2} label={page ? 'Change the page…' : 'Choose the page…'} onClick={() => setChoosing(true)} disabled={loading || scope === null || !ready} />
       <IconButton icon={RotateCcw} label="Reset — forget the chosen page" onClick={reset} disabled={loading || page === null} />
+      <IconButton icon={ZapOff} label="Close the User Action window" onClick={close} disabled={!open} />
       <IconButton icon={Info} label="What is this?" onClick={() => setExplaining(true)} />
     </>
   )
@@ -115,7 +127,7 @@ export default function UserActionModal({ onClose }: { onClose: () => void }) {
               </button>
             </div>
           ) : (
-            <p className="muted">The page is launched in a window of its own with the ⚡ button (it is reused: the same window each time). It is closed with the button next to it.</p>
+            <p className="muted">The page is launched in a window of its own with the ⚡ button (it is reused: the same window each time). Right click — or a long press — on the ⚡ opens this dialog, which is also where it is closed.</p>
           )}
         </div>
       </Modal>
@@ -144,7 +156,7 @@ export default function UserActionModal({ onClose }: { onClose: () => void }) {
             <strong>The window is reused.</strong> Launching it again brings the same window to the front; going somewhere else in Notes doesn't close it. Two events tell the
             page what happens — <code>user-action-launched</code> (every time you launch it: it carries the resource identifier of what opened it, and where from — a button, or a
             text box, it also tells which one — a stable id distinct for every text box of Notes, never what is in it) and <code>user-action-scope-left</code> (you went elsewhere: what opened it is out of scope, so the page may go back to
-            its default state). If the window was closed, it is opened and the first event waits until the page has started. The ✕ next to the ⚡ closes it. To hand it text from a box, copy the selection to the app's clipboard (the box's “…” menu); the page can read the app's clipboard, and what it puts there you can paste back.
+            its default state). If the window was closed, it is opened and the first event waits until the page has started. Right click (or a long press) on the ⚡ opens this dialog, which has a Close button for it. To hand it text from a box, copy the selection to the app's clipboard (the box's “…” menu); the page can read the app's clipboard, and what it puts there you can paste back.
           </p>
           <p>
             <strong>Which page.</strong> Inside a notebook, the page is that notebook's: which file it is is written in the notebook itself

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileCode, Info, RotateCcw } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
@@ -18,7 +18,12 @@ export default function NoteViewerScriptModal({ notebook, onClose }: { notebook:
   const [choosing, setChoosing] = useState(false)
   const [explaining, setExplaining] = useState(false)
 
-  const source = sourceOf(notebook.sourceId)
+  // A real bug, found live building `CustomTextLocationsModal.tsx`'s own identical pattern: `sourceOf`
+  // builds a *fresh* `FileSource` object on every call, so calling it directly in the render body gives
+  // `source` a new identity every render — `load` below depends on it, so `useEffect(() => load(), [load])`
+  // never settled, re-fetching `readNotebookScript` continuously rather than once per real change. `useMemo`
+  // keeps the same `source` reference as long as `sourceOf`/`notebook.sourceId` themselves don't change.
+  const source = useMemo(() => sourceOf(notebook.sourceId), [sourceOf, notebook.sourceId])
 
   const load = useCallback(async () => {
     setLoading(true)

@@ -3,6 +3,7 @@ import { confirm } from '../../lib/dialogs'
 import { AppWindow, ArrowLeft, Link2, Paperclip, PanelTop, RefreshCw, RotateCcw, Save } from 'lucide-react'
 import CodeEditor, { type CodeEditorHandle } from '../../components/CodeEditor'
 import IconButton from '../../components/IconButton'
+import MoreMenuButton from '../../components/MoreMenuButton'
 import PathStyleModal from '../../components/PathStyleModal'
 import { getAppState, setAppState } from '../../lib/appState'
 import { onShowTopBar, openExternalSite, openNoteTab, syncRefreshWithoutScroll, syncScrollNudge, syncScrollToLine, syncShowTopBar } from '../../lib/secondaryWindows'
@@ -14,12 +15,15 @@ import { findMarkdown, readNote, renameNote, titleFromMarkdown, touchNote, type 
 import type { FileVersion } from './sources'
 import { reportNotePlace, type Place, type Tab } from './tabs'
 import { useNotesSources } from './useSources'
-import { loadNotebooks } from './notebooks'
+import { loadNotebooks, type NotebookEntry } from './notebooks'
 import { useNotesSettings } from './settings'
 import { notebookContaining } from './userAction'
+import { readCustomTextLocations } from './customTextLocations'
 import UserActionButton from './UserActionButton'
 import CacheMenu from './CacheMenu'
 import InsertPathModal from './InsertPathModal'
+import CreateImageFromClipboardModal from './CreateImageFromClipboardModal'
+import InsertCustomTextModal from './InsertCustomTextModal'
 
 /** The unsaved text of note editors that were left (a tab switched away from, a window closed): `<source>|<markdown path>` → text. */
 const DRAFTS_KEY = 'notes.noteDrafts'
@@ -57,7 +61,13 @@ export default function NoteEditPage({
   const dirty = loaded && text !== saved
   const editorRef = useRef<CodeEditorHandle>(null)
   const [inserting, setInserting] = useState(false)
-  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string } | null>(null)
+  const [pathChoice, setPathChoice] = useState<{ relative: string; absolute: string; image: boolean } | null>(null)
+  // The listed notebook this note's folder sits inside, if any — gates the notebook-only three-dots menu
+  // (`notebookMenu`, below) and gives `pathPicked`/image-insertion the notebook's own root for "absolute."
+  const [notebook, setNotebook] = useState<NotebookEntry | null>(null)
+  const [creatingImage, setCreatingImage] = useState(false)
+  const [insertingCustomText, setInsertingCustomText] = useState(false)
+  const [customTextLocations, setCustomTextLocations] = useState<string[] | null>(null)
   // This page's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
   // autohide and nested scrollable content"), and follows the same "show it" trigger as Notes' own top bar, so
   // the admin-app's "show top bar" reveals both together.
@@ -104,6 +114,16 @@ export default function NoteEditPage({
   useEffect(() => {
     if (ready) load()
   }, [ready, load])
+
+  useEffect(() => {
+    let alive = true
+    loadNotebooks().then((list) => {
+      if (alive) setNotebook(notebookContaining(list, sourceId, folder))
+    })
+    return () => {
+      alive = false
+    }
+  }, [sourceId, folder])
 
   useEffect(() => {
     if (tab && note) reportNotePlace(tab, { view: 'noteEdit', sourceId, folder }, note.title, dirty)
@@ -273,12 +293,30 @@ export default function NoteEditPage({
   }
 
   /** "Insert a path…" picked one: works out both the relative form (from this note's own folder) and the
-   * absolute one (from the notebook's root — this note is always inside one, being a note — see
+   * absolute one (from the notebook's root — this note is almost always inside one, being a note — see
    * `lib/relativePath.ts`), then asks which to insert. */
-  async function pathPicked(target: string) {
+  function pathPicked(target: string) {
     setInserting(false)
-    const notebook = notebookContaining(await loadNotebooks(), sourceId, folder)
-    setPathChoice({ relative: relativePathFrom(folder, target), absolute: absolutePathFrom(target, notebook?.folder ?? null) })
+    setPathChoice({ relative: relativePathFrom(folder, target), absolute: absolutePathFrom(target, notebook?.folder ?? null), image: false })
+  }
+
+  /** The notebook-scoped three-dots menu's own "Create image from the clipboard" (item 2 of the todo): the
+   * new file's own path is offered the same relative/absolute choice as "Insert a path…" above, just wrapped
+   * as a markdown image (`![](...)`) once a style is chosen. */
+  function imageCreated(target: string) {
+    setCreatingImage(false)
+    setPathChoice({ relative: relativePathFrom(folder, target), absolute: absolutePathFrom(target, notebook?.folder ?? null), image: true })
+  }
+
+  /** The notebook-scoped three-dots menu's own "Insert custom text at the caret": the notebook's own
+   * configured locations are read fresh every time (cheap — one small json file), rather than cached, so a
+   * change made from "Set its custom-text locations…" is picked up the next time this is opened, not only
+   * after a reload. */
+  function insertCustomText() {
+    if (!notebook) return
+    setCustomTextLocations(null)
+    setInsertingCustomText(true)
+    if (source) readCustomTextLocations(source, notebook).then(setCustomTextLocations, () => setCustomTextLocations([]))
   }
 
   if (!ready) return null
@@ -292,14 +330,19 @@ export default function NoteEditPage({
             <div ref={actionsRef} className={`editor-header-actions ${actionsWrap ? 'editor-header-actions-wrap' : ''}`}>
               {dirty && <span className="muted">unsaved changes</span>}
               <CacheMenu source={source} path={path ?? folder} isDirectory={false} editing={dirty ? 'dirty' : 'open'} onDone={(kind) => (kind === 'soft' ? load() : undefined)} onError={setError} onNotice={setNotice} />
-              <IconButton icon={RotateCcw} label="Discard your unsaved changes" onClick={discardUnsavedChanges} disabled={!dirty || saving} />
               <IconButton icon={Save} label="Save (Ctrl+S)" onClick={() => save()} disabled={!dirty || saving} />
-              <IconButton icon={AppWindow} label="Open it as a web app in a window of its own — it follows this editor" onClick={openAsWebApp} disabled={!path} />
               <IconButton icon={RefreshCw} label="Refresh the web app — starts it over, without keeping its scroll position" onClick={refreshWebApp} disabled={!path} />
-              <IconButton icon={PanelTop} label="Show its top bar — the web app's own window isn't listed to do this from elsewhere" onClick={showWebAppTopBar} disabled={!path} />
-              <IconButton icon={Paperclip} label="Its files" onClick={() => leave({ view: 'noteFiles', sourceId, folder, path: '' })} />
               <IconButton icon={Link2} label="Insert a path…" onClick={() => setInserting(true)} disabled={!path} />
               <UserActionButton sourceId={sourceId} folder={folder} />
+              <MoreMenuButton
+                label="More actions"
+                items={[
+                  { label: 'Discard your unsaved changes', icon: RotateCcw, onSelect: discardUnsavedChanges, disabled: !dirty || saving },
+                  { label: 'Open it as a web app in a window of its own — it follows this editor', icon: AppWindow, onSelect: openAsWebApp, disabled: !path },
+                  { label: "Show its top bar — the web app's own window isn't listed to do this from elsewhere", icon: PanelTop, onSelect: showWebAppTopBar, disabled: !path },
+                  { label: 'Its files', icon: Paperclip, onSelect: () => leave({ view: 'noteFiles', sourceId, folder, path: '' }) },
+                ]}
+              />
             </div>
           </div>
           {error && <div className="error-banner">{error}</div>}
@@ -314,6 +357,7 @@ export default function NoteEditPage({
               onVisibleLineChange={visibleLineChanged}
               onScrollNudge={scrollNudged}
               extra={<UserActionButton sourceId={sourceId} folder={folder} />}
+              notebookMenu={notebook ? { onCreateImageFromClipboard: () => setCreatingImage(true), onInsertCustomText: insertCustomText } : undefined}
             />
           ) : (
             !error && <div className="muted">Loading…</div>
@@ -328,10 +372,31 @@ export default function NoteEditPage({
           relative={pathChoice.relative}
           absolute={pathChoice.absolute}
           onPick={(inserted) => {
-            editorRef.current?.insertAtCursor(inserted)
+            editorRef.current?.insertAtCursor(pathChoice.image ? `![](${inserted})` : inserted)
             setPathChoice(null)
           }}
           onClose={() => setPathChoice(null)}
+        />
+      )}
+      {creatingImage && source && path && (
+        <CreateImageFromClipboardModal
+          source={source}
+          initialPath={parentOf(path)}
+          persistKey={`${sourceId}|${path}`}
+          onCreated={imageCreated}
+          onClose={() => setCreatingImage(false)}
+        />
+      )}
+      {insertingCustomText && source && customTextLocations !== null && (
+        <InsertCustomTextModal
+          source={source}
+          locationPaths={customTextLocations}
+          persistKey={`${sourceId}|${path}`}
+          onInsert={(text, caretOffset) => {
+            editorRef.current?.insertAtCursor(text, caretOffset ?? undefined)
+            setInsertingCustomText(false)
+          }}
+          onClose={() => setInsertingCustomText(false)}
         />
       )}
     </div>

@@ -532,6 +532,17 @@ export default function SettingsTab() {
         storage, then closes its database connection — and restarts itself once the deletion
         finishes{info && !info.canRestart ? ' (on this device it just closes — open it again)' : ''}.
       </p>
+      {info?.canRelocate && (
+        <p className="muted">
+          These two look identical, but differ once a custom data folder is set (the field above shows whether one is). <em>Delete custom
+          folder contents</em> (left; greyed out until a custom folder is actually in use) empties <em>that</em> folder — the one the app is
+          actually reading and writing right now — keeping the folder itself but losing everything in it. <em>Delete app data</em> (right)
+          instead empties the <em>default</em> folder (where the app started before it was ever relocated) and forgets the pointer that says
+          a custom folder is in use — it does <strong>not</strong> touch the custom folder's own files, which are left exactly as they were,
+          simply no longer pointed to. So with a custom folder set, wiping the data you're actually using means the left button; the right
+          one on its own leaves it untouched on disk, just unreachable until you point the app back at it by hand.
+        </p>
+      )}
       <div className="toolbar-actions">
         {info?.canRelocate && (
           <IconButton

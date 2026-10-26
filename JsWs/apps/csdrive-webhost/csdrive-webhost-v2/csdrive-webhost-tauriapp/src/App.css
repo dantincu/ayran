@@ -393,6 +393,48 @@ select {
   background: var(--row-hover);
 }
 
+/* "Insert custom text at the caret"'s own 2-column name/text table (`InsertCustomTextModal.tsx`, item 2 of
+   the todo) — the same plain look as `.file-table`, just under its own class since it isn't a file listing
+   (no sizes/dates/row-actions, and its second column is the template's own text, truncated — see
+   `.custom-text-preview` below — rather than a size or a date). */
+.custom-text-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.custom-text-table th {
+  text-align: left;
+  color: var(--muted);
+  font-weight: 500;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.custom-text-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.custom-text-table tr:hover td {
+  background: var(--row-hover);
+}
+
+.custom-text-table th:last-child,
+.custom-text-table td.custom-text-preview {
+  width: 60%;
+}
+
+.custom-text-preview {
+  max-width: 0; /* with `table-layout` left at `auto`, a `width` on `td` is only a hint without this: it lets
+  the column actually shrink to fit `white-space: nowrap`'s own overflow rule below, rather than growing to
+  fit the untruncated text regardless. */
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .row-actions {
   display: flex;
   gap: 6px;
@@ -1697,16 +1739,15 @@ select {
 
 /* An empty reserved slot — TextFieldMenu's own floating portal positions its buttons over it (see
    `data-text-menu-target`), rather than over the top-right corner of the text underneath.
-   **110px, not 80px** — reported live: the Redo button sitting immediately to this slot's own left was almost
-   completely covered by the floating cluster's own first button. Measured directly: the cluster TextFieldMenu
-   actually renders here can be the trigger *plus* Notes' own User Action pair (`extra`) — three 34px buttons,
-   106px total (`TRIGGER_SIZE` and its own "room" calculation in `TextFieldMenu.tsx`) — but this slot was only
-   80px, so the cluster's own placement math (anchored to the slot's *right* edge, extending left by its full
-   width) started 30px to the left of the slot's own left edge every time all three buttons were present,
-   landing squarely on Redo. 110px covers the full three-button cluster with 4px to spare, matching
-   `TextFieldMenu.tsx`'s own right-edge margin, so the cluster's own left edge now never goes past this slot's. */
+   **Originally 110px**, for the cluster TextFieldMenu rendered here at the time — the trigger *plus* Notes'
+   own User Action launch/close pair (`extra`) — three 34px buttons. Once the User Action pair collapsed to
+   one button (its own close moved into a configuration dialog, reached by right-clicking the launch button —
+   `UserActionButton.tsx`), the cluster is only ever the trigger plus one button, so this shrank to **76px**
+   (`TRIGGER_SIZE`'s own "room" calculation in `TextFieldMenu.tsx`, plus the 4px right-edge margin it already
+   reserves, plus the same 4px of slack `TextFieldMenu.tsx`'s own margin leaves) — kept in step by hand, the
+   same way `TRIGGER_SIZE` itself is. */
 .code-editor-menu-slot {
-  width: 110px;
+  width: 76px;
   align-self: stretch;
 }
 
@@ -2625,6 +2666,14 @@ select {
 
 .context-menu button:hover:not(:disabled) {
   background: var(--row-hover);
+}
+
+/* The item the menu's own keyboard navigation (Up/Down/Home/End/PageUp/PageDown/fast-nav — ContextMenu.tsx)
+   moves real focus to: the same accent outline `.icon-button:focus-visible` already uses, so a menu opened
+   by keyboard (or navigated with it) reads consistently with every other focusable control in the app. */
+.context-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .context-menu button.danger {
