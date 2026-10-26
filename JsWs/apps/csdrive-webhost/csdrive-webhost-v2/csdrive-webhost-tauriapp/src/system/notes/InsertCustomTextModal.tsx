@@ -227,7 +227,10 @@ export default function InsertCustomTextModal({
           />
         )}
       </div>
-      <label className="notes-field">
+      {/* No clipboard menu or User Action buttons for this one — asked for directly: a search box over the
+       * pieces being browsed has no use for either, unlike the path box in "Add a location…" below, which
+       * genuinely does. */}
+      <label className="notes-field" data-no-text-menu>
         <span>
           <SearchIcon size={14} aria-hidden="true" /> Search
         </span>

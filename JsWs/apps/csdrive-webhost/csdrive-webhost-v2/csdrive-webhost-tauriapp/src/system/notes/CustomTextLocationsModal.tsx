@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Folder, RefreshCw, Trash2 } from 'lucide-react'
+import { CornerDownRight, Folder, RefreshCw, Trash2, X } from 'lucide-react'
 import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
 import { TagList } from '../../components/Tags'
 import { listTags, type TagRecord } from '../../lib/secondaryWindows'
 import { confirm } from '../../lib/dialogs'
+import { parsePathInput, pathForInput } from '../../lib/pathInput'
 import {
   customTextLocationTagGuid,
   randomId,
@@ -52,6 +53,30 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
   const [browsing, setBrowsing] = useState(false)
   const [browsePath, setBrowsePath] = useState('')
   const [listing, setListing] = useState<DirListing | null>(null)
+  // The path box's own typed text (item 1 of the todo: "the current path ... should be editable") — kept apart
+  // from `browsePath` itself, the same way every other editable-text-that-also-changes-from-outside field in
+  // this app is (F2 renaming, the search boxes elsewhere): what's on screen while typing shouldn't jump to
+  // match `browsePath` on every keystroke, and typing something invalid shouldn't navigate anywhere until it's
+  // actually committed. Re-synced to the real path whenever *that* changes for a reason other than this box
+  // itself (a folder row clicked, "Up a folder", the browser just opening).
+  const [pathText, setPathText] = useState('')
+  useEffect(() => {
+    if (browsing) setPathText(pathForInput(browsePath))
+  }, [browsePath, browsing])
+
+  function commitPathText() {
+    const parsed = parsePathInput(pathText)
+    if (!parsed.ok) {
+      setError(parsed.error)
+      return
+    }
+    setError(null)
+    setBrowsePath(parsed.segments.join('/'))
+  }
+
+  function revertPathText() {
+    setPathText(pathForInput(browsePath))
+  }
 
   useEffect(() => {
     if (!ready) return
@@ -141,23 +166,38 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
   }
 
   if (browsing) {
-    const segments = browsePath ? browsePath.split('/') : []
     return (
       <Modal title="Choose a folder" onClose={() => setBrowsing(false)}>
         {error && <div className="error-banner">{error}</div>}
-        <div className="breadcrumbs">
-          <button type="button" className="link-button" onClick={() => setBrowsePath('')}>
-            /
-          </button>
-          {segments.map((segment, i) => (
-            <span key={i}>
-              <span className="crumb-sep">/</span>
-              <button type="button" className="link-button" onClick={() => setBrowsePath(segments.slice(0, i + 1).join('/'))}>
-                {segment}
-              </button>
-            </span>
-          ))}
-        </div>
+        {/* `notes-field-leading` (`notes.css`) gives the floating User Action/clipboard-menu strip real room
+         * above this field — without it, it lands right on top of the typed text, the exact bug this app's
+         * own `NewNoteModal`/`FolderPairModal`/`TitleDialog` title fields already hit and were fixed the same
+         * way (see CLAUDE.md's "A floating field menu could keep floating over a second, later-opened modal"
+         * follow-up): a field this close to the modal's own header never has the plain 38px the strip needs
+         * above it, whatever its own `box.top` happens to measure against the viewport. */}
+        <label className="notes-field notes-field-leading">
+          <span>Current path</span>
+          <input
+            value={pathText}
+            onChange={(e) => setPathText(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitPathText()
+              else if (e.key === 'Escape') {
+                // Revert the typed text, not the whole dialog — stop it here before it reaches `Modal`'s own
+                // window-level Escape-closes-the-dialog listener.
+                e.stopPropagation()
+                revertPathText()
+              }
+            }}
+            onBlur={commitPathText}
+            aria-label="The folder being navigated — type a path and press Enter to go there"
+          />
+          {/* Real buttons beside the box, not just the keys — asked for directly, for a touch keyboard with
+           * no convenient Enter/Escape, but shown on every platform alike, the same as `GoToPathModal.tsx`'s
+           * own "Go"/"Cancel" buttons already are. */}
+          <IconButton icon={CornerDownRight} label="Go to this path" onClick={commitPathText} />
+          <IconButton icon={X} label="Revert to the current path" onClick={revertPathText} />
+        </label>
         <ul className="picker-list">
           {listing === null && <li className="muted">Loading…</li>}
           {listing?.entries.filter((e) => e.isDirectory).length === 0 && <li className="muted">No subfolders here.</li>}
