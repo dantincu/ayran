@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { CircleHelp, FolderPlus, X } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
@@ -6,6 +6,7 @@ import { INVALID_NAME_CHARACTERS, keepFile, MAX_PART, nextPairIndex, pairNames, 
 import { joinRelative } from '../../lib/localFs'
 import { namePartFromTitle } from './notebookFile'
 import { markdownName, markdownTitle } from './noteModel'
+import InsertCustomTextButton from './InsertCustomTextButton'
 import type { FileSource } from './sources'
 
 /** **Add Folders Pair** in a file manager: makes a pair of sibling folders in the folder shown — a short folder (`001`, or any name the
@@ -18,19 +19,26 @@ import type { FileSource } from './sources'
 export default function FolderPairModal({
   source,
   folder,
+  realFolder = folder,
   taken,
   onDone,
   onClose,
 }: {
   source: FileSource
-  /** The folder the pair is made in. */
+  /** The folder the pair is made in — relative to `source`'s own root, which, for the Note Files Explorer,
+   * is a note's own `01` folder, not the source's real root. */
   folder: string
+  /** `folder`'s real, un-scoped path (relative to the source's actual root) — only for the title field's own
+   * "Insert custom text" button, which needs to know which *real* notebook it's in; defaults to `folder`
+   * itself, already real for every caller except the Note Files Explorer. */
+  realFolder?: string
   /** The names in it now. */
   taken: string[]
   onDone: (created: string) => void
   onClose: () => void
 }) {
   const [title, setTitle] = useState('')
+  const titleRef = useRef<HTMLInputElement>(null)
   const suggested = useMemo(() => nextPairIndex(taken), [taken])
   const [shortText, setShortText] = useState(suggested)
   const [withMarkdown, setWithMarkdown] = useState(false)
@@ -80,6 +88,7 @@ export default function FolderPairModal({
             </button>
           </span>
           <input
+            ref={titleRef}
             autoFocus
             data-ua-field="notes.folderPair.title"
             value={title}
@@ -87,6 +96,7 @@ export default function FolderPairModal({
             onKeyDown={(e) => e.key === 'Enter' && create()}
             placeholder="What the pair is for — it becomes the readable half of the full folder's name"
           />
+          <InsertCustomTextButton source={source} sourceId={source.id} folder={realFolder} inputRef={titleRef} value={title} onChange={setTitle} />
         </label>
         {hint && (
           <div className="status-banner pair-hint">

@@ -652,7 +652,9 @@ export default function NotePage({
 
       {deleting && <DeleteNotesModal notes={deleting} canNormalize={indexOps} onConfirm={(normalize) => removeNotes(deleting, normalize)} onClose={() => setDeleting(null)} />}
 
-      {creating && <NewNoteModal names={children.map((c) => c.index)} onCreate={addNote} onClose={() => setCreating(false)} />}
+      {creating && source && (
+        <NewNoteModal names={children.map((c) => c.index)} source={source} sourceId={sourceId} folder={folder} onCreate={addNote} onClose={() => setCreating(false)} />
+      )}
 
       {pasting && clipboard && (
         <PasteNotesModal

@@ -1,17 +1,37 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { FilePlus2, X } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
 import { NOTE_INTERVALS, nextIndexIn, type NoteInterval } from './noteIndexes'
 import { usedIndexes } from './noteModel'
+import InsertCustomTextButton from './InsertCustomTextButton'
+import type { FileSource } from './sources'
 
 /** **New note…** — the title, and which interval its index comes from (`docs/strategies/notes-strategy.md`, `noteIndexes.ts`): the
  * note items' interval by default, or one of the section intervals when the person means the new note to be a section rather than an
  * ordinary note (a note is only ever *converted* between intervals afterwards through the indexes dialog — this is the one place a new
  * note picks one up front). `names` are the entries already in the parent, so a full interval is shown as such (its radio disabled)
- * rather than only failing once *Create* is pressed. */
-export default function NewNoteModal({ names, onCreate, onClose }: { names: string[]; onCreate: (title: string, interval: NoteInterval) => Promise<void>; onClose: () => void }) {
+ * rather than only failing once *Create* is pressed.
+ *
+ * `source`/`sourceId`/`folder` are only for the title field's own "Insert custom text" button (item 1 of the todo) — nothing else
+ * here needs them; the button itself renders nothing when the folder isn't inside a listed notebook. */
+export default function NewNoteModal({
+  names,
+  source,
+  sourceId,
+  folder,
+  onCreate,
+  onClose,
+}: {
+  names: string[]
+  source: FileSource
+  sourceId: string
+  folder: string
+  onCreate: (title: string, interval: NoteInterval) => Promise<void>
+  onClose: () => void
+}) {
   const [title, setTitle] = useState('')
+  const titleRef = useRef<HTMLInputElement>(null)
   const [intervalKey, setIntervalKey] = useState(NOTE_INTERVALS[0].key)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -38,7 +58,15 @@ export default function NewNoteModal({ names, onCreate, onClose }: { names: stri
       <div className="pair-modal">
         <label className="notes-field notes-field-leading">
           <span>Title</span>
-          <input autoFocus data-ua-field="notes.newNote.title" value={title} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && create()} />
+          <input
+            ref={titleRef}
+            autoFocus
+            data-ua-field="notes.newNote.title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && create()}
+          />
+          <InsertCustomTextButton source={source} sourceId={sourceId} folder={folder} inputRef={titleRef} value={title} onChange={setTitle} />
         </label>
         <fieldset className="notes-field">
           <legend>Index interval</legend>

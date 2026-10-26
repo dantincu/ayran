@@ -62,6 +62,7 @@ import SearchPanel from './SearchPanel'
 import { FileSearchResults } from './SearchResults'
 import { DEFAULT_SORT, sortEntries, type FileHit, type SearchCriteria, type SortSpec } from './search'
 import FolderPairModal from './FolderPairModal'
+import NamePromptModal from './NamePromptModal'
 import { selectBaseName } from './renaming'
 import { useNotesSettings } from './settings'
 import { exportPathToDevice, isMobile, pickDeviceFiles } from '../../lib/platform'
@@ -123,7 +124,7 @@ import CacheMenu, { cacheMenuItems, type CacheTarget } from './CacheMenu'
 import InsertPathModal from './InsertPathModal'
 import { loadNotebooks, entryKey, type NotebookEntry } from './notebooks'
 import { notebookContaining } from './userAction'
-import { readCustomTextLocations } from './customTextLocations'
+import { pathsForMode, readCustomTextLocations, type CustomTextLocation } from './customTextLocations'
 import CreateImageFromClipboardModal from './CreateImageFromClipboardModal'
 import InsertCustomTextModal from './InsertCustomTextModal'
 import { absolutePathFrom, relativePathFrom } from '../../lib/relativePath'
@@ -318,7 +319,7 @@ export default function NotesApp({
   const [editorNotebook, setEditorNotebook] = useState<NotebookEntry | null>(null)
   const [creatingImage, setCreatingImage] = useState(false)
   const [insertingCustomText, setInsertingCustomText] = useState(false)
-  const [customTextLocations, setCustomTextLocations] = useState<string[] | null>(null)
+  const [customTextLocations, setCustomTextLocations] = useState<CustomTextLocation[] | null>(null)
   // The editor's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
   // autohide and nested scrollable content"), following the same "show it" trigger as Notes' own top bar.
   const [editorHeaderHidden, showEditorHeader] = useScrollAutohide()
@@ -368,6 +369,10 @@ export default function NotesApp({
   const renamingRef = useRef<string | null>(null)
   /** The dialog that adds a folders pair. */
   const [pairing, setPairing] = useState(false)
+  /** "New folder…"/"New file…" — plain `window.prompt()` boxes until item 1 of the todo asked for the same
+   * "Insert custom text" button they'd get as a modal field (a native prompt can't host one). */
+  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [creatingFile, setCreatingFile] = useState(false)
   /** The media viewer, when it is open: the media of the folder, and which one is shown first. */
   const [viewer, setViewer] = useState<{ items: MediaItem[]; start: number } | null>(null)
   /** The search and sort panel: open or not, how the listing is sorted, and — while results show — what is searched for (from `searchRoot`). */
@@ -1114,32 +1119,52 @@ export default function NotesApp({
     if (realSource) readCustomTextLocations(realSource, editorNotebook).then(setCustomTextLocations, () => setCustomTextLocations([]))
   }
 
+  function invalidNameMessage(name: string): string | null {
+    return !name || name === '.' || name === '..' || /[/\\]/.test(name) ? 'That is not a valid file name.' : null
+  }
+
   function nameOk(name: string): boolean {
-    if (!name || name === '.' || name === '..' || /[/\\]/.test(name)) {
-      setError('That is not a valid file name.')
+    const problem = invalidNameMessage(name)
+    if (problem) {
+      setError(problem)
       return false
     }
     return true
   }
 
-  async function createFolder() {
-    if (!source) return
-    const name = window.prompt('New folder name:')?.trim()
-    if (!name || !nameOk(name)) return
-    if (entries.some((e) => e.name === name)) return setError(`"${name}" already exists.`)
-    await act(() => source.mkdir(joinRelative(path, name)))
+  /** Both the validity check and "already exists here" — what `NamePromptModal`'s own `validate` needs for
+   * folder/file creation, which (unlike `pasteClipboardImage`'s own overwrite-with-confirmation flow, still
+   * on `nameOk` alone) has always refused a taken name outright, never offered to replace it. */
+  function nameProblem(name: string): string | null {
+    return invalidNameMessage(name) ?? (entries.some((e) => e.name === name) ? `"${name}" already exists.` : null)
   }
 
-  async function createFile() {
+  function createFolder() {
+    if (source) setCreatingFolder(true)
+  }
+
+  async function submitNewFolder(name: string) {
     if (!source) return
-    const name = window.prompt('New file name:', 'untitled.md')?.trim()
-    if (!name || !nameOk(name)) return
-    if (entries.some((e) => e.name === name)) return setError(`"${name}" already exists.`)
+    const problem = nameProblem(name)
+    if (problem) throw new Error(problem)
+    await act(() => source.mkdir(joinRelative(path, name)))
+    setCreatingFolder(false)
+  }
+
+  function createFile() {
+    if (source) setCreatingFile(true)
+  }
+
+  async function submitNewFile(name: string) {
+    if (!source) return
+    const problem = nameProblem(name)
+    if (problem) throw new Error(problem)
     const rel = joinRelative(path, name)
     if (await act(() => source.write(rel, new Uint8Array()))) {
       const version = (await source.version?.(rel).catch(() => null)) ?? null
       setEditing({ source, path: rel, content: '', dirty: false, version })
     }
+    setCreatingFile(false)
   }
 
   /** Asks before a destructive change (deleting an entry, overwriting one on upload) in `folder` — unless
@@ -1884,7 +1909,7 @@ export default function NotesApp({
             {insertingCustomText && editing && realSource && customTextLocations !== null && (
               <InsertCustomTextModal
                 source={realSource}
-                locationPaths={customTextLocations}
+                locationPaths={pathsForMode(customTextLocations, 'editor')}
                 persistKey={`${editing.source.id}|${editing.path}`}
                 onInsert={(text, caretOffset) => {
                   editorRef.current?.insertAtCursor(text, caretOffset ?? undefined)
@@ -2250,12 +2275,40 @@ export default function NotesApp({
         <FolderPairModal
           source={source}
           folder={path}
+          realFolder={scope ? joinRelative(scope.root, path) : path}
           taken={entries.map((e) => e.name)}
           onDone={() => {
             setPairing(false)
             load(false)
           }}
           onClose={() => setPairing(false)}
+        />
+      )}
+
+      {creatingFolder && source && (
+        <NamePromptModal
+          title="New folder…"
+          label="Folder name"
+          validate={nameProblem}
+          source={source}
+          sourceId={source.id}
+          folder={scope ? joinRelative(scope.root, path) : path}
+          onSubmit={submitNewFolder}
+          onClose={() => setCreatingFolder(false)}
+        />
+      )}
+
+      {creatingFile && source && (
+        <NamePromptModal
+          title="New file…"
+          label="File name"
+          initialValue="untitled.md"
+          validate={nameProblem}
+          source={source}
+          sourceId={source.id}
+          folder={scope ? joinRelative(scope.root, path) : path}
+          onSubmit={submitNewFile}
+          onClose={() => setCreatingFile(false)}
         />
       )}
 

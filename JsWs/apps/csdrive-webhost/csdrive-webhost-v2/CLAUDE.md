@@ -3388,3 +3388,199 @@ found-live bugs were reproduced first against the unfixed build and re-confirmed
 one** (the stuck-"Loading…" browser, and the stuck-blank clipboard-error modal), not merely fixed and trusted.
 `npx tsc --noEmit` and `npm run build` both clean throughout; no Rust change, so `cargo build`/
 `cargo test --lib` don't apply.
+
+## Custom-text follow-ups: item names, repeatable locations, tags, cache, and date/timezone formats
+
+Five more asks about the same "Insert custom text" feature, all from one todo file, taken in order.
+
+**1. "Let's also make that option available for when typing the item name... the set of locations will be the
+same in both cases; but for each location the user will specify... if the location is for item names or for
+the text editor or for both."** `CustomTextLocation` (`customTextLocations.ts`) is no longer a bare path —
+`{ id, path, appliesTo }`, `appliesTo: 'editor' | 'itemName' | 'both'` — and `pathsForMode(locations, mode)`
+is the one thing both callers (the editor's own menu, and the new item-name button below) filter through
+before building a hierarchy, so neither needs to know the other exists. **`id` is new too, and it's the one
+field that has to survive every edit untouched** — it's what a location's own colored tags (item 3) are
+attached to; a location read from the *old*, plain-string-array format gets one made for it the first time
+it's read, and that read immediately writes the migrated form back (`readCustomTextLocations`), so the same
+id — and so the same tags — come back on every later read, not a fresh one each time.
+
+**`InsertCustomTextButton.tsx`** is the item-name counterpart of the editor's own menu entry — self-contained
+the way `UserActionButton` is: given `sourceId`/`folder`, it resolves its own notebook, renders nothing
+outside one, and reads that notebook's locations fresh every time it's opened, filtered to `itemName`/`both`.
+Unlike the editor there's no `CodeEditorHandle` to splice into — just a plain `<input>` the caller already
+owns the `value`/`onChange` of — so insertion reads the field's own current selection (`inputRef`) and writes
+the result back through the caller's `onChange`, restoring focus and the new caret position on the next
+frame (the field hasn't re-rendered with the new value yet at the moment `onChange` is called).
+
+Wired into **`NewNoteModal.tsx`** and **`FolderPairModal.tsx`**'s own title fields (both already had a
+`source`/notebook-adjacent context in scope — `FolderPairModal` reuses `source.id` rather than taking a new
+prop, since `scopedSource` already preserves the real source id under `.id` for exactly this kind of lookup).
+`FolderPairModal` also gained a `realFolder` prop, separate from `folder` — `folder` is relative to whatever
+`source` represents (a note's own `01` folder, inside the Note Files Explorer), but notebook detection needs
+the *real*, un-scoped path; defaults to `folder` itself, which is already real for every caller except that
+one scoped case.
+
+**"New file…"/"New folder…" used plain `window.prompt()`, which can't host a button** — converted to a small
+modal, `NamePromptModal.tsx` (a name field, the same `InsertCustomTextButton`, OK/Cancel), reused by both
+`NotesApp.tsx`'s `createFolder`/`createFile` (now two state flags opening the modal, with `submitNewFolder`/
+`submitNewFile` doing what the prompt's own continuation used to). `pasteClipboardImage`'s own "name the
+clipboard image" prompt is deliberately **left as a native prompt** — out of scope for this pass, disclosed
+rather than silently fixed, since it wasn't named directly and converting it would mean the same clipboard
+image's own content has to be known before the button could resolve anything useful to insert near it
+anyway, a different shape of problem than a plain name field.
+
+**A real comment-syntax bug was found by the build, not by inspection**: `NamePromptModal.tsx`'s own first
+doc comment read `...**New folder…**/**New file…**...` — the sequence `…**/` is a literal `*/`, closing the
+`/** ... */` JSDoc comment several sentences early; everything after that point was then parsed as real
+TypeScript, producing dozens of cascading syntax errors from `tsc -b` (but not from a bare `npx tsc --noEmit`,
+which — confirmed directly — doesn't actually check this project's app source at all under its own project-
+references setup, only `tsc -b`/`npm run build`'s own `tsc -b` step does; a useful, if sobering, correction to
+this file's own "verified live" habit of citing `npx tsc --noEmit` as if it were a second, independent check —
+from now on `npm run build` is the one that actually matters). Fixed by rewording the sentence to avoid the
+`**X**/` shape; every other new/edited file in this pass was grepped for the same `**/` pattern afterward,
+with none found.
+
+**2. "The user should be able to keep adding / removing locations all the time; right now, I can only add
+locations when none have been added yet."** Read carefully against the already-shipped `CustomTextLocationsModal.tsx`
+(whose own `useMemo` fix for the *previous* "stuck on Loading…" bug — see "A notebook's three-dots menu" —
+looked, on paper, like it should already cover this): nothing in the code actually reproduced a
+one-shot-only limit by inspection. Given the file needed a full rewrite anyway for items 1/3/4 below, it was
+rebuilt with explicit care here and **verified live, specifically for a second add in the same session**
+(the earlier verification only ever exercised one) — through the real UI: a first location added
+successfully, the "Add a location…" browser reopened at the root with a real listing (not stuck), navigated
+to a second real folder, and added — both locations then showing correctly, side by side. The most likely
+explanation, not chased further since the bug didn't reproduce against the current code either way: the
+report describes the *already-fixed*, pre-`useMemo` "stuck on Loading…" symptom (from before this session),
+where the **first** add could still be clicked through blind (the "Add this folder" button was never gated
+on the listing actually loading) while a **second** attempt, compounding the same re-render loop, became bad
+enough to look genuinely stuck — consistent with "after that I'm stuck," but not something this pass could
+make happen again to confirm.
+
+**3. "The user should be able to add colored tags to locations."** The exact same mechanism root tags already
+use (`lib/rootTags.ts`'s own doc comment: "a tag is attached to an opaque guid... which means every place
+that shows the root shows the same tags") — `customTextLocationTagGuid(id)` → `` `customtext-location:${id}` ``,
+and the existing `TagList`/`listTags` components and commands need nothing new. The per-location row moved
+into the same `.window-item`/`.window-item-row`/`.window-item-tags` markup every other tagged list in this app
+already uses (not a bespoke layout) — `.window-item-row`'s `justify-content: space-between` with the
+entry-name wearing `.window-item-main` (`flex: 1`) absorbs the slack correctly even with the new mode
+`<select>` as a third sibling, the same shape `AppsTab.tsx`'s own rows already rely on.
+
+**4. "I saw that the contents of locations are being cached... but when removing a location, its cache
+should be wiped. Likewise, we should also add an option to refresh a location's cache."** `FileSource.cache`
+(already built for the Filen cache's own "Cache options of one item" section) is exactly the right shape
+with no new backend command needed: `removeLocation` calls `source.cache?.clear(location.path)` — already
+documented as recursive for a folder — **before** removing the entry, with a failure shown as an error but
+never blocking the removal itself (a cache-clear failing shouldn't trap the person into being unable to drop
+a misconfigured or offline location); a new `RefreshCw` **"Refresh its cache"** button per location calls
+`source.cache.hardRefresh(location.path)`. **Both are gated on `source?.cache` existing at all** — absent for
+a folder on this device, exactly the same gate `CacheMenu` already uses elsewhere, confirmed live: the
+button simply isn't rendered for a local-device notebook (verified against the real folder-based test
+notebook below, which has no Filen account to exercise the cache path itself against — the same disclosed
+gap every other cache-touching feature in this app's own history already carries when no live Filen account
+is available in the isolated test instance).
+
+**5. Date/timezone formats — answered directly, and implemented to match** (`lib/customTextTemplate.ts`).
+The person's own prepared formats (`{$d:yyyy-MM-dd}`, `{$d:hh-mm-ss}`, a final `{$d:...-zzz}`) line up almost
+exactly with **.NET's own custom date-and-time format specifiers** — `yyyy`/`MM`/`dd`/`HH`/`hh`/`mm`/`ss`/
+`fff`/`zzz` — which is the convention adopted (rather than a third, invented one), added *alongside* the
+module's own original uppercase tokens (`YYYY`/`DD`/`SSS`), not replacing them: `yyyy`/`YYYY` (year),
+`MM` (month), `dd`/`DD` (day), `HH`/`hh` (hour — **both spellings mean 24-hour**; there is no 12-hour/AM-PM
+token, since nothing in any example asked for one), `mm`/`ss` (unchanged), `SSS`/`fff` (millisecond), and
+**`zzz`** — new — which renders the *resolved* UTC offset as `±HH:MM`, matching .NET's own meaning for that
+exact token: "yes, these formats work," once `yyyy`/`dd` are recognized (the module only ever had uppercase
+`YYYY`/`DD` before this).
+
+**The offset grammar** (add/subtract date components) already matched the person's own second draft almost
+exactly — `{$d:format:offset}`, units `y`/`d`/`h`/`m`/`s`/`ms` — except their `"-1y+2M"` used uppercase `M`
+for *month*, which the module only had as `mo`: added as a direct alias (`mo`/`M` both mean month now;
+offset units stay case-sensitive, so lowercase `m` still means minute, with no ambiguity introduced).
+**"Will it be something like the following?" — yes, with that one addition.**
+
+**The colon-escaping ask** ("let's give the user the option to use \[the colon] as a string literal by
+escaping it by repeating it; so `{$d:hh::mm:+1h}` will print something like `10:30`") was **not** already
+implemented — the module's old `$d` parsing found the format/offset boundary with a plain `lastIndexOf(':')`,
+which happened to still locate the right boundary by coincidence in that exact example, but never actually
+collapsed the doubled colon, so the real output would have kept both (`"10::30"`, not `"10:30"`). Replaced
+with a real escape-aware scanner, `splitDateBodySegments`: a doubled colon (`"::"`) becomes one literal `:`
+kept in whichever segment is currently being built, and a single `:` starts a new one — so `"hh::mm:+1h"`
+becomes exactly the two segments `["hh:mm", "+1h"]`, the first (the format) keeping its own real colon. This
+is also why the person's own prepared formats all use dashes/underscores instead of colons (`yyyy-MM-dd`,
+`hh-mm`) — not because of this new escaping rule, which didn't exist yet when those were written, but almost
+certainly because these templates are meant for **file/item names**, where a literal colon isn't even a
+valid character on Windows; in practice a format rarely needs the escape at all.
+
+**The timezone ask — "let's give the user the option to specify the time zone... I think the best way would
+be to specify it after the second colon, after the (optionally) added/subtracted date components: the time
+zone info like +0300 or -0200 should come after the letter T, and the UTC time zone should be something like
+TZ or TK (please suggest the best option)."** **`TZ` is the better of the two, and is exactly what got
+built**: `Z` is already the universal ISO-8601 shorthand for UTC (`2024-01-01T00:00:00Z`) — `K` has no
+established meaning to lean on — so `T` + `Z` (case-insensitive) means UTC, and `T+0300`/`T-0200` (always
+two digits of hours then two of minutes, no colon, matching the person's own examples exactly) is a fixed
+offset applied regardless of the system's own local timezone. **A segment's position doesn't matter** —
+`{$d:format:offset:T<tz>}` and `{$d:format:T<tz>}` (no offset at all) both work, since every segment after
+the format is classified by its own shape (timezone-shaped? offset-shaped?), never by which position it
+happens to occupy — so there's no awkward "leave the middle segment empty" syntax needed when only a
+timezone, not an offset, is wanted. The one draft format that used a timezone-shaped guess before this
+question was asked explicitly (`"...-zzz:-4z"`, a bare `-4z` offset with no real meaning — there's no `z`
+date-math unit) is superseded by this mechanism, not supported as written: the intended effect is now
+`{$d:...-zzz:T+0400}` or similar.
+
+**A real correctness question was checked directly before shipping, not assumed**: whether UTC's own
+`Date.getUTC*()` getters, or a plain offset-shifted timestamp read back with the same getters, actually
+produce the "wall clock at that offset" a person expects — confirmed with hand-built cases crossing a day
+boundary (`T-0530` shifting a UTC noon timestamp back past midnight, `T+0300` forward across one) in the
+module's own Node test (below), not just trusted from the formula.
+
+Node-tested (`lib/customTextTemplate.ts`, an ad-hoc script matching this project's own "Node-tested"
+convention for a module with no committed test file yet, run via `node --experimental-strip-types`): every
+one of the person's own six prepared formats (with `yyyy`/`dd` now recognized); the pre-existing uppercase
+tokens and `SSS` still working unchanged; the new `fff` alias; the `-1y+2M` offset (both `M` and the
+pre-existing `mo` spelling, cross-checked against hand-computed calendar math — `2025-12-20` minus a year
+then plus two months lands on `2025-02-20`, not the year before, since December plus two months rolls into
+the next year); the colon escape, with and without a trailing offset; `TZ` rendering a UTC date/time and
+`zzz` correctly as `+00:00`; `T+0300` and `T-0530` both shifting the displayed time correctly (including
+across a day boundary) and `zzz` reporting the matching offset in each; an offset and a timezone combined,
+and a timezone with no offset segment at all; case-insensitive `tz`/`t+0300`; and every "never throws" case
+(an unterminated brace, an unrecognized `$`-token, a trailing segment that's neither a valid offset nor a
+valid timezone, a malformed `T+030` with the wrong digit count) all resolving to the plain, sensible fallback
+rather than an exception.
+
+**Verified live** (isolated **debug** data folder — a dedicated `WEBVIEW2_USER_DATA_FOLDER`/CDP port, desktop,
+real CDP throughout, a real folder-based notebook (`customtext-test`) registered the same way earlier
+sessions' own folder-as-notebook tests were, with two real locations — `loc-a` (containing a real
+`greeting.txt`: `Hello {name:single:World}! Today is {$d:yyyy-MM-dd}.{$p}`) set to **item names only**, and
+`loc-b` (containing a real `sig.txt`: `Best, {name:single:Me:nopersist}`) set to **editor only** —, both
+locations' mode changes confirmed persisted to the real `[custom-text-locations].json` on disk with the new
+`Id`/`Path`/`AppliesTo` shape):
+- **The "stuck after one add" bug**: two real, sequential adds through the actual "Add a location…" browser
+  both succeeded, the second reopening at the root with a genuine listing (not stuck), both locations shown
+  side by side afterward.
+- **Colored tags**: added a real tag ("snippets", a real color) to `loc-a` through the actual dialog; a
+  direct `list_tags` call against `customtext-location:<loc-a's real id>` confirmed it was stored correctly,
+  keyed to the location's own stable id, not the notebook's or anything else's.
+- **Mode filtering, both directions, through the real UI — not assumed from the stored data alone**: opening
+  the editor's own **"Insert custom text at the caret…"** on a file inside the notebook showed **only**
+  `sig.txt` (`loc-b`, editor mode) — `greeting.txt` (`loc-a`, item-name mode) was correctly absent; filling
+  and inserting it landed `"Best, Me"` at the real Monaco caret position. Separately, opening **"New note…"**
+  from the notebook's own notes page showed the new **"Insert custom text here…"** button on the title field,
+  and its own picker showed **only** `greeting.txt` — `sig.txt` was correctly absent; filling the `name`
+  variable with `"Ayran"` and inserting produced, in the real `<input>`: `"Hello Ayran! Today is 2026-10-26."`
+  (the live system date, confirming `yyyy-MM-dd` renders correctly outside the Node test too) with the real
+  caret (`selectionStart === selectionEnd === 33`) landing exactly where `{$p}` marked it, at the very end.
+- **"New file…"/"New folder…" as real modals, not native prompts**: "New file…" opened with "File name"
+  pre-filled `untitled.md` and the new "Insert custom text here…" button present; submitting a real name
+  (`test-new-file.txt`) created the file on disk (confirmed via a direct `fs_exists` call) and opened it in
+  the editor, exactly as the old prompt-based flow did. "New folder…" correctly refused a name already taken
+  (`"loc-a" already exists.`) without creating anything, matching the pre-existing `createFolder`'s own
+  behavior.
+- **The cache buttons' gating**: confirmed absent for both locations in this local-device notebook (no
+  `RefreshCw` button rendered for either row) — matching `source?.cache` being `undefined` for a folder on
+  this device, the same gate `CacheMenu` already uses. **Not exercised live**: the actual clear-on-remove and
+  refresh calls against a real Filen-backed location — no Filen account was connected in this isolated
+  instance, the same disclosed gap this app's own cache-feature history already carries elsewhere; this rests
+  on `FileSource.cache`'s own already-proven `clear`/`hardRefresh` methods (used identically by `CacheMenu`
+  and the Filen cache's own "Delete all cache for a branch" feature) rather than a fresh live call here.
+
+All test data (the notebook registration, the `customtext-test` folder and its contents) was removed from
+the isolated debug data folder afterward. `npm run build` clean throughout (after the comment-syntax fix
+above); no Rust change, so `cargo build`/`cargo test --lib` don't apply.

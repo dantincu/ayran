@@ -1,25 +1,54 @@
 /** **Custom text templates** (item 2 of the todo, "Insert custom text at the caret"): a piece of custom text
- * can be *dynamic* — `{{`/`}}` are literal `{`/`}`, `{$d:format[:offset]}` is today's date/time (optionally
- * shifted), `{$p}` marks where the caret should land once the text is inserted, and `{name[:mode[:default
- * [:nopersist]]]}` (any name not starting with `$`) is a "user variable" — a textbox in the insertion dialog,
- * single-line by default or `multi`line, with an optional default value and an optional opt-out of persisting
- * what was typed across sessions. Pure, no DOM/backend dependency — the whole thing is a string-in,
- * tokens-out parser plus a tokens-and-values-in, text-out renderer, so both halves are plain Node-testable
- * functions (matching this project's own "Node-tested" convention for a module with no committed test file
- * of its own yet).
+ * can be *dynamic* — `{{`/`}}` are literal `{`/`}`, `{$d:format[:offset][:T<tz>]}` is today's date/time
+ * (optionally shifted, optionally rendered in a chosen timezone), `{$p}` marks where the caret should land once
+ * the text is inserted, and `{name[:mode[:default[:nopersist]]]}` (any name not starting with `$`) is a "user
+ * variable" — a textbox in the insertion dialog, single-line by default or `multi`line, with an optional
+ * default value and an optional opt-out of persisting what was typed across sessions. Pure, no DOM/backend
+ * dependency — the whole thing is a string-in, tokens-out parser plus a tokens-and-values-in, text-out
+ * renderer, so both halves are plain Node-testable functions (matching this project's own "Node-tested"
+ * convention for a module with no committed test file of its own yet).
  *
- * **The date format's own tokens and the offset's own syntax are this module's own design choice, not
- * something the spec pinned down precisely** — the person asked for "year, month, day, hour, minutes,
- * seconds, millis" to be choosable and for the offset to "add or subtract from... now," without naming an
- * exact token/offset grammar. Chosen here: the same repeated-letter convention common date-formatting
- * libraries (moment/day.js) already use — `YYYY`/`MM`/`DD`/`hh`/`mm`/`ss`/`SSS` — and an offset as one or more
- * `<sign><number><unit>` runs concatenated with no separator (`+1y2mo3d`, `-90m`), units being `y`/`mo`/`d`/
- * `h`/`m`/`s`/`ms`. Anything in the format string that isn't one of the seven tokens passes through literally
- * (so a format can mix in its own punctuation — `YYYY-MM-DD`, `DD/MM/YYYY hh:mm`).
+ * **The date format's own tokens are a deliberate near-match of what the person's own prepared format strings
+ * already used** (`{$d:yyyy-MM-dd}`, `{$d:hh-mm-ss}`, a final `{$d:…-zzz}`) — those line up almost exactly with
+ * .NET's own custom date-and-time format specifiers (`yyyy`/`MM`/`dd`/`HH`/`hh`/`mm`/`ss`/`fff`/`zzz`), which is
+ * why that's the convention adopted here rather than inventing a third one: `yyyy`/`YYYY` (4-digit year),
+ * `MM` (month), `dd`/`DD` (day), `HH`/`hh` (hour, **both 24-hour** — this module has no 12-hour/AM-PM token,
+ * since nothing asked for one and every example format given was bare digits with no "tt" designator),
+ * `mm` (minute), `ss` (second), `SSS`/`fff` (millisecond), and **`zzz`**, which (matching .NET's own meaning
+ * for that exact token) renders the *resolved* UTC offset as `±HH:MM` — not a literal the person types, a
+ * token the format can *include* to show whichever offset ends up applying (the local system's own, or the
+ * explicit one from the `T<tz>` segment below). Anything in the format string that isn't one of these tokens
+ * passes through literally, so a format can mix in its own punctuation (`YYYY-MM-DD`, `DD/MM/YYYY hh:mm`).
+ *
+ * **The offset segment** (add/subtract date components) is `[+-]\d+` immediately followed by a unit, one or
+ * more such runs concatenated with no separator (`+1y2mo3d`, `-90m`) — `y`/`d`/`h`/`m`/`s` as before, `mo` *or*
+ * `M` for months (`M` added to match the person's own draft, `"-1y+2M"`, which — since offset units are
+ * case-sensitive and `m` already means minutes — needed its own, distinct letter; `mo` still works too) and
+ * `ms` for milliseconds. (Longer units are tried before the single-letter ones they'd otherwise be swallowed
+ * by, in the regex itself — see `OFFSET_TOKEN_RE`.)
+ *
+ * **A timezone segment, `T<tz>`, picks which timezone the date/time is *shown* in** — a separate question
+ * from the offset above (which date/time it *is*): `TZ` (the letter Z, not case-sensitive) means UTC — chosen
+ * over the person's own other suggestion, `TK`, because `Z` is already the universal ISO-8601 shorthand for
+ * UTC (`2024-01-01T00:00:00Z`), where `K` has no established meaning to lean on; `T+0300`/`T-0200` (always
+ * exactly two digits of hours then two of minutes, no colon — matching the person's own examples) is a fixed
+ * offset from UTC, applied regardless of the system's own timezone. With neither segment given, formatting
+ * uses the system's own local time, exactly as before this was added. **A segment's own position among the
+ * template's `:`-delimited parts doesn't matter** — `{$d:format:offset:T<tz>}` and `{$d:format:T<tz>}` (no
+ * offset) both work, since every segment after the format is classified by its own shape (does it look like
+ * `T<tz>`? like a valid offset?), not by which position it happens to sit in.
+ *
+ * **A colon inside the format (or any other segment) is written as two colons, `::`, to escape it** — item 2's
+ * own ask: "give the user the option to use \[the colon] as a string literal by escaping it by repeating it; so
+ * a date variable like `{$d:hh::mm:+1h}` will print something like `10:30`". The whole `$d` body is scanned
+ * once, character by character (`splitDateBodySegments`): a doubled colon becomes one literal colon in whatever
+ * segment is being built, and a single colon starts a new segment — so `"hh::mm:+1h"` becomes the two segments
+ * `["hh:mm", "+1h"]`, the first (the format) keeping its own, real, un-escaped colon.
  *
  * **A malformed template never throws** — a `{` with no matching `}` is taken as literal text for the rest
- * of the string, and a `$`-prefixed token that isn't `$d`/`$p` resolves to nothing (empty string) rather than
- * failing the whole insertion over one typo in a custom text file the person wrote by hand. */
+ * of the string, a `$`-prefixed token that isn't `$d`/`$p` resolves to nothing (empty string), and a segment
+ * after the format that matches neither the timezone nor the offset shape is simply dropped — none of these
+ * fail the whole insertion over one typo in a custom text file the person wrote by hand. */
 
 export interface CustomTextVariable {
   name: string
@@ -31,9 +60,15 @@ export interface CustomTextVariable {
   persist: boolean
 }
 
+/** Either UTC (`zzz` renders `+00:00`), or a fixed number of minutes offset from UTC (`zzz` renders that
+ * offset; the displayed date/time is computed as if living at that offset, regardless of the system's own
+ * timezone). `null` (the default, everywhere this type appears) means "the system's own local time," exactly
+ * as this module worked before timezones existed in it at all. */
+export type CustomTextTimezone = { kind: 'utc' } | { kind: 'fixed'; offsetMinutes: number }
+
 export type CustomTextToken =
   | { kind: 'literal'; text: string }
-  | { kind: 'date'; format: string; offset: string | null }
+  | { kind: 'date'; format: string; offset: string | null; timezone: CustomTextTimezone | null }
   | { kind: 'caret' }
   | { kind: 'variable'; variable: CustomTextVariable }
 
@@ -55,21 +90,70 @@ function splitVariableBody(body: string): { name: string; mode: string; rest: st
 }
 
 /** `true` when `s` is made up entirely of one or more valid offset tokens, back to back, with nothing left
- * over — what `$d`'s own trailing-offset detection (below) uses to tell a genuine offset apart from a date
- * format that simply happens to end in something colon-separated (`hh:mm`'s own "mm" doesn't match). */
+ * over — what `$d`'s own segment classification (below) uses to tell a genuine offset apart from anything
+ * else trailing the format. */
 function isValidOffset(s: string): boolean {
   if (s === '') return false
   return [...s.matchAll(OFFSET_TOKEN_RE)].map((m) => m[0]).join('') === s
 }
 
+/** `T<tz>` → UTC (`TZ`/`Tz`) or a fixed `±HHMM` offset from it (`T+0300`, `T-0200`) — or `undefined` when
+ * `s` doesn't have this shape at all (so the caller can try the offset grammar instead). */
+function parseTimezoneSegment(s: string): CustomTextTimezone | undefined {
+  if (!/^T/i.test(s)) return undefined
+  const rest = s.slice(1)
+  if (/^Z$/i.test(rest)) return { kind: 'utc' }
+  const m = /^([+-])(\d{2})(\d{2})$/.exec(rest)
+  if (!m) return undefined
+  const minutes = parseInt(m[2], 10) * 60 + parseInt(m[3], 10)
+  return { kind: 'fixed', offsetMinutes: m[1] === '-' ? -minutes : minutes }
+}
+
+/** Splits the body after `"$d:"` into segments on single colons, while a *doubled* colon (`"::"`) collapses
+ * to one literal colon kept inside whichever segment is currently being built — the escape item 2 asks for.
+ * The first returned segment is always the format (however many colons it has of its own); the rest are
+ * whatever trailing parts the template named (an offset, a timezone, or — for a malformed template — neither,
+ * simply dropped later on). */
+function splitDateBodySegments(body: string): string[] {
+  const segments: string[] = []
+  let current = ''
+  let i = 0
+  while (i < body.length) {
+    if (body[i] === ':' && body[i + 1] === ':') {
+      current += ':'
+      i += 2
+      continue
+    }
+    if (body[i] === ':') {
+      segments.push(current)
+      current = ''
+      i++
+      continue
+    }
+    current += body[i]
+    i++
+  }
+  segments.push(current)
+  return segments
+}
+
 function parseToken(body: string): CustomTextToken {
   if (body === '$p') return { kind: 'caret' }
   if (body.startsWith('$d')) {
-    const afterColon = body.slice(2).replace(/^:/, '')
-    const lastColon = afterColon.lastIndexOf(':')
-    const candidate = lastColon === -1 ? '' : afterColon.slice(lastColon + 1)
-    if (lastColon !== -1 && isValidOffset(candidate)) return { kind: 'date', format: afterColon.slice(0, lastColon), offset: candidate }
-    return { kind: 'date', format: afterColon, offset: null }
+    const segments = splitDateBodySegments(body.slice(2).replace(/^:/, ''))
+    const format = segments[0] ?? ''
+    let offset: string | null = null
+    let timezone: CustomTextTimezone | null = null
+    for (const segment of segments.slice(1)) {
+      const tz = parseTimezoneSegment(segment)
+      if (tz) {
+        timezone = tz
+        continue
+      }
+      if (isValidOffset(segment)) offset = segment
+      // anything else trailing the format is dropped — a malformed template never throws.
+    }
+    return { kind: 'date', format, offset, timezone }
   }
   if (body.startsWith('$')) return { kind: 'literal', text: '' } // an unrecognized $-token: a template typo, not a crash.
   const { name, mode, rest } = splitVariableBody(body)
@@ -138,25 +222,71 @@ export function templateVariables(tokens: CustomTextToken[]): CustomTextVariable
   return [...seen.values()]
 }
 
-const DATE_TOKEN_RE = /YYYY|MM|DD|hh|mm|ss|SSS/g
+const DATE_TOKEN_RE = /YYYY|yyyy|MM|DD|dd|HH|hh|mm|ss|SSS|fff|zzz/g
 
-function formatDate(date: Date, format: string): string {
+/** `date`'s own field values, read for whichever timezone is in effect — `null` (the system's local time,
+ * via the plain getters) or a resolved utc/fixed one (via a timestamp shifted by the chosen offset, read back
+ * with the UTC getters, the standard trick for "what would the wall clock read at this other offset"). Also
+ * carries the *effective* offset in minutes, which is what the `zzz` token itself renders. */
+function displayParts(date: Date, timezone: CustomTextTimezone | null) {
+  if (timezone === null) {
+    return {
+      year: date.getFullYear(),
+      month: date.getMonth() + 1,
+      day: date.getDate(),
+      hours: date.getHours(),
+      minutes: date.getMinutes(),
+      seconds: date.getSeconds(),
+      millis: date.getMilliseconds(),
+      offsetMinutes: -date.getTimezoneOffset(),
+    }
+  }
+  const offsetMinutes = timezone.kind === 'utc' ? 0 : timezone.offsetMinutes
+  const shifted = new Date(date.getTime() + offsetMinutes * 60000)
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth() + 1,
+    day: shifted.getUTCDate(),
+    hours: shifted.getUTCHours(),
+    minutes: shifted.getUTCMinutes(),
+    seconds: shifted.getUTCSeconds(),
+    millis: shifted.getUTCMilliseconds(),
+    offsetMinutes,
+  }
+}
+
+function formatOffset(offsetMinutes: number): string {
+  const sign = offsetMinutes < 0 ? '-' : '+'
+  const abs = Math.abs(offsetMinutes)
+  const hh = String(Math.floor(abs / 60)).padStart(2, '0')
+  const mm = String(abs % 60).padStart(2, '0')
+  return `${sign}${hh}:${mm}`
+}
+
+function formatDate(date: Date, format: string, timezone: CustomTextTimezone | null): string {
+  const parts = displayParts(date, timezone)
   return format.replace(DATE_TOKEN_RE, (token) => {
     switch (token) {
       case 'YYYY':
-        return String(date.getFullYear()).padStart(4, '0')
+      case 'yyyy':
+        return String(parts.year).padStart(4, '0')
       case 'MM':
-        return String(date.getMonth() + 1).padStart(2, '0')
+        return String(parts.month).padStart(2, '0')
       case 'DD':
-        return String(date.getDate()).padStart(2, '0')
+      case 'dd':
+        return String(parts.day).padStart(2, '0')
+      case 'HH':
       case 'hh':
-        return String(date.getHours()).padStart(2, '0')
+        return String(parts.hours).padStart(2, '0')
       case 'mm':
-        return String(date.getMinutes()).padStart(2, '0')
+        return String(parts.minutes).padStart(2, '0')
       case 'ss':
-        return String(date.getSeconds()).padStart(2, '0')
+        return String(parts.seconds).padStart(2, '0')
       case 'SSS':
-        return String(date.getMilliseconds()).padStart(3, '0')
+      case 'fff':
+        return String(parts.millis).padStart(3, '0')
+      case 'zzz':
+        return formatOffset(parts.offsetMinutes)
       default:
         return token
     }
@@ -165,8 +295,10 @@ function formatDate(date: Date, format: string): string {
 
 // Longer units (`mo`, `ms`) are listed ahead of the single-letter ones they'd otherwise be swallowed by —
 // regex alternation takes the *first* alternative that matches at a position, not the longest, so `mo`/`ms`
-// must come before `m`/`s` or "+5ms" would wrongly read as "+5m" followed by a dangling, ignored "s".
-const OFFSET_TOKEN_RE = /([+-]\d+)(y|mo|ms|d|h|m|s)/g
+// must come before `m`/`s` or "+5ms" would wrongly read as "+5m" followed by a dangling, ignored "s". `M`
+// (month, uppercase — added alongside the pre-existing `mo`) is a distinct literal from lowercase `m`
+// (minute), so the two never collide.
+const OFFSET_TOKEN_RE = /([+-]\d+)(y|mo|M|ms|d|h|m|s)/g
 
 function applyOffset(date: Date, offset: string): Date {
   const result = new Date(date.getTime())
@@ -177,6 +309,7 @@ function applyOffset(date: Date, offset: string): Date {
         result.setFullYear(result.getFullYear() + amount)
         break
       case 'mo':
+      case 'M':
         result.setMonth(result.getMonth() + amount)
         break
       case 'd':
@@ -215,7 +348,7 @@ export function renderCustomTextTemplate(tokens: CustomTextToken[], values: Reco
   for (const token of tokens) {
     if (token.kind === 'literal') text += token.text
     else if (token.kind === 'caret') caretOffset = text.length
-    else if (token.kind === 'date') text += formatDate(token.offset ? applyOffset(now, token.offset) : now, token.format)
+    else if (token.kind === 'date') text += formatDate(token.offset ? applyOffset(now, token.offset) : now, token.format, token.timezone)
     else text += values[token.variable.name] ?? token.variable.default
   }
   return { text, caretOffset }

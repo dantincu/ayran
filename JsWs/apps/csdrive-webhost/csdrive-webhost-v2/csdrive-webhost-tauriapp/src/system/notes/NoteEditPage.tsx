@@ -18,7 +18,7 @@ import { useNotesSources } from './useSources'
 import { loadNotebooks, type NotebookEntry } from './notebooks'
 import { useNotesSettings } from './settings'
 import { notebookContaining } from './userAction'
-import { readCustomTextLocations } from './customTextLocations'
+import { pathsForMode, readCustomTextLocations, type CustomTextLocation } from './customTextLocations'
 import UserActionButton from './UserActionButton'
 import CacheMenu from './CacheMenu'
 import InsertPathModal from './InsertPathModal'
@@ -67,7 +67,7 @@ export default function NoteEditPage({
   const [notebook, setNotebook] = useState<NotebookEntry | null>(null)
   const [creatingImage, setCreatingImage] = useState(false)
   const [insertingCustomText, setInsertingCustomText] = useState(false)
-  const [customTextLocations, setCustomTextLocations] = useState<string[] | null>(null)
+  const [customTextLocations, setCustomTextLocations] = useState<CustomTextLocation[] | null>(null)
   // This page's own header doubles as an autohiding header (`useScrollAutohide` — see CLAUDE.md's "Top bar
   // autohide and nested scrollable content"), and follows the same "show it" trigger as Notes' own top bar, so
   // the admin-app's "show top bar" reveals both together.
@@ -390,7 +390,7 @@ export default function NoteEditPage({
       {insertingCustomText && source && customTextLocations !== null && (
         <InsertCustomTextModal
           source={source}
-          locationPaths={customTextLocations}
+          locationPaths={pathsForMode(customTextLocations, 'editor')}
           persistKey={`${sourceId}|${path}`}
           onInsert={(text, caretOffset) => {
             editorRef.current?.insertAtCursor(text, caretOffset ?? undefined)
