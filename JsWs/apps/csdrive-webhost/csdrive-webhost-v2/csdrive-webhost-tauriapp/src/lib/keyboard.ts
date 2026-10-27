@@ -72,6 +72,82 @@ export interface ListKeyboard {
   page?: number
 }
 
+/** The actual key handling `useListKeyboard` and `useModalListKeyboard` share — assumes the caller has
+ * already decided the event is theirs to act on (`enabled`, `isTypingTarget`/`overlayOpen` or the lack of
+ * them, is each hook's own business, not this function's). Pulled out so the two hooks can't drift apart on
+ * what a key actually does, only on *when* they're willing to look at one. */
+function applyListKeyboardKey(e: KeyboardEvent, options: ListKeyboard): void {
+  const { count, focused, setFocused, onOpen, onParent, onActivate, pageSize, page } = options
+  // The page the focus is on (or, with none, the one shown): where it starts and ends.
+  const paged = pageSize !== undefined && pageSize > 0
+  const pageStart = paged ? (focused >= 0 ? Math.floor(focused / pageSize) : (page ?? 0)) * pageSize : 0
+  const pageEnd = paged ? Math.min(count - 1, pageStart + pageSize - 1) : count - 1
+  /** `amount` forward (positive) or backward (negative) — in a paginated list, stopping at the page's own
+   * edge and, only from there, spilling one further item onto the next/previous page (the same rule
+   * PageUp/PageDown already used, now shared with "fast navigation" below). */
+  function jumpBy(amount: number): number {
+    const at = focused < 0 ? pageStart : focused
+    if (!paged) return at + amount
+    if (amount > 0) return at >= pageEnd ? (pageEnd < count - 1 ? pageEnd + 1 : pageEnd) : Math.min(pageEnd, at + amount)
+    return at <= pageStart ? (pageStart > 0 ? pageStart - 1 : pageStart) : Math.max(pageStart, at + amount)
+  }
+  const fast = fastNavAmount(e)
+  if (fast !== null) {
+    if (count === 0) return
+    e.preventDefault()
+    setFocused(Math.min(count - 1, Math.max(0, jumpBy(fast))))
+    return
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+  let next: number
+  switch (e.key) {
+    // (With nothing focused yet, either one focuses the first item — of the page shown, in a paginated list.)
+    case 'ArrowDown':
+      next = focused < 0 ? pageStart : focused + 1
+      break
+    case 'ArrowUp':
+      next = focused < 0 ? pageStart : focused - 1
+      break
+    case 'Home':
+      next = pageStart
+      break
+    case 'End':
+      next = pageEnd
+      break
+    case 'PageDown':
+      next = jumpBy(PAGE_JUMP)
+      break
+    case 'PageUp':
+      next = jumpBy(-PAGE_JUMP)
+      break
+    case 'ArrowLeft':
+      if (onParent) {
+        e.preventDefault()
+        onParent()
+      }
+      return
+    case 'ArrowRight':
+      if (onOpen && focused >= 0 && focused < count) {
+        e.preventDefault()
+        onOpen(focused)
+      }
+      return
+    case 'Enter': {
+      const act = onActivate ?? onOpen
+      if (!act || focused < 0 || focused >= count) return
+      if (e.target instanceof HTMLElement && e.target.closest('button, a, summary, [role="button"]')) return
+      e.preventDefault()
+      act(focused)
+      return
+    }
+    default:
+      return
+  }
+  if (count === 0) return
+  e.preventDefault()
+  setFocused(Math.min(count - 1, Math.max(0, next)))
+}
+
 /** Arrow-key navigation of a list, for the page it is used on: Up/Down move the focus by one,
  * Home/End go to the first/last item, PageUp/PageDown move it by 10 (of a paginated list: within the page
  * shown — see `pageSize`), Left goes to the parent and Right into the focused item, and Alt+N/P/./,/]/['/;
@@ -85,77 +161,61 @@ export function useListKeyboard(options: ListKeyboard) {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      const { count, focused, setFocused, onOpen, onParent, onActivate, enabled, pageSize, page } = latest.current
+      const { enabled } = latest.current
       if (enabled === false || e.defaultPrevented) return
       if (isTypingTarget(e.target) || overlayOpen()) return
-      // The page the focus is on (or, with none, the one shown): where it starts and ends.
-      const paged = pageSize !== undefined && pageSize > 0
-      const pageStart = paged ? (focused >= 0 ? Math.floor(focused / pageSize) : (page ?? 0)) * pageSize : 0
-      const pageEnd = paged ? Math.min(count - 1, pageStart + pageSize - 1) : count - 1
-      /** `amount` forward (positive) or backward (negative) — in a paginated list, stopping at the page's own
-       * edge and, only from there, spilling one further item onto the next/previous page (the same rule
-       * PageUp/PageDown already used, now shared with "fast navigation" below). */
-      function jumpBy(amount: number): number {
-        const at = focused < 0 ? pageStart : focused
-        if (!paged) return at + amount
-        if (amount > 0) return at >= pageEnd ? (pageEnd < count - 1 ? pageEnd + 1 : pageEnd) : Math.min(pageEnd, at + amount)
-        return at <= pageStart ? (pageStart > 0 ? pageStart - 1 : pageStart) : Math.max(pageStart, at + amount)
-      }
-      const fast = fastNavAmount(e)
-      if (fast !== null) {
-        if (count === 0) return
+      applyListKeyboardKey(e, latest.current)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  useEffect(() => {
+    if (options.focused >= 0) document.querySelector('[data-kbd-focused]')?.scrollIntoView({ block: 'nearest' })
+  }, [options.focused])
+}
+
+export interface ModalListKeyboard extends ListKeyboard {
+  /** Ctrl+Enter: switch between two lists shown one at a time in the same modal (folders/files) — only
+   * offered where a level genuinely has both, so pass it only then. */
+  onToggleView?: () => void
+  /** Ctrl+S: move the focus to the modal's own search box, for a modal that has one. */
+  onFocusSearch?: () => void
+}
+
+/** The same navigation as `useListKeyboard`, for a list that lives *inside* an already-open modal (the
+ * "Insert custom text"/"Create image from the clipboard" popups, asked for directly) — two differences, both
+ * because the list IS the modal's own content, not a background page one just opened on top of:
+ * - **Never suppressed by `overlayOpen()`** — that check exists so a *background* list stops responding the
+ *   moment something opens over it; a modal's own list is the thing that opened, not what got covered.
+ * - **Never suppressed by `isTypingTarget()`** — asked for directly: these two modals have a search box, and
+ *   the list should stay navigable by keyboard *while* that box has the focus, not only once it's blurred.
+ *   A plain character typed there is untouched either way — only the specific keys this module already
+ *   claims (the arrows, Home/End, Page Up/Down, Enter, the fast-nav Alt+ combinations) are intercepted, and
+ *   none of those insert text into a box to begin with.
+ *
+ * `onToggleView`/`onFocusSearch` are two more modal-only shortcuts, Ctrl+Enter and Ctrl+S — checked before
+ * the shared arrow/page logic so they can't be shadowed by it (`isShortcut(e, 'enter')` reads `e.key` the
+ * same way for the Enter key as for a letter, so it's reused here rather than a second hand-rolled check). */
+export function useModalListKeyboard(options: ModalListKeyboard) {
+  const latest = useRef(options)
+  latest.current = options
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const { enabled, onToggleView, onFocusSearch } = latest.current
+      if (enabled === false || e.defaultPrevented) return
+      if (onFocusSearch && isShortcut(e, 's')) {
         e.preventDefault()
-        setFocused(Math.min(count - 1, Math.max(0, jumpBy(fast))))
+        onFocusSearch()
         return
       }
-      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
-      let next: number
-      switch (e.key) {
-        // (With nothing focused yet, either one focuses the first item — of the page shown, in a paginated list.)
-        case 'ArrowDown':
-          next = focused < 0 ? pageStart : focused + 1
-          break
-        case 'ArrowUp':
-          next = focused < 0 ? pageStart : focused - 1
-          break
-        case 'Home':
-          next = pageStart
-          break
-        case 'End':
-          next = pageEnd
-          break
-        case 'PageDown':
-          next = jumpBy(PAGE_JUMP)
-          break
-        case 'PageUp':
-          next = jumpBy(-PAGE_JUMP)
-          break
-        case 'ArrowLeft':
-          if (onParent) {
-            e.preventDefault()
-            onParent()
-          }
-          return
-        case 'ArrowRight':
-          if (onOpen && focused >= 0 && focused < count) {
-            e.preventDefault()
-            onOpen(focused)
-          }
-          return
-        case 'Enter': {
-          const act = onActivate ?? onOpen
-          if (!act || focused < 0 || focused >= count) return
-          if (e.target instanceof HTMLElement && e.target.closest('button, a, summary, [role="button"]')) return
-          e.preventDefault()
-          act(focused)
-          return
-        }
-        default:
-          return
+      if (onToggleView && isShortcut(e, 'enter')) {
+        e.preventDefault()
+        onToggleView()
+        return
       }
-      if (count === 0) return
-      e.preventDefault()
-      setFocused(Math.min(count - 1, Math.max(0, next)))
+      applyListKeyboardKey(e, latest.current)
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)

@@ -800,7 +800,14 @@ export default function NotesApp({
     return () => {
       cancelled = true
     }
-  }, [scope, sourceId, path, pageId])
+    // Depends on whether `scope` is present, never the object itself — this effect's own body only ever asks
+    // `if (scope)`, and `NoteFilesPage.tsx` hands this component a brand-new `scope` object literal on every
+    // one of *its own* renders (see the matching fix, and its full reasoning, on the `onPlaceChange` effect
+    // further down this file): depending on `scope` directly re-ran this effect's real backend calls
+    // (`getPagePageSize`/`loadNotebooks`/`getNotebookPageSize`) on every single render a scoped explorer ever
+    // caused, not only when whether it's scoped actually changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [!!scope, sourceId, path, pageId])
 
   function setPageSize(size: number) {
     setPageSizeState(size)
@@ -1613,7 +1620,20 @@ export default function NotesApp({
       ...(editing ? { edit: editing.path } : {}),
       ...(viewer ? { viewing: joinRelative(path, viewer.items[viewer.start].name) } : {}),
     })
-  }, [scope, path, currentPage, pageSize, restoringPage, editing?.path, viewer])
+    // Depends on `scope?.onPlaceChange` — the one field this effect's own body actually reads — never the
+    // whole `scope` object: reported live as a genuine infinite loop (the CPU pegged, the admin app's own
+    // window list stuck flickering "Loading…"). `NoteFilesPage.tsx` hands this component a brand-new `scope`
+    // object literal on every one of *its own* renders, so depending on `scope` itself re-ran this effect on
+    // every render regardless of whether anything it reports actually changed — and what it reports is a
+    // freshly built object every time too, which `onPlaceChange` (`NoteFilesPage.tsx`'s `setPlace`) can never
+    // see as "the same" as before (a fresh object is never `Object.is`-equal to the last one), so every call
+    // forced a re-render, which built a new `scope`, which re-ran this effect again — self-sustaining,
+    // nothing in the loop ever settling. `onPlaceChange` itself (`setPlace`, a `useState` setter) is the one
+    // genuinely stable thing available through `scope`, which is what makes depending on it directly, instead
+    // of the object wrapping it, the actual fix — the same way `scope?.root`/`scope?.label` are already
+    // depended on individually a little further up in this file, not the whole object either.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope?.onPlaceChange, path, currentPage, pageSize, restoringPage, editing?.path, viewer])
   useEffect(() => {
     const pending = pendingFocusRef.current
     if (pending === null || loading) return
