@@ -23,3 +23,32 @@ export function absolutePathFrom(targetPath: string, root: string | null): strin
   }
   return `/${targetPath}`
 }
+
+/** `targetFolder` relative to `baseFolder` — `../` segments as needed, both using the no-leading/trailing-
+ * slash convention (`''` for the root). Unlike `relativePathFrom` above (built for a *file* target, which
+ * keeps its own name past the common prefix), this treats `targetFolder` itself as the thing being related
+ * to, since what a notebook's own per-notebook settings reference (a custom-text location, the viewer
+ * script's folder) is a folder, not a file relative to some *other* file's own folder. Used so a path
+ * written here survives the notebook being moved or copied intact — unlike a path relative to the whole
+ * source's own root, which breaks the moment the notebook's own folder moves. */
+export function folderRelativeTo(baseFolder: string, targetFolder: string): string {
+  const baseParts = baseFolder ? baseFolder.split('/') : []
+  const targetParts = targetFolder ? targetFolder.split('/') : []
+  let common = 0
+  while (common < baseParts.length && common < targetParts.length && baseParts[common] === targetParts[common]) common++
+  const up = baseParts.length - common
+  return [...Array(up).fill('..'), ...targetParts.slice(common)].join('/')
+}
+
+/** The reverse of `folderRelativeTo`: resolves a possibly `../`-prefixed relative path against `baseFolder`,
+ * back to a path from the storage's own root. */
+export function resolveFolderRelative(baseFolder: string, relative: string): string {
+  const parts = [...(baseFolder ? baseFolder.split('/') : []), ...(relative ? relative.split('/') : [])]
+  const resolved: string[] = []
+  for (const part of parts) {
+    if (part === '' || part === '.') continue
+    if (part === '..') resolved.pop()
+    else resolved.push(part)
+  }
+  return resolved.join('/')
+}

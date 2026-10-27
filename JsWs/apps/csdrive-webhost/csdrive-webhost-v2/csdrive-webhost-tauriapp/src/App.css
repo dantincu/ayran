@@ -936,6 +936,17 @@ select {
   margin-bottom: 4px;
 }
 
+/* An autofocused field that is the very first thing in a modal's body sits only `.modal-body`'s own 14px of
+   padding below the header — far short of the ~38px `TextFieldMenu.tsx`'s floating strip needs to float
+   *above* the field without landing on its typed text (see `notes.css`'s `.notes-field-leading`, the
+   Notes-only sibling of this rule, for the fix's own full history). `Tags.tsx`'s own "Add tag"/"Edit tag"
+   popup has the identical shape — reported live, "the three-dots button is overlapping the tag text
+   textbox" — but `Tags.tsx` is shared by the admin-app, which never imports `notes.css`, so this shared
+   twin lives here instead. 28px (on top of the existing 14px) comfortably clears the 38px threshold. */
+.field-leading {
+  margin-top: 28px;
+}
+
 .modal-guid-row {
   display: flex;
   align-items: center;

@@ -387,10 +387,10 @@ export default function NoteEditPage({
           onClose={() => setCreatingImage(false)}
         />
       )}
-      {insertingCustomText && source && customTextLocations !== null && (
+      {insertingCustomText && source && notebook && customTextLocations !== null && (
         <InsertCustomTextModal
           source={source}
-          locationPaths={pathsForMode(customTextLocations, 'editor')}
+          locationPaths={pathsForMode(customTextLocations, 'editor', notebook.folder)}
           persistKey={`${sourceId}|${path}`}
           onInsert={(text, caretOffset) => {
             editorRef.current?.insertAtCursor(text, caretOffset ?? undefined)

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { FileCode, Info, RotateCcw } from 'lucide-react'
 import IconButton from '../../components/IconButton'
 import Modal from '../../components/Modal'
+import { folderRelativeTo, resolveFolderRelative } from '../../lib/relativePath'
 import LocationPicker, { type Picked } from './LocationPicker'
 import { readNotebookScript, resetNotebookScript, saveNotebookScript, type NoteViewerScript } from './noteViewerScript'
 import { notebookTitle, type NotebookEntry } from './notebooks'
@@ -47,7 +48,14 @@ export default function NoteViewerScriptModal({ notebook, onClose }: { notebook:
   async function choose(picked: Picked) {
     setChoosing(false)
     if (!picked.fileName || !source) return
-    const next: NoteViewerScript = { sourceId: picked.source.id, path: [picked.folder, picked.fileName].filter(Boolean).join('/') }
+    // Relative to the notebook's own root folder, not the whole source's — so it stays correct if the
+    // notebook is moved or copied intact — but only when the script is genuinely in the *same* source as
+    // the notebook: a script in a different folder of this device, or a different Filen account, has no
+    // meaningful "relative to this notebook" address at all, and keeps the plain, source-root-absolute
+    // form it always had.
+    const absolute = [picked.folder, picked.fileName].filter(Boolean).join('/')
+    const path = picked.source.id === notebook.sourceId ? folderRelativeTo(notebook.folder, absolute) : absolute
+    const next: NoteViewerScript = { sourceId: picked.source.id, path }
     try {
       await saveNotebookScript(source, notebook, next)
       setError(null)
@@ -68,7 +76,12 @@ export default function NoteViewerScriptModal({ notebook, onClose }: { notebook:
     }
   }
 
-  const shown = script ? `${sourceOf(script.sourceId)?.label ?? script.sourceId} · /${script.path}` : null
+  // `script.path` is notebook-relative only when the script's own source matches the notebook's — resolved
+  // back to a plain, source-root-absolute path wherever the *real* file is actually needed (showing where
+  // it is, seeding the picker at its current folder), the same split `choose` above writes it with.
+  const sameSource = script ? script.sourceId === notebook.sourceId : false
+  const scriptAbsolutePath = script ? (sameSource ? resolveFolderRelative(notebook.folder, script.path) : script.path) : null
+  const shown = script ? `${sourceOf(script.sourceId)?.label ?? script.sourceId} · ${sameSource ? script.path || '.' : `/${script.path}`}` : null
 
   const actions = (
     <>
@@ -118,8 +131,8 @@ export default function NoteViewerScriptModal({ notebook, onClose }: { notebook:
           onAddRoot={addRoot}
           listed={[]}
           initial={
-            script
-              ? { sourceId: script.sourceId, path: script.path.includes('/') ? script.path.slice(0, script.path.lastIndexOf('/')) : '' }
+            script && scriptAbsolutePath !== null
+              ? { sourceId: script.sourceId, path: scriptAbsolutePath.includes('/') ? scriptAbsolutePath.slice(0, scriptAbsolutePath.lastIndexOf('/')) : '' }
               : { sourceId: notebook.sourceId, path: notebook.folder }
           }
           onPick={choose}

@@ -1906,10 +1906,10 @@ export default function NotesApp({
                 onClose={() => setCreatingImage(false)}
               />
             )}
-            {insertingCustomText && editing && realSource && customTextLocations !== null && (
+            {insertingCustomText && editing && realSource && editorNotebook && customTextLocations !== null && (
               <InsertCustomTextModal
                 source={realSource}
-                locationPaths={pathsForMode(customTextLocations, 'editor')}
+                locationPaths={pathsForMode(customTextLocations, 'editor', editorNotebook.folder)}
                 persistKey={`${editing.source.id}|${editing.path}`}
                 onInsert={(text, caretOffset) => {
                   editorRef.current?.insertAtCursor(text, caretOffset ?? undefined)

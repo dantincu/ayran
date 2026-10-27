@@ -1,3 +1,4 @@
+import { resolveFolderRelative } from '../../lib/relativePath'
 import { ensureNotebookInternals, join, NOTEBOOK_INTERNALS_INDEX } from './noteModel'
 import type { NotebookEntry } from './notebooks'
 import type { FileSource } from './sources'
@@ -29,6 +30,12 @@ export type CustomTextLocationMode = 'editor' | 'itemName' | 'both'
  * (or missing its own `Id` for any other reason) gets a freshly made one the first time it's read — and that
  * read immediately writes the migrated form back (see `readCustomTextLocations`), so the same id comes back
  * every time after, not a new one per read. */
+/** `path` is relative to the **notebook's own root folder** (the parent of its `[note-book]` folders pair),
+ * `../` escaping as needed for a location that sits outside it — not relative to the whole source's own
+ * root, so a location kept inside the notebook (the ordinary case) stays correct if the notebook is moved
+ * or copied intact. Resolved back to a source-root-relative path with `resolveFolderRelative` wherever a
+ * location is actually read/listed/cached (`pathsForMode`, `CustomTextLocationsModal.tsx`'s own cache
+ * calls) — written the opposite way (`folderRelativeTo`) when a location is chosen. */
 export interface CustomTextLocation {
   id: string
   path: string
@@ -125,10 +132,12 @@ export async function saveCustomTextLocations(source: FileSource, notebook: Note
   await source.write(settingPath(notebook), new TextEncoder().encode(serializeCustomTextLocationsFile(locations)))
 }
 
-/** The plain paths `buildCustomTextHierarchy` needs — every location whose own `appliesTo` includes `mode`
- * (its own exact mode, or `'both'`). What both "Insert custom text at the caret" (the editor) and the new
- * item-name button call before building their own hierarchy, so the same stored locations serve either
- * context without the hierarchy module itself needing to know this distinction exists. */
-export function pathsForMode(locations: CustomTextLocation[], mode: 'editor' | 'itemName'): string[] {
-  return locations.filter((l) => l.appliesTo === mode || l.appliesTo === 'both').map((l) => l.path)
+/** The plain, **source-root-relative** paths `buildCustomTextHierarchy` needs — every location whose own
+ * `appliesTo` includes `mode` (its own exact mode, or `'both'`), resolved from its notebook-relative
+ * storage form back to the source's own root (`resolveFolderRelative`) since that's what `buildCustomTextHierarchy`'s
+ * own `source.list`/`source.read` calls expect. What both "Insert custom text at the caret" (the editor)
+ * and the item-name button call before building their own hierarchy, so the same stored locations serve
+ * either context without the hierarchy module itself needing to know this distinction exists. */
+export function pathsForMode(locations: CustomTextLocation[], mode: 'editor' | 'itemName', notebookFolder: string): string[] {
+  return locations.filter((l) => l.appliesTo === mode || l.appliesTo === 'both').map((l) => resolveFolderRelative(notebookFolder, l.path))
 }

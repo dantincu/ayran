@@ -6,6 +6,7 @@ import { TagList } from '../../components/Tags'
 import { listTags, type TagRecord } from '../../lib/secondaryWindows'
 import { confirm } from '../../lib/dialogs'
 import { parsePathInput, pathForInput } from '../../lib/pathInput'
+import { folderRelativeTo, resolveFolderRelative } from '../../lib/relativePath'
 import {
   customTextLocationTagGuid,
   randomId,
@@ -20,6 +21,11 @@ import type { DirListing } from './sources'
 
 const parentOf = (path: string) => (path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '')
 const joinPath = (folder: string, name: string) => (folder ? `${folder}/${name}` : name)
+
+/** A stored location's path is relative to the notebook's own root — shown as-is, never with a forced
+ * leading slash (it may start with `../` for a location that sits outside the notebook), and `.` for the
+ * notebook's own root folder itself rather than an empty string. */
+const displayLocation = (path: string) => path || '.'
 
 const MODE_LABEL: Record<CustomTextLocationMode, string> = {
   both: 'Editor & item names',
@@ -125,7 +131,11 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
 
   function addLocation() {
     if (!locations) return
-    const normalized = browsePath.replace(/^\/+|\/+$/g, '')
+    // Stored relative to the notebook's own root, not the whole source's — so the location stays correct
+    // if the notebook is moved or copied intact (the browser itself still browses the whole source, since a
+    // template's own text has no path to reference and so there's no reason to restrict it further).
+    const absolute = browsePath.replace(/^\/+|\/+$/g, '')
+    const normalized = folderRelativeTo(notebook.folder, absolute)
     setBrowsing(false)
     if (locations.some((l) => l.path === normalized)) return
     persist([...locations, { id: randomId(), path: normalized, appliesTo: 'both' }])
@@ -135,12 +145,13 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
     if (!locations) return
     setError(null)
     // The cache (if this source has one) is wiped before the location itself is removed — asked for directly:
-    // "when removing a location, its cache should be wiped." A clear failure still goes ahead with the
-    // removal (shown as an error, not something that traps the person into being unable to drop a
-    // misconfigured or offline location).
+    // "when removing a location, its cache should be wiped." `location.path` is notebook-relative, but the
+    // cache lives at the source's own paths — resolved back before the call, the same as every other real
+    // use of a stored location's path. A clear failure still goes ahead with the removal (shown as an error,
+    // not something that traps the person into being unable to drop a misconfigured or offline location).
     if (source?.cache) {
       try {
-        await source.cache.clear(location.path)
+        await source.cache.clear(resolveFolderRelative(notebook.folder, location.path))
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e))
       }
@@ -153,8 +164,8 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
     setError(null)
     setNotice(null)
     try {
-      await source.cache.hardRefresh(location.path)
-      setNotice(`Refreshed the cache of /${location.path}.`)
+      await source.cache.hardRefresh(resolveFolderRelative(notebook.folder, location.path))
+      setNotice(`Refreshed the cache of ${displayLocation(location.path)}.`)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -242,9 +253,13 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
             <li key={location.id} className="window-item">
               <div className="window-item-row">
                 <span className="entry-name window-item-main">
-                  <Folder size={15} strokeWidth={2} aria-hidden="true" /> /{location.path}
+                  <Folder size={15} strokeWidth={2} aria-hidden="true" /> {displayLocation(location.path)}
                 </span>
-                <select value={location.appliesTo} onChange={(e) => setMode(location, e.target.value as CustomTextLocationMode)} aria-label={`What /${location.path} applies to`}>
+                <select
+                  value={location.appliesTo}
+                  onChange={(e) => setMode(location, e.target.value as CustomTextLocationMode)}
+                  aria-label={`What ${displayLocation(location.path)} applies to`}
+                >
                   {(Object.keys(MODE_LABEL) as CustomTextLocationMode[]).map((mode) => (
                     <option key={mode} value={mode}>
                       {MODE_LABEL[mode]}
@@ -255,9 +270,9 @@ export default function CustomTextLocationsModal({ notebook, onClose }: { notebo
                   {source?.cache && <IconButton icon={RefreshCw} label="Refresh its cache" onClick={() => refreshCache(location)} />}
                   <IconButton
                     icon={Trash2}
-                    label={`Remove /${location.path}`}
+                    label={`Remove ${displayLocation(location.path)}`}
                     onClick={async () => {
-                      if (await confirm(`Stop using /${location.path} as a custom-text location?${source?.cache ? ' Its cache is cleared too.' : ''}`)) removeLocation(location)
+                      if (await confirm(`Stop using ${displayLocation(location.path)} as a custom-text location?${source?.cache ? ' Its cache is cleared too.' : ''}`)) removeLocation(location)
                     }}
                   />
                 </span>

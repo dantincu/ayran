@@ -68,6 +68,7 @@ function TagModal({ title, submitLabel, initial, onSubmit, onClose, reorder }: T
     <Modal title={title} onClose={onClose}>
       <input
         autoFocus
+        className="field-leading"
         placeholder="tag text"
         value={text}
         onChange={(e) => setText(e.target.value)}

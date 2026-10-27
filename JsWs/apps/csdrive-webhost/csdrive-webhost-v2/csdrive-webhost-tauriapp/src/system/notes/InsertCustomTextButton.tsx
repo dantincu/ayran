@@ -57,7 +57,7 @@ export default function InsertCustomTextButton({
     setLocationPaths(null)
     setOpen(true)
     readCustomTextLocations(source, notebook!).then(
-      (locations) => setLocationPaths(pathsForMode(locations, 'itemName')),
+      (locations) => setLocationPaths(pathsForMode(locations, 'itemName', notebook!.folder)),
       () => setLocationPaths([]),
     )
   }

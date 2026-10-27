@@ -133,6 +133,22 @@ function applyOrder<T>(items: T[], getId: (item: T) => string, useCustom: boolea
   return ordered
 }
 
+/** An app-level row (the first drill-down level — one per distinct page, grouping every window of it) is
+ * derived from the `relativePath` on each window's own record, not a database row of its own — the same
+ * reason a root's own tags are kept under a synthesized guid rather than a real one (`rootTags.ts`'s own
+ * doc comment). `kind` is included even though a system app's `relativePath` (`system:<id>`) and a user
+ * app's (a plain file path) can never collide in practice — it keeps the two tag namespaces visually
+ * distinct and self-documenting, at no real cost. */
+function appTagGuid(kind: WindowKind, relativePath: string): string {
+  return `app:${kind}:${relativePath}`
+}
+
+/** The tags of every app-level row (one per distinct `relativePath`) among `records`. */
+async function fetchAppTags(records: SecondaryWindowRecord[], kind: WindowKind): Promise<TagRecord[]> {
+  const guids = new Set(records.map((r) => appTagGuid(kind, r.relativePath)))
+  return guids.size > 0 ? listTags(Array.from(guids)) : []
+}
+
 /** The tags of every root that the tabs of `records` show. */
 async function fetchRootTags(records: SecondaryWindowRecord[]): Promise<TagRecord[]> {
   const guids = new Set<string>()
@@ -667,6 +683,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   const [records, setRecords] = useState<SecondaryWindowRecord[]>([])
   const [catalog, setCatalog] = useState<SystemAppInfo[]>([])
   const [rootTags, setRootTags] = useState<TagRecord[]>([])
+  const [appTags, setAppTags] = useState<TagRecord[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -829,6 +846,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
       setRecords(list)
       setRecordsLoaded(true)
       setRootTags(await fetchRootTags(list))
+      setAppTags(await fetchAppTags(list, kind))
     } catch (e) {
       setError(String(e))
     } finally {
@@ -847,6 +865,14 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
   async function refreshRootTags() {
     try {
       setRootTags(await fetchRootTags(records))
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  async function refreshAppTags() {
+    try {
+      setAppTags(await fetchAppTags(records, kind))
     } catch (e) {
       setError(String(e))
     }
@@ -1170,6 +1196,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
     const state = (open: boolean) => (open ? 'Open' : 'Suspended')
     if (key.kind === 'app') {
       const group = apps.find((g) => g.relativePath === key.path)
+      const guid = appTagGuid(kind, key.path)
       return {
         title: 'App details',
         fields: [
@@ -1177,6 +1204,7 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
           { label: 'Page', value: key.path, mono: true },
           { label: 'Windows', value: String(group?.windows.length ?? 0), copy: false },
         ],
+        tags: { guid, tags: appTags.filter((t) => t.guid === guid), onChanged: refreshAppTags },
       }
     }
     if (key.kind === 'window') {
@@ -1417,6 +1445,13 @@ export default function AppsTab({ kind }: { kind: WindowKind }) {
                       />
                     </div>
                   </div>
+                  <TagList
+                    guid={appTagGuid(kind, g.relativePath)}
+                    tags={appTags.filter((t) => t.guid === appTagGuid(kind, g.relativePath))}
+                    className="window-item-tags"
+                    onChanged={refreshAppTags}
+                    onError={setError}
+                  />
                 </div>
               )}
             />

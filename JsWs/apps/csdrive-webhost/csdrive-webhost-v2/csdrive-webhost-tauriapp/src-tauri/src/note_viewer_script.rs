@@ -115,6 +115,24 @@ fn folder_of(path: &str) -> String {
     path.trim_start_matches('/').rsplit_once('/').map(|(dir, _)| dir.to_string()).unwrap_or_default()
 }
 
+/// Resolves `relative` (which may begin with one or more `../` segments) against `base_folder`, back to a
+/// path from the storage's own root — the Rust counterpart of the frontend's `resolveFolderRelative`
+/// (`lib/relativePath.ts`): the viewer script's own `Path` is now stored relative to the *notebook's* own
+/// root folder, not the source's, so this is needed before reading the real file.
+fn resolve_folder_relative(base_folder: &str, relative: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in base_folder.split('/').chain(relative.split('/')) {
+        match part {
+            "" | "." => continue,
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    parts.join("/")
+}
+
 /// The notebook's own viewer script to inject for a page at `storage`/`root`/`filen`/`path` (the same four
 /// a `TabInitResponse` already carries), if there is a listed notebook containing it and it has one
 /// configured. Never an error: a missing or unreadable script, or no containing notebook at all, is simply
@@ -141,7 +159,14 @@ pub(crate) async fn snippet_for(app: &AppHandle, pool: &SqlitePool, storage: &st
     let config_text = String::from_utf8(read_from_source(app, &notebook_source_id, &config_path).await.ok()?).ok()?;
     let script_ref = serde_json::from_str::<ScriptFile>(&config_text).ok()?.script?;
 
-    let code = String::from_utf8(read_from_source(app, &script_ref.source_id, &script_ref.path).await.ok()?).ok()?;
+    // The script's own `Path` is relative to the *notebook's* own root folder only when it's genuinely in
+    // the same source as the notebook (`NoteViewerScriptModal.tsx`'s own `choose` writes it the identical
+    // way) — a script in a different source has no meaningful "relative to this notebook" address, and
+    // keeps the plain, source-root-absolute form it always had.
+    let resolved_path =
+        if script_ref.source_id == notebook_source_id { resolve_folder_relative(&notebook_folder, &script_ref.path) } else { script_ref.path.clone() };
+
+    let code = String::from_utf8(read_from_source(app, &script_ref.source_id, &resolved_path).await.ok()?).ok()?;
     Some(CodeSnippet { code, kind: SnippetType::Javascript })
 }
 
@@ -173,6 +198,16 @@ mod tests {
     fn a_different_source_never_matches() {
         let list = vec![entry("filen:1", "")];
         assert_eq!(pick_notebook(&list, "local:user", "anything.md"), None);
+    }
+
+    #[test]
+    fn resolve_folder_relative_handles_plain_dotdot_and_empty_segments() {
+        assert_eq!(resolve_folder_relative("nb", "scripts"), "nb/scripts");
+        assert_eq!(resolve_folder_relative("nb/deep", "../scripts"), "nb/scripts");
+        assert_eq!(resolve_folder_relative("nb", "../outside"), "outside");
+        assert_eq!(resolve_folder_relative("nb", ""), "nb");
+        assert_eq!(resolve_folder_relative("", "scripts"), "scripts");
+        assert_eq!(resolve_folder_relative("nb", "."), "nb");
     }
 
     #[test]
