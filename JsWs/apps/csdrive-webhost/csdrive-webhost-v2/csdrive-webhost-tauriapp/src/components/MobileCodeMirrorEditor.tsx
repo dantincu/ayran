@@ -252,6 +252,9 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
       view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text }, selection: { anchor: sel.from + (caretOffset ?? text.length) } })
       view.focus()
     },
+    focus() {
+      viewRef.current?.focus()
+    },
   }))
 
   function openLinkAtCursor() {

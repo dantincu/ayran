@@ -114,6 +114,7 @@ The popover is as tall as the screen allows; the list scrolls (vertically, insid
 | **Tab** | In a file or note editor: inserts one tab-unit of indentation at the caret (a real tab or a number of spaces — Settings' "Text editors" section decides), or, with more than one line selected, indents every line the selection touches. |
 | **Shift+Tab** | In a file or note editor: **outdents** — removes one tab-unit's worth of leading whitespace from the line the caret is on, or from every line the selection touches. |
 | **Page Down** / **Page Up** | In a file or note editor: moves the caret down / up by one screenful of lines and pages the view with it (**Shift** extends the selection instead of moving the caret). |
+| **Alt+J** | On a page that has a file or note editor, with the focus **outside** it (a toolbar button, a text box elsewhere on the page, nowhere at all…): gives the editor the focus. Ignored while a dialog is open over the page, and while the editor already has the focus. |
 
 ## Text boxes and editors — select, copy, paste
 
@@ -156,5 +157,5 @@ One press on a picture (or on a playing video) hides or brings back the bars. Th
 ## Keeping this list right
 
 The shortcuts are defined in code — `src/lib/keyboard.ts` (the list keys), `src/lib/chords.ts` and `src/components/ChordHost.tsx` (the two-key
-shortcuts), `src/components/Pagination.tsx` — and described for developers in the "Keyboard" section of `CLAUDE.md`. **A new shortcut is added to this list in the
-same change.**
+shortcuts), `src/components/Pagination.tsx`, `src/components/CodeEditor.tsx` (Alt+J, giving an editor the focus) — and described for developers in
+the "Keyboard" section of `CLAUDE.md`. **A new shortcut is added to this list in the same change.**

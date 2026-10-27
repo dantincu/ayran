@@ -1,4 +1,17 @@
-import { forwardRef, lazy, Suspense, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import {
+  forwardRef,
+  lazy,
+  Suspense,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type ForwardedRef,
+  type ReactNode,
+} from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { Braces, ImagePlus, Redo2, Search, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
@@ -12,6 +25,7 @@ import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
+import { overlayOpen } from '../lib/keyboard'
 import {
   carryForwardRows,
   computeRowsPerLine,
@@ -106,6 +120,9 @@ interface Props {
  * snippet with a placeholder to type over next), not always at its tail. */
 export interface CodeEditorHandle {
   insertAtCursor: (text: string, caretOffset?: number) => void
+  /** Gives the editor's own real focus — asked for directly: "when the editor is not focused, pressing
+   * Alt+J focuses the editor" (`useEditorFocusShortcut`, below). */
+  focus: () => void
 }
 
 /** A genuinely exact (never approximate) highlight result and what it was computed for — see
@@ -1088,6 +1105,9 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
       applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: caret, end: caret })
       input?.focus()
     },
+    focus() {
+      inputRef.current?.focus()
+    },
   }))
 
   const focused = () => document.activeElement === inputRef.current
@@ -1479,6 +1499,9 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
       applyEdit({ value: value.slice(0, start) + text + value.slice(end), start: caret, end: caret })
       input?.focus()
     },
+    focus() {
+      inputRef.current?.focus()
+    },
   }))
 
   const step = (direction: 'undo' | 'redo') => {
@@ -1650,6 +1673,38 @@ const ThirdPartyEditor = isMobile
   ? lazy(() => import('./MobileCodeMirrorEditor'))
   : lazy(() => import('./MonacoCodeEditor'))
 
+/** Alt+J, with the real DOM focus currently *outside* any editor on the page, gives this one the focus —
+ * asked for directly: "when the editor is not focused, pressing Alt+J focuses the editor." A plain, window-
+ * level `keydown` listener (bubble phase — nothing else on the bubble phase claims a bare Alt+J, so there's
+ * no ordering fragility to guard against the way `buttonRowKeyboard.ts`'s own doc comment warns about for
+ * *its* Alt+J): `useButtonRowKeyboard` (`ChordHost.tsx`, mounted once per page) already owns Alt+J for "the
+ * keyboard-focused list item's own row of action buttons," on the *capture* phase, so it always gets first
+ * look — but it only calls `preventDefault()` once it actually finds a row to focus, and an editor page never
+ * shows a list with a keyboard-focused item at the same time as the editor itself (opening the editor
+ * replaces the listing outright — CLAUDE.md's "Text editors are now dedicated pages, not popups"), so the two
+ * features never genuinely compete: checking `e.defaultPrevented` here is what lets this one fall through
+ * cleanly on every page that doesn't have a focused list item, with no special-casing needed either way.
+ * `overlayOpen()` keeps a modal's own content in charge of Alt+J while one is open, rather than reaching
+ * through to an editor sitting behind it; checking `document.activeElement` against the one wrapper class
+ * every editor implementation shares (`.code-editor-wrap`) is what "not focused" means, generically, with no
+ * per-implementation "am I focused" method needed beyond the `focus()` already on `CodeEditorHandle`. */
+function useEditorFocusShortcut(ref: ForwardedRef<CodeEditorHandle>) {
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) return
+      if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || e.key.toLowerCase() !== 'j') return
+      if (overlayOpen()) return
+      if (document.activeElement?.closest('.code-editor-wrap')) return
+      const handle = typeof ref === 'object' && ref !== null ? ref.current : null
+      if (!handle) return
+      e.preventDefault()
+      handle.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [ref])
+}
+
 /** The one text editor of the app's file views — a thin wrapper that reads `editor.useBuiltInEditor` and
  * `editor.highlightDisabled` (`lib/editorSettings.ts`) and mounts one of three implementations: this app's
  * own `HighlightedEditor`/`PlainTextEditor` (opt-in, `useBuiltInEditor` on) or `ThirdPartyEditor` (the
@@ -1671,6 +1726,7 @@ const ThirdPartyEditor = isMobile
 const CodeEditor = forwardRef<CodeEditorHandle, Props>(function CodeEditor(props, ref) {
   const [settings, setSettings] = useState<EditorSettings | null>(null)
   useEffect(() => subscribeEditorSettings(setSettings), [])
+  useEditorFocusShortcut(ref)
   // Reported live, for the Note Files Explorer's own "New file" (its `window.prompt` for the name pauses the
   // page and hands real OS focus to the separate prompt window — see CLAUDE.md's "Prompts and windows" — and
   // nothing ever asked for it back once the prompt closed and this editor took its place) and, separately, for

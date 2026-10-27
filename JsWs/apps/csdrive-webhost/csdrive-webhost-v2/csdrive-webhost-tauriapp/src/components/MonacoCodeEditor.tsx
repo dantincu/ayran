@@ -593,6 +593,9 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       editor.focus()
       if (caretOffset !== undefined) editor.setPosition(model.getPositionAt(start + caretOffset))
     },
+    focus() {
+      editorRef.current?.focus()
+    },
   }))
 
   return (
