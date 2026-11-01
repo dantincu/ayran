@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
-import { Braces, Clipboard, ClipboardPaste, ExternalLink, ImagePlus, Link2, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
+import { Braces, Clipboard, ClipboardPaste, ExternalLink, ImagePlus, Indent, Link2, Outdent, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
 import * as monaco from 'monaco-editor/editor/editor.api'
 import 'monaco-editor/languages/definitions/javascript/register.js'
 import 'monaco-editor/languages/definitions/css/register.js'
@@ -40,6 +40,7 @@ import MoreMenuButton from './MoreMenuButton'
 import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
+import { applyQuoteLevel } from '../lib/editorQuote'
 import { selectParagraphs } from '../lib/paragraphs'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
@@ -174,6 +175,30 @@ function moveWord(editor: monaco.editor.IStandaloneCodeEditor, direction: 'left'
     editor.setPosition(to)
   }
   editor.revealPosition(to)
+}
+
+/** Increase/decrease the blockquote level of the selected (or current) lines — item 4 of the todo, the Monaco
+ * equivalent of `CodeEditor.tsx`'s own `quoteLevel`. `applyQuoteLevel` (`lib/editorQuote.ts`) always works on
+ * whole lines, so its own `rangeStart`/`rangeEnd` are exactly the `Range` to replace — the same "convert pure
+ * character offsets to a `Range` only here" shape `submitLink`/`insertAtCursor` already use, so the edit lands
+ * as a real step of Monaco's own undo stack and the selection follows it afterward. */
+function applyQuoteLevelInMonaco(editor: monaco.editor.IStandaloneCodeEditor, decrease: boolean): void {
+  const model = editor.getModel()
+  const sel = editor.getSelection()
+  if (!model || !sel) return
+  const text = editor.getValue()
+  const start = model.getOffsetAt(sel.getStartPosition())
+  const end = model.getOffsetAt(sel.getEndPosition())
+  const edit = applyQuoteLevel(text, start, end, decrease)
+  const rangeStartPos = model.getPositionAt(edit.rangeStart)
+  const rangeEndPos = model.getPositionAt(edit.rangeEnd)
+  editor.executeEdits('csdrive.quoteLevel', [
+    { range: new monaco.Range(rangeStartPos.lineNumber, rangeStartPos.column, rangeEndPos.lineNumber, rangeEndPos.column), text: edit.replacement },
+  ])
+  const startPos = model.getPositionAt(edit.start)
+  const endPos = model.getPositionAt(edit.end)
+  editor.setSelection(new monaco.Selection(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column))
+  editor.revealRange(new monaco.Range(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column))
 }
 
 interface Props {
@@ -519,6 +544,16 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
         editor.executeEdits('csdrive.pasteFromAppClipboard', [{ range: sel, text }])
       },
     })
+    const increaseQuoteLevelAction = editor.addAction({
+      id: 'csdrive.increaseQuoteLevel',
+      label: 'Increase the quote level',
+      run: () => applyQuoteLevelInMonaco(editor, false),
+    })
+    const decreaseQuoteLevelAction = editor.addAction({
+      id: 'csdrive.decreaseQuoteLevel',
+      label: 'Decrease the quote level',
+      run: () => applyQuoteLevelInMonaco(editor, true),
+    })
     return () => {
       changeSub.dispose()
       scrollSub.dispose()
@@ -527,6 +562,8 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
       selectParagraphsAction.dispose()
       copyToAppClipboardAction.dispose()
       pasteFromAppClipboardAction.dispose()
+      increaseQuoteLevelAction.dispose()
+      decreaseQuoteLevelAction.dispose()
       wordNavActions.forEach((a) => a.dispose())
       nudgeActions.forEach((a) => a.dispose())
       editor.dispose()
@@ -643,6 +680,12 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
               {onOpenLink && (
                 <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={() => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null)} />
               )}
+            </>
+          )}
+          {effectiveLanguage === 'markdown' && (
+            <>
+              <IconButton icon={Indent} label="Increase the quote level" onClick={() => editorRef.current?.trigger('', 'csdrive.increaseQuoteLevel', null)} />
+              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => editorRef.current?.trigger('', 'csdrive.decreaseQuoteLevel', null)} />
             </>
           )}
           {extra}

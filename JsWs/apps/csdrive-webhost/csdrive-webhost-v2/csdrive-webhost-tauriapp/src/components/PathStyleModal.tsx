@@ -17,8 +17,16 @@ export default function PathStyleModal({
 }) {
   return (
     <Modal title="Insert this path" onClose={onClose}>
-      <div className="dialog-actions" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
-        <button type="button" onClick={() => onPick(relative)}>
+      {/* `data-primary-actions` (`lib/buttonRowKeyboard.ts`) is what makes these three buttons a recognized
+       * "row of buttons" — Left/Right/Home/End/Page Up/Page Down and the Alt+N/P/./,/]/['/; fast-nav moves
+       * already apply to *any* row matching that marker, with no keyboard handling of its own needed here
+       * (item 2 of the todo). Without the marker, an unmounted modal's buttons were only ever reached by
+       * Alt+Shift+J's own "first enabled button" fallback — which focuses one, but `currentRow()` then finds
+       * no row to navigate *within*, since a plain, unmarked `.dialog-actions` matches none of `ROW_SELECTOR`.
+       * `autoFocus` on the first button means the row is already usable the instant the modal opens, not only
+       * once Alt+Shift+J is pressed by hand. */}
+      <div className="dialog-actions" data-primary-actions style={{ flexDirection: 'column', alignItems: 'stretch', gap: 8 }}>
+        <button type="button" autoFocus onClick={() => onPick(relative)}>
           Relative — <code>{relative}</code>
         </button>
         <button type="button" onClick={() => onPick(absolute)}>

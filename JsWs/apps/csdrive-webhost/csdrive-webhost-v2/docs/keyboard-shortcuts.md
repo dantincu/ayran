@@ -154,8 +154,26 @@ One press on a picture (or on a playing video) hides or brings back the bars. Th
 | **Ctrl+Alt+↑** / **Ctrl+Alt+↓** | On a note's editing page: nudges the scroll of its **syncing web app** (open in a window of its own) up / down a little, without leaving the editor. Settings → "Editor ↔ syncing web app" has a checkbox for this. |
 | **Ctrl+Alt+Page Up** / **Ctrl+Alt+Page Down** | The same, by almost a screenful. |
 
+## "Insert custom text…" and "Create image from the clipboard…" (the notebook-scoped three-dots menu)
+
+Both popups' own browsing list is navigable with the keyboard (arrows, Home/End, Page Up/Page Down, the
+fast-nav Alt+ combinations) the instant either one opens — but **not while a text box inside the popup has
+the focus**: those keys are left to the box itself (moving the caret, selecting text), the same as any other
+text box in the app.
+
+| Keys | What it does |
+| --- | --- |
+| **Ctrl+S** | "Insert custom text…": moves the focus to the **search box**. |
+| **Ctrl+Enter** | "Insert custom text…", browsing a notebook: switches between its **notebooks** list and its **notes** list. |
+| **Ctrl+N** | "Create image from the clipboard…": moves the focus to the **file name** box. |
+| **Alt+J** | In the popup that asks for a snippet's own variables (after picking one with at least one `{name}` in it): with no text box in it already focused, focuses the **first** variable's own box — already focused the moment the popup opens. |
+| **Enter** | In "Create image from the clipboard…"'s own file name box: the same as pressing **Create**. |
+
 ## Keeping this list right
 
-The shortcuts are defined in code — `src/lib/keyboard.ts` (the list keys), `src/lib/chords.ts` and `src/components/ChordHost.tsx` (the two-key
-shortcuts), `src/components/Pagination.tsx`, `src/components/CodeEditor.tsx` (Alt+J, giving an editor the focus) — and described for developers in
-the "Keyboard" section of `CLAUDE.md`. **A new shortcut is added to this list in the same change.**
+The shortcuts are defined in code — `src/lib/keyboard.ts` (the list keys, and `useModalListKeyboard`'s own
+Ctrl+S/Ctrl+Enter), `src/lib/chords.ts` and `src/components/ChordHost.tsx` (the two-key shortcuts),
+`src/components/Pagination.tsx`, `src/components/CodeEditor.tsx` (Alt+J, giving an editor the focus),
+`src/system/notes/InsertCustomTextModal.tsx` (its own Alt+J, scoped to the variable-filling popup) and
+`src/system/notes/CreateImageFromClipboardModal.tsx` (Ctrl+N) — and described for developers in the
+"Keyboard" section of `CLAUDE.md`. **A new shortcut is added to this list in the same change.**

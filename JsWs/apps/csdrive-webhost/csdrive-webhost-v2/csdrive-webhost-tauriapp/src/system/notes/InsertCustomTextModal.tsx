@@ -4,7 +4,7 @@ import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
 import Pagination from '../../components/Pagination'
 import { getAppState, setAppState } from '../../lib/appState'
-import { kbdItem, useModalListKeyboard } from '../../lib/keyboard'
+import { isTypingTarget, kbdItem, useModalListKeyboard } from '../../lib/keyboard'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { offsetOfPage, pageOfOffset, validOffset } from '../../lib/pagedPosition'
 import { buildCustomTextHierarchy, filterHierarchyLevel, type HierarchyFile, type HierarchyLevel, type HierarchySource } from '../../lib/customTextHierarchy'
@@ -435,6 +435,11 @@ function VariableFormModal({
   onCancel: () => void
 }) {
   const [values, setValues] = useState<Record<string, string> | null>(null)
+  // Wraps whichever element is the *first* variable's own field (an `<input>` or a `<textarea>`, decided per
+  // variable by `v.multiline` — two different element types, so one typed ref can't target either directly
+  // without a widening TS would refuse; a ref on the `<label>` around it and a `querySelector` inside it is
+  // simpler than fighting that). Item 1 of the todo: autofocus on open, and Alt+J to get back to it.
+  const firstFieldWrapperRef = useRef<HTMLLabelElement>(null)
 
   useEffect(() => {
     let alive = true
@@ -448,6 +453,22 @@ function VariableFormModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity])
 
+  // Alt+J, with no textbox currently focused, focuses the first variable's own field — the same "give it back
+  // the focus" shape `CodeEditor.tsx`'s own Alt+J already uses for an editor, scoped to this modal's own
+  // fields instead: nothing else here (Insert/Cancel) is a typing target, so "no textbox focused" is simply
+  // "none of this form's own fields already has the focus" in practice.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) return
+      if (!e.altKey || e.shiftKey || e.ctrlKey || e.metaKey || e.key.toLowerCase() !== 'j') return
+      if (isTypingTarget(document.activeElement)) return
+      e.preventDefault()
+      firstFieldWrapperRef.current?.querySelector<HTMLInputElement | HTMLTextAreaElement>('input, textarea')?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   if (!values) return null
 
   return (
@@ -458,13 +479,24 @@ function VariableFormModal({
           onSubmit(values)
         }}
       >
-        {variables.map((v) => (
-          <label key={v.name} className="notes-field notes-field-leading">
+        {variables.map((v, i) => (
+          <label key={v.name} className="notes-field notes-field-leading" ref={i === 0 ? firstFieldWrapperRef : undefined}>
             <span>{v.name}</span>
             {v.multiline ? (
-              <textarea rows={4} value={values[v.name] ?? ''} onChange={(e) => setValues({ ...values, [v.name]: e.target.value })} aria-label={v.name} />
+              <textarea
+                autoFocus={i === 0}
+                rows={4}
+                value={values[v.name] ?? ''}
+                onChange={(e) => setValues({ ...values, [v.name]: e.target.value })}
+                aria-label={v.name}
+              />
             ) : (
-              <input value={values[v.name] ?? ''} onChange={(e) => setValues({ ...values, [v.name]: e.target.value })} aria-label={v.name} />
+              <input
+                autoFocus={i === 0}
+                value={values[v.name] ?? ''}
+                onChange={(e) => setValues({ ...values, [v.name]: e.target.value })}
+                aria-label={v.name}
+              />
             )}
           </label>
         ))}

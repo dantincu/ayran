@@ -188,11 +188,17 @@ export interface ModalListKeyboard extends ListKeyboard {
  * because the list IS the modal's own content, not a background page one just opened on top of:
  * - **Never suppressed by `overlayOpen()`** — that check exists so a *background* list stops responding the
  *   moment something opens over it; a modal's own list is the thing that opened, not what got covered.
- * - **Never suppressed by `isTypingTarget()`** — asked for directly: these two modals have a search box, and
- *   the list should stay navigable by keyboard *while* that box has the focus, not only once it's blurred.
- *   A plain character typed there is untouched either way — only the specific keys this module already
- *   claims (the arrows, Home/End, Page Up/Down, Enter, the fast-nav Alt+ combinations) are intercepted, and
- *   none of those insert text into a box to begin with.
+ * - **`isTypingTarget()` *is* still checked here, but only around the list-navigation itself, not the two
+ *   shortcuts below.** Asked for directly, reversing an earlier choice: both modals have a search box, and a
+ *   first version left the list's own arrow/Home/End/Page keys live even while that box (or a variable's own
+ *   text box, in "Insert custom text") had the focus — which turned out to fight the person typing: Home/End/
+ *   the arrow keys are also how text is edited and moved around *inside* a box, and a modal that steals them
+ *   for the list instead makes the box itself impossible to navigate normally. So a typing target now blocks
+ *   `applyListKeyboardKey` exactly the way `useListKeyboard`'s own does — but `onFocusSearch`/`onToggleView`
+ *   (Ctrl+S, Ctrl+Enter) are checked *before* that gate, since jumping to a different field, or switching the
+ *   view, is something a person reasonably does *from inside* a box they're already typing in (Ctrl+S to leave
+ *   a filled-in search box isn't "typing" the letter S into it, it's a chord no text box would ever treat as
+ *   ordinary input, exactly like `isShortcut`'s own Ctrl-qualified check already guarantees).
  *
  * `onToggleView`/`onFocusSearch` are two more modal-only shortcuts, Ctrl+Enter and Ctrl+S — checked before
  * the shared arrow/page logic so they can't be shadowed by it (`isShortcut(e, 'enter')` reads `e.key` the
@@ -215,6 +221,7 @@ export function useModalListKeyboard(options: ModalListKeyboard) {
         onToggleView()
         return
       }
+      if (isTypingTarget(e.target)) return
       applyListKeyboardKey(e, latest.current)
     }
     window.addEventListener('keydown', onKeyDown)

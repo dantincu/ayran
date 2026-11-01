@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { File as FileIcon, Folder } from 'lucide-react'
 import Modal from '../../components/Modal'
 import IconButton from '../../components/IconButton'
@@ -6,7 +6,7 @@ import Pagination from '../../components/Pagination'
 import { confirm } from '../../lib/dialogs'
 import { readOsClipboardImage } from '../../lib/clipboard'
 import { getAppState, setAppState } from '../../lib/appState'
-import { kbdItem, useModalListKeyboard } from '../../lib/keyboard'
+import { isShortcut, kbdItem, useModalListKeyboard } from '../../lib/keyboard'
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { offsetOfPage, pageOfOffset, validOffset } from '../../lib/pagedPosition'
 import type { DirListing, FileSource } from './sources'
@@ -78,10 +78,27 @@ export default function CreateImageFromClipboardModal({
   // The keyboard's own focus — a global index into `listing.entries`; navigable the instant the modal opens,
   // the keys heard on the whole window (`useModalListKeyboard`), item 1 of the todo.
   const [kbdFocus, setKbdFocus] = useState(-1)
+  const nameInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     getPagePageSize(PAGE_IDS.notesCreateImageFromClipboard, getGlobalPageSize).then(setPageSizeState, () => {})
   }, [])
+
+  // Ctrl+N focuses the name box — the mirror of "Insert custom text"'s own Ctrl+S for its search box (item 3
+  // of the todo; the person's own first suggestion, Ctrl+K, T, already names the admin-app's tab switcher, so
+  // this is a plain Ctrl+<letter> instead, the same shape Ctrl+S already uses in the sibling modal). Only
+  // meaningful once the name box actually exists (`stage === 'browsing'`); harmless otherwise, since the ref is
+  // then still null.
+  useEffect(() => {
+    if (stage !== 'browsing') return
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented || !isShortcut(e, 'n')) return
+      e.preventDefault()
+      nameInputRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [stage])
 
   // Reads the clipboard once, then where the browser was last left for this same file — in that order, since
   // there is nothing to browse to if the clipboard holds no image at all.
@@ -277,7 +294,7 @@ export default function CreateImageFromClipboardModal({
       >
         <label className="notes-field notes-field-leading">
           <span>Save the image here as</span>
-          <input autoFocus value={name} onChange={(e) => setName(e.target.value)} aria-label="File name" />
+          <input ref={nameInputRef} autoFocus value={name} onChange={(e) => setName(e.target.value)} aria-label="File name" />
         </label>
         {collides && <p className="error-banner">A file or folder named "{trimmedName}" already exists here.</p>}
         <div className="dialog-actions">

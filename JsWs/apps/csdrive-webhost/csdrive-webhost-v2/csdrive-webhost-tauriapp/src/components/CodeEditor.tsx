@@ -13,7 +13,7 @@ import {
   type ReactNode,
 } from 'react'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { Braces, ImagePlus, Redo2, Search, Undo2 } from 'lucide-react'
+import { Braces, ImagePlus, Indent, Outdent, Redo2, Search, Undo2 } from 'lucide-react'
 import IconButton from './IconButton'
 import MoreMenuButton from './MoreMenuButton'
 import FindBar from './FindBar'
@@ -23,6 +23,7 @@ import { highlight, languageOf, type Language } from '../lib/highlight'
 import { HighlightScheduler } from '../lib/highlightScheduler'
 import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
 import { applyTab, indentUnit } from '../lib/editorIndent'
+import { applyQuoteLevel } from '../lib/editorQuote'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
 import { overlayOpen } from '../lib/keyboard'
@@ -1132,6 +1133,18 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
     focused,
   )
 
+  // Increase/decrease the quote level of the selected (or current) lines — item 4 of the todo, markdown
+  // files only (`effectiveLanguage === 'markdown'` gates the two toolbar buttons below, the same way every
+  // other markdown-only action in this editor is gated by what the file actually is, not by anything the
+  // caller has to opt into). `applyQuoteLevel` (`lib/editorQuote.ts`) always works on whole lines, so there's
+  // no single-line "replace the selection" special case to handle here, unlike Tab's own `applyTab`.
+  function quoteLevel(decrease: boolean) {
+    const input = inputRef.current
+    if (!input) return
+    const edit = applyQuoteLevel(value, input.selectionStart, input.selectionEnd, decrease)
+    applyEdit({ value: value.slice(0, edit.rangeStart) + edit.replacement + value.slice(edit.rangeEnd), start: edit.start, end: edit.end })
+  }
+
   const h = history.current!
   const gutterDigits = Math.max(2, String(lineCount).length)
   return (
@@ -1156,6 +1169,12 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
               label="Find (Ctrl+F)"
               onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
             />
+          )}
+          {effectiveLanguage === 'markdown' && (
+            <>
+              <IconButton icon={Indent} label="Increase the quote level" onClick={() => quoteLevel(false)} onMouseDown={(e) => e.preventDefault()} />
+              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => quoteLevel(true)} onMouseDown={(e) => e.preventDefault()} />
+            </>
           )}
           {/* Reserves room for TextFieldMenu's own clipboard button (and, in Notes, the User Action pair beside it) to sit
               in, instead of floating over the top-right corner of the text — which used to cover whatever happened to be
@@ -1405,9 +1424,13 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
  * implementations below are the same logic `HighlightedEditor` uses, just without anything downstream that
  * depends on a window or a measured line. */
 const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEditor(
-  { value, onChange, onOpenLink, readOnly, onVisibleLineChange, onScrollNudge, notebookMenu },
+  { value, onChange, fileName, language, onOpenLink, readOnly, onVisibleLineChange, onScrollNudge, notebookMenu },
   ref,
 ) {
+  // Quote-level, item 4 of the todo, cares about the file's *language*, not whether it's coloured — a
+  // markdown file opened with "disable all code highlighting" on is still markdown, so this editor needs
+  // `effectiveLanguage` the same way `HighlightedEditor` does, even though it otherwise has no use for it.
+  const effectiveLanguage = language ?? languageOf(fileName)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const history = useRef<UndoHistory | null>(null)
   if (history.current === null) history.current = new UndoHistory(value)
@@ -1537,6 +1560,14 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
     focused,
   )
 
+  // Same as `HighlightedEditor`'s own `quoteLevel` — see its doc comment.
+  function quoteLevel(decrease: boolean) {
+    const input = inputRef.current
+    if (!input) return
+    const edit = applyQuoteLevel(value, input.selectionStart, input.selectionEnd, decrease)
+    applyEdit({ value: value.slice(0, edit.rangeStart) + edit.replacement + value.slice(edit.rangeEnd), start: edit.start, end: edit.end })
+  }
+
   // Mirror-scroll's own "the editor scrolled" half (`NoteEditPage.tsx`) — the textarea itself is the scrolling
   // element here (no outer frame to read from), otherwise identical to `HighlightedEditor`'s own version.
   function handleScroll() {
@@ -1577,6 +1608,12 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
               label="Find (Ctrl+F)"
               onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
             />
+          )}
+          {effectiveLanguage === 'markdown' && (
+            <>
+              <IconButton icon={Indent} label="Increase the quote level" onClick={() => quoteLevel(false)} onMouseDown={(e) => e.preventDefault()} />
+              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => quoteLevel(true)} onMouseDown={(e) => e.preventDefault()} />
+            </>
           )}
           <span className="code-editor-menu-slot" data-text-menu-target />
         </div>

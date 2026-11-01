@@ -3616,4 +3616,211 @@ and `...fffK:T+0200` → `"...-123+02:00"`; a negative offset (`T-0530`) renderi
 rendering `"+0000"`/`"+00:00"` through `KK`/`K`; and a date-math offset (`+1d`) combined with a `T<tz>`
 render (`KK`) still composing correctly (`"2026-10-27-123+0530"`), confirming the two independent segments —
 *which* date/time, and *how* to render its offset — are genuinely unaffected by each other after the fix.
+
+## A real CPU-spinning render loop in the Note Files Explorer, found live
+
+**Reported live: opening a window with a tab that lands on a Note Files Explorer made the machine's CPU work
+hard continuously, with the admin-app's own System Apps page stuck flashing "Loading…" every few seconds —
+reproduced with a folder holding exactly one file inside it, created through the app's own "New folder…"/
+"New file…" buttons** (not the native filesystem — the person's own correction, which mattered: the bug needs
+`NoteFilesPage.tsx`'s own `scope` prop to be passed down, which only happens on *this* code path). Root cause,
+in `NotesApp.tsx` (pre-existing code, not introduced this session): two effects depended on the *whole*
+`scope` object — but `NoteFilesPage.tsx` builds that object fresh, as a new literal, on **every render** of
+its own, so depending on it by reference meant depending on something that changes identity every single
+time regardless of whether anything it actually holds changed. The second of the two effects
+(`scope.onPlaceChange?.({...})`, reporting where the explorer is) made this a genuine infinite loop, not just
+redundant work: calling `onPlaceChange` (→ `setPlace` in `NoteFilesPage.tsx`) triggers a re-render there,
+which rebuilds `scope` as a new object, which re-triggers the effect in `NotesApp.tsx`, which calls
+`onPlaceChange` again — forever, with no natural end, pegging a CPU core and making the admin-app's own
+System Apps page (which polls window state while this is happening) look like it's stuck re-loading.
+
+**Fixed by depending on the specific, stable values actually used, not the object that wraps them**: the
+first effect's dependency array changed from `[scope, sourceId, path, pageId]` to
+`[!!scope, sourceId, path, pageId]` (the effect only ever branches on *whether* `scope` exists, never reads
+from it beyond that check); the second's from `[scope, path, currentPage, pageSize, restoringPage,
+editing?.path, viewer]` to `[scope?.onPlaceChange, path, currentPage, pageSize, restoringPage, editing?.path,
+viewer]` — `onPlaceChange` is `setPlace`, a `useState` setter, whose identity React guarantees is stable
+across renders, so depending on it directly (instead of the ever-fresh object it happens to be a property
+of) breaks the cycle at its root. Fixed in `NotesApp.tsx` rather than changing `NoteFilesPage.tsx` to memoize
+its own `scope` object — more robust, since it doesn't depend on every future caller remembering to memoize.
+
+Verified live (isolated data folder, desktop, real CDP, real Windows process CPU-time monitoring via
+`(Get-Process -Id <pid>).CPU` as the actual signal — JS-level `invoke` interception proved unreliable, since
+`secondaryWindows.ts` imports `invoke` as an ES module binding captured at import time, bypassing a later
+global monkey-patch; `window.__TAURI_INTERNALS__.invoke`, the lower-level bridge read fresh on every call, is
+what actually works for this): reproduced the exact scenario (a window with 3 tabs in 1 group, one tab
+landing on a Note Files Explorer for a folder with one file inside, both the folder and the file made through
+the app's own New Folder/New File buttons) against the pre-fix build — the process's own CPU time climbed
+continuously with the window just sitting open, untouched. Against the fixed build, the identical scenario
+left CPU time flat. Deployed to both this machine and the connected phone after the user re-tested and
+confirmed the fix themselves.
+
+## Alt+J focuses a page's own file or note editor, when it isn't already focused
+
+**A new feature, asked for directly: "For the pages that have text editors: when the editor is not focused,
+pressing Alt+J focuses the editor."** `CodeEditor.tsx`'s top-level `forwardRef` dispatcher — already the
+established place for cross-cutting editor behavior shared by all three real implementations
+(`HighlightedEditor`/`PlainTextEditor`, `MonacoCodeEditor.tsx`, `MobileCodeMirrorEditor.tsx`) — gained
+`useEditorFocusShortcut(ref)`: a plain bubble-phase `window` `keydown` listener for bare Alt+J (no Ctrl/Shift/
+Meta), skipped while `e.defaultPrevented`, while `overlayOpen()` (a dialog open over the page — the editor
+behind it isn't what Alt+J should reach), or while focus is **already** inside `.code-editor-wrap` (every one
+of the four editor surfaces shares this one wrapper class, so the check is written once, not per
+implementation) — otherwise it calls the already-existing `focus()` on the imperative handle.
+
+**`CodeEditorHandle` gained a `focus()` method**, alongside the pre-existing `insertAtCursor`, implemented
+identically in all four places: `inputRef.current?.focus()` for the two built-in editors,
+`editorRef.current?.focus()` for Monaco, `viewRef.current?.focus()` for CodeMirror.
+
+**Deliberately a different key *scope* from the two pre-existing Alt+J handlers** (`buttonRowKeyboard.ts`'s
+own global Alt+J — a list item's own row of action buttons — and the admin-app's row-of-buttons navigation),
+not a conflict with either: this one only ever acts once focus is confirmed to be *outside* every editor
+surface, and the other two have nothing to claim once a list item isn't what currently matters on an editor
+page — in practice the three simply never compete for the same keypress.
+
+Verified live (isolated **debug** data folder — a dedicated `WEBVIEW2_USER_DATA_FOLDER`/CDP port, desktop,
+real CDP `Input.dispatchKeyEvent`): with focus outside the editor (a toolbar button, or nothing), a real
+Alt+J moved real DOM focus into Monaco's own editing surface (`document.activeElement` landing inside
+`.monaco-editor-host`); the pre-existing, list-scoped Alt+J (focusing a keyboard-focused list item's own row
+of action buttons) was re-checked immediately after as a regression and still worked unchanged. `npx tsc
+--noEmit` and `npm run build` both clean; no Rust change. `docs/keyboard-shortcuts.md`'s "Dialogs, editors and
+text boxes" table and its own "Keeping this list right" file list were both updated in the same change.
+
+## Keyboard polish for "Insert custom text…" and "Create image from the clipboard…"
+
+Four items from a new todo file, the first three about the same two popups (see "A notebook's three-dots
+menu…" and "Custom-text follow-ups…" above for the feature itself).
+
+**1. Autofocus, and a modal-scoped Alt+J, for the variable-filling popup.** `VariableFormModal`
+(`InsertCustomTextModal.tsx`) — the small form that opens once a chosen snippet has at least one `{name}` in
+it — never autofocused anything, and had no way back to the first field once it lost focus. Fixed with a
+plain `i === 0` check across the `variables.map()` (`autoFocus={i === 0}`, on whichever of `<input>`/
+`<textarea>` that variable actually renders as) and a ref on the first field's own wrapping `<label>`
+(`firstFieldWrapperRef`, since the two branches are different element types a single typed ref can't target
+without TS refusing the widening) — a modal-scoped Alt+J handler, active only while no textbox in the modal
+already has the focus (`isTypingTarget(document.activeElement)`), calls `.focus()` on whatever `input,
+textarea` it finds inside that wrapper.
+
+**2a. Enter in "Create image from the clipboard…"'s own name box submits, the same as clicking Create** —
+resolved as a side effect of item 3's fix below, not a separate change: the name field already sits inside
+`<form onSubmit={...}>`, so once the list-navigation keys stop intercepting Enter while a textbox has the
+focus, the browser's own native "Enter submits a form with one text field" behavior reaches it unobstructed.
+**Verified by a different route than a literal click-through**: this sandbox's `Input.dispatchKeyEvent`
+(both `rawKeyDown` and `keyDown` forms) does not trigger a real WebView2 form's own native implicit
+submission at all — confirmed conclusively by reproducing the identical non-submission on a bare, completely
+app-independent `<form>` with one `<input>` and no app code involved, ruling out anything about this feature
+specifically. What *is* directly verified: a fresh `window`-level bubble listener, deliberately registered
+**after** `useModalListKeyboard`'s own (so it observes the event's final state, not an earlier phase) —
+confirmed `e.defaultPrevented` reads `false` for a real Enter keydown while the name field has focus, proving
+this app's own code never blocks the key; the remaining gap to an actual file-on-disk is a CDP/WebView2
+testing-tool limitation, not a functional one.
+
+**2b. "Insert this path" (relative/absolute/cancel) is now keyboard-navigable.** `PathStyleModal.tsx`'s own
+three-button `.dialog-actions` container gained `data-primary-actions` and the first button (`Relative`)
+gained `autoFocus` — nothing else needed: `lib/buttonRowKeyboard.ts`'s existing, generic row-of-buttons
+navigation (Left/Right/Home/End/Page Up/Page Down/the Alt+ fast-nav combinations) already applies to *any*
+element matching that marker, with zero bespoke keyboard code in this modal. (Within a vertically-stacked
+row like this one, the navigation axis is still Left/Right, not Up/Down — the same convention every other
+`[data-primary-actions]` toolbar in the app already uses, kept rather than special-cased so the two systems
+stay interchangeable.)
+
+**3. The listing-navigation keys no longer fight a focused text box, in either popup** — the opposite of an
+earlier choice in this same feature's own history, reversed on request ("I actually need the keyboard arrows
+and home and end keys to navigate the text from the textbox itself"). `useModalListKeyboard`
+(`lib/keyboard.ts`) now checks `isTypingTarget(e.target)` immediately before calling the shared
+`applyListKeyboardKey` — but **after** the `onFocusSearch`/`onToggleView` (Ctrl+S/Ctrl+Enter) checks, which
+stay reachable from inside a text box, the same way a Ctrl-qualified chord is never mistaken for ordinary
+typing. A new **Ctrl+N** (`CreateImageFromClipboardModal.tsx`) moves the focus to the name box — the mirror
+of the sibling modal's own Ctrl+S for its search box; the person's own suggestion, Ctrl+K, T, already names
+the admin-app's tab switcher, so a plain Ctrl+letter was used instead, matching the existing convention.
+
+Verified live (isolated **debug** data folder, desktop, real CDP, a real folder-based test notebook with a
+real `.txt` template containing a `{name}` variable, driven entirely through the real UI — `fs_mkdir`/
+`fs_write_file` to build the fixture, then real button clicks and `Input.dispatchKeyEvent` sequences, not
+direct backend shortcuts for the behavior itself): the variable popup opened with the name field already
+focused; blurring it and pressing a real Alt+J returned focus to it. In "Create image from the clipboard…"
+(the OS clipboard mocked via `navigator.clipboard.read` for a repeatable test image, since this sandbox has
+no real one): a real **End** keypress while the name field had focus moved the native text caret to the end
+of the typed name (`selectionStart` 5 → 27, matching the field's own length) rather than jumping the file
+list's own focus — confirming the typing-target guard, independent of the Enter-submission limitation noted
+above. In "Insert this path…", reached via "Insert a path…" on a real markdown file inside the test
+notebook: a real **ArrowRight** moved focus from "Relative" to "Absolute", **End** to "Cancel", **Home** back
+to "Relative", and **Alt+N** (fast-nav, +2) from "Relative" landed correctly clamped at "Cancel" (only 3
+buttons). `docs/keyboard-shortcuts.md` gained a new section, "'Insert custom text…' and 'Create image from
+the clipboard…'", documenting Ctrl+S, Ctrl+Enter (already shipped but previously undocumented), the new
+Ctrl+N, the new modal-scoped Alt+J, and the Enter-submits behavior — plus the module's own doc comment in
+`lib/keyboard.ts` was corrected to describe the reversed (now typing-target-gated) behavior accurately. `npm
+run build` clean; no Rust change.
+
+## Markdown editors: increase/decrease the quote (blockquote) level
+
+**Item 4 of the same todo file: "For markdown editors let's add options to increase/decrease levels of
+quoted text."** `lib/editorQuote.ts` (new, pure, no DOM — Node-tested the same ad-hoc way every module of
+this shape in this app already is) is the blockquote counterpart of `editorIndent.ts`'s own `applyTab`, but
+simpler: a `>` marker always belongs at a line's own *start*, never wherever the caret happens to sit within
+it, so — unlike `applyTab`'s "replace the selection at the caret" special case for a single-line, collapsed
+selection — `applyQuoteLevel` always works on **whole lines**, for both directions alike. Increasing always
+prepends `"> "` to every line the selection touches (so quoting twice reads as `"> > text"`, itself valid
+nested-blockquote markdown, not the more compact `">> text"` this never produces); decreasing removes **one**
+leading `>` — its own one trailing space too, if there is one — from whichever touched lines actually have
+one, leaving the rest exactly as they are, the same per-line independence `applyTab`'s own outdent already
+has; it correctly unwinds one level from either compact (`">> text"`) or spaced (`"> > text"`) nesting. The
+function returns `{ rangeStart, rangeEnd, replacement, start, end }` rather than the whole new document
+string — the exact span to replace and what to replace it with — so none of its three callers has to re-derive
+line boundaries independently (a real risk of the three implementations' own math quietly drifting apart).
+
+**All three real editor implementations get two new toolbar buttons — "Increase the quote level" / "Decrease
+the quote level" (`Indent`/`Outdent` icons) — shown only when the file's own language is markdown**
+(`effectiveLanguage === 'markdown'`, computed exactly as `HighlightedEditor` already does; `PlainTextEditor`
+gained the same computation even though it otherwise has no use for `fileName`/`language` at all, since a
+markdown file opened with "disable all code highlighting" on is still markdown — the structural feature has
+nothing to do with syntax coloring). Placed outside the existing `notebookMenu ? ... : ...` branching (unlike
+Select-paragraphs/Open-link/Edit-link, this isn't notebook-specific, so it applies identically whichever
+branch is showing), right before the reserved `TextFieldMenu` slot:
+- **`HighlightedEditor`/`PlainTextEditor`** (`CodeEditor.tsx`): a plain `quoteLevel(decrease)` function reads
+  `inputRef.current.selectionStart/selectionEnd`, calls `applyQuoteLevel`, and feeds the result through the
+  same `applyEdit` every other edit in these two components already goes through — so it's one step of the
+  editor's own undo history, Ctrl+Z included, for free. The buttons carry `onMouseDown={(e) =>
+  e.preventDefault()}`, the same convention Undo/Redo already use, so clicking one never steals focus (and so
+  never disturbs the selection) from the real `<textarea>`.
+- **`MonacoCodeEditor.tsx`**: `applyQuoteLevelInMonaco(editor, decrease)` (a new top-level function, beside
+  `moveWord`) converts `applyQuoteLevel`'s `rangeStart`/`rangeEnd` to a `Range` via `model.getPositionAt` —
+  the identical "convert pure character offsets to Monaco's own coordinates only here" shape `submitLink`/
+  `insertAtCursor` already use — applies it through `executeEdits` (a real step of Monaco's own undo stack)
+  and sets the selection from the result's `start`/`end`, converted the same way *after* the edit has already
+  updated the model (so `getPositionAt` resolves against the new, not the old, text). Registered as two
+  `editor.addAction`s (`csdrive.increaseQuoteLevel`/`csdrive.decreaseQuoteLevel`), disposed alongside the
+  module's other actions.
+- **`MobileCodeMirrorEditor.tsx`**: `applyQuoteLevel`'s own `rangeStart`/`rangeEnd` are exactly the `{from,
+  to}` pair CodeMirror already addresses a change by, so `quoteLevel(decrease)` needs no position-type
+  conversion at all — `view.dispatch({ changes: { from: edit.rangeStart, to: edit.rangeEnd, insert:
+  edit.replacement }, selection: { anchor: edit.start, head: edit.end } })`, the identical shape `submitLink`'s
+  own CodeMirror counterpart already uses.
+
+Node-tested (`lib/editorQuote.ts`, an ad-hoc script matching this project's own established pattern): a
+single-line increase and its own caret placement; a single-line decrease; a no-op decrease on a line with no
+marker; a multi-line increase touching three lines from a selection that only partly covers the first and
+second; a mixed multi-line decrease (one quoted line, one not, each handled independently); two increases in
+a row producing the spaced-nested `"> > text"` form; one decrease correctly unwinding either the compact
+(`">> text"`) or the no-trailing-space (`">text"`) variant by exactly one level.
+
+**Verified live (isolated debug data folder, desktop, real CDP — and a real methodology pitfall worth
+recording for next time):** a naive first pass that clicked a button and read `textarea.value` *in the same
+synchronous script*, or chained two button clicks back-to-back with no settling time between them, produced
+confusing, seemingly-wrong results (an "increase" that looked like a no-op, a "decrease" that looked like it
+removed two levels at once) — not a bug in the feature, but `applyEdit`'s own deferred (`setTimeout(fn, 0)`)
+DOM-sync for the uncontrolled `<textarea>`, this file's own long-documented "every keystroke handler defers
+its own work" design, racing a same-tick readback. Resolved by giving each click its own, separately-issued
+CDP call with a real wait before reading the result — a fresh markdown file (`alpha\nbeta\ngamma\n`), driven
+through the real Monaco editor in the admin-app's Files tab: select-all + **Increase** settled to `"> alpha\n>
+beta\n> gamma\n"`; **Ctrl+A + Increase** again settled to `"> > alpha\n> > beta\n> > gamma\n"`; a real
+**Ctrl+Z** correctly reverted one step back to the single-quoted form, confirming the edit is a genuine step
+of Monaco's own undo stack; opening a plain `.txt` file in the same editor showed both buttons correctly
+absent. The same sequence (plain → increase → increase-again (nested) → decrease → decrease), each step on
+its own CDP call with a real settle, was repeated against the **built-in editor** (`editor.useBuiltInEditor`
+on) and produced the identical, byte-exact results at every step; the buttons were also confirmed present and
+functional with **`editor.highlightDisabled`** on (the `PlainTextEditor` path, confirming the feature is
+independent of syntax coloring, as designed). `npm run build` clean throughout; no Rust change, so `cargo
+test --lib` doesn't apply. **Not separately exercised live**: CodeMirror on Android — no emulator was booted
+for this pass; the wiring is a direct, type-checked mirror of the already-proven Monaco/built-in patterns,
+with nothing CodeMirror-specific left to get wrong differently.
 `npm run build` clean; no Rust change, so `cargo build`/`cargo test --lib` don't apply.

@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, type ReactNode } from 'react'
-import { Braces, Clipboard, ClipboardPaste, ExternalLink, ImagePlus, Link2, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
+import { Braces, Clipboard, ClipboardPaste, ExternalLink, ImagePlus, Indent, Link2, Outdent, Redo2, Search, TextCursorInput, Undo2 } from 'lucide-react'
 import { basicSetup, EditorView } from 'codemirror'
 import { Compartment, EditorState } from '@codemirror/state'
 import { highlightWhitespace, keymap } from '@codemirror/view'
@@ -17,6 +17,7 @@ import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
 import { selectParagraphs } from '../lib/paragraphs'
+import { applyQuoteLevel } from '../lib/editorQuote'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import type { CodeEditorHandle } from './CodeEditor'
@@ -320,6 +321,23 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
     view.dispatch({ changes: { from: sel.from, to: sel.to, insert: text } })
   }
 
+  /** Increase/decrease the blockquote level of the selected (or current) lines — item 4 of the todo, the
+   * CodeMirror equivalent of `CodeEditor.tsx`'s own `quoteLevel` and `MonacoCodeEditor.tsx`'s
+   * `applyQuoteLevelInMonaco`: `applyQuoteLevel`'s own `rangeStart`/`rangeEnd` are exactly the `{from, to}`
+   * CodeMirror already addresses a change by, so there's no position-type conversion needed here at all. */
+  function quoteLevel(decrease: boolean) {
+    const view = viewRef.current
+    if (!view) return
+    const sel = view.state.selection.main
+    const text = view.state.doc.toString()
+    const edit = applyQuoteLevel(text, sel.from, sel.to, decrease)
+    view.dispatch({
+      changes: { from: edit.rangeStart, to: edit.rangeEnd, insert: edit.replacement },
+      selection: { anchor: edit.start, head: edit.end },
+    })
+    view.focus()
+  }
+
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -350,6 +368,12 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
               <IconButton icon={Search} label="Find" onClick={() => viewRef.current && openSearchPanel(viewRef.current)} />
               {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
               {onOpenLink && <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={editOrInsertLink} />}
+            </>
+          )}
+          {effectiveLanguage === 'markdown' && (
+            <>
+              <IconButton icon={Indent} label="Increase the quote level" onClick={() => quoteLevel(false)} />
+              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => quoteLevel(true)} />
             </>
           )}
           {extra}
