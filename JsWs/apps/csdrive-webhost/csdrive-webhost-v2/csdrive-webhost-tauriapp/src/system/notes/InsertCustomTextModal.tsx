@@ -8,7 +8,7 @@ import { isTypingTarget, kbdItem, useModalListKeyboard } from '../../lib/keyboar
 import { DEFAULT_PAGE_SIZE, getGlobalPageSize, getPagePageSize, setPagePageSize, PAGE_IDS } from '../../lib/listPageSize'
 import { offsetOfPage, pageOfOffset, validOffset } from '../../lib/pagedPosition'
 import { buildCustomTextHierarchy, filterHierarchyLevel, type HierarchyFile, type HierarchyLevel, type HierarchySource } from '../../lib/customTextHierarchy'
-import { parseCustomTextTemplate, renderCustomTextTemplate, templateVariables, type CustomTextVariable } from '../../lib/customTextTemplate'
+import { generateUuid, parseCustomTextTemplate, renderCustomTextTemplate, templateVariables, type CustomTextVariable } from '../../lib/customTextTemplate'
 
 /** Where the browser's own navigation (its breadcrumb path, its search query, and the files table's own
  * page — as the number of records skipped, never a bare page number, `pagedPosition.ts` — "the current page
@@ -497,6 +497,13 @@ function VariableFormModal({
                 onChange={(e) => setValues({ ...values, [v.name]: e.target.value })}
                 aria-label={v.name}
               />
+            )}
+            {/* `{$uuid}`'s own "generate a new one" button — item 4 of the todo: "besides the uuid being
+                generated every time, let's add the possibility to edit this generated uuid... and a button
+                next to the textbox to generate a new uuid." Never shown for an ordinary variable (`v.default`
+                there is whatever the template's author typed, not something to roll a replacement for). */}
+            {v.generated && (
+              <IconButton icon={RefreshCw} label="Generate a new one" onClick={() => setValues({ ...values, [v.name]: generateUuid() })} />
             )}
           </label>
         ))}

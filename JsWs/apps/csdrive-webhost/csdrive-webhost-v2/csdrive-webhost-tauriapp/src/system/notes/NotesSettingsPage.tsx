@@ -3,6 +3,7 @@ import { ClipboardList, Eraser, House } from 'lucide-react'
 import ClipboardManagerModal from '../../components/ClipboardManagerModal'
 import IconButton from '../../components/IconButton'
 import { internalClipboard } from '../../lib/clipboard'
+import { getPreservePartialScroll, setPreservePartialScroll } from '../../lib/noteWebAppScroll'
 import { useNotesSettings } from './settings'
 import UserActionButton from './UserActionButton'
 
@@ -12,6 +13,19 @@ export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
   const [clipboardEntries, setClipboardEntries] = useState<string[] | null>(null)
   const [managingClipboard, setManagingClipboard] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // `global_settings`-backed, not Notes' own app state — see `noteWebAppScroll.ts`'s own doc comment for why.
+  const [preservePartialScroll, setPreservePartialScrollState] = useState(false)
+  useEffect(() => {
+    getPreservePartialScroll().then(setPreservePartialScrollState).catch(() => {})
+  }, [])
+  async function togglePreservePartialScroll(checked: boolean) {
+    setPreservePartialScrollState(checked)
+    try {
+      await setPreservePartialScroll(checked)
+    } catch (e) {
+      setError(String(e))
+    }
+  }
 
   const read = useCallback(async () => {
     try {
@@ -67,6 +81,13 @@ export default function NotesSettingsPage({ onHome }: { onHome: () => void }) {
             <label className="notes-settings-row">
               <input type="checkbox" checked={settings.autosync} onChange={(e) => change({ autosync: e.target.checked })} />
               <span>Automatically refresh the web app when the note is saved</span>
+            </label>
+            <label className="notes-settings-row">
+              <input type="checkbox" checked={preservePartialScroll} onChange={(e) => void togglePreservePartialScroll(e.target.checked)} />
+              <span>
+                When the web app reloads and wasn't scrolled to the bottom, restore the same proportion scrolled (not the exact pixel
+                position, which an edit can move) — it already does this when it was at the bottom, regardless of this setting
+              </span>
             </label>
           </section>
 

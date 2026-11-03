@@ -3824,3 +3824,126 @@ test --lib` doesn't apply. **Not separately exercised live**: CodeMirror on Andr
 for this pass; the wiring is a direct, type-checked mirror of the already-proven Monaco/built-in patterns,
 with nothing CodeMirror-specific left to get wrong differently.
 `npm run build` clean; no Rust change, so `cargo build`/`cargo test --lib` don't apply.
+
+## Partial-scroll preservation for a note's web app, the quote buttons moved into a three-dots menu, Ctrl+S everywhere, and `{$uuid}`
+
+Four items from the next todo file.
+
+**1. Preserving a *partial* scroll on reload, not only "at the bottom."** `markdown.rs`'s `BOOTSTRAP` already
+pinned a note's web-app page to the bottom across a reload, unconditionally — this adds an **optional** second
+case: when the page wasn't at the bottom, restore the *proportion* scrolled (`scrollPercent()`), not the raw
+pixel offset, which an ordinary edit (text appended, the usual case) would otherwise point at the wrong place
+the instant the document's height changes — the same reasoning the at-the-bottom case already rests on.
+**At-the-bottom still wins outright, unconditionally** — checked first, never gated on the new setting, since
+the ask was an addition, not a change to what already worked.
+
+**The setting itself lives in `global_settings`, not Notes' own app state** — a structural necessity, not a
+style choice: this page's own app id is never `system:notes` (CLAUDE.md's "App state storage" — a window only
+ever reaches its *own* namespace), so a plain `get_app_state` call from inside the bootstrap script would read
+nothing meaningful; `get_global_setting` is granted to every window for exactly this kind of case, the same way
+`appearance.*`/`rowActionsCompact` already are. `lib/noteWebAppScroll.ts` is a thin wrapper (the same shape as
+`rowActionsCompact.ts`) used only by Notes settings' own checkbox; the bootstrap script reads the identical key
+by its own literal string, since it's plain, Rust-generated JS with no access to this TypeScript module — the
+two are kept in sync by hand, the same duality `ayran_tags`/`ayran_global` already have between their Rust
+constants and their TS-side keys. Read fresh on every restore, not cached, so toggling the setting takes effect
+on the very next reload, and only when there's actually something non-trivial to restore (a partial scroll;
+the at-the-bottom case needs no round trip at all).
+
+Rust-tested (`markdown.rs`): a new test confirms the percentage is recorded unconditionally
+(`sessionStorage.setItem(PERCENT_KEY, ...)`, cheap, no network) while only the *restore* path is gated on the
+setting; that the at-the-bottom check still runs, and still wins, before the percentage one is ever reached.
+
+**Verified live** (isolated debug data folder, desktop, real CDP, `cargo tauri dev`): a real 300-line markdown
+file opened as a web app, scrolled to a real, measured ~40% — a genuine `Page.reload()` (which fires a real
+`beforeunload` then a fresh `load`, not a synthetic substitute) landed back at ~40% with the setting **on**,
+and correctly at the **top** (0%) with the setting **off** — confirming the setting genuinely gates the new
+behavior, not merely coexists with the old default. A direct regression check (setting off throughout):
+scrolled to the genuine bottom, reloaded, landed exactly at the new bottom again (`scrollY === max` on both
+sides of the reload, even though `max` itself shifted by a few dozen pixels between loads) — the pre-existing
+behavior is untouched.
+
+**2. The quote-level buttons moved into a three-dots menu.** The two standalone `Indent`/`Outdent` toolbar
+buttons (added in the previous session, gated on `effectiveLanguage === 'markdown'`) are now menu entries —
+asked for directly: "let's move the 2 options as menu entries triggered by the three-dots icon button." Rather
+than adding a *second*, redundant three-dots button beside the existing notebook-scoped one
+(`notebookMenu`/`MoreMenuButton`, "A notebook's three-dots menu" above), the two quote entries fold into
+*whichever* `MoreMenuButton` an editor already shows: inside a notebook, they join the existing menu (right
+after Find, before Select paragraphs — the same relative order in all three editor implementations); outside
+one, a markdown file now gets its own, dedicated `MoreMenuButton` holding just the two quote entries, where it
+previously had two bare icon buttons and (for the built-in editor) a separate plain Find button beside them.
+Every one of the three real editor surfaces (`CodeEditor.tsx`'s `HighlightedEditor`/`PlainTextEditor`,
+`MonacoCodeEditor.tsx`, `MobileCodeMirrorEditor.tsx`) computes a small `quoteMenuItems` array the same way, and
+either splices it into the notebook menu's own item list or renders it as its own `MoreMenuButton` when that
+list doesn't already exist — a markdown file outside every notebook still gets the "move into a menu"
+treatment the ask was actually about, not only the notebook-scoped case the existing menu happened to cover.
+
+**Verified live** (the same debug instance, real CDP, through the admin-app's Files tab and a real Monaco
+editor): a plain (non-notebook) markdown file's toolbar correctly showed **one** "More actions" button (no
+more two separate Indent/Outdent icons) whose menu listed exactly "Increase the quote level / Decrease the
+quote level"; clicking "Increase the quote level" from the menu made a real edit (Undo flipped from disabled
+to enabled, confirming the click reaches the same, already-proven `csdrive.increaseQuoteLevel` action, not a
+dead button). Inside a real notebook, a markdown file's "More actions" menu correctly listed all eight entries
+in one list — `Find | Increase the quote level | Decrease the quote level | Select paragraphs | Open link at
+the caret | Edit the link at the caret, or insert a new one | Create image from the clipboard… | Insert custom
+text at the caret…` — confirming the merge, not two three-dots buttons side by side.
+
+**3. Ctrl+S now saves in every text editor, not only the note editor.** `NoteEditPage.tsx` already had a plain
+`window`-level Ctrl+S listener; the Files tab's own editor (`FilesTab.tsx`'s `saveEditing`) and Notes' File
+Manager/Note Files Explorer editor (`NotesApp.tsx`'s `save()`) each gained the identical listener — no
+`isTypingTarget` guard needed (saving isn't a typing-navigation conflict the way list-arrow keys are), just
+`e.ctrlKey || e.metaKey`, no Alt/Shift, `key.toLowerCase() === 's'`, calling the host's own existing save
+function only while the editor is actually open and dirty.
+
+**Verified live**: in the Files tab, a real Ctrl+F (quote-level) edit followed by a real `Input.dispatchKeyEvent`
+Ctrl+S flipped the Save button from enabled back to disabled, and a direct `fs_read_file` afterward confirmed
+the edited content (`"> # Test\n..."`) was genuinely on disk, not just the UI's own optimistic state. In
+Notes' File Manager editor, Save started disabled, flipped to enabled after one real typed character, and
+back to disabled after a real Ctrl+S — the same round trip, confirmed through the second host independently.
+
+**4. `{$uuid}` — a predefined custom-text variable that renders a fresh, editable, regenerable id.**
+`lib/customTextTemplate.ts` treats `{$uuid}` as, under the hood, exactly a user variable — `generateUuid()`
+(`crypto.randomUUID()` with its dashes stripped; `randomUUID` is already lowercase hex, so nothing more to
+normalize) stands in for a typed default, `persist: false` so a *fresh* one is generated every time the
+template is opened rather than recalling whatever was last typed, and a new `generated: true` flag marks it
+for the UI, which offers a "generate a new one" button (`RefreshCw`, `VariableFormModal` in
+`InsertCustomTextModal.tsx`) next to its textbox — the one thing that tells it apart from an ordinary
+variable's own plain textbox. Writing `{$uuid}` more than once in the same template shares the *one* generated
+value (the same "a repeated name shares one textbox" rule `templateVariables` already has), useful for a
+correlation id referenced twice.
+
+**A real bug in `renderCustomTextTemplate` was found by this feature's own Node test, not by inspection, and
+fixed before it ever reached a browser**: the pure function fell back to *each token's own embedded default*
+when `values` didn't have an entry for a name — correct for an ordinary variable (every occurrence shares one
+default anyway), but wrong for `{$uuid}`, whose *each occurrence* is parsed independently and so generates its
+own, different id at parse time. Calling the function with an incomplete `values` map (never actually happens
+through the real insertion dialog, which always seeds every variable's name first, but is exactly what a pure
+function's own test exercises) could render two different ids for two mentions of the identical `{$uuid}`,
+contradicting the one guarantee that token exists to make. Fixed by having `renderCustomTextTemplate` build a
+`name → first-occurrence-default` map (via the same `templateVariables` the dialog already uses) and falling
+back to *that*, not the current token's own default — a pure, Node-tested fix, confirmed before and after.
+
+**A second, real, pre-existing bug was found live while setting up this feature's own end-to-end test — not
+introduced today, and nothing to do with `{$uuid}` specifically.** `customTextLocations.ts`'s `parseLocations`
+had `if (path === '') continue` on the **object-format** branch (a real, already-saved location record) — the
+same line that's correct on the *legacy bare-string* branch just above it (where an emptied-after-trimming
+string genuinely means "nothing useful was ever typed," since that old format has no way to mean "the
+notebook's own root"). But a location set to the notebook's own root — "Add a location…" → "Add this folder"
+at the very top of the breadcrumb, a real, intentional, UI-supported choice, saved as `Path: ""` and shown in
+the list as "." — was **silently dropped on every read**, even though it had been saved correctly to disk.
+Found by a dynamic-import probe against the real file on disk (confirmed via `source.list`/`source.read`
+directly that the correct, non-empty content was there, then confirmed `readCustomTextLocations` still
+returned `[]` for the exact same inputs) — not by inspection; the fix distinguishes "`rec.Path` isn't a string
+at all" (a genuinely malformed entry, still skipped) from "`rec.Path` is a well-formed, deliberately empty
+string" (a legitimate root-level location, now kept).
+
+**Verified live, end to end, through the real UI** (isolated debug data folder, desktop, real CDP, a real
+folder-based notebook, a real `{$uuid}`-containing template file, a real native confirm dialog clicked via
+Win32 `BM_CLICK` where a DOM click couldn't reach it): before the `parseLocations` fix, "Insert custom text at
+the caret…" on a file inside the notebook said "no custom-text locations chosen yet," even with one genuinely
+saved; after the fix, the picker correctly listed the template, opening it showed **one** textbox named
+`$uuid` pre-filled with a real, validly-shaped id (`0a1085c14d9f4da895594d80a96a505e`); clicking "Generate a
+new one" changed it to a different, equally valid id; clicking Insert landed the **same** regenerated id in
+**both** places the template referenced it (`Correlation id: 13c37cfd73534bd6bf2f09658bf24c75Twice:
+13c37cfd73534bd6bf2f09658bf24c75`), confirmed by reading Monaco's own real rendered text, not assumed from the
+dialog's own state. `npm run build` and `cargo test --lib` (292 tests) both clean throughout; no Rust change
+for items 2–4 and the `customTextLocations.ts` fix, so only item 1 touched `markdown.rs`.

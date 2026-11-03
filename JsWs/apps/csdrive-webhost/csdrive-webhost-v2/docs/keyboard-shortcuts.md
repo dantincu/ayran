@@ -147,7 +147,7 @@ One press on a picture (or on a playing video) hides or brings back the bars. Th
 
 | Keys | What it does |
 | --- | --- |
-| **Ctrl+S** | On a note's editing page: saves the note. |
+| **Ctrl+S** | In any text editor — the Files tab's own, Notes' File Manager/Note Files Explorer editor, and a note's editing page — saves the file (while it has unsaved changes). |
 | **F2** | In a list of notes, files or folders: **renames** the focused item — its name (a file's without its extension) becomes a box. |
 | **Shift+F2** | In a list of notes: edits the focused note's **index**. |
 | **↓** / **↑** *(in a rename box)* | Submits the new name (or index) **and goes on to rename the item after / before it** — as in Total Commander. Enter submits, Esc cancels. |

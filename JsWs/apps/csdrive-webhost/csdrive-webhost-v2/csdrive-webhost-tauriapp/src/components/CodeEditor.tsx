@@ -1147,6 +1147,25 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
 
   const h = history.current!
   const gutterDigits = Math.max(2, String(lineCount).length)
+  /** The two quote-level actions as menu entries, not standalone toolbar buttons — asked for directly, item 2
+   * of the todo: "let's move the 2 options as menu entries triggered by the three-dots icon button." Folded
+   * into whichever `MoreMenuButton` this editor already shows (the notebook-scoped one, below, when
+   * `notebookMenu` is set) rather than adding a second, separate three-dots button beside it; a markdown file
+   * outside every notebook still gets one, on its own, since the request applies to every markdown editor —
+   * not only the notebook-scoped case `notebookMenu` otherwise gates. */
+  const quoteMenuItems = effectiveLanguage === 'markdown'
+    ? [
+        { label: 'Increase the quote level', icon: Indent, onSelect: () => quoteLevel(false) },
+        { label: 'Decrease the quote level', icon: Outdent, onSelect: () => quoteLevel(true) },
+      ]
+    : []
+  const findButton = (
+    <IconButton
+      icon={Search}
+      label="Find (Ctrl+F)"
+      onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
+    />
+  )
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -1158,22 +1177,16 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
               label="More actions"
               items={[
                 { label: 'Find (Ctrl+F)', icon: Search, onSelect: () => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0) },
+                ...quoteMenuItems,
                 ...notebookTextItems,
                 { label: 'Create image from the clipboard…', icon: ImagePlus, onSelect: notebookMenu.onCreateImageFromClipboard },
                 { label: 'Insert custom text at the caret…', icon: Braces, onSelect: notebookMenu.onInsertCustomText },
               ]}
             />
           ) : (
-            <IconButton
-              icon={Search}
-              label="Find (Ctrl+F)"
-              onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
-            />
-          )}
-          {effectiveLanguage === 'markdown' && (
             <>
-              <IconButton icon={Indent} label="Increase the quote level" onClick={() => quoteLevel(false)} onMouseDown={(e) => e.preventDefault()} />
-              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => quoteLevel(true)} onMouseDown={(e) => e.preventDefault()} />
+              {findButton}
+              {quoteMenuItems.length > 0 && <MoreMenuButton label="More actions" items={quoteMenuItems} />}
             </>
           )}
           {/* Reserves room for TextFieldMenu's own clipboard button (and, in Notes, the User Action pair beside it) to sit
@@ -1586,6 +1599,20 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
   }
 
   const h = history.current!
+  // Same reasoning as `HighlightedEditor`'s own `quoteMenuItems`/`findButton` — see their doc comment.
+  const quoteMenuItems = effectiveLanguage === 'markdown'
+    ? [
+        { label: 'Increase the quote level', icon: Indent, onSelect: () => quoteLevel(false) },
+        { label: 'Decrease the quote level', icon: Outdent, onSelect: () => quoteLevel(true) },
+      ]
+    : []
+  const findButton = (
+    <IconButton
+      icon={Search}
+      label="Find (Ctrl+F)"
+      onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
+    />
+  )
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -1597,22 +1624,16 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
               label="More actions"
               items={[
                 { label: 'Find (Ctrl+F)', icon: Search, onSelect: () => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0) },
+                ...quoteMenuItems,
                 ...notebookTextItems,
                 { label: 'Create image from the clipboard…', icon: ImagePlus, onSelect: notebookMenu.onCreateImageFromClipboard },
                 { label: 'Insert custom text at the caret…', icon: Braces, onSelect: notebookMenu.onInsertCustomText },
               ]}
             />
           ) : (
-            <IconButton
-              icon={Search}
-              label="Find (Ctrl+F)"
-              onClick={() => openFind(inputRef.current?.selectionStart ?? 0, inputRef.current?.selectionEnd ?? 0)}
-            />
-          )}
-          {effectiveLanguage === 'markdown' && (
             <>
-              <IconButton icon={Indent} label="Increase the quote level" onClick={() => quoteLevel(false)} onMouseDown={(e) => e.preventDefault()} />
-              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => quoteLevel(true)} onMouseDown={(e) => e.preventDefault()} />
+              {findButton}
+              {quoteMenuItems.length > 0 && <MoreMenuButton label="More actions" items={quoteMenuItems} />}
             </>
           )}
           <span className="code-editor-menu-slot" data-text-menu-target />

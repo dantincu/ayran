@@ -635,6 +635,15 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
     },
   }))
 
+  // Same reasoning as `CodeEditor.tsx`'s own `quoteMenuItems` — see its doc comment: folded into whichever
+  // `MoreMenuButton` this editor already shows, rather than two standalone toolbar buttons.
+  const quoteMenuItems = effectiveLanguage === 'markdown'
+    ? [
+        { label: 'Increase the quote level', icon: Indent, onSelect: () => editorRef.current?.trigger('', 'csdrive.increaseQuoteLevel', null) },
+        { label: 'Decrease the quote level', icon: Outdent, onSelect: () => editorRef.current?.trigger('', 'csdrive.decreaseQuoteLevel', null) },
+      ]
+    : []
+
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -656,6 +665,7 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
               label="More actions"
               items={[
                 { label: 'Find (Ctrl+F)', icon: Search, onSelect: () => editorRef.current?.trigger('', 'actions.find', null) },
+                ...quoteMenuItems,
                 { label: 'Select paragraphs', icon: TextCursorInput, onSelect: () => editorRef.current?.trigger('', 'csdrive.selectParagraphs', null) },
                 ...(onOpenLink
                   ? [
@@ -680,12 +690,7 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
               {onOpenLink && (
                 <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={() => editorRef.current?.trigger('', 'csdrive.editOrInsertLink', null)} />
               )}
-            </>
-          )}
-          {effectiveLanguage === 'markdown' && (
-            <>
-              <IconButton icon={Indent} label="Increase the quote level" onClick={() => editorRef.current?.trigger('', 'csdrive.increaseQuoteLevel', null)} />
-              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => editorRef.current?.trigger('', 'csdrive.decreaseQuoteLevel', null)} />
+              {quoteMenuItems.length > 0 && <MoreMenuButton label="More actions" items={quoteMenuItems} />}
             </>
           )}
           {extra}

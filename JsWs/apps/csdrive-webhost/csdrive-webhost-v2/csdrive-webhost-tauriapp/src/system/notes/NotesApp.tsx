@@ -1009,6 +1009,20 @@ export default function NotesApp({
     }
   }
 
+  // Ctrl+S saves the open editor — asked for directly, item 3 of the todo: "we only have it for the note
+  // editor." The same plain `window`-level listener `NoteEditPage.tsx`'s own Ctrl+S already uses.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's' && editing) {
+        e.preventDefault()
+        if (editing.dirty) void save()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing])
+
   /** "Discard unsaved changes" — a direct toolbar button, asked for separately from "Discard changes" above
    * (CLAUDE.md's "Typing after a fast scroll, and a blank editor after one": the person asked for a way to
    * discard persisted drafts, having just been testing the large-file editor). Unlike the conflict dialog's own

@@ -364,6 +364,23 @@ const CODE_HIGHLIGHT_SCRIPT: &str = r#"
 /// reload) — there is no meaningful difference in why the content changed, only whether the person was
 /// reading the end of it.
 ///
+/// **Optionally, the same for a *partial* scroll** (asked for directly: "right now it is only preserved
+/// when its at its bottom... we should have a way to (optionally) enable scroll preservation when the page
+/// is partially scrolled"), behind Notes' own "Preserve the scroll position..." checkbox — off by default,
+/// since always doing it would mean every reload lands at roughly the same *spot in the layout* rather than
+/// the top, which isn't what anyone asked for as the default. The *proportion* scrolled (`scrollPercent`),
+/// not the raw pixel offset, is what's kept — a raw `scrollY` would point at the wrong place the instant an
+/// ordinary edit (text appended, the usual case) changes the document's own height, the same reason the
+/// at-the-bottom case already works this way. At-the-bottom still wins outright when both could apply
+/// (checked first, unconditionally, never gated on the setting — the ask was for an addition, not a change
+/// to what's already correct). **The setting itself lives in `global_settings`, not this window's own app
+/// state**: this page's app id is never `system:notes` (CLAUDE.md's "App state storage" — a window only
+/// ever reaches its *own* namespace), so a plain `get_app_state` call here would read nothing meaningful;
+/// `get_global_setting` is granted to every window for exactly this kind of case, the same way `appearance.*`
+/// already is. Read once per restore, not cached — the one extra round trip this costs only happens when
+/// there's actually something non-trivial to restore (a partial scroll, with the at-the-bottom case already
+/// handled without it), and reading fresh means toggling the setting takes effect on the very next reload.
+///
 /// **Three more events, all from the note editor's own window** (`notes_pages.rs`'s `sync_scroll_to_line`/
 /// `sync_scroll_nudge`/`sync_refresh_without_scroll`; see CLAUDE.md's "Editor ↔ syncing web app: scroll and
 /// refresh options"), sent only to the tab that follows the editor (`tabs.syncs`), same as a save's own reload:
@@ -437,21 +454,44 @@ const BOOTSTRAP: &str = "
   var t = window.__TAURI__
   if (!t) return
   var SCROLL_KEY = 'csdrive-md-at-bottom'
+  var PERCENT_KEY = 'csdrive-md-scroll-pct'
   var NO_SCROLL_KEY = 'csdrive-md-no-scroll'
+  // Notes' own setting (global_settings, not this window's app state — this page's own app id isn't
+  // `system:notes`, so `get_app_state` would read the wrong, unrelated namespace; see this function's own
+  // doc comment and `get_global_setting`'s, which every window, this one included, is granted to call).
+  var PRESERVE_PARTIAL_SETTING = 'notes.webAppPreservePartialScroll'
   // The webview's own history has its own idea of restoring the previous scroll position across a reload,
   // entirely outside this script — 'manual' hands that decision to this script alone on every load instead.
   try { history.scrollRestoration = 'manual' } catch (e) {}
   function atBottom() {
     return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 4
   }
+  function scrollPercent() {
+    var max = document.documentElement.scrollHeight - window.innerHeight
+    return max > 0 ? window.scrollY / max : 0
+  }
   function restoreScrollIfWasAtBottom() {
     try {
       if (sessionStorage.getItem(NO_SCROLL_KEY) === '1') { sessionStorage.removeItem(NO_SCROLL_KEY); return }
-      if (sessionStorage.getItem(SCROLL_KEY) === '1') window.scrollTo(0, document.documentElement.scrollHeight)
+      if (sessionStorage.getItem(SCROLL_KEY) === '1') { window.scrollTo(0, document.documentElement.scrollHeight); return }
+      // Not at the bottom: restore the *proportion* scrolled, not the raw pixel offset (which the usual edit
+      // — appending text — would leave pointing at the wrong place the moment the document's height changes)
+      // — but only if the person turned this on (Notes settings' own checkbox); the setting lives server-side
+      // of this page, so it's asked for, not assumed, each time there's something to restore.
+      var pct = sessionStorage.getItem(PERCENT_KEY)
+      if (pct === null) return
+      t.core.invoke('get_global_setting', { key: PRESERVE_PARTIAL_SETTING }).then(function (enabled) {
+        if (enabled !== '1') return
+        var max = document.documentElement.scrollHeight - window.innerHeight
+        if (max > 0) window.scrollTo(0, parseFloat(pct) * max)
+      }).catch(function () {})
     } catch (e) {}
   }
   window.addEventListener('beforeunload', function () {
-    try { sessionStorage.setItem(SCROLL_KEY, atBottom() ? '1' : '0') } catch (e) {}
+    try {
+      sessionStorage.setItem(SCROLL_KEY, atBottom() ? '1' : '0')
+      sessionStorage.setItem(PERCENT_KEY, String(scrollPercent()))
+    } catch (e) {}
   })
   // Right away (the content is already laid out — this script runs at the end of the body), and again once
   // every resource (an image, say) has finished loading and may have changed the page's height.
@@ -795,6 +835,24 @@ mod tests {
         assert!(page.contains("sessionStorage.setItem(SCROLL_KEY"), "{page}");
         assert!(page.contains("restoreScrollIfWasAtBottom()"), "called once outright, not just registered");
         assert!(page.contains("addEventListener('load', restoreScrollIfWasAtBottom)"), "{page}");
+    }
+
+    #[test]
+    fn the_bootstrap_script_can_optionally_restore_a_partial_scroll_by_percentage() {
+        let page = render_page("text", "t.md");
+        // Recorded unconditionally (cheap, no network) — only *restoring* it is gated on the setting.
+        assert!(page.contains("sessionStorage.setItem(PERCENT_KEY, String(scrollPercent()))"), "{page}");
+        assert!(page.contains("function scrollPercent()"), "{page}");
+        // The setting lives in global_settings, not this window's own app state (see this function's own
+        // doc comment for why `get_app_state` would be meaningless here) — fetched fresh, not cached, so
+        // toggling it in Settings takes effect on the very next reload.
+        assert!(page.contains("'notes.webAppPreservePartialScroll'"), "{page}");
+        assert!(page.contains("t.core.invoke('get_global_setting'"), "{page}");
+        // At-the-bottom still wins outright, unconditionally — the percentage check only runs once that one
+        // has already returned without restoring anything.
+        let at_bottom_at = page.find("sessionStorage.getItem(SCROLL_KEY)").unwrap();
+        let percent_at = page.find("sessionStorage.getItem(PERCENT_KEY)").unwrap();
+        assert!(at_bottom_at < percent_at, "{page}");
     }
 
     #[test]

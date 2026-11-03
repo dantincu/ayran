@@ -434,6 +434,20 @@ export default function FilesTab() {
     }
   }
 
+  // Ctrl+S saves — asked for directly, item 3 of the todo: "we only have it for the note editor." The same
+  // plain `window`-level listener `NoteEditPage.tsx`'s own Ctrl+S already uses, with no deps array (cheap to
+  // add/remove every render, and it needs the *current* `editing`/`saveEditing` closure, not a stale one).
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        if (editing?.dirty) void saveEditing()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  })
+
   /** "Discard your unsaved changes" — asked for directly (CLAUDE.md's "Typing after a fast scroll, and a blank
    * editor after one"). This editor keeps no draft of its own (CLAUDE.md's "Text editors are now dedicated
    * pages, not popups": "The Files tab's own editor has no equivalent place-persistence") — `saved` is simply

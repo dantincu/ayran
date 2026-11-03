@@ -338,6 +338,15 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
     view.focus()
   }
 
+  // Same reasoning as `CodeEditor.tsx`'s own `quoteMenuItems` — see its doc comment: folded into whichever
+  // `MoreMenuButton` this editor already shows, rather than two standalone toolbar buttons.
+  const quoteMenuItems = effectiveLanguage === 'markdown'
+    ? [
+        { label: 'Increase the quote level', icon: Indent, onSelect: () => quoteLevel(false) },
+        { label: 'Decrease the quote level', icon: Outdent, onSelect: () => quoteLevel(true) },
+      ]
+    : []
+
   return (
     <div className="code-editor-wrap">
       {!readOnly && (
@@ -351,6 +360,7 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
               label="More actions"
               items={[
                 { label: 'Find', icon: Search, onSelect: () => viewRef.current && openSearchPanel(viewRef.current) },
+                ...quoteMenuItems,
                 { label: 'Select paragraphs', icon: TextCursorInput, onSelect: selectParagraphsAtCursor },
                 ...(onOpenLink
                   ? [
@@ -368,12 +378,7 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
               <IconButton icon={Search} label="Find" onClick={() => viewRef.current && openSearchPanel(viewRef.current)} />
               {onOpenLink && <IconButton icon={ExternalLink} label="Open link at the caret" onClick={openLinkAtCursor} />}
               {onOpenLink && <IconButton icon={Link2} label="Edit the link at the caret, or insert a new one" onClick={editOrInsertLink} />}
-            </>
-          )}
-          {effectiveLanguage === 'markdown' && (
-            <>
-              <IconButton icon={Indent} label="Increase the quote level" onClick={() => quoteLevel(false)} />
-              <IconButton icon={Outdent} label="Decrease the quote level" onClick={() => quoteLevel(true)} />
+              {quoteMenuItems.length > 0 && <MoreMenuButton label="More actions" items={quoteMenuItems} />}
             </>
           )}
           {extra}

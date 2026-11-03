@@ -76,8 +76,17 @@ function parseLocations(value: unknown): { locations: CustomTextLocation[]; migr
     }
     if (typeof item !== 'object' || item === null) continue
     const rec = item as Record<string, unknown>
-    const path = typeof rec.Path === 'string' ? rec.Path.replace(/^\/+|\/+$/g, '').trim() : ''
-    if (path === '') continue
+    // A genuine, real bug found live while verifying this app's own notebook-root location (built for exactly
+    // this — "Add this folder" at a notebook's own breadcrumb root saves `Path: ""`, displayed as "." in the
+    // list): `rec.Path` not being a string at all is what makes an entry malformed, not it being *empty* once
+    // trimmed — the legacy bare-string branch above still correctly drops a typed-then-emptied string (there
+    // was never a way for that old format to mean "the root" at all), but an object entry's deliberately empty
+    // `Path` is a real, legitimate location, not something to skip. Confirmed live: this one line silently
+    // dropped the notebook-root location on every read, even though `saveCustomTextLocations` had written it
+    // correctly — reproduced with a dynamic-import probe against the real file on disk (a correctly-parsed,
+    // non-empty `Locations` array going in, an empty result coming back out of this function specifically).
+    if (typeof rec.Path !== 'string') continue
+    const path = rec.Path.replace(/^\/+|\/+$/g, '').trim()
     const hasId = typeof rec.Id === 'string' && rec.Id.trim() !== ''
     if (!hasId) migrated = true
     locations.push({ id: hasId ? (rec.Id as string) : randomId(), path, appliesTo: validMode(rec.AppliesTo) })

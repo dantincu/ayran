@@ -1,12 +1,27 @@
 /** **Custom text templates** (item 2 of the todo, "Insert custom text at the caret"): a piece of custom text
  * can be *dynamic* — `{{`/`}}` are literal `{`/`}`, `{$d:format[:offset][:T<tz>]}` is today's date/time
  * (optionally shifted, optionally rendered in a chosen timezone), `{$p}` marks where the caret should land once
- * the text is inserted, and `{name[:mode[:default[:nopersist]]]}` (any name not starting with `$`) is a "user
- * variable" — a textbox in the insertion dialog, single-line by default or `multi`line, with an optional
- * default value and an optional opt-out of persisting what was typed across sessions. Pure, no DOM/backend
- * dependency — the whole thing is a string-in, tokens-out parser plus a tokens-and-values-in, text-out
- * renderer, so both halves are plain Node-testable functions (matching this project's own "Node-tested"
- * convention for a module with no committed test file of its own yet).
+ * the text is inserted, `{$uuid}` is a freshly generated id (below), and `{name[:mode[:default[:nopersist]]]}`
+ * (any name not starting with `$`) is a "user variable" — a textbox in the insertion dialog, single-line by
+ * default or `multi`line, with an optional default value and an optional opt-out of persisting what was typed
+ * across sessions. Pure, no DOM/backend dependency — the whole thing is a string-in, tokens-out parser plus a
+ * tokens-and-values-in, text-out renderer, so both halves are plain Node-testable functions (matching this
+ * project's own "Node-tested" convention for a module with no committed test file of its own yet).
+ *
+ * **`{$uuid}`** (a later addition, item 4 of its own todo: "add a predefined variable called $uuid that
+ * renders a uuid... without dashes or extra symbols, just lowercase letters and digits") is, under the hood,
+ * exactly a user variable — `generateUuid()` (`crypto.randomUUID()`, its dashes stripped; `randomUUID` is
+ * already lowercase hex, so nothing more to normalize) stands in for a default the person would otherwise
+ * have typed, `persist: false` so a *fresh* one is generated every time the template is opened rather than
+ * reusing whatever was last typed (the one thing that tells it apart from an ordinary variable — everything
+ * else, including "the person can edit it before inserting," falls out of being a variable at all), and
+ * `generated: true` marks it for the insertion dialog's own UI, which offers a "generate a new one" button
+ * next to its textbox that an ordinary variable doesn't get (`InsertCustomTextModal.tsx`'s `VariableFormModal`).
+ * Writing `{$uuid}` more than once in the same template reuses the *one* generated value for all of them
+ * (the same "a repeated name shares one textbox" rule `templateVariables` already has for user variables,
+ * useful here for a correlation id referenced twice) — a *second*, independent id needs no new syntax, since
+ * `{$uuid}` has no name of its own to collide with: nothing stops two different custom-text files from each
+ * having their own `{$uuid}`, which never share state.
  *
  * **The date format's own tokens are a deliberate near-match of what the person's own prepared format strings
  * already used** (`{$d:yyyy-MM-dd}`, `{$d:hh-mm-ss}`) — close to .NET's own custom date-and-time format
@@ -67,8 +82,20 @@ export interface CustomTextVariable {
   default: string
   /** `false` when the token ends in the literal `:nopersist` segment — this variable's typed value is never
    * remembered across sessions, even though the dialog's own state otherwise is (item 2's own "unless the
-   * variable is followed by the colon with an option that prevents its value from being persisted"). */
+   * variable is followed by the colon with an option that prevents its value from being persisted"). Also
+   * `false` for `{$uuid}` (below), for the same reason: it's meant to be regenerated every time, not recalled. */
   persist: boolean
+  /** `true` only for `{$uuid}` — its `default` is machine-generated (`generateUuid()`), not typed by the
+   * person, so the insertion dialog offers a way to roll a new one on top of the ordinary textbox every
+   * other variable already gets. */
+  generated: boolean
+}
+
+/** `{$uuid}`'s own generator: a lowercase-hex id with no dashes or other punctuation, exactly the shape
+ * asked for — `crypto.randomUUID()` is already lowercase hex with dashes, so stripping them is the whole
+ * transform. */
+export function generateUuid(): string {
+  return crypto.randomUUID().replace(/-/g, '')
 }
 
 /** Either UTC (`K`/`KK` render `+00:00`/`+0000`), or a fixed number of minutes offset from UTC (`K`/`KK`
@@ -150,6 +177,9 @@ function splitDateBodySegments(body: string): string[] {
 
 function parseToken(body: string): CustomTextToken {
   if (body === '$p') return { kind: 'caret' }
+  if (body === '$uuid') {
+    return { kind: 'variable', variable: { name: '$uuid', multiline: false, default: generateUuid(), persist: false, generated: true } }
+  }
   if (body.startsWith('$d')) {
     const segments = splitDateBodySegments(body.slice(2).replace(/^:/, ''))
     const format = segments[0] ?? ''
@@ -177,6 +207,7 @@ function parseToken(body: string): CustomTextToken {
       multiline: mode.toLowerCase() === 'multi' || mode.toLowerCase() === 'multiline',
       default: persist ? rest : rest.slice(0, lastColon),
       persist,
+      generated: false,
     },
   }
 }
@@ -369,15 +400,23 @@ export interface CustomTextRenderResult {
 
 /** Resolves every token except the literal runs (already text) against `values` (the user variables'
  * current textbox contents) and `now` (real time by default; a fixed value makes this deterministic for a
- * test). A variable with nothing typed yet falls back to its own default. */
+ * test). A variable with nothing typed yet falls back to its own default — specifically the *first*
+ * mention's default for its name, the same one `templateVariables` already builds the one shared textbox
+ * from, **not** necessarily the one embedded in *this* particular token. `parseCustomTextTemplate` parses
+ * each occurrence of `{$uuid}` independently, each generating its own fresh id at parse time — so without
+ * this, calling this function with an incomplete `values` map (never actually happens through the real
+ * insertion dialog, which always seeds every variable's name into `values` first, but is exactly what a
+ * pure function's own tests exercise) could render two different ids for two mentions of the identical
+ * `{$uuid}`, contradicting the one guarantee that token exists to make. */
 export function renderCustomTextTemplate(tokens: CustomTextToken[], values: Record<string, string>, now: Date = new Date()): CustomTextRenderResult {
+  const firstDefaults = new Map(templateVariables(tokens).map((v) => [v.name, v.default]))
   let text = ''
   let caretOffset: number | null = null
   for (const token of tokens) {
     if (token.kind === 'literal') text += token.text
     else if (token.kind === 'caret') caretOffset = text.length
     else if (token.kind === 'date') text += formatDate(token.offset ? applyOffset(now, token.offset) : now, token.format, token.timezone)
-    else text += values[token.variable.name] ?? token.variable.default
+    else text += values[token.variable.name] ?? firstDefaults.get(token.variable.name) ?? token.variable.default
   }
   return { text, caretOffset }
 }
