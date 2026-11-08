@@ -1,0 +1,7 @@
+node_modules
+dist
+*.local
+.env
+src-tauri/.env
+src-tauri/target
+src-tauri/gen/schemas
