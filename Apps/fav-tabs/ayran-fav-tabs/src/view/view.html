@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fav Tabs</title>
+    <link rel="icon" href="../../icons/icon32.png" />
+    <link rel="stylesheet" href="view.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <button id="back" class="btn" hidden title="Back to the list (Alt+Left)">
+        <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7" /></svg><span>Back</span>
+      </button>
+      <h1><img src="../../icons/icon32.png" alt="" />Fav Tabs <span id="count"></span></h1>
+
+      <div id="select-tools" hidden>
+        <span id="sel-count" class="sel-count"></span>
+        <button class="btn" data-act="select-all" title="Select all (Ctrl+A)">All</button>
+        <button class="btn" data-act="select-none" title="Select none">None</button>
+        <span class="sep"></span>
+        <button class="btn icon-btn" data-act="start" title="Move selected to the start">
+          <svg viewBox="0 0 24 24"><path d="M5 4h14M7 14l5-5 5 5M12 9v11" /></svg>
+        </button>
+        <button class="btn icon-btn" data-act="page-up" title="Move selected up 10 positions (right-click: 30)">
+          <svg viewBox="0 0 24 24"><path d="M7 12l5-5 5 5M7 18l5-5 5 5" /></svg>
+        </button>
+        <button class="btn icon-btn" data-act="up" title="Move selected up 1 position (right-click: 3)">
+          <svg viewBox="0 0 24 24"><path d="M7 15l5-5 5 5" /></svg>
+        </button>
+        <button class="btn icon-btn" data-act="down" title="Move selected down 1 position (right-click: 3)">
+          <svg viewBox="0 0 24 24"><path d="M7 9l5 5 5-5" /></svg>
+        </button>
+        <button class="btn icon-btn" data-act="page-down" title="Move selected down 10 positions (right-click: 30)">
+          <svg viewBox="0 0 24 24"><path d="M7 6l5 5 5-5M7 12l5 5 5-5" /></svg>
+        </button>
+        <button class="btn icon-btn" data-act="end" title="Move selected to the end">
+          <svg viewBox="0 0 24 24"><path d="M5 20h14M7 10l5 5 5-5M12 15V4" /></svg>
+        </button>
+        <span class="sep"></span>
+        <button class="btn" data-act="forget" data-needs-selection>Forget</button>
+        <button class="btn" data-act="close" data-needs-selection>Close</button>
+        <button class="btn" data-act="forget-close" data-needs-selection>Forget &amp; Close</button>
+        <span class="sep"></span>
+        <button class="btn primary" data-act="done" title="Leave select mode (Esc)">Done</button>
+      </div>
+
+      <div class="spacer"></div>
+      <button id="remember-all" class="btn" title="Remember all open tabs (this window or all windows)">Remember all</button>
+      <button id="select-toggle" class="btn" title="Select tabs to reorder, forget or close them">Select</button>
+      <button id="settings-btn" class="btn icon-btn" title="Settings">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3" />
+          <path
+            d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"
+          />
+        </svg>
+      </button>
+    </header>
+
+    <main id="list-view">
+      <div id="grid"></div>
+      <div id="empty" class="empty" hidden>
+        <p>No remembered tabs yet.</p>
+        <p>Click the extension's icon in the toolbar to remember the current tab (click it again to forget it).
+          Right-click the icon and choose <b>Open the Fav Tabs list</b>, or press
+          <kbd id="shortcut-hint">Alt+Shift+F</kbd>, to come back here.</p>
+      </div>
+    </main>
+
+    <main id="match-view" hidden>
+      <div id="match-entry"></div>
+      <h2 id="match-heading"></h2>
+      <div id="match-list"></div>
+      <p id="match-empty" class="empty" hidden>No open browser tab is on this site.</p>
+    </main>
+
+    <div id="menu" class="menu" role="menu" hidden></div>
+    <div id="drop-marker" hidden></div>
+    <div id="drag-ghost" hidden></div>
+    <div id="toast" role="status" hidden><span id="toast-text"></span><button id="toast-action" class="btn" hidden></button></div>
+
+    <dialog id="settings">
+      <form method="dialog">
+        <h2>Settings</h2>
+        <label class="row">
+          <input type="checkbox" id="set-show-url" />
+          <span>Show the url below the title</span>
+        </label>
+        <label class="row">
+          <span>Tab width</span>
+          <input type="number" id="set-width" min="80" max="800" step="10" />
+          <span>px</span>
+        </label>
+        <p class="hint">
+          Keyboard shortcuts can be changed at
+          <a href="#" id="shortcuts-link">chrome://extensions/shortcuts</a>.
+        </p>
+        <div class="dialog-actions"><button class="btn primary" value="close">Close</button></div>
+      </form>
+    </dialog>
+
+    <script type="module" src="view.js"></script>
+  </body>
+</html>

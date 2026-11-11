@@ -1,0 +1,11 @@
+{
+  "name": "ayran-fav-tabs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Chromium extension that remembers chosen browser tabs.",
+  "scripts": {
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "icons": "node tools/make-icons.mjs"
+  }
+}
