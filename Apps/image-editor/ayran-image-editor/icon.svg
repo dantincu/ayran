@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1e40af"/>
+    </linearGradient>
+    <pattern id="checker" width="8" height="8" patternUnits="userSpaceOnUse">
+      <rect width="8" height="8" fill="#ffffff"/>
+      <rect width="4" height="4" fill="#d4d8e0"/>
+      <rect x="4" y="4" width="4" height="4" fill="#d4d8e0"/>
+    </pattern>
+    <clipPath id="canvas"><rect x="12" y="12" width="40" height="40" rx="3"/></clipPath>
+  </defs>
+
+  <!-- app tile -->
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="url(#bg)"/>
+
+  <!-- the image: transparent (checkerboard) on the left, solid background still on the right -->
+  <g clip-path="url(#canvas)">
+    <rect x="12" y="12" width="40" height="40" fill="url(#checker)"/>
+    <path d="M32 12h20v40H32z" fill="#fde68a"/>
+    <!-- the subject, untouched by the background removal -->
+    <circle cx="32" cy="34" r="11" fill="#ef4444"/>
+    <path d="M26 26c2-5 10-5 12 0" fill="none" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <rect x="12" y="12" width="40" height="40" rx="3" fill="none" stroke="#0f172a" stroke-opacity=".25"/>
+
+  <!-- brush -->
+  <g transform="rotate(45 48 16)">
+    <rect x="45.5" y="-2" width="5" height="16" rx="2.5" fill="#f8fafc"/>
+    <rect x="45" y="13" width="6" height="4" fill="#94a3b8"/>
+    <path d="M45 17h6v3c0 3-1.5 5-3 6-1.5-1-3-3-3-6z" fill="#ef4444"/>
+  </g>
+</svg>

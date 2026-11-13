@@ -1,0 +1,9 @@
+{
+  "name": "ayran-image-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A small MS Paint-like image editor with transparency and two-step background removal",
+  "scripts": {
+    "test": "node --test"
+  }
+}
