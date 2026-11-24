@@ -1,0 +1,5 @@
+# Ayran Password Trainer Tauri App
+
+Let's create a tauri app that helps the user train to remember certain important passwords. So the app will have 2 views:
+1. A list of passwords (stored as password hashes, so never store actual passwords), each password having associated a label. This list should be fully editable and sortable, with multiselect capability. The sorting should be done both with drag and drop and with up and down arrows for the current selection. Multiselect should offer the possibility to select a range (holding the shift key while toggling a checkbox or triggering the context event on a checkbox will toggle all the checkboxes between the currently toggled and the previously toggled).
+2. Tapping on a password should navigate to the individual password view. There will be a password textbox (and its text will not be copiable to the clipboard) where the user attempts to type the corresponding password. And there should be an icon button for checking if the hash for the typed password matches the hash of the original password.
