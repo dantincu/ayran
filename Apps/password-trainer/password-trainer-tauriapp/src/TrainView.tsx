@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { api, errorText, type Entry } from './api'
 import { IconBack, IconCheck, IconX } from './icons'
-import { noCopyProps } from './noCopy'
+import { PasswordInput } from './PasswordInput'
 
 type Result = { ok: boolean } | { error: string } | null
 
@@ -42,8 +42,8 @@ export function TrainView({ entry, onBack }: { entry: Entry; onBack: () => void 
       </header>
 
       <form className="attempt" onSubmit={check}>
-        <input ref={inputRef} {...noCopyProps} value={attempt} placeholder="Type the password"
-          aria-label={`Password for ${entry.label}`}
+        <PasswordInput ref={inputRef} value={attempt} placeholder="Type the password"
+          ariaLabel={`Password for ${entry.label}`}
           onChange={(e) => { setAttempt(e.target.value); setResult(null) }} />
         <button type="submit" className="icon primary big" disabled={!attempt || checking}
           aria-label="Check the password" title="Check">

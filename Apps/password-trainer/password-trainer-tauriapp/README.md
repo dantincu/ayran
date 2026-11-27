@@ -9,7 +9,8 @@ A Tauri 2 app (React + TypeScript frontend, Rust backend) for practising importa
   - **Editing**: add, edit (the label, and optionally a new password), delete the selection.
   - **Selection**: Shift-click, right-click or long-press a checkbox to set every row between it and the checkbox toggled before to the new state.
   - **Reordering**: drag the ⠿ handle (pointer events, so touch works too; dragging a selected row moves the whole selection), or use the up and down arrows on the selection.
-- **Training view** (`src/TrainView.tsx`): a password field you can't copy, cut, drag from or open a context menu on (`src/noCopy.ts`), and a ✓ button (or Enter) to check it against the hash.
+- **Password fields** (`src/PasswordInput.tsx`): every password field blocks copy, cut and dragging the text out. Each has an eye button that switches it to a plain text field and back. In plain-text mode the long-press/right-click menu is allowed, so a password can be pasted in. Any selection collapses to the cursor at once, so the menu's Copy and Share have nothing to act on.
+- **Training view** (`src/TrainView.tsx`): one such field and a ✓ button (or Enter) to check it against the hash.
 - **Android**:
   - Autofill is excluded from the window, so password managers never offer to save what you type (`MainActivity.kt`).
   - `allowBackup="false"` keeps the hash file out of cloud backups.

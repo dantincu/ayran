@@ -127,9 +127,19 @@ input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* training */
 .train-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attempt { display: flex; gap: 8px; margin-top: 24px; }
-.attempt input { flex: 1; min-width: 0; font-size: 1.15rem; min-height: 52px; }
+.attempt .pw-field { flex: 1; }
+.attempt input { font-size: 1.15rem; min-height: 52px; }
 .result { min-height: 56px; margin-top: 12px; }
 .result p { display: flex; align-items: center; gap: 8px; font-size: 1.1rem; font-weight: 600; margin: 0; }
 .ok { color: var(--ok); }
 .wrong { color: var(--wrong); }
 .stats { font-size: 0.9rem; }
+
+/* password field with its show / hide button inside the right edge */
+.pw-field { position: relative; display: flex; min-width: 0; }
+.pw-field input { flex: 1; min-width: 0; width: 100%; padding-right: 48px; color: var(--text); }
+.pw-field .pw-toggle {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  color: var(--muted);
+}
+.pw-field .pw-toggle[aria-pressed='true'] { color: var(--accent); }

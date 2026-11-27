@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { errorText, type Entry } from './api'
-import { noCopyProps } from './noCopy'
+import { PasswordInput } from './PasswordInput'
 
 function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
   useEffect(() => {
@@ -62,11 +62,11 @@ export function EditDialog({ entry, onSave, onClose }: {
         </label>
         <label>
           {adding ? 'Password' : 'New password (leave empty to keep the current one)'}
-          <input {...noCopyProps} value={password} onChange={(e) => setPassword(e.target.value)} />
+          <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
         <label>
           Repeat the password
-          <input {...noCopyProps} value={confirm} onChange={(e) => setConfirm(e.target.value)}
+          <PasswordInput value={confirm} onChange={(e) => setConfirm(e.target.value)}
             disabled={!adding && !password && !confirm} />
         </label>
         <p className="hint">Only a salted hash of the password is stored, never the password itself.</p>
