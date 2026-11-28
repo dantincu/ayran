@@ -23,6 +23,7 @@ pub struct SystemApp {
 pub const APPS: &[SystemApp] = &[
     SystemApp { id: "notes", name: "Notes", entry: "system/notes/index.html" },
     SystemApp { id: "pdf-viewer", name: "PDF Viewer", entry: "system/pdf-viewer/index.html" },
+    SystemApp { id: "js-playground", name: "JS Playground", entry: "system/js-playground/index.html" },
 ];
 
 /// System windows and tabs store `system:<id>` where user ones store an html file's relative path,

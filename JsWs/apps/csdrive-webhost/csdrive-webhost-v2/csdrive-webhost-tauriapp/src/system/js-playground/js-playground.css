@@ -1,0 +1,145 @@
+.js-playground {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.js-playground-status {
+  padding: 16px;
+}
+
+.js-playground-toolbar {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  align-items: center;
+  gap: 8px;
+}
+
+.js-playground-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.js-playground-hint {
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.js-playground-panes {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.js-playground-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.js-playground-editor-pane {
+  border-right: 1px solid var(--border);
+}
+
+.js-playground-output-pane {
+  background: var(--panel-bg);
+}
+
+.js-playground-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+  font: 13px/1.5 'Cascadia Code', Consolas, 'Liberation Mono', monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.js-playground-output-empty {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  white-space: normal;
+}
+
+.js-playground-output-entry {
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.js-playground-output-entry:last-child {
+  border-bottom: none;
+}
+
+.js-playground-output-warn {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.js-playground-output-error {
+  background: var(--error-bg);
+  color: var(--error-fg);
+  padding: 4px 6px;
+  border-radius: 4px;
+  margin: 2px 0;
+  border-bottom: none;
+}
+
+.js-playground-output-debug {
+  color: var(--muted);
+}
+
+/* The dedicated full-page "editing a profile" view (`JsPlaygroundApp.tsx` swaps to it in place, the same
+   "a text editor is a page, not a popup" choice this app made everywhere else — never a `CodeEditor` inside
+   a `Modal`). Its own simple header — not `.editor-top-bar`'s own measured wrap machinery, which is built
+   around a *static* `h2` title and three already-established hosts; this one's title is a plain, always-
+   editable `<input>` with only two trailing buttons, never enough of either to need it. */
+.js-playground-profile-name {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+}
+
+.js-playground-profile-name:hover,
+.js-playground-profile-name:focus {
+  border-color: var(--border);
+  background: var(--bg);
+}
+
+.js-playground-profile-pane {
+  border-right: none;
+}
+
+/* The starred ("runs automatically on open") profile's own button in `ProfilesModal.tsx` — an SVG
+   presentation attribute (`fill="none"`, lucide's own default) has lower priority than this rule, so it's
+   safe to override from plain CSS rather than needing a prop `IconButton` doesn't expose. */
+.js-playground-profile-active {
+  color: var(--accent);
+}
+
+.js-playground-profile-active svg {
+  fill: currentColor;
+}
+
+/* Side by side needs real width for both the editor and the output to be usable — under that, stack them
+   instead, the same "give each its own line" idea `.window-item`'s own narrow-window rule already uses. */
+@media (max-width: 700px) {
+  .js-playground-panes {
+    flex-direction: column;
+  }
+
+  .js-playground-editor-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}

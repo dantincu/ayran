@@ -169,11 +169,19 @@ text box in the app.
 | **Alt+J** | In the popup that asks for a snippet's own variables (after picking one with at least one `{name}` in it): with no text box in it already focused, focuses the **first** variable's own box — already focused the moment the popup opens. |
 | **Enter** | In "Create image from the clipboard…"'s own file name box: the same as pressing **Create**. |
 
+## JS Playground
+
+| Keys | What it does |
+| --- | --- |
+| **Ctrl+Shift+Enter** | Runs the typed code (the same as the **Run** button) — works with the focus in the editor itself. Not plain Ctrl+Enter: CodeMirror (the mobile editor) binds that by default to "insert a blank line," which would also fire alongside Run. |
+| **Ctrl+S** | While editing a profile's own code (**Manage profiles…**): saves it (while it has unsaved changes) — the same "every text editor answers to Ctrl+S" rule as everywhere else. |
+
 ## Keeping this list right
 
 The shortcuts are defined in code — `src/lib/keyboard.ts` (the list keys, and `useModalListKeyboard`'s own
 Ctrl+S/Ctrl+Enter), `src/lib/chords.ts` and `src/components/ChordHost.tsx` (the two-key shortcuts),
 `src/components/Pagination.tsx`, `src/components/CodeEditor.tsx` (Alt+J, giving an editor the focus),
-`src/system/notes/InsertCustomTextModal.tsx` (its own Alt+J, scoped to the variable-filling popup) and
-`src/system/notes/CreateImageFromClipboardModal.tsx` (Ctrl+N) — and described for developers in the
+`src/system/notes/InsertCustomTextModal.tsx` (its own Alt+J, scoped to the variable-filling popup),
+`src/system/notes/CreateImageFromClipboardModal.tsx` (Ctrl+N) and
+`src/system/js-playground/JsPlaygroundApp.tsx` (Ctrl+Shift+Enter, and Ctrl+S while editing a profile) — and described for developers in the
 "Keyboard" section of `CLAUDE.md`. **A new shortcut is added to this list in the same change.**

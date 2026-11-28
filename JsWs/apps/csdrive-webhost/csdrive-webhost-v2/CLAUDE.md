@@ -3947,3 +3947,227 @@ new one" changed it to a different, equally valid id; clicking Insert landed the
 13c37cfd73534bd6bf2f09658bf24c75`), confirmed by reading Monaco's own real rendered text, not assumed from the
 dialog's own state. `npm run build` and `cargo test --lib` (292 tests) both clean throughout; no Rust change
 for items 2–4 and the `customTextLocations.ts` fix, so only item 1 touched `markdown.rs`.
+
+## JS Playground
+
+**A new system app, asked for directly: a JavaScript code editor, an area showing whatever the code prints,
+and a Run action reachable by a button or a keyboard shortcut — "the way to execute the user-provided
+javascript code would be to simply add a script tag whose contents would be the user-provided javascript
+code," and "this app should have the exact same rights the notes app does."** Built exactly like Notes and
+the pdf-viewer are — a fixed catalog entry (`system_apps::APPS`, a new `vite.config.ts` `rollupOptions.input`
+entry, `system/js-playground/index.html`) — which already answers the rights question on its own: a system
+app is never granted anything beyond what `user-apps.json` already gives *every* window (`"windows": ["*"]`)
+— "there is no tier between them" (this file's own "System apps and Notes" section) — so JS Playground has
+precisely Notes' own rights, with zero new capability grants, because there was nothing left to grant. No
+new backend command exists for this feature at all: `JsPlaygroundApp.tsx` only ever calls the same generic,
+already-documented `get_app_state`/`set_app_state` every app's own UI-state persistence already uses.
+
+**Running the code is literally what was asked for — a real `<script>` element, nothing more.**
+`JsPlaygroundApp.tsx`'s `run()` sets a fresh `<script>` element's `textContent` to the typed source, appends
+it to `document.body`, and removes the element right away — no `eval`, no `Function` constructor, no
+separate realm or sandbox. This needed no CSP change: `script-src` is already `'self' 'unsafe-inline'`
+(`tauri.conf.json`), and `lib/codeSnippets.ts`'s own `applyCodeSnippets` already injects a backend-supplied
+`<script>` the identical way, for every window in the app — this is the same mechanism, just handed the
+person's own typed text instead of a snippet the backend chose. **The trust model is the same one "A
+notebook's own viewer script" and User Action already established**: the code runs with this window's own,
+ordinary rights, because the person *is* the one who just typed it, in this very window, a moment ago —
+there's no indirection (no file path pointing elsewhere, no shared/copied content) for a warning to be
+*about*, so none is shown. Removing the element right after insertion doesn't cancel anything it scheduled —
+a `setTimeout`/`.then()` the code started keeps running independently of whether the element is still in the
+DOM, which is what lets asynchronous output keep appearing in the pane well after Run returns.
+
+**"An area where stuff printed by the javascript code will show up"** is `console.log`/`info`/`warn`/`error`/
+`debug`, intercepted (not silently swallowed — each still forwards to the real `console` too, so DevTools
+sees everything a real `<script>` tag would print, same as before), plus the two things a plain `<script>`
+can fail with that `console.*` never reports on its own: an uncaught exception (`window`'s `error` event —
+this is also how a *syntax* error in the inserted script surfaces, since a parse failure during execution is
+reported the identical way) and an unhandled promise rejection (`unhandledrejection`). Both listeners, and the
+five patched `console` methods, stay installed for the whole page's lifetime, not just during a run — a
+scheduled callback that fires later is exactly as much "stuff the code printed" as something synchronous.
+`lib/consoleFormat.ts` (pure, Node-tested) turns a call's arguments into one line the way a console roughly
+would: a string as itself, an `Error` as its stack, anything else through a circular-safe `JSON.stringify`
+(a bare function/symbol, or anything `JSON.stringify` can't represent at all, falls back to `String(value)`
+rather than throwing). Output is capped at 2000 entries, the oldest dropped first — the same kind of
+size-based safety net the app's own internal clipboard stack already has, for a runaway `setInterval` that
+never stops printing. **Pressing Run clears the pane first** (a separate "Clear the output" button exists for
+clearing without running) — the common convention most quick code-running tools already use, so a person
+isn't left reading a mix of two different runs' output; the typed code itself is left completely untouched by
+a run, including after a thrown error (a real `<script>`'s own execution can't be "rolled back" the way, say,
+a REPL's own undo might be, so nothing here pretends to).
+
+**A real conflict was found and avoided before it ever shipped, not live — by reading the two bundled
+editors' own default keymaps directly.** The obvious choice for "Run" would have been plain **Ctrl+Enter** —
+but `@codemirror/commands`' `defaultKeymap` (bundled into `codemirror`'s own `basicSetup`, which
+`MobileCodeMirrorEditor.tsx` uses as its base extension set for Android) binds `Mod-Enter` to
+`insertBlankLine` — so a plain Ctrl+Enter on the mobile editor would insert a blank line *and* run the code,
+since nothing about that binding would have stopped our own, separate window-level listener from firing too.
+**Ctrl+Shift+Enter** was checked the identical way against both bundled editors' actual keymaps (Monaco's
+bare `editor.api` core ships none of its contrib keybindings at all — see `MonacoCodeEditor.tsx`'s own doc
+comment — and CodeMirror's own bundled keymaps have no `Shift-Mod-Enter` entry) and used instead, with no
+conflict in either.
+
+Node-tested (`lib/consoleFormat.ts`, an ad-hoc script matching this project's own established pattern for a
+module with no committed test file yet): every primitive type, a function, a symbol, an `Error` with and
+without its own stack, a plain object, a circular object (confirmed not to throw), a `bigint` nested inside an
+object, and multiple arguments joined with a space. Verified live (an isolated `cargo tauri dev` instance —
+its own `WEBVIEW2_USER_DATA_FOLDER`/CDP port, so it never touched the already-running production app's own
+shared WebView2 browser host or its real data — real CDP throughout, real mouse clicks and dispatched
+keystrokes, not synthetic DOM events, for every interactive check): a fresh window opened through the
+System Apps tab's own generic `open_new_secondary_window` (no dedicated opener command needed, unlike the
+pdf-viewer's, because this app has no file to be opened *with*) showed the correct title ("JS Playground"),
+the editor pre-filled with a small working example (`console.log('Hello, world!')`), Run enabled and Clear
+disabled; clicking Run produced exactly one `log` entry; a real multi-line script covering every case —
+`console.log` with mixed argument types (confirmed pretty-printed via `JSON.stringify`), `console.info`,
+`console.warn`, `console.error` with a real `Error` object (full stack shown), a `setTimeout`, a rejected,
+never-caught `Promise`, and a top-level `throw` — was typed in with real `Input.insertText`/keyboard events
+and run with **Ctrl+Shift+Enter** (not the button, to prove the shortcut itself): all seven lines produced
+the correct, correctly-labelled entries (`log`/`info`/`warn`/`error`×3) in exactly the order real JavaScript
+execution semantics predict (the synchronous lines, then the `throw`, then the microtask-queued unhandled
+rejection, then the macrotask-queued `setTimeout` arriving ~300ms later) — and the editor's own text was
+completely unaffected by Ctrl+Shift+Enter (confirmed byte-for-byte unchanged), ruling out the exact
+double-firing risk the shortcut choice above was picked to avoid. Running the same script a second time
+produced exactly seven entries again, not fourteen — confirming output is cleared on each run, not
+accumulated. **Persistence**: the typed script was confirmed written to `jsPlayground.code` via a direct
+`get_app_state` call, and a real `Page.reload()` (a page's own reload, which this app's frozen-navigation
+rule always lets through) restored the exact same text into the editor while the output pane came back
+empty, as designed (output is ephemeral; the code is not). Clearing the editor's own text live-disabled the
+Run button; clicking "Clear the output" emptied the pane and brought back its "Nothing printed yet…" message
+and live-disabled itself. The shared `CodeEditor` toolbar showed exactly the subset expected for a plain,
+non-notebook JavaScript file with no link handler wired (Undo, Redo, both app-clipboard buttons, Select
+paragraphs — no "Open link"/"Edit link", no quote-level entries, no notebook menu), confirming this page
+doesn't accidentally trigger any notebook- or markdown-specific behavior. `list_system_apps` correctly listed
+the new entry, so the admin-app's System Apps tab needs no code of its own to show or open it. `npm run
+build`, `cargo build` and `cargo test --lib` (292 tests, unchanged — this feature added no Rust test of its
+own, since `system_apps.rs`'s existing tests already cover any new catalog entry generically) all clean
+throughout. **Not exercised live**:
+Android/CodeMirror specifically (no emulator was brought up for this pass) — the keymap conflict check above
+was done directly against the real, bundled `@codemirror/commands` source rather than assumed, but the live
+click-through itself rests on the identical, already-proven `CodeEditor`/`ThirdPartyEditor` wiring every
+other feature built on it in this file already exercises on Android elsewhere.
+
+**Three follow-ups, asked for together: replace instead of append, console overriding as the stated
+mechanism, and startup profiles.** The first two turned out to already be satisfied by the shape of what was
+built — the second is literally restated below, honestly, for why — but the third is a real, sizeable
+addition: named, saved pieces of JavaScript, one of which can run automatically whenever a new playground
+window opens, the explicit analogy being a shell's own profile script.
+
+**Replace, not append — now a named, shared primitive, `lib/scriptTagRunner.ts`'s `runScript(code)`.** The
+original `run()` already inserted-then-immediately-removed a script element per call, so nothing ever
+*accumulated* — but the ask was specifically about *replacing the previously inserted script tag*, which
+matters once there's more than one *kind* of caller (the Run button, a profile's own auto-run, and the new
+"run a string of code from within running code" primitive below): a profile's own script, left in the DOM
+after it runs (no reason to remove it immediately now — see why below), has to be the thing a later Run
+press, or a nested call, correctly tears down before inserting its own. `runScript` tracks exactly one
+module-level `currentScript` — removing whatever the *previous* call left, before inserting the new one,
+never removing what it itself just inserted. Removing an old element doesn't interrupt anything already
+executing from it (a classic, `src`-less script's own top-level code runs synchronously, in one go, the
+instant it's inserted — long done by the time any later call could reach it), which is exactly what makes it
+safe to call recursively from *within* code `runScript` is itself currently running.
+
+**The "similar to using javascript's built-in eval function" ask is `window.jsPlayground.run(code)`** — the
+same `runScript`, exposed as a global any running code (the main editor's, a profile's, or code reached
+*through* one of these) can call back into. Deliberately not literally named `eval`: real `eval` shares the
+caller's own local scope and returns a value: this always runs as an independent top-level script (global
+`var`s/functions only, no access to the caller's locals, no return value) — closer to what the phrase
+actually describes (running a string of code) than to `eval`'s own exact semantics, so naming it `run`
+avoids promising something it doesn't do. **Only the top-level Run button/shortcut clears the output pane**
+— a nested `jsPlayground.run(...)` call, a profile's own auto-run, or "Run this profile now" (below) never
+does, since wiping out whatever the *calling* code already printed would be a strange side effect of what's
+meant to be "run this one more string," not "start over."
+
+**"Load and execute javascript from external files" is two primitives composed, not a third, overloaded
+one**: `window.jsPlayground.readFile(root, path)` (a local file — `root` is `'user'` or a picked folder's own
+id, the identical addressing every local file command in this app already uses — wrapping the existing
+`lib/fs.ts`'s own `readTextFile`) and `window.jsPlayground.readFilenFile(userId, path)` (a connected Filen
+account, wrapping `lib/filen.ts`'s own `filenReadFile`, decoded to text). "Load and run" is then simply
+`jsPlayground.run(await jsPlayground.readFile(...))` — no combined convenience function, since a combined one
+would have to pick between the two storages anyway, with nothing simpler to offer than composing the two
+pieces by hand. **Both are genuinely new conveniences; nothing else needed building**: the executed code
+runs in this same, real, unsandboxed `window` — it already had `window.__TAURI__.core.invoke(...)` reachable
+directly, the same as every other capability `user-apps.json` grants this app's own windows (Notes included)
+— so "the exact same rights the notes app has" was already true the moment Run started inserting a plain
+`<script>` tag; the two `readFile*` wrappers exist purely for convenience, not because the rights were
+missing. **One real constraint worth stating plainly, since it bit the very first draft of this doc
+comment**: a classic (non-module) script has no top-level `await` — `readFile`/`readFilenFile` return a
+`Promise`, so calling code needs `.then(...)` or an async IIFE (`(async () => { ... })()`), never a bare
+`await` at the top level. A small **"What is this?"** popup (the toolbar's new `HelpCircle` button) spells
+all of this out in the app itself, the same "explain the trust model and the mechanism, in-app, not only in
+this file" convention User Action's and the notebook viewer script's own modals already follow.
+
+**Profiles** (`lib/jsPlaygroundProfiles.ts`, `system/js-playground/ProfilesModal.tsx`): named, saved pieces of
+JavaScript — add, rename (from the dedicated editor view, the one place a profile's name and its code are
+both editable together, not duplicated into the list too), delete, and star **one** of them as the one that
+runs automatically, via `runScript`, the instant a new playground window finishes loading — including a
+reload, which is treated as "opening a fresh playground" too, there being no separate "has the init already
+run this session" flag to track. Kept as one JSON blob (`jsPlayground.profiles`, `{ profiles, activeId }`),
+not two separate keys, specifically so `activeId` can never drift to point at a profile that's since been
+deleted — `removeProfile` clears it in the same write when the deleted profile was the active one, and
+`sanitize()` (run on every load) drops it back to `null` on its own if a malformed save ever let it through
+anyway, the same "what was saved is never trusted blindly" rule every other saved shape in this app follows.
+
+**Editing a profile's code is a dedicated full-page view, not a `CodeEditor` inside a `Modal`** — this app
+already moved *away* from exactly that shape once (CLAUDE.md's "Text editors are now dedicated pages, not
+popups"), so a first-of-its-kind step back into it wasn't taken: `ProfilesModal`'s own list (names, a `Star`
+to mark the one that auto-runs, `Play` to run one immediately without closing the modal, `Pencil` to edit,
+`Trash2` to delete, each persisting immediately — the same "no separate Save step for the list itself"
+immediacy `CustomTextLocationsModal` already has for its own list) hands off to `JsPlaygroundApp`'s own
+top-level view swap the moment "Edit" is pressed, exactly the way `NotesApp.tsx` swaps its whole content area
+between a listing and an editor. The profile editor's own header is deliberately *not* `.editor-top-bar` (the
+three already-established hosts' own measured-wrap machinery, built around a static `h2` title) — its title
+is a plain, always-editable `<input>`, with only two trailing buttons, never enough of either to need that
+machinery — so it gets its own small, bespoke CSS instead. **Ctrl+S saves** (the same "every text editor
+answers to this" rule the main editor and three other hosts already follow) and **Back asks to confirm
+discarding** when the name or the code has changed since it was last saved — both wired through refs
+(`editingProfileRef`/`editingOriginalRef`/`profilesRef`), not the state values directly, specifically so
+neither listener has to be torn down and re-registered on every keystroke while typing a profile's code (the
+same reason the main editor's own Ctrl+Shift+Enter listener was already written this way).
+
+**A real DOM/CSS mistake was caught before it ever reached a browser, not live**: `ProfilesModal.tsx`'s own
+`Star` button (the "runs automatically" toggle) was first written passing both an `icon` prop *and* an
+explicit `<Star .../>` child to `IconButton` — but `IconButton` always renders its own icon from the `icon`
+prop and never reads `children` at all, so the child element would have been silently discarded (or, worse,
+conflicted with the `...rest` spread also carrying a stray `children` prop from the JSX). Fixed by dropping
+the child entirely and toggling a plain CSS class instead (`.js-playground-profile-active`, forcing `fill:
+currentColor` on the icon's own `<svg>` — a CSS rule beats the SVG's own `fill="none"` presentation
+attribute, the same precedence any stylesheet rule already has over one) — caught by a second read of the
+component before building, not by a failed live click.
+
+Verified live (an isolated `cargo tauri dev` instance — its own `WEBVIEW2_USER_DATA_FOLDER`/CDP port, never
+touching the already-running production app or its real data — real CDP throughout): **replace, not append**
+— two Run presses on real, changed code, and two direct `window.jsPlayground.run(...)` calls made from
+outside any script tag at all (to exercise the primitive itself, not just its one caller), all confirmed
+through `document.querySelectorAll('body > script').length`, which stayed flat (2: the page's own static
+entry-point script, plus exactly one of ours) across every one of them — never growing, confirming
+replacement, not accumulation; a nested call's own two prints (`'nested A'`, `'nested B'`) both reached the
+output pane, confirming recursion through the primitive works and doesn't clear anything either. **A real
+test-methodology trap, caught mid-pass, not assumed away**: the very first "replace, not append" check showed
+*no* change in script count across two Run *button* clicks at all — not because the mechanism was broken, but
+because the Run button was silently `disabled` the whole time: this isolated profile's `jsPlayground.code`
+had been left as an empty string by an earlier, unrelated live-verification pass in this same debug data
+folder (the one that specifically tested "Run disables itself when the editor is empty"), and an empty editor
+correctly disables Run — so every "click" was a genuine no-op, confirmed directly (`.disabled === true`,
+`.view-lines`'s own text empty) before concluding anything about the feature itself. **Profiles, end to end,
+with real file I/O, not a stub**: wrote a real file to the user folder through the playground window's own
+already-granted `fs_write_file` rights; opened **Manage profiles…**, added a profile, renamed it through a
+real React-tracked input change (not a raw `.value` assignment), typed real code into its own Monaco editor
+(`console.log('profile init ran')` followed by `jsPlayground.readFile('user', 'playground-test.txt')
+.then(t => console.log('file says: ' + t))`), saved it, and starred it; closed that window and opened a
+**brand-new** one — its toolbar hint correctly named the active profile, and its output pane showed
+`["profile init ran", "file says: hello from a real file on disk"]` **with no Run press at all** — the
+synchronous line first, the real file's real content arriving a moment later once the `readFile` promise
+resolved, confirming the whole chain (the global exists before the profile's own code could call into it,
+`readFile` genuinely reads a real file off disk, and the ordering between sync and async output is correct).
+**The discard-confirm dialog, both directions, against the real native box** (Win32 `BM_CLICK`, since this is
+`confirm_dialog`, not a DOM dialog — titled `"JS Playground" (or a page it shows) asks`, confirming the
+title-by-page-label convention `confirm_dialog`'s other callers already get applies here unchanged): dirtied
+a profile's code, pressed Back, clicked **Cancel** on the real dialog — stayed on the editor, the dirty text
+untouched; pressed Back again, clicked **OK** on a fresh dialog instance — returned to the list, and
+reopening that same profile's editor confirmed the discarded edit was genuinely gone, reverted to exactly
+what the last real Save had written (not a cached in-memory guess). **Ctrl+S** saved a real edit and returned
+to the list, confirmed by the modal's own title reappearing. **"Run this profile now"**, from the list,
+correctly *appended* to the output pane (2 entries before, 5 after) rather than clearing it, confirming the
+nested/non-top-level "never clears" rule holds for this trigger too, not just a literal nested call. **Delete**,
+confirmed through the identical real native dialog, removed the row and correctly cleared `activeId` back to
+`null` in the same persisted write (read back directly via `get_app_state`), with the list's own "No profiles
+yet." message reappearing. `npm run build` clean throughout; no Rust change, so `cargo build`/`cargo test
+--lib` don't apply to this follow-up.
