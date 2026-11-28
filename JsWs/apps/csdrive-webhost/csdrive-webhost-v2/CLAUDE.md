@@ -4171,3 +4171,187 @@ confirmed through the identical real native dialog, removed the row and correctl
 `null` in the same persisted write (read back directly via `get_app_state`), with the list's own "No profiles
 yet." message reappearing. `npm run build` clean throughout; no Rust change, so `cargo build`/`cargo test
 --lib` don't apply to this follow-up.
+
+**The `jsPlayground` global moved to be a property of the shared, admin-renameable `ayran` namespace
+object, not a bare global of its own** — asked for directly, reusing exactly the namespace
+`markdown.rs`'s own bootstrap script already creates for an unrelated purpose (`window.ayran = window.ayran
+|| {}`, see "A notebook's own viewer script"/`ayran_global.rs`), rather than inventing a second one.
+`lib/ayranGlobalName.ts`'s `getAyranGlobalName()` is the read side of this: **not** the dedicated
+`get_ayran_global_name` command, which is admin-only at the *capability* level (`admin.json`, `windows:
+["main"]`) and would be refused outright for this (or any other) non-admin window — it reads the identical
+stored value through the generic `get_global_setting`, which has no reserved-prefix check on its *read*
+side (only `set_global_setting`'s write side refuses the `ayranGlobal.` prefix, which is why the dedicated
+admin-only command still exists for changing it). The mount effect that used to do `window.jsPlayground =
+{...}` synchronously now fetches the configured name first, then does `window[name] = window[name] || {};
+window[name].jsPlayground = {...}` — and the cleanup on unmount removes only this app's own `jsPlayground`
+property, never the whole namespace object, which may hold other things too. The "What is this?" help
+popup shows the *real*, currently-configured name (`{ayranName}.jsPlayground.run(...)`), not a hardcoded
+`"ayran"` that could silently drift from whatever the admin has actually renamed it to.
+
+Verified live (an isolated `cargo tauri dev` instance, real CDP): `window.jsPlayground` is `undefined`;
+`window.ayran.jsPlayground` exists with `run`/`readFile`/`readFilenFile`, all reachable and working from
+inside running code (a nested call through it still replaces, not appends — confirmed via `document
+.querySelectorAll('body > script').length` staying flat); the help modal's text matched. Renamed the
+namespace from the admin window (`set_ayran_global_name({name: 'csdrive_test'})`), closed and reopened a
+fresh playground window: `window.ayran` didn't even exist any more, `window.csdrive_test.jsPlayground` did,
+and the help text picked up the new name with zero stale `"ayran"` text left — confirming this is read
+fresh at mount, not baked in. Reverted the name back to `'ayran'` afterward. `npm run build` clean; no
+Rust change (the backend commands this reuses already existed for `markdown.rs`'s own purpose).
+
+**A real bug was found live right after this shipped to production — not in this change itself, but in the
+whole feature's own execution mechanism, present since the very first version**: "I executed the sample
+code that contains a call to console.log but it doesn't print anything." Every earlier live-verification
+pass in this file's own "JS Playground" history — every one of them — was run against `cargo tauri dev`
+(the Vite dev server), never against the actual *embedded, bundled* frontend the real installer ships. That
+turned out to matter: reproduced directly against the embedded serving path (`cargo run --features
+tauri/custom-protocol`, the same `tauri://`-serving code the installed release build uses, in an isolated
+debug data folder) and confirmed, with a real captured `securitypolicyviolation` event
+(`{directive: "script-src-elem", blockedURI: "inline", sourceFile: ".../js-playground-*.js"}`), that the
+dynamically-inserted, literal-`textContent` `<script>` element `runScript` was building — the one and only
+execution mechanism, explicitly asked for as "simply add a script tag" — was being **silently blocked by
+CSP**. Root cause, confirmed by reading the real, served response headers side by side: Tauri's own CSP
+hash-injection (which scans the *admin-app's* own inline bootstrap scripts and appends a `'sha256-…'' per
+one to `script-src`) is applied to **every** `tauri://`-served page in this build, not recomputed per file —
+the js-playground page's own header carried the identical 28 hashes the admin's own page does, despite its
+own html having no inline script of its own to hash at all. Per the CSP spec, the mere *presence* of a
+hash-source in a directive makes the browser ignore `'unsafe-inline'` for that whole directive, hash match
+or not — so `'unsafe-inline'` being textually present in the configured `script-src` string never actually
+helped once Tauri's own hashes sat beside it. **This never showed up in `cargo tauri dev` testing because
+the Vite dev server's own pages never get this hash injection at all** (Tauri has no html of its own to
+scan there — it never serves them, Vite does) — a real, fully load-bearing gap in this session's own
+testing discipline across the whole feature's life, not a one-off oversight.
+
+**The fix: `runScript` now sources the script from a `blob:` URL instead of literal `textContent`**, and
+`script-src` in `tauri.conf.json` (both `csp` and `devCsp`, for consistency, though only the embedded one
+was ever actually missing it) gained `blob:` — a plain scheme-source, independent of whatever happens to
+`'unsafe-inline'` once hashes are present, so it's allowed regardless. There was no third option that kept
+the content inline: the typed code is arbitrary, decided at runtime, so no `'sha256-…'`/nonce-source could
+ever be computed for it in advance the way Tauri's own build-time hashes are for the admin's own static
+scripts. The one real behavioural difference from the original, inline version — a `src`'d script (even a
+`blob:` one) executes once its "fetch" resolves, not synchronously the instant it's inserted, unlike a bare
+inline script — cost nothing in practice: nothing in this module or its callers ever depended on the
+script having already run by the time `runScript` itself returned. `cargo test --lib
+the_csp_never_names_an_external_host_or_scheme` passes unchanged (`blob:` was already in that test's own
+allowlist, used elsewhere in this exact CSP for `worker-src`/`img-src`/`media-src`/`connect-src`).
+
+Verified live, against the real embedded-serving path a second time, not assumed fixed from the code change
+alone: the page's own served CSP now carries `blob:` in `script-src` alongside the (still-present,
+unavoidable) hashes; a `securitypolicyviolation` listener installed *before* anything ran, through two
+separate Run presses and a profile's own auto-run-on-open, captured **zero** violations; the sample code's
+`console.log` calls, a nested `ayran.jsPlayground.run(...)` call, `console.warn`, `console.error` with a
+real `Error` object (its stack now correctly pointing at a real `blob:http://tauri.localhost/<uuid>` address
+rather than `<anonymous>`), and a top-level `throw` all produced exactly the entries expected, with `document
+.querySelectorAll('script')` confirming exactly one `blob:`-sourced script ever present at a time across
+three separate runs (never two, never three) — replace-not-append holds unchanged under the new mechanism.
+A profile created, saved and starred through the real UI printed its own `console.log` automatically on a
+freshly reopened window, with no manual Run press, confirming the auto-run path goes through the identical,
+now-fixed primitive. Redeployed to this machine's production install afterward (a fresh `cargo tauri build`
++ silent NSIS install) — the first time this exact serving path was actually exercised in production, not
+only in an isolated debug instance, now that the bug it was hiding is fixed.
+
+## Auto-closing brackets/quotes and smart Enter in the code editors, with a 2-space indent for JavaScript
+
+**"Let's mimic the behavior of other popular javascript editors by automatically appending matching closing
+brackets and quotes... Enter inside a pair of braces... the closing brace on a third line... And the indent
+for javascript should be 2 spaces... generally, when pressing the ENTER key from an already indented line,
+the newly created line should itself be indented accordingly."** The three editing surfaces this app ships
+(Monaco on desktop and CodeMirror on mobile — "A plain textarea for 'disable all code highlighting'..."
+above — and this app's own built-in editor, `CodeEditor.tsx`'s `HighlightedEditor`/`PlainTextEditor`) needed
+three very different amounts of work, found by reading each one's own real behavior and source rather than
+assuming any of them needed building from nothing.
+
+**Monaco and CodeMirror already do almost all of it, by default — confirmed live and by source, not
+assumed.** Monaco's bare `editor.api` core (this app's own, CSP-driven choice — see "Monaco and CodeMirror:
+Select paragraphs..." above) ships its own real `autoClosingPairs`/`onEnterRules` for every language it
+knows, including JavaScript, pulled in automatically the moment the file's language mode is set —
+confirmed live: typing `(`/`[`/`{`/`'`/`"` each auto-closes; typing a selection's own opener wraps it;
+typing a closing bracket immediately before a matching one steps over it instead of duplicating it;
+Backspace between an empty pair deletes both in one step; and Enter between `{}`/`()`/`[]` already produces
+the exact 3-line explosion asked for, with the closing brace back at the opening line's own indent and the
+caret one level deeper on the line between. CodeMirror's `basicSetup` (`MobileCodeMirrorEditor.tsx`'s own
+base extension set) bundles `@codemirror/autocomplete`'s `closeBrackets()` (confirmed from its own installed
+source: the default `brackets` list is exactly `( [ { ' "`) and `@codemirror/commands`' `defaultKeymap`,
+whose `Enter` binding is `insertNewlineAndIndent` — read directly in its own source, not assumed from its
+name: `isBetweenBrackets` matches `()`/`[]`/`{}` by a plain regex (with a syntax-tree-based fallback for any
+other bracket-like pair CodeMirror's own language support knows), and `newlineAndIndent` builds the
+identical 3-line explosion when it matches. **Neither editor needed any new code for any of this** — only
+the per-language tab size (below).
+
+**The built-in editor had none of it — a bare `<textarea>`, exactly as this file's own prior documentation
+already says** ("The experimental, token-patching code editor" above never claimed otherwise) — so this is
+where the actual implementation went. `lib/editorAutoClose.ts` (new, pure, no DOM — Node-tested with the
+project's own established ad-hoc-script pattern) has three functions, each returning either `null` ("nothing
+special, let the ordinary path handle it") or a plain `{ value, start, end }` edit the caller applies through
+the file's existing `applyEdit` — the identical "decide synchronously and `preventDefault()`, defer the real
+edit via `setTimeout(0)`" shape every other hand-built shortcut in `CodeEditor.tsx` (Tab, Page Up/Down,
+undo/redo) already uses, so the new behavior is one more step of the editor's own undo history, Ctrl+Z
+included, for free:
+- **`autoCloseEdit(value, selStart, selEnd, key)`** — with a selection and an opening bracket/quote, wraps it
+  (`(hello)`, caret spanning the wrapped text); with no selection, typing a closer immediately before an
+  identical character steps over it rather than inserting a duplicate; otherwise, typing an opener inserts
+  the matching closer too, caret landing between them.
+- **`autoCloseBackspaceEdit(value, selStart, selEnd)`** — Backspace with the caret directly between a
+  matching empty pair (`(|)`, `''`, …) removes both characters in one step; anything else (a selection, the
+  document's own start, unmatched characters) is left to the browser's ordinary Backspace.
+- **`smartEnterEdit(value, selStart, selEnd, unit)`** — reads the **current** line's own leading
+  whitespace and continues it on the new line for a plain Enter; when the caret sits directly between a
+  matching, now-adjacent pair (`()`/`[]`/`{}`), it instead builds the 3-line explosion (`unit` is one
+  indent step — `\n<indent><unit>` for the middle line, caret there, then `\n<indent>` for the closing
+  bracket's own line) — deliberately **not gated to any one language**, the same way CodeMirror's own
+  `isBetweenBrackets` isn't: a brace pair means the same thing in JSON, CSS or plain text as it does in
+  JavaScript, so there was no reason to special-case it.
+
+**None of `editorAutoClose.ts` is language-gated — only the indent *size* is, and that's one small, shared
+helper, not three separate overrides.** `lib/editorIndent.ts` gained `effectiveTabSettings(language,
+tabInsertsSpaces, tabSpaceCount)`: for `'javascript'`, **always** `{ insertSpaces: true, size: 2 }`,
+regardless of whatever the person's own `editor.tabInsertsSpaces`/`editor.tabSpaceCount` settings say (those
+still apply to every other language, unchanged); for anything else, the settings exactly as given.
+`indentUnitForLanguage` wraps it into the plain indent-unit string `CodeEditor.tsx`'s own Tab handler and
+Ctrl+K chords already needed. All three editors read through this one function: `MonacoCodeEditor.tsx`'s
+`updateOptions` effect now computes `tabSize`/`insertSpaces` from it (previously straight from the plain
+settings) and re-runs the effect when `effectiveLanguage` changes; `MobileCodeMirrorEditor.tsx`'s
+`tabExtensions` takes `language` as a new first parameter and both its call sites (the mount effect and the
+settings-reconfigure effect, the latter gaining `effectiveLanguage` in its own dependency array) pass it
+through; `CodeEditor.tsx`'s own six pre-existing call sites of the old, settings-only `indentUnit` (two
+Ctrl+K chords and the Tab handler, in each of `HighlightedEditor`/`PlainTextEditor`) were all switched to
+`indentUnitForLanguage(effectiveLanguage, ...)`. **Changing the tab size/character this way never rewrites a
+file already on disk** — it only decides what a future Tab press inserts and how an existing tab character
+*renders*, the same as the generic per-language setting this overrides already only ever did.
+
+Node-tested (`lib/editorAutoClose.ts`, an ad-hoc script matching this project's own established pattern for
+a module with no committed test file yet): every opening bracket/quote with no selection, wrapping a
+selection, stepping over a closing bracket/quote, a closing bracket with nothing to step over (left `null`
+for the ordinary path), a plain character (`null`), Backspace deleting an empty pair (bracket and quote
+alike), Backspace refusing when there's content between, a selection, or the document's own start; plain
+Enter continuing an indented and an unindented line; the 3-line explosion for `{}`, `()` and `[]` alike, both
+at the document's own start and inside an already-indented line; and Enter over a selection replacing it the
+same way typing any character would. **Two off-by-one errors were in this test's own hand-counted string
+offsets, not the implementation** — caught and fixed by recounting the exact strings before trusting the
+test's own "FAIL" output as meaning the code was wrong.
+
+**Verified live (isolated `cargo tauri dev` instance, its own dedicated `WEBVIEW2_USER_DATA_FOLDER`/CDP
+port, real CDP throughout — including the one Enter-dispatch correction this session's own CDP work needed:
+Monaco's EditContext input surface silently ignores `Input.dispatchKeyEvent` for Enter unless the event also
+carries `text: '\r'`/`unmodifiedText: '\r'`, confirmed by first reproducing a plain "type hello, Enter, type
+world" staying on one line with neither property set, then correctly splitting into two lines once they were
+added — a CDP-dispatch-shape finding, not an app bug, and distinct from the already-documented class of real
+OS-focus bugs this project's own history records elsewhere):** against **Monaco**, on a real `.js` file —
+`x` then Tab produced a real two-space indent (`"x  "`'s own leading run measured, not a 4-space one); typing
+`{` then a real Enter (with the corrected dispatch shape) produced `["{","  ","}"]` — the pre-existing
+3-line explosion, now landing on 2 spaces instead of whatever the generic setting would have given a
+non-JS file. Against the **built-in editor** (`editor.useBuiltInEditor` toggled on for the test, then back
+off afterward to leave the isolated instance in its default state): all five opener/quote types
+auto-closed correctly (`()`/`[]`/`{}`/`''`/`""`, caret landing between each pair); typing `)` immediately
+after a fresh `(` stepped over it rather than duplicating it; Backspace against a fresh, empty `()` deleted
+both characters in one step (back to an empty document); a real Enter inside a fresh, empty `{}` produced
+exactly `"{\n  \n}"` with the caret at offset 4 — the middle line, indented one level, matching the pure-
+function test's own prediction exactly; a real Enter after typing `"  x"` (two spaces, then `x`) produced
+`"  x\n  "` with the caret at the end — the new line correctly continuing the original line's own
+indentation; a plain Tab on an empty `.js` file inserted exactly two spaces; and wrapping a real text
+selection (`"hello"`, selected via Ctrl+A) with a typed `(` produced `"(hello)"`. `npm run build` (`tsc -b`
++ `vite build`) clean throughout, confirming every call site's types line up. **Not separately exercised
+live**: CodeMirror on Android — no emulator was brought up for this pass; its own relevant behavior
+(`closeBrackets()`, `insertNewlineAndIndent`) was confirmed by reading the actual installed package source
+directly rather than assumed from its name, and the one thing this session's code actually changed for it
+(`tabExtensions`'s new `language` parameter) is a small, type-checked, mechanically-mirrored change next to
+the already-live-verified desktop wiring, with nothing CodeMirror-specific left to get wrong differently.

@@ -22,8 +22,9 @@ import { UndoHistory } from '../lib/undoHistory'
 import { highlight, languageOf, type Language } from '../lib/highlight'
 import { HighlightScheduler } from '../lib/highlightScheduler'
 import { editorLinkHandlers, type LinkHandler } from '../lib/textLinks'
-import { applyTab, indentUnit } from '../lib/editorIndent'
+import { applyTab, indentUnitForLanguage } from '../lib/editorIndent'
 import { applyQuoteLevel } from '../lib/editorQuote'
+import { autoCloseBackspaceEdit, autoCloseEdit, smartEnterEdit } from '../lib/editorAutoClose'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import { useChord } from '../lib/chords'
 import { overlayOpen } from '../lib/keyboard'
@@ -1117,7 +1118,7 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
     "Insert 2 tabs' indentation at the caret (or indent the lines selected)",
     () => {
       const input = inputRef.current
-      const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+      const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
       if (input) applyEdit(applyTab(value, input.selectionStart, input.selectionEnd, unit.repeat(2), false))
     },
     focused,
@@ -1127,7 +1128,7 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
     "Insert 4 tabs' indentation at the caret (or indent the lines selected)",
     () => {
       const input = inputRef.current
-      const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+      const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
       if (input) applyEdit(applyTab(value, input.selectionStart, input.selectionEnd, unit.repeat(4), false))
     },
     focused,
@@ -1313,7 +1314,7 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
                   const selStart = e.currentTarget.selectionStart
                   const selEnd = e.currentTarget.selectionEnd
                   setTimeout(() => {
-                    const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+                    const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
                     applyEdit(applyTab(value, selStart, selEnd, unit, shiftKey))
                   }, 0)
                   return
@@ -1387,6 +1388,46 @@ const HighlightedEditor = forwardRef<CodeEditorHandle, Props>(function Highlight
                     frame.scrollTop = Math.min(maxScroll, Math.max(0, frame.scrollTop + (goingDown ? frame.clientHeight : -frame.clientHeight)))
                   }, 0)
                   return
+                }
+                // Enter, smart-indented — see `lib/editorAutoClose.ts`'s own doc for why this is always
+                // computed by hand (a plain textarea's own default Enter is just a bare "\n") and why it
+                // isn't gated to any one language. Not held back by Shift — Monaco's and CodeMirror's own
+                // default keymaps both treat Shift+Enter the same way for this.
+                if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                  e.preventDefault()
+                  const selStart = e.currentTarget.selectionStart
+                  const selEnd = e.currentTarget.selectionEnd
+                  setTimeout(() => {
+                    const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+                    applyEdit(smartEnterEdit(value, selStart, selEnd, unit))
+                  }, 0)
+                  return
+                }
+                // Backspace, deleting a matching empty pair in one step — decided synchronously (the
+                // ordinary "nothing special here" case is left to the browser's own default Backspace,
+                // untouched, the same "decide now, defer only the real edit" shape every shortcut here uses).
+                if (e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                  const selStart = e.currentTarget.selectionStart
+                  const selEnd = e.currentTarget.selectionEnd
+                  const backspaceEdit = autoCloseBackspaceEdit(value, selStart, selEnd)
+                  if (backspaceEdit) {
+                    e.preventDefault()
+                    setTimeout(() => applyEdit(backspaceEdit), 0)
+                    return
+                  }
+                }
+                // Auto-closing brackets and quotes — see `lib/editorAutoClose.ts`'s own doc for what Monaco
+                // and CodeMirror already do here for free. `e.key` is already the resulting character
+                // (shift/AltGr already applied), so this works regardless of keyboard layout.
+                if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
+                  const selStart = e.currentTarget.selectionStart
+                  const selEnd = e.currentTarget.selectionEnd
+                  const closeEdit = autoCloseEdit(value, selStart, selEnd, e.key)
+                  if (closeEdit) {
+                    e.preventDefault()
+                    setTimeout(() => applyEdit(closeEdit), 0)
+                    return
+                  }
                 }
                 if (!(e.ctrlKey || e.metaKey) || e.altKey) return
                 const key = e.key.toLowerCase()
@@ -1557,7 +1598,7 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
     "Insert 2 tabs' indentation at the caret (or indent the lines selected)",
     () => {
       const input = inputRef.current
-      const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+      const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
       if (input) applyEdit(applyTab(value, input.selectionStart, input.selectionEnd, unit.repeat(2), false))
     },
     focused,
@@ -1567,7 +1608,7 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
     "Insert 4 tabs' indentation at the caret (or indent the lines selected)",
     () => {
       const input = inputRef.current
-      const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+      const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
       if (input) applyEdit(applyTab(value, input.selectionStart, input.selectionEnd, unit.repeat(4), false))
     },
     focused,
@@ -1688,7 +1729,7 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
               const selStart = e.currentTarget.selectionStart
               const selEnd = e.currentTarget.selectionEnd
               setTimeout(() => {
-                const unit = indentUnit(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+                const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
                 applyEdit(applyTab(value, selStart, selEnd, unit, shiftKey))
               }, 0)
               return
@@ -1703,6 +1744,40 @@ const PlainTextEditor = forwardRef<CodeEditorHandle, Props>(function PlainTextEd
               if (direction) {
                 e.preventDefault()
                 setTimeout(() => onScrollNudge(direction), 0)
+                return
+              }
+            }
+            // Enter, smart-indented; Backspace, deleting a matching empty pair; auto-closing brackets and
+            // quotes — see `HighlightedEditor`'s own identical three blocks, and `lib/editorAutoClose.ts`'s
+            // own doc, for the full reasoning (this editor shares the exact same logic, just with no
+            // virtualized window underneath it to disturb).
+            if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              e.preventDefault()
+              const selStart = e.currentTarget.selectionStart
+              const selEnd = e.currentTarget.selectionEnd
+              setTimeout(() => {
+                const unit = indentUnitForLanguage(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
+                applyEdit(smartEnterEdit(value, selStart, selEnd, unit))
+              }, 0)
+              return
+            }
+            if (e.key === 'Backspace' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+              const selStart = e.currentTarget.selectionStart
+              const selEnd = e.currentTarget.selectionEnd
+              const backspaceEdit = autoCloseBackspaceEdit(value, selStart, selEnd)
+              if (backspaceEdit) {
+                e.preventDefault()
+                setTimeout(() => applyEdit(backspaceEdit), 0)
+                return
+              }
+            }
+            if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1) {
+              const selStart = e.currentTarget.selectionStart
+              const selEnd = e.currentTarget.selectionEnd
+              const closeEdit = autoCloseEdit(value, selStart, selEnd, e.key)
+              if (closeEdit) {
+                e.preventDefault()
+                setTimeout(() => applyEdit(closeEdit), 0)
                 return
               }
             }

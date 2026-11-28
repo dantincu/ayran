@@ -18,12 +18,17 @@ import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
 import { selectParagraphs } from '../lib/paragraphs'
 import { applyQuoteLevel } from '../lib/editorQuote'
+import { effectiveTabSettings } from '../lib/editorIndent'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
 import type { CodeEditorHandle } from './CodeEditor'
 
-function tabExtensions(tabInsertsSpaces: boolean, tabSpaceCount: number) {
-  return [EditorState.tabSize.of(tabSpaceCount), indentUnit.of(tabInsertsSpaces ? ' '.repeat(tabSpaceCount) : '\t')]
+/** `language`'s own override (`editorIndent.ts`'s `effectiveTabSettings` — JavaScript always 2 spaces,
+ * regardless of the generic `tabInsertsSpaces`/`tabSpaceCount` settings) applies here too, the same as it
+ * does for Monaco's own `tabSize`/`insertSpaces` and the built-in editor's Tab key and smart-Enter indent. */
+function tabExtensions(language: Language, tabInsertsSpaces: boolean, tabSpaceCount: number) {
+  const tab = effectiveTabSettings(language, tabInsertsSpaces, tabSpaceCount)
+  return [EditorState.tabSize.of(tab.size), indentUnit.of(tab.insertSpaces ? ' '.repeat(tab.size) : '\t')]
 }
 
 function languageExtension(language: Language) {
@@ -133,7 +138,7 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
         readOnlyCompartment.of(EditorState.readOnly.of(readOnly ?? false)),
         wrapCompartment.of(settings?.wrapLines === false ? [] : EditorView.lineWrapping),
         whitespaceCompartment.of(settings?.showWhitespace ? highlightWhitespace() : []),
-        tabCompartment.of(tabExtensions(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)),
+        tabCompartment.of(tabExtensions(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             const text = update.state.doc.toString()
@@ -241,9 +246,9 @@ const MobileCodeMirrorEditor = forwardRef<CodeEditorHandle, Props>(function Mobi
 
   useEffect(() => {
     viewRef.current?.dispatch({
-      effects: tabCompartment.reconfigure(tabExtensions(settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)),
+      effects: tabCompartment.reconfigure(tabExtensions(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)),
     })
-  }, [settings?.tabInsertsSpaces, settings?.tabSpaceCount, tabCompartment])
+  }, [settings?.tabInsertsSpaces, settings?.tabSpaceCount, tabCompartment, effectiveLanguage])
 
   useImperativeHandle(ref, () => ({
     insertAtCursor(text, caretOffset) {

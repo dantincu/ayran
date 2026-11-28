@@ -41,6 +41,7 @@ import MarkdownLinkModal from './MarkdownLinkModal'
 import { languageOf, type Language } from '../lib/highlight'
 import { linkAt, markdownLinkAt, type LinkHandler } from '../lib/textLinks'
 import { applyQuoteLevel } from '../lib/editorQuote'
+import { effectiveTabSettings } from '../lib/editorIndent'
 import { selectParagraphs } from '../lib/paragraphs'
 import { internalClipboard } from '../lib/clipboard'
 import { subscribeEditorSettings, type EditorSettings } from '../lib/editorSettings'
@@ -589,15 +590,16 @@ const MonacoCodeEditor = forwardRef<CodeEditorHandle, Props>(function MonacoCode
   }, [effectiveLanguage, settings?.highlightDisabled])
 
   useEffect(() => {
+    const tab = effectiveTabSettings(effectiveLanguage, settings?.tabInsertsSpaces ?? false, settings?.tabSpaceCount ?? 4)
     editorRef.current?.updateOptions({
       readOnly,
       wordWrap: settings?.wrapLines === false ? 'off' : 'on',
       lineNumbers: settings?.lineNumbers === false ? 'off' : 'on',
       renderWhitespace: settings?.showWhitespace ? 'all' : 'none',
-      insertSpaces: settings?.tabInsertsSpaces ?? false,
-      tabSize: settings?.tabSpaceCount ?? 4,
+      insertSpaces: tab.insertSpaces,
+      tabSize: tab.size,
     })
-  }, [readOnly, settings?.wrapLines, settings?.lineNumbers, settings?.showWhitespace, settings?.tabInsertsSpaces, settings?.tabSpaceCount])
+  }, [readOnly, settings?.wrapLines, settings?.lineNumbers, settings?.showWhitespace, settings?.tabInsertsSpaces, settings?.tabSpaceCount, effectiveLanguage])
 
   /** Writes the "Edit or insert a link" popup's result back — the Monaco equivalent of `TextFieldMenu.tsx`'s own
    * `submitLink`/`replaceSelection`: the hit's own character offsets are converted to a `Range` only here (the

@@ -3,6 +3,8 @@
  * because a `textarea` doesn't intercept it by itself — the browser's own default action (focus the next
  * focusable element) has to be prevented and the indentation inserted by hand. */
 
+import type { Language } from './highlight'
+
 export interface TabEdit {
   value: string
   /** Where the selection should be afterward. */
@@ -13,6 +15,24 @@ export interface TabEdit {
 /** The literal text one Tab key press inserts: a tab character, or `count` spaces (`editorSettings.ts`). */
 export function indentUnit(tabInsertsSpaces: boolean, tabSpaceCount: number): string {
   return tabInsertsSpaces ? ' '.repeat(tabSpaceCount) : '\t'
+}
+
+/** `{ insertSpaces, size }` for whichever of the three real editors' own tab-size API this feeds —
+ * Monaco's `updateOptions({ insertSpaces, tabSize })`, CodeMirror's `EditorState.tabSize.of`/`indentUnit.of`
+ * (`MobileCodeMirrorEditor.tsx`'s own `tabExtensions`), or `indentUnit` above for the built-in editor's Tab
+ * key and smart-Enter indent (below). **JavaScript always uses 2 spaces** — asked for directly ("the indent
+ * for javascript should be 2 spaces"), overriding whatever the person's own generic `editor.tabInsertsSpaces`/
+ * `editor.tabSpaceCount` settings say; every other language keeps using those, unchanged. */
+export function effectiveTabSettings(language: Language, tabInsertsSpaces: boolean, tabSpaceCount: number): { insertSpaces: boolean; size: number } {
+  if (language === 'javascript') return { insertSpaces: true, size: 2 }
+  return { insertSpaces: tabInsertsSpaces, size: tabSpaceCount }
+}
+
+/** `indentUnit`, through `effectiveTabSettings`'s own per-language override — the one call site the built-in
+ * editor's Tab-key handling and smart-Enter indent (`editorAutoClose.ts`) both need. */
+export function indentUnitForLanguage(language: Language, tabInsertsSpaces: boolean, tabSpaceCount: number): string {
+  const settings = effectiveTabSettings(language, tabInsertsSpaces, tabSpaceCount)
+  return indentUnit(settings.insertSpaces, settings.size)
 }
 
 /** Applies Tab (`outdent: false`) or Shift+Tab (`true`) to `value`, whose selection is `[start, end)`.
